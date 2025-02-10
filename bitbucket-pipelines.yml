@@ -70,7 +70,7 @@ definitions:
                     { "Key": "Env","Value": "prod" },
                     { "Key": "App","Value": "poseidonCdpApp" },
                     { "Key": "Owner","Value": "bi_tools@wfscorp.com" },
-                    { "Key": "Domain","Value": "cdp" }
+                    { "Key": "Domain","Value": "CDP" }
                 ]
         services:
           - docker
@@ -79,7 +79,7 @@ definitions:
 
     - step: &buildAndPushToJFrog
         trigger: automatic
-        name: "Build and Push Docker Image"
+        name: "Build and Push to JFrog"
         script:
           # Jfrog Configuration
           - docker login $JFROG_URL --username $JFROG_AUTOBAHN_USERNAME --password $JFROG_AUTOBAHN_TOKEN
