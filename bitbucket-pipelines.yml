@@ -135,7 +135,7 @@ definitions:
             else
               echo "Image $IMAGE_URL exists in ECR"
             fi
-          - pipe: docker://wfscorp.jfrog.io/docker/wfs-ecs-deploy-pipe:5.1.0
+          - pipe: docker://wfscorp.jfrog.io/docker/wfs-ecs-deploy-pipe:5.1.1
             variables:
               AWS_OIDC_ROLE_ARN: "arn:aws:iam::$AWS_ACCOUNT_ID:role/$AUTOBAHN_DEPLOYMENT_ROLE"
               AWS_ECR_OIDC_ROLE_ARN: "arn:aws:iam::425815147557:role/$AUTOBAHN_DEPLOYMENT_ROLE"
