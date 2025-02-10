@@ -70,7 +70,7 @@ definitions:
                     { "Key": "Env","Value": "prod" },
                     { "Key": "App","Value": "poseidonCdpApp" },
                     { "Key": "Owner","Value": "bi_tools@wfscorp.com" },
-                    { "Key": "Domain","Value": "cdp" }
+                    { "Key": "Domain","Value": "shared" }
                 ]
         services:
           - docker
