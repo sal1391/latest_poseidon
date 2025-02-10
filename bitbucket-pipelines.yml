@@ -231,7 +231,7 @@ pipelines:
 branches:
     main:
       - parallel:
-          - step: *compileAndPublish
+          - step: *buildDocker
           - step: *validateCustomPolicyDocument
       - parallel:
           - step: *buildAndPushToJFrog
