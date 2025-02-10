@@ -73,13 +73,12 @@ definitions:
                     { "Key": "Domain","Value": "shared" }
                 ]
           - docker login $JFROG_URL --username $JFROG_AUTOBAHN_USERNAME --password $JFROG_AUTOBAHN_TOKEN
-          - pipe: docker://wfscorp.jfrog.io/docker/atlassian/aws-ecr-push-image:2.4.2
+          - pipe: docker://wfscorp.jfrog.io/docker/bitbucketpipelines/aws-ecr-push-image:2.4.2
             variables:
               AWS_DEFAULT_REGION: us-east-1
               AWS_OIDC_ROLE_ARN: arn:aws:iam::425815147557:role/$AUTOBAHN_DEPLOYMENT_ROLE
               IMAGE_NAME: $BITBUCKET_REPO_SLUG
               TAGS: $BITBUCKET_BUILD_NUMBER
-
         services:
           - docker
         caches:
