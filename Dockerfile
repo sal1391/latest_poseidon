@@ -1,29 +1,14 @@
-FROM wfscorp.jfrog.io/docker/library/python:3.11-slim-buster@sha256:c46b0ae5728c2247b99903098ade3176a58e274d9c7d2efeaaab3e0621a53935
+FROM python:3.8-slim
 
-LABEL maintainer="WFS Corp"
+WORKDIR /code
 
-# Set working directory
-WORKDIR /usr/local/airflow/dags/dbt/cdp_edw
+COPY ./requirements.txt ./
 
-COPY . .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Install OS dependencies
-RUN apt-get update && apt-get install -qq -y \
-    git gcc build-essential libpq-dev --fix-missing --no-install-recommends \ 
-    && apt-get clean
+COPY ./src ./src
 
-# Make sure we are using latest pip
-RUN pip install --upgrade pip
+CMD ["streamlit", "run", "src/main.py"]
 
-# Copy requirements.txt
-COPY ../requirements.txt requirements.txt
-
-# Install dependencies
-RUN pip install -r requirements.txt
-
-EXPOSE 8501
-
-HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health
-
-# Run app.py when the container launches
-ENTRYPOINT ["streamlit", "run", "app.py"]
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD curl -f http://localhost:8501/ || exit 1
