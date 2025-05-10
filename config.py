@@ -13,7 +13,7 @@ SNOWFLAKE_CONNECTION = {
 AUTH0_CONFIG = {
     "clientId": "wscvwhAWpFNKEn9VOwA0PVNhFz6o5uEJ",
     "domain": "dev-wfs.auth0.com",
-    "redirect_uri": "http://localhost:8501"
+    "redirect_uri": "https://poseidon.dev.aws.wfscorp.com/"
 }
 
 
