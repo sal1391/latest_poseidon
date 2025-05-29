@@ -1,12 +1,6 @@
 # Snowflake connection parameters
 # DO NOT commit this file to version control
 
-SNOWFLAKE_CONNECTION = {
-    "account": "wfs.us-east-1",
-    "user": "SVCCDP_MCA@WFSCORP.COM",     # Replace with actual username
-    "password": "Marine_MCA2025"  # Replace with actual password
-} 
-
 
 
 # Auth0 Configuration
