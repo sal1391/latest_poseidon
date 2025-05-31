@@ -99,7 +99,7 @@ with st.sidebar:
 #    st.write("Login result:", result)
 # --- Role-based access control ---
 
-REQUIRED_ROLE = "Test" 
+REQUIRED_ROLE = "Poseidon_streamlit_role" 
 
 if result:
     # Get the id_token or access_token from result
