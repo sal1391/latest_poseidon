@@ -5,6 +5,7 @@ from snowflake.snowpark.functions import col, sum as snowflake_sum, coalesce
 import os
 from auth0_component import login_button
 import json
+import jwt
 
 # Import custom modules for specific functionality
 from prompts import get_supplier_profile_prompt, get_customer_profile_prompt, get_welcome_message
@@ -95,141 +96,125 @@ st.title("Poseidon :trident:")
 with st.sidebar:
     st.subheader("Authentication")
     result = login_button(AUTH0_CONFIG["clientId"], AUTH0_CONFIG["domain"])
+    
+# --- Role-based access control ---
+REQUIRED_ROLE = "Test" 
 
-# Only show application content after successful authentication
 if result:
-    # Temporarily display success message in sidebar
-    success_message = st.sidebar.empty()
-    success_message.success("Login success")
-    success_message.empty()
-    
-    # Display persistent user info in sidebar for session awareness
-    with st.sidebar:
-        st.write(f"Welcome, {result.get('name', 'User')}")
-        st.write("---")
-    
-    # Initialize counters for text animation effects
-    if 'stream_data_counter' not in st.session_state:
-        st.session_state.stream_data_counter = 0
+    # Get the id_token or access_token from result
+    token = result.get("access_token")
+    if token:
+        try:
+            # Decode JWT (skip signature verification for demo; verify in prod!)
+            decoded = jwt.decode(token, options={"verify_signature": False})
 
-    # Display animated welcome message
-    st.write(stream_text_effect(get_welcome_message()))
+            # Try custom claim first, then default 'roles'
+            roles = (
+                decoded.get("https://wfscorp.com/custom-claims", {}).get("roles", [])
+                or decoded.get("roles", [])
+            )
 
-    # Create main navigation tabs for different analysis modes
-    tabs = st.tabs(["**Supplier Insight**", "**Customer Insight**"])
+            if REQUIRED_ROLE in roles:
+                # Show login success and user info in sidebar
+                with st.sidebar:
+                    st.success("Login success")
+                    st.write(f"Welcome, {result.get('name', 'User')}")
+                    st.write("---")
+                # ---- Place your protected app content below ----
 
-    def render_account_tab(session, tab_type="customer"):
-        """
-        Unified function to render either supplier or customer analysis tabs.
+                # Initialize counters for text animation effects
+                if 'stream_data_counter' not in st.session_state:
+                    st.session_state.stream_data_counter = 0
 
-        This implements the DRY principle by using a single function with
-        conditional logic rather than separate functions for each tab type.
+                # Display animated welcome message
+                st.write(stream_text_effect(get_welcome_message()))
 
-        Args:
-            session (Session): Active Snowflake session object
-            tab_type (str): The tab type - either "customer" or "supplier"
-        """
-        is_supplier = tab_type == "supplier"
-        tab_title = "Supplier Insight" if is_supplier else "Customer Insight"
-        st.write(f"Welcome to {tab_title}!")
+                # Create main navigation tabs for different analysis modes
+                tabs = st.tabs(["**Supplier Insight**", "**Customer Insight**"])
 
-        # Configure UI elements based on tab type
-        account_type_list = ["Select Account Type", "New", "Existing"]
-        key_prefix = "vendor" if is_supplier else "customer"
-        account_lookup = st.selectbox("Account Type", account_type_list, key=f"{key_prefix}_account_type")
+                def render_account_tab(session, tab_type="customer"):
+                    is_supplier = tab_type == "supplier"
+                    tab_title = "Supplier Insight" if is_supplier else "Customer Insight"
+                    st.write(f"Welcome to {tab_title}!")
 
-        # Get appropriate list based on account type
-        account_list = get_account_list(session, is_supplier)
-        list_label = "Supplier Group" if is_supplier else "Account Group"
-        # Renamed to avoid confusion with direct function call later.
-        # This stores the appropriate function (get_supplier_group_details_query or get_customer_group_details_query)
-        get_details_query_func = get_supplier_group_details_query if is_supplier else get_customer_group_details_query
+                    # Configure UI elements based on tab type
+                    account_type_list = ["Select Account Type", "New", "Existing"]
+                    key_prefix = "vendor" if is_supplier else "customer"
+                    account_lookup = st.selectbox("Account Type", account_type_list, key=f"{key_prefix}_account_type")
 
+                    # Get appropriate list based on account type
+                    account_list = get_account_list(session, is_supplier)
+                    list_label = "Supplier Group" if is_supplier else "Account Group"
+                    get_details_query_func = get_supplier_group_details_query if is_supplier else get_customer_group_details_query
 
-        # Logic for existing accounts - retrieve and analyze data
-        if account_lookup == "Existing":
-            # Dynamically determine the placeholder text
-            placeholder_text = f"Select {'Supplier' if is_supplier else 'Account'}"
-
-            # Create a copy of the original account_list.
-            # Then, insert the placeholder ONLY ONCE at the beginning of this copy.
-            selectbox_options = account_list.copy()
-            selectbox_options.insert(0, placeholder_text)
-
-            company_name = st.selectbox(list_label, selectbox_options)
-
-            if company_name == placeholder_text:
-                # Corrected warning message to be dynamic and grammatically correct
-                st.warning(f"Please select a {'Supplier' if is_supplier else 'Account'}.")
-            else:
-                try:
-                    # Data retrieval phase
-                    with st.spinner("Running SQL query for group details..."):
-                        time.sleep(2)  # Visual indication of processing
-                        # Call the assigned function and pass is_supplier
-                        grp_result_df = execute_query(session, get_details_query_func(company_name))
-
-                        if grp_result_df.empty:
-                            st.write("No data found for the selected company name.")
+                    if account_lookup == "Existing":
+                        placeholder_text = f"Select {'Supplier' if is_supplier else 'Account'}"
+                        selectbox_options = account_list.copy()
+                        selectbox_options.insert(0, placeholder_text)
+                        company_name = st.selectbox(list_label, selectbox_options)
+                        if company_name == placeholder_text:
+                            st.warning(f"Please select a {'Supplier' if is_supplier else 'Account'}.")
                         else:
-                            st.dataframe(grp_result_df.set_index(grp_result_df.columns[0]))
+                            try:
+                                with st.spinner("Running SQL query for group details..."):
+                                    time.sleep(2)
+                                    grp_result_df = execute_query(session, get_details_query_func(company_name))
+                                    if grp_result_df.empty:
+                                        st.write("No data found for the selected company name.")
+                                    else:
+                                        st.dataframe(grp_result_df.set_index(grp_result_df.columns[0]))
+                                with st.spinner("Generating AI response..."):
+                                    time.sleep(2)
+                                    profile, input_tokens, output_tokens, cost = generate_company_profile(
+                                        session,
+                                        company_name,
+                                        profile_type=tab_type
+                                    )
+                                    display_token_info(input_tokens, output_tokens, cost)
+                                    st.write("AI generated response:")
+                                    st.text_area(f"Summarization of {company_name}", value=profile, height=3150)
+                            except Exception as e:
+                                st.error(f"We encountered an issue while processing your request. Details: {str(e)}")
+                                import logging
+                                logging.error(f"Error processing request: {str(e)}", exc_info=True)
+                    elif account_lookup == "New":
+                        company_name = st.text_input("Account:")
+                        if company_name == "":
+                            st.warning(f"Please type a {'Supplier' if is_supplier else 'Account'}.")
+                        else:
+                            try:
+                                with st.spinner("Generating AI response..."):
+                                    time.sleep(2)
+                                    profile, input_tokens, output_tokens, cost = generate_company_profile(
+                                        session,
+                                        company_name,
+                                        is_supplier=is_supplier,
+                                        profile_type=tab_type
+                                    )
+                                    display_token_info(input_tokens, output_tokens, cost)
+                                    st.write("AI generated response:")
+                                    st.text_area(f"Summarization of {company_name}", value=profile, height=3150)
+                            except Exception as e:
+                                st.error(f"We encountered an issue while processing your request. Details: {str(e)}")
+                                import logging
+                                logging.error(f"Error processing request: {str(e)}", exc_info=True)
+                    else:
+                        st.write("Please select a valid account type.")
 
-                    # AI analysis phase
-                    with st.spinner("Generating AI response..."):
-                        time.sleep(2)  # Visual indication of processing
-                        profile, input_tokens, output_tokens, cost = generate_company_profile(
-                            session,
-                            company_name,
-                            profile_type=tab_type
-                        )
-
-                        # Display token usage metrics and AI-generated analysis
-                        display_token_info(input_tokens, output_tokens, cost)
-                        st.write("AI generated response:")
-                        st.text_area(f"Summarization of {company_name}", value=profile, height=3150)
-                except Exception as e:
-                    st.error(f"We encountered an issue while processing your request. Details: {str(e)}")
-                    # Log detailed error for debugging while showing user-friendly message
-                    import logging
-                    logging.error(f"Error processing request: {str(e)}", exc_info=True)
-
-        # Logic for new accounts - AI analysis only without database lookup
-        elif account_lookup == "New":
-            company_name = st.text_input("Account:")
-
-            if company_name == "":
-                st.warning(f"Please type a {'Supplier' if is_supplier else 'Account'}.") # Dynamic warning message
+                with tabs[0]:
+                    render_account_tab(session, "supplier")
+                with tabs[1]:
+                    render_account_tab(session, "customer")
             else:
-                try:
-                    with st.spinner("Generating AI response..."):
-                        time.sleep(2)  # Visual indication of processing
-                        profile, input_tokens, output_tokens, cost = generate_company_profile(
-                            session,
-                            company_name,
-                            is_supplier=is_supplier, # Ensure is_supplier is passed for new accounts too
-                            profile_type=tab_type
-                        )
-
-                        # Display token usage metrics and AI-generated analysis
-                        display_token_info(input_tokens, output_tokens, cost)
-                        st.write("AI generated response:")
-                        st.text_area(f"Summarization of {company_name}", value=profile, height=3150)
-                except Exception as e:S
-                st.error(f"We encountered an issue while processing your request. Details: {str(e)}")
-                # Log detailed error for debugging while showing user-friendly message
-                import logging
-                logging.error(f"Error processing request: {str(e)}", exc_info=True)
-        else:
-            st.write("Please select a valid account type.")
-
-# Render the appropriate tab content
-    with tabs[0]:  # Supplier Insight Tab
-        render_account_tab(session, "supplier")
-
-    with tabs[1]:  # Customer Insight Tab
-        render_account_tab(session, "customer")
+                st.error("You do not have the required role to access this app. Wrong role, try later.")
+                st.stop()
+        except Exception as e:
+            st.error(f"Could not verify your role. Error: {e}")
+            st.stop()
+    else:
+        st.error("No token found. Please log in again.")
+        st.stop()
 else:
-# Security measure - don't show any application content until authenticated
     st.warning("Please log in.")
 
 

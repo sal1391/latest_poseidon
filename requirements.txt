@@ -3,3 +3,4 @@ pandas
 snowflake
 snowflake-snowpark-python
 streamlit-auth0-component-patch
+PyJWT
