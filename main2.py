@@ -96,8 +96,9 @@ st.title("Poseidon :trident:")
 with st.sidebar:
     st.subheader("Authentication")
     result = login_button(AUTH0_CONFIG["clientId"], AUTH0_CONFIG["domain"])
-    
+    st.write("Login result:", result)
 # --- Role-based access control ---
+
 REQUIRED_ROLE = "Test" 
 
 if result:
