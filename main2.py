@@ -5,6 +5,7 @@ from snowflake.snowpark.functions import col, sum as snowflake_sum, coalesce
 import os
 from auth0_component import login_button
 import json
+import jwt  # Added import for JWT decoding
 
 # Import custom modules for specific functionality
 from prompts import get_supplier_profile_prompt, get_customer_profile_prompt, get_welcome_message
@@ -86,8 +87,6 @@ def generate_company_profile(session, company_name, profile_type="customer"):
     response, input_tokens, output_tokens, cost = generate_llm_response(session, prompt)
     return response, input_tokens, output_tokens, cost
 
-
-
 # --- Main Streamlit Application ---
 st.title("Poseidon :trident:")
 
@@ -120,7 +119,7 @@ if result:
                     st.write(f"Welcome, {result.get('name', 'User')}")
                     st.write("---")
                 # ---- Place your protected app content below ----
-    
+
                 # Initialize counters for text animation effects
                 if 'stream_data_counter' not in st.session_state:
                     st.session_state.stream_data_counter = 0
@@ -157,7 +156,6 @@ if result:
                     
                     # This stores the appropriate function (get_supplier_group_details_query or get_customer_group_details_query)
                     get_details_query_func = get_supplier_group_details_query if is_supplier else get_customer_group_details_query
-
 
                     # Logic for existing accounts - retrieve and analyze data
                     if account_lookup == "Existing":
@@ -226,23 +224,20 @@ if result:
                                     display_token_info(input_tokens, output_tokens, cost)
                                     st.write("AI generated response:")
                                     st.text_area(f"Summarization of {company_name}", value=profile, height=3150)
-                            except Exception as e:S
-                            st.error(f"We encountered an issue while processing your request. Details: {str(e)}")
-                            # Log detailed error for debugging while showing user-friendly message
-                            import logging
-                            logging.error(f"Error processing request: {str(e)}", exc_info=True)
+                            except Exception as e:
+                                st.error(f"We encountered an issue while processing your request. Details: {str(e)}")
+                                # Log detailed error for debugging while showing user-friendly message
+                                import logging
+                                logging.error(f"Error processing request: {str(e)}", exc_info=True)
                     else:
                         st.write("Please select a valid account type.")
 
-            # Render the appropriate tab content
+                # Render the appropriate tab content
                 with tabs[0]:  # Supplier Insight Tab
                     render_account_tab(session, "supplier")
 
                 with tabs[1]:  # Customer Insight Tab
                     render_account_tab(session, "customer")
             else:
-            # Security measure - don't show any application content until authenticated
+                # Security measure - don't show any application content until authenticated
                 st.warning("Please log in.")
-
-
-
