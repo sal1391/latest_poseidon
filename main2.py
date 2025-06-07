@@ -38,7 +38,6 @@ except ImportError:
 session = Session.builder.configs(SNOWFLAKE_CONNECTION).create()
 
 # Initialize session state variables for caching query results
-# This prevents redundant queries and improves performance
 if 'supplier_list' not in st.session_state:
     st.session_state.supplier_list = None
 if 'customer_list' not in st.session_state:
