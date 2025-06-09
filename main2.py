@@ -154,8 +154,13 @@ if result:
                 with tabs[1]:
                     render_account_tab(session, "customer")
             else:
-                st.warning("Please log in.")
+                st.error("You do not have the required role to access this app. Wrong role, try later.")
+                st.stop()
         except Exception as e:
-            st.error(f"Authentication error: {str(e)}")
+            st.error(f"Could not verify your role. Error: {e}")
+            st.stop()
     else:
-        st.warning("Please log in.")
+        st.error("No token found. Please log in again.")
+        st.stop()
+else:
+    st.warning("Please log in.")
