@@ -1,0 +1,26 @@
+<<<<<<< Updated upstream
+# this is needed for local develpment
+[server]
+
+# no default broswer
+headless = true
+
+#required for local development
+runOnSave = true
+
+#required for loca development
+fileWatcherType = "poll"
+=======
+[server]
+headless = true
+runOnSave = true
+fileWatcherType = "poll"
+enableCORS = false
+
+[theme]
+primaryColor = "#FF4B4B"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F0F2F6"
+textColor = "#262730"
+font = "sans serif" 
+>>>>>>> Stashed changes

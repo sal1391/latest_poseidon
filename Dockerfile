@@ -1,29 +1,20 @@
-FROM wfscorp.jfrog.io/docker/library/python:3.11-slim-buster@sha256:c46b0ae5728c2247b99903098ade3176a58e274d9c7d2efeaaab3e0621a53935
+FROM python:3.10-slim
 
-LABEL maintainer="WFS Corp"
+WORKDIR /app
 
-# Set working directory
-WORKDIR /usr/local/airflow/dags/dbt/cdp_edw
+# Copy requirements first to leverage Docker cache
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy the application code
 COPY . .
 
-# Install OS dependencies
-RUN apt-get update && apt-get install -qq -y \
-    git gcc build-essential libpq-dev --fix-missing --no-install-recommends \ 
-    && apt-get clean
+# Set environment variables
+ENV STREAMLIT_SERVER_PORT=8501
+ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
 
-# Make sure we are using latest pip
-RUN pip install --upgrade pip
-
-# Copy requirements.txt
-COPY ../requirements.txt requirements.txt
-
-# Install dependencies
-RUN pip install -r requirements.txt
-
+# Expose the port
 EXPOSE 8501
 
-HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health
-
-# Run app.py when the container launches
-ENTRYPOINT ["streamlit", "run", "app.py"]
+# Command to run the application
+CMD ["streamlit", "run", "main2.py"] 
