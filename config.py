@@ -22,10 +22,9 @@ def get_secret(secret_name):
 
 # Determine deployment environment
 try:
-    raw_env = os.environ["BITBUCKET_DEPLOYMENT_ENVIRONMENT"].lower()
+    raw_env = os.environ["BITBUCKET_DEPLOYMENT_ENVIRONMENT"].lower()
 except KeyError:
-    raise EnvironmentError("BITBUCKET_DEPLOYMENT_ENVIRONMENT is not set. Please define it in your pipeline.")
-
+    raise EnvironmentError("BITBUCKET_DEPLOYMENT_ENVIRONMENT is not set. Please define it in your pipeline.")
 
 # Map environment to subdomain
 if raw_env == "prod":
