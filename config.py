@@ -28,9 +28,9 @@ except KeyError:
 
 # Map environment to subdomain
 if raw_env == "prod":
-    subdomain = ""
+    subdomain = ""
 else:
-    subdomain = f"{raw_env}."
+    subdomain = f"{raw_env}."
 
 # Construct redirect URI
 redirect_uri = f"https://poseidon.{subdomain}aws.wfscorp.com/"
