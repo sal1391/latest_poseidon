@@ -83,25 +83,34 @@ if result:
                     st.success("Login success")
                     st.write(f"Welcome, {result.get('name', 'User')}")
                     st.write("---")
+                
                 if 'stream_data_counter' not in st.session_state:
                     st.session_state.stream_data_counter = 0
                 st.write(stream_text_effect(get_welcome_message()))
+                
                 tabs = st.tabs(["**Supplier Insight**", "**Customer Insight**"])
+                
                 def render_account_tab(session, tab_type="customer"):
                     is_supplier = tab_type == "supplier"
                     tab_title = "Supplier Insight" if is_supplier else "Customer Insight"
                     st.write(f"Welcome to {tab_title}!")
                     account_type_list = ["Select Account Type", "New", "Existing"]
                     key_prefix = "vendor" if is_supplier else "customer"
+                    
                     account_lookup = st.selectbox("Account Type", account_type_list, key=f"{key_prefix}_account_type")
                     account_list = get_account_list(session, is_supplier)
+                    
                     list_label = "Supplier Group" if is_supplier else "Account Group"
-                    get_details_query_func = get_supplier_group_details_query if is_supplier else get_customer_group_details_query
+                    get_details_query_func = get_supplier_group_details_query if is_supplier else get_customer_group_details_query                    
+                    
                     if account_lookup == "Existing":
                         placeholder_text = f"Select {'Supplier' if is_supplier else 'Account'}"
+                        
                         selectbox_options = account_list.copy()
                         selectbox_options.insert(0, placeholder_text)
-                        company_name = st.selectbox(list_label, selectbox_options)
+                        
+                        company_name = st.selectbox(list_label, selectbox_options, key=f"{key_prefix}_company_selectbox")
+                        
                         if company_name == placeholder_text:
                             st.warning(f"Please select a {'Supplier' if is_supplier else 'Account'}.")
                         else:
@@ -112,7 +121,7 @@ if result:
                                     if grp_result_df.empty:
                                         st.write("No data found for the selected company name.")
                                     else:
-                                        st.dataframe(grp_result_df.set_index(grp_result_df.columns[0]))
+                                        st.dataframe(grp_result_df.set_index(grp_result_df.columns[0]), key=f"{key_prefix}_existing_dataframe")
                                 with st.spinner("Generating AI response..."):
                                     time.sleep(2)
                                     profile, input_tokens, output_tokens, cost = generate_company_profile(
@@ -122,13 +131,14 @@ if result:
                                     )
                                     display_token_info(input_tokens, output_tokens, cost)
                                     st.write("AI generated response:")
-                                    st.text_area(f"Summarization of {company_name}", value=profile, height=3150)
+                                    st.text_area(f"Summarization of {company_name}", value=profile, height=3150, key=f"{key_prefix}_existing_summary")
                             except Exception as e:
                                 st.error(f"We encountered an issue while processing your request. Details: {str(e)}")
                                 import logging
                                 logging.error(f"Error processing request: {str(e)}", exc_info=True)
                     elif account_lookup == "New":
-                        company_name = st.text_input("Account:")
+                        
+                        company_name = st.text_input("Account:", key=f"{key_prefix}_company_textinput")
                         if company_name == "":
                             st.warning(f"Please type a {'Supplier' if is_supplier else 'Account'}.")
                         else:
@@ -141,8 +151,10 @@ if result:
                                         profile_type=tab_type
                                     )
                                     display_token_info(input_tokens, output_tokens, cost)
+                                    
                                     st.write("AI generated response:")
-                                    st.text_area(f"Summarization of {company_name}", value=profile, height=3150)
+                                    st.text_area(f"Summarization of {company_name}", value=profile, height=3150, key=f"{key_prefix}_new_summary")
+                                    
                             except Exception as e:
                                 st.error(f"We encountered an issue while processing your request. Details: {str(e)}")
                                 import logging
