@@ -22,7 +22,7 @@ def get_secret(secret_name):
 
 # Determine deployment environment
 try:
-    raw_env = os.environ["BITBUCKET_DEPLOYMENT_ENVIRONMENT"].lower()
+    raw_env = os.getenv('BITBUCKET_DEPLOYMENT_ENVIRONMENT')
 except KeyError:
     raise EnvironmentError("BITBUCKET_DEPLOYMENT_ENVIRONMENT is not set. Please define it in your pipeline.")
 
