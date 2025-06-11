@@ -175,6 +175,8 @@ pipelines:
             - step:
                 name: Deploy
                 <<: *deploy
+                variables:
+                    BITBUCKET_DEPLOYMENT_ENVIRONMENT: "dev"
 
     rw-deploy-to-test:
       - variables:
@@ -186,6 +188,8 @@ pipelines:
             - step:
                 name: Deploy
                 <<: *deploy
+                variables:
+                    BITBUCKET_DEPLOYMENT_ENVIRONMENT: "test"
 
     rw-deploy-to-qa:
       - variables:
@@ -197,6 +201,8 @@ pipelines:
             - step:
                 name: Deploy
                 <<: *deploy
+                variables:
+                    BITBUCKET_DEPLOYMENT_ENVIRONMENT: "qa"
 
     rw-deploy-to-psup:
       - variables:
@@ -208,6 +214,8 @@ pipelines:
             - step:
                 name: Deploy
                 <<: *deploy
+                variables:
+                    BITBUCKET_DEPLOYMENT_ENVIRONMENT: "psup"
 
     rw-deploy-to-prod:
       - variables:
@@ -219,6 +227,8 @@ pipelines:
             - step:
                 name: Deploy
                 <<: *deploy
+                variables:
+                    BITBUCKET_DEPLOYMENT_ENVIRONMENT: "prod"
 
   default:
     - parallel:
