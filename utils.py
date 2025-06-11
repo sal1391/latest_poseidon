@@ -10,7 +10,7 @@ def execute_query(session, query):
     """Execute a Snowflake query and return the results as a pandas DataFrame"""
     return session.sql(query).to_pandas()
 
-def generate_llm_response(session, prompt, model="llama3.1-70b"):
+def generate_llm_response(session, prompt, model="claude-4-sonnet"):
     """Generate a response from Snowflake's LLM and return the response and token counts"""
     # Clean prompt for SQL injection prevention
     safe_prompt = prompt.replace("'", "''")
@@ -21,14 +21,14 @@ def generate_llm_response(session, prompt, model="llama3.1-70b"):
     response = response_df['CONTENT'][0]
     
     # Get token counts
-    input_token_query = f"""SELECT snowflake.cortex.count_tokens('{model}', '{safe_prompt}') AS TOKEN_COUNT"""
+    input_token_query = f"""SELECT snowflake.cortex.count_tokens('llama3.2-1b', '{safe_prompt}') AS TOKEN_COUNT"""
     input_token_count = execute_query(session, input_token_query)['TOKEN_COUNT'][0]
     
-    output_token_query = f"""SELECT snowflake.cortex.count_tokens('{model}', '{response.replace("'", "''")}') AS TOKEN_COUNT"""
+    output_token_query = f"""SELECT snowflake.cortex.count_tokens('llama3.2-1b', '{response.replace("'", "''")}') AS TOKEN_COUNT"""
     output_token_count = execute_query(session, output_token_query)['TOKEN_COUNT'][0]
     
     # Calculate cost (adjust as needed based on your pricing)
-    cost_per_search = round((input_token_count + output_token_count) * 1.21 / 1000000 * 2.40, 4)
+    cost_per_search = round((input_token_count + output_token_count) * 2.55 / 1000000 * 2.40, 4)
     
     return response, input_token_count, output_token_count, cost_per_search
 
