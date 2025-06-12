@@ -23,6 +23,7 @@ def get_secret(secret_name):
 # Determine deployment environment
 try:
     raw_env = os.getenv('BITBUCKET_DEPLOYMENT_ENVIRONMENT')
+    print(raw_env)
 except KeyError:
     raise EnvironmentError("BITBUCKET_DEPLOYMENT_ENVIRONMENT is not set. Please define it in your pipeline.")
 
@@ -44,8 +45,8 @@ auth0_settings = {
 }
 
 # Validate environment
-if raw_env not in auth0_settings:
-    raise ValueError(f"Unsupported environment '{raw_env}'. Allowed environments: {', '.join(auth0_settings.keys())}")
+##if raw_env not in auth0_settings:
+##    raise ValueError(f"Unsupported environment '{raw_env}'. Allowed environments: {', '.join(auth0_settings.keys())}")
 
 # Determine subdomain prefix
 subdomain = "" if raw_env == "prod" else f"{raw_env}."
