@@ -1,6 +1,3 @@
-# Snowflake connection parameters
-# DO NOT commit this file to version control
-
 import boto3
 import json
 import os
@@ -18,45 +15,34 @@ def get_secret(secret_name):
         return json.loads(secret)
     except Exception as e:
         raise Exception(f"Unable to retrieve secret: {e}")
-        
 
 # Determine deployment environment
-try:
-    raw_env = os.getenv('BITBUCKET_DEPLOYMENT_ENVIRONMENT')
-    print(f"Deployment environment: {raw_env}")
-except KeyError:
+raw_env = os.getenv('BITBUCKET_DEPLOYMENT_ENVIRONMENT')
+if not raw_env:
     raise EnvironmentError("BITBUCKET_DEPLOYMENT_ENVIRONMENT is not set. Please define it in your pipeline.")
 
-# Define allowed environments and their Auth0 settings
-auth0_settings = {
-    "dev": {
-        "clientId": "11EIyyba4ieIlQFycP1Sc3lJfgqHVMFD",
-        "domain": "https://auth.dev.wfscorp.com/"
-    },
-    "prod": {
-        "clientId": "BX8pTmM5Bgmiu3w9vk6WpPLLeRr3SCG7",
-        "domain": "https://auth.wfscorp.com/"
-    }
-    # Add more environments like "qa", "staging" if needed
-}
+print(f"Deployment environment: {raw_env}")
 
-# Validate environment
-##if raw_env not in auth0_settings:
-##    raise ValueError(f"Unsupported environment '{raw_env}'. Allowed environments: {', '.join(auth0_settings.keys())}")
+if raw_env == "prod":
+    clientId = "BX8pTmM5Bgmiu3w9vk6WpPLLeRr3SCG7"
+    domain = "https://auth.wfscorp.com/"
+    redirect_uri = "https://poseidon.aws.wfscorp.com/"
+elif raw_env == "dev":
+    clientId = "11EIyyba4ieIlQFycP1Sc3lJfgqHVMFD"
+    domain = "https://auth.dev.wfscorp.com/"
+    redirect_uri = "https://poseidon.dev.aws.wfscorp.com/"
+elif raw_env == "test":
+    clientId = "CazkhQ2pTEDUcV3NLHuAuIYZIBA7LXpK"
+    domain = "https://auth.test.wfscorp.com/"
+    redirect_uri = "https://poseidon.test.aws.wfscorp.com/"
+else:
+    raise ValueError(f"Unknown deployment environment: {raw_env}")
 
-# Determine subdomain prefix
-subdomain = "" if raw_env == "prod" else f"{raw_env}."
-
-# Build Auth0 config
-config = auth0_settings[raw_env]
 AUTH0_CONFIG = {
-    "clientId": config["clientId"],
-    "domain": config["domain"],
-    "redirect_uri": f"https://poseidon.{subdomain}aws.wfscorp.com/"
+    "clientId": clientId,
+    "domain": domain,
+    "redirect_uri": redirect_uri
 }
 
 # Fetch the secret
 SNOWFLAKE_CONNECTION = get_secret("poseidon_secret_json")
-
-
-
