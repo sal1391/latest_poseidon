@@ -27,21 +27,21 @@ except KeyError:
     raise EnvironmentError("BITBUCKET_DEPLOYMENT_ENVIRONMENT is not set. Please define it in your pipeline.")
 
 # Map environment to subdomain
-if raw_env == "prod":
-    subdomain = ""
-else:
-    subdomain = f"{raw_env}."
+if raw_env == "dev":
+    AUTH0_CONFIG = {
+        "clientId": "11EIyyba4ieIlQFycP1Sc3lJfgqHVMFD",
+        "domain": "https://auth.dev.wfscorp.com/",
+        "redirect_uri": f"https://poseidon.dev.aws.wfscorp.com/"
+        }
+elif raw_env == "prod":
+    AUTH0_CONFIG = {
+        "clientId": "BX8pTmM5Bgmiu3w9vk6WpPLLeRr3SCG7",
+        "domain": "https://auth.wfscorp.com/",
+        "redirect_uri": f"https://poseidon.aws.wfscorp.com/"
+        }
 
 # Fetch the secret
 SNOWFLAKE_CONNECTION = get_secret("poseidon_secret_json")
-
-# Auth0 Configuration
-###for dev 
-AUTH0_CONFIG = {
-    "clientId": "11EIyyba4ieIlQFycP1Sc3lJfgqHVMFD",
-    "domain": "dev-wfs.auth0.com",
-    "redirect_uri": f"https://poseidon.{subdomain}aws.wfscorp.com/"
-}
 
 
 
