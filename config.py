@@ -1,3 +1,5 @@
+# Snowflake connection parameters
+
 import boto3
 import json
 import os
@@ -15,14 +17,18 @@ def get_secret(secret_name):
         return json.loads(secret)
     except Exception as e:
         raise Exception(f"Unable to retrieve secret: {e}")
+        
 
 # Determine deployment environment
-raw_env = os.getenv('BITBUCKET_DEPLOYMENT_ENVIRONMENT')
+try:
+    raw_env = os.getenv('BITBUCKET_DEPLOYMENT_ENVIRONMENT')
+except KeyError:
+    raise EnvironmentError("BITBUCKET_DEPLOYMENT_ENVIRONMENT is not set. Please define it in your pipeline.")
+
 if not raw_env:
     raise EnvironmentError("BITBUCKET_DEPLOYMENT_ENVIRONMENT is not set. Please define it in your pipeline.")
 
-print(f"Deployment environment: {raw_env}")
-
+# Define environment-specific Auth0 config
 if raw_env == "prod":
     clientId = "BX8pTmM5Bgmiu3w9vk6WpPLLeRr3SCG7"
     domain = "https://auth.wfscorp.com/"
@@ -38,11 +44,16 @@ elif raw_env == "test":
 else:
     raise ValueError(f"Unknown deployment environment: {raw_env}")
 
+# Fetch the secret
+SNOWFLAKE_CONNECTION = get_secret("poseidon_secret_json")
+
+# Auth0 Configuration
 AUTH0_CONFIG = {
     "clientId": clientId,
     "domain": domain,
     "redirect_uri": redirect_uri
 }
 
-# Fetch the secret
-SNOWFLAKE_CONNECTION = get_secret("poseidon_secret_json")
+
+
+
