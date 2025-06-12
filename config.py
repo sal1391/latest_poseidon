@@ -1,4 +1,5 @@
 # Snowflake connection parameters
+# DO NOT commit this file to version control
 
 import boto3
 import json
@@ -25,34 +26,23 @@ try:
 except KeyError:
     raise EnvironmentError("BITBUCKET_DEPLOYMENT_ENVIRONMENT is not set. Please define it in your pipeline.")
 
-if not raw_env:
-    raise EnvironmentError("BITBUCKET_DEPLOYMENT_ENVIRONMENT is not set. Please define it in your pipeline.")
-
-# Define environment-specific Auth0 config
+# Map environment to subdomain
 if raw_env == "prod":
-    clientId = "BX8pTmM5Bgmiu3w9vk6WpPLLeRr3SCG7"
-    domain = "https://auth.wfscorp.com/"
-    redirect_uri = "https://poseidon.aws.wfscorp.com/"
-elif raw_env == "dev":
-    clientId = "11EIyyba4ieIlQFycP1Sc3lJfgqHVMFD"
-    domain = "https://auth.dev.wfscorp.com/"
-    redirect_uri = "https://poseidon.dev.aws.wfscorp.com/"
-elif raw_env == "test":
-    clientId = "CazkhQ2pTEDUcV3NLHuAuIYZIBA7LXpK"
-    domain = "https://auth.test.wfscorp.com/"
-    redirect_uri = "https://poseidon.test.aws.wfscorp.com/"
+    subdomain = ""
 else:
-    raise ValueError(f"Unknown deployment environment: {raw_env}")
+    subdomain = f"{raw_env}."
 
 # Fetch the secret
 SNOWFLAKE_CONNECTION = get_secret("poseidon_secret_json")
 
 # Auth0 Configuration
+###for dev 
 AUTH0_CONFIG = {
-    "clientId": clientId,
-    "domain": domain,
-    "redirect_uri": redirect_uri
+    "clientId": "11EIyyba4ieIlQFycP1Sc3lJfgqHVMFD",
+    "domain": "dev-wfs.auth0.com",
+    "redirect_uri": f"https://poseidon.{subdomain}aws.wfscorp.com/"
 }
+
 
 
 
