@@ -23,7 +23,7 @@ def get_secret(secret_name):
 # Determine deployment environment
 try:
     raw_env = os.getenv('BITBUCKET_DEPLOYMENT_ENVIRONMENT')
-    print(raw_env)
+    print(f"Deployment environment: {raw_env}")
 except KeyError:
     raise EnvironmentError("BITBUCKET_DEPLOYMENT_ENVIRONMENT is not set. Please define it in your pipeline.")
 
@@ -32,10 +32,6 @@ auth0_settings = {
     "dev": {
         "clientId": "11EIyyba4ieIlQFycP1Sc3lJfgqHVMFD",
         "domain": "https://auth.dev.wfscorp.com/"
-    },
-    "test": {
-        "clientId": "CazkhQ2pTEDUcV3NLHuAuIYZIBA7LXpK",
-        "domain": "https://auth.test.wfscorp.com/"
     },
     "prod": {
         "clientId": "BX8pTmM5Bgmiu3w9vk6WpPLLeRr3SCG7",
