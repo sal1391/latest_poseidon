@@ -24,7 +24,6 @@ raw_env = os.getenv('BITBUCKET_DEPLOYMENT_ENVIRONMENT')
 if not raw_env:
     raise EnvironmentError("BITBUCKET_DEPLOYMENT_ENVIRONMENT is not set. Please define it in your pipeline.")
 
-# Auth0 Configuration
 if raw_env == "dev":
     AUTH0_CONFIG = {
         "clientId": "11EIyyba4ieIlQFycP1Sc3lJfgqHVMFD",
@@ -40,7 +39,6 @@ elif raw_env == "prod":
 else:
     raise ValueError(f"Unknown deployment environment: {raw_env}")
 
-# Fetch the secret
 SNOWFLAKE_CONNECTION = get_secret("poseidon_secret_json")
 
 
