@@ -21,29 +21,44 @@ def get_secret(secret_name):
         
 
 # Determine deployment environment
-try:
-    raw_env = os.getenv('BITBUCKET_DEPLOYMENT_ENVIRONMENT')
-except KeyError:
+raw_env = os.getenv('BITBUCKET_DEPLOYMENT_ENVIRONMENT')
+if not raw_env:
     raise EnvironmentError("BITBUCKET_DEPLOYMENT_ENVIRONMENT is not set. Please define it in your pipeline.")
 
-# Map environment to subdomain
-if raw_env == "prod":
-    subdomain = ""
-else:
-    subdomain = f"{raw_env}."
+# Define allowed environments and their Auth0 settings
+auth0_settings = {
+    "dev": {
+        "clientId": "11EIyyba4ieIlQFycP1Sc3lJfgqHVMFD",
+        "domain": "https://auth.dev.wfscorp.com/"
+    },
+    "test": {
+        "clientId": "CazkhQ2pTEDUcV3NLHuAuIYZIBA7LXpK",
+        "domain": "https://auth.test.wfscorp.com/"
+    },
+    "prod": {
+        "clientId": "BX8pTmM5Bgmiu3w9vk6WpPLLeRr3SCG7",
+        "domain": "https://auth.wfscorp.com/"
+    }
+    # Add more environments like "qa", "staging" if needed
+}
 
-# Construct redirect URI
-redirect_uri = f"https://poseidon.{subdomain}aws.wfscorp.com/"
+# Validate environment
+if raw_env not in auth0_settings:
+    raise ValueError(f"Unsupported environment '{raw_env}'. Allowed environments: {', '.join(auth0_settings.keys())}")
 
+# Determine subdomain prefix
+subdomain = "" if raw_env == "prod" else f"{raw_env}."
+
+# Build Auth0 config
+config = auth0_settings[raw_env]
+AUTH0_CONFIG = {
+    "clientId": config["clientId"],
+    "domain": config["domain"],
+    "redirect_uri": f"https://poseidon.{subdomain}aws.wfscorp.com/"
+}
 
 # Fetch the secret
 SNOWFLAKE_CONNECTION = get_secret("poseidon_secret_json")
 
-# Auth0 Configuration
-AUTH0_CONFIG = {
-    "clientId": "11EIyyba4ieIlQFycP1Sc3lJfgqHVMFD",
-    "domain": "dev-wfs.auth0.com",
-    "redirect_uri": f"https://poseidon.{subdomain}aws.wfscorp.com/"
-}
 
 
