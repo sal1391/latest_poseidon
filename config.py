@@ -21,8 +21,9 @@ def get_secret(secret_name):
         
 
 # Determine deployment environment
-raw_env = os.getenv('BITBUCKET_DEPLOYMENT_ENVIRONMENT')
-if not raw_env:
+try:
+    raw_env = os.getenv('BITBUCKET_DEPLOYMENT_ENVIRONMENT')
+except KeyError:
     raise EnvironmentError("BITBUCKET_DEPLOYMENT_ENVIRONMENT is not set. Please define it in your pipeline.")
 
 # Define allowed environments and their Auth0 settings
