@@ -18,8 +18,7 @@ def get_secret(secret_name):
         return json.loads(secret)
     except Exception as e:
         raise Exception(f"Unable to retrieve secret: {e}")
-        
-
+#######
 # Determine deployment environment
 try:
     raw_env = os.getenv('BITBUCKET_DEPLOYMENT_ENVIRONMENT')
@@ -32,18 +31,18 @@ if raw_env == "prod":
 else:
     subdomain = f"{raw_env}."
 
-# Construct redirect URI
-redirect_uri = f"https://poseidon.{subdomain}aws.wfscorp.com/"
-
-
 # Fetch the secret
 SNOWFLAKE_CONNECTION = get_secret("poseidon_secret_json")
 
 # Auth0 Configuration
+###for dev 
 AUTH0_CONFIG = {
-    "clientId": "11EIyyba4ieIlQFycP1Sc3lJfgqHVMFD",
-    "domain": "dev-wfs.auth0.com",
-    "redirect_uri": f"https://poseidon.{subdomain}aws.wfscorp.com/"
+    "clientId": "BX8pTmM5Bgmiu3w9vk6WpPLLeRr3SCG7",
+    "domain": "https://auth.wfscorp.com/",
 }
+
+
+
+
 
 
