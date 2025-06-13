@@ -40,6 +40,7 @@ else:
     raise ValueError(f"Unknown deployment environment: {raw_env}")
 
 SNOWFLAKE_CONNECTION = get_secret("poseidon_secret_json")
+AUTH0_CONFIG=AUTH0_CONFIG
 
 
 
