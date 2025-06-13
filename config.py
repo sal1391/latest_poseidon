@@ -34,11 +34,12 @@ else:
 SNOWFLAKE_CONNECTION = get_secret("poseidon_secret_json")
 
 # Auth0 Configuration
+clientId_env=os.getenv('clientId')
+domain_env=os.getenv('domain')
 ###for dev 
 AUTH0_CONFIG = {
-    "clientId": "11EIyyba4ieIlQFycP1Sc3lJfgqHVMFD",
-    "domain": "dev-wfs.auth0.com",
-    "redirect_uri": f"https://poseidon.aws.wfscorp.com/"
+    "clientId": f"{clientId_env}",
+    "domain": f"{domain_env}",
 }
 
 
