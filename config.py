@@ -37,9 +37,9 @@ SNOWFLAKE_CONNECTION = get_secret("poseidon_secret_json")
 # Auth0 Configuration
 ###for dev 
 AUTH0_CONFIG = {
-    "clientId": "BX8pTmM5Bgmiu3w9vk6WpPLLeRr3SCG7",
-    "domain": "https://auth.wfscorp.com",
-    "redirect_uri": "https://poseidon.aws.wfscorp.com/"
+    "clientId": "11EIyyba4ieIlQFycP1Sc3lJfgqHVMFD",
+    "domain": "https://auth.dev.wfscorp.com",
+    "redirect_uri": f"https://poseidon.dev.aws.wfscorp.com/"
 }
 
 
