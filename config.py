@@ -23,7 +23,7 @@ try:
     raw_env = os.getenv('BITBUCKET_DEPLOYMENT_ENVIRONMENT')
 except KeyError:
     raise EnvironmentError("BITBUCKET_DEPLOYMENT_ENVIRONMENT is not set. Please define it in your pipeline.")
-
+print(f"The current value of raw_env is: {raw_env}")
 # Map environment to subdomain
 if raw_env == "prod":
     subdomain = ""
