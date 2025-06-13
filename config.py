@@ -19,11 +19,12 @@ def get_secret(secret_name):
     except Exception as e:
         raise Exception(f"Unable to retrieve secret: {e}")
 #######
+# Determine deployment environment
 try:
     raw_env = os.getenv('BITBUCKET_DEPLOYMENT_ENVIRONMENT')
 except KeyError:
     raise EnvironmentError("BITBUCKET_DEPLOYMENT_ENVIRONMENT is not set. Please define it in your pipeline.")
-print(f"The current value of raw_env is: {raw_env}")
+
 # Map environment to subdomain
 if raw_env == "prod":
     subdomain = ""
@@ -34,12 +35,10 @@ else:
 SNOWFLAKE_CONNECTION = get_secret("poseidon_secret_json")
 
 # Auth0 Configuration
-clientId_env=os.getenv('clientId')
-domain_env=os.getenv('domain')
 ###for dev 
 AUTH0_CONFIG = {
-    "clientId": os.getenv('clientId'),
-    "domain": os.getenv('domain'),
+    "clientId": "BX8pTmM5Bgmiu3w9vk6WpPLLeRr3SCG7",
+    "domain": "https://auth.wfscorp.com/",
 }
 
 
