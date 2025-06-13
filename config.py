@@ -38,8 +38,8 @@ clientId_env=os.getenv('clientId')
 domain_env=os.getenv('domain')
 ###for dev 
 AUTH0_CONFIG = {
-    "clientId": f"{clientId_env}",
-    "domain": f"{domain_env}",
+    "clientId": os.getenv('clientId'),
+    "domain": os.getenv('domain'),
 }
 
 
