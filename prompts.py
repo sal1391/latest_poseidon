@@ -44,12 +44,14 @@ Finally, please provide any insights you have about emerging trends in the fuel 
 
 def get_customer_profile_prompt(company_name):
     return f"""
-As the Senior Director of Fuel Marketing for World Fuel Services, I need a comprehensive profile of {company_name} martime or {company_name} chartering a company operating in the maritime market. This profile should provide insights into their operations, sustainability goals, and potential opportunities for partnership, specifically focusing on enhancing our relationship and driving sales of our fuel and sustainability products.
+As the Senior Director of Fuel Marketing for World Fuel Services, I need a comprehensive maritime profile of {company_name} Maritime or {company_name} Chartering a maritime company. This profile should provide insights into their operations, sustainability goals, and potential opportunities for partnership, specifically focusing on enhancing our relationship and driving sales of our fuel and sustainability products.
 
-Search Strategy Note: The target company operates in the maritime/shipping industry. When you search for {company_name}, if the initial search is unclear or leads to multiple corporate divisions (e.g., a "Cloud" vs. a "Maritime" division), your primary task is to identify and focus on the maritime-specific entity. Consider searching for variations such as {company_name} + 'Maritime', 'Shipping', 'Lines', 'Tankers', 'Charter', 'Holding' or 'Group' to ensure you identify the correct operational company.
+Search Strategy Intructions: The target company operates in the maritime/shipping industry. When you search for {company_name}, if the initial search is unclear or leads to multiple corporate divisions (e.g., a "Cloud" vs. a "Maritime" division), your primary task is to identify and focus on the maritime-specific entity. Consider searching for variations such as {company_name} + 'Maritime', 'Shipping', 'Lines', 'Tankers', 'Charter', 'Holding' or 'Group' to ensure you identify the correct operational company.
+
+If unable to find then intruct the user to search New Customer instead.
 
 
-{company_name} is a company focused on. its specific role and focus within the maritime industry. To effectively tailor our fuel and sustainability solutions to their needs, and to identify strategic opportunities for a stronger partnership, please provide a detailed profile that covers the following areas:
+{company_name} is a company focused on its specific role and focus within the maritime industry. To effectively tailor our fuel and sustainability solutions to their needs, and to identify strategic opportunities for a stronger partnership, please provide a detailed profile that covers the following areas:
 
  ***1. ***Company Overview***
  
@@ -63,7 +65,7 @@ Search Strategy Note: The target company operates in the maritime/shipping indus
     *Energy Efficienc*y: Identify their initiatives aimed at improving energy efficiency within their operations.
     *Sustainability Efforts*: Highlight any current or planned sustainability initiatives, such as reducing carbon emissions, transitioning to cleaner energy sources, or adopting innovative fuel solutions. Identify any initiatives that could align with World Fuel Service's offerings.
  
-***3. ***Fuel Consumption Strategy Alignment with Industry Trends***
+**3. ***Fuel Consumption Strategy Alignment with Industry Trends***
  
     *Comparisons*: Identify 5 ways in which {company_name}'s fuel consumption strategy aligns with current industry trends in fuel management, efficiency, and innovation.
     *Contrasts*: Identify 5 ways in which {company_name}'s fuel consumption strategy diverges from current industry trends, highlighting potential areas for growth or improvement.
