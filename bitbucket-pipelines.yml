@@ -169,8 +169,6 @@ pipelines:
       - variables:
           - name: BITBUCKET_BUILD_NUMBER
           - name: BITBUCKET_DEPLOYMENT_ENVIRONMENT
-          - name: clientId
-          - name: domain
       - stage:
           name: DEV Deployment Stage
           deployment: dev
@@ -183,8 +181,6 @@ pipelines:
       - variables:
           - name: BITBUCKET_BUILD_NUMBER
           - name: BITBUCKET_DEPLOYMENT_ENVIRONMENT
-          - name: clientId
-          - name: domain
       - stage:
           name: TEST Deployment Stage
           deployment: test
@@ -196,9 +192,6 @@ pipelines:
     rw-deploy-to-qa:
       - variables:
           - name: BITBUCKET_BUILD_NUMBER
-          - name: BITBUCKET_DEPLOYMENT_ENVIRONMENT
-          - name: clientId
-          - name: domain
       - stage:
           name: QA Deployment Stage
           deployment: qa
@@ -210,9 +203,6 @@ pipelines:
     rw-deploy-to-psup:
       - variables:
           - name: BITBUCKET_BUILD_NUMBER
-          - name: BITBUCKET_DEPLOYMENT_ENVIRONMENT
-          - name: clientId
-          - name: domain
       - stage:
           name: PSUP Deployment Stage
           deployment: psup
@@ -224,9 +214,6 @@ pipelines:
     rw-deploy-to-prod:
       - variables:
           - name: BITBUCKET_BUILD_NUMBER
-          - name: BITBUCKET_DEPLOYMENT_ENVIRONMENT
-          - name: clientId
-          - name: domain
       - stage:
           name: PROD Deployment Stage
           deployment: prod
