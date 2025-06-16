@@ -44,14 +44,11 @@ Finally, please provide any insights you have about emerging trends in the fuel 
 
 def get_customer_profile_prompt(company_name):
     return f"""
-As the Senior Director of Fuel Marketing for World Fuel Services, I need a comprehensive maritime profile of {company_name} Maritime or {company_name} Chartering a maritime company. This profile should provide insights into their operations, sustainability goals, and potential opportunities for partnership, specifically focusing on enhancing our relationship and driving sales of our fuel and sustainability products.
+As the Senior Director of Fuel Marketing for World Fuel Services, I need a comprehensive profile of {company_name}, a company operating in the marine market. This profile should provide insights into their operations, sustainability goals, and potential opportunities for partnership, specifically focusing on enhancing our relationship and driving sales of our fuel and sustainability products.
+Intructions: For each task, synthesize the information you gather from multiple sources and provide insightful analysis that goes beyond simply summarizing data
+ 
+{company_name} is a [Briefly describe the customer's business] operating in the marine market. To effectively tailor our fuel and sustainability solutions to their needs, and to identify strategic opportunities for a stronger partnership, please provide a detailed profile that covers the following areas:
 
-Search Strategy Intructions: The target company operates in the maritime/shipping industry. When you search for {company_name}, if the initial search is unclear or leads to multiple corporate divisions (e.g., a "Cloud" vs. a "Maritime" division), your primary task is to identify and focus on the maritime-specific entity. Consider searching for variations such as {company_name} + 'Maritime', 'Shipping', 'Lines', 'Tankers', 'Charter', 'Holding' or 'Group' to ensure you identify the correct operational company.
-
-If unable to find then intruct the user to search New Customer instead.
-
-
-{company_name} is a company focused on its specific role and focus within the maritime industry. To effectively tailor our fuel and sustainability solutions to their needs, and to identify strategic opportunities for a stronger partnership, please provide a detailed profile that covers the following areas:
 
  ***1. ***Company Overview***
  
