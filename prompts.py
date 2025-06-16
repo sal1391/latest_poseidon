@@ -44,13 +44,16 @@ Finally, please provide any insights you have about emerging trends in the fuel 
 
 def get_customer_profile_prompt(company_name):
     return f"""
-As the Senior Director of Fuel Marketing for World Fuel Services, I need a comprehensive profile of {company_name}, a company operating in the marine market. This profile should provide insights into their operations, sustainability goals, and potential opportunities for partnership, specifically focusing on enhancing our relationship and driving sales of our fuel and sustainability products.
+As the Senior Director of Fuel Marketing for World Fuel Services, I need a comprehensive maritime profile of {company_name} Maritime or {company_name} Chartering a maritime company. This profile should provide insights into their operations, sustainability goals, and potential opportunities for partnership, specifically focusing on enhancing our relationship and driving sales of our fuel and sustainability products.
 
-Intructions: For each task, synthesize the information you gather from multiple sources and provide insightful analysis that goes beyond simply summarizing data
- 
-{company_name} is a [Briefly describe the customer's business] operating in the marine market. To effectively tailor our fuel and sustainability solutions to their needs, and to identify strategic opportunities for a stronger partnership, please provide a detailed profile that covers the following areas:
- 
-***1. ***Company Overview***
+Search Strategy Intructions: The target company operates in the maritime/shipping industry. When you search for {company_name}, if the initial search is unclear or leads to multiple corporate divisions (e.g., a "Cloud" vs. a "Maritime" division), your primary task is to identify and focus on the maritime-specific entity. Consider searching for variations such as {company_name} + 'Maritime', 'Shipping', 'Lines', 'Tankers', 'Charter', 'Holding' or 'Group' to ensure you identify the correct operational company.
+
+If unable to find then intruct the user to search New Customer instead.
+
+
+{company_name} is a company focused on its specific role and focus within the maritime industry. To effectively tailor our fuel and sustainability solutions to their needs, and to identify strategic opportunities for a stronger partnership, please provide a detailed profile that covers the following areas:
+
+ ***1. ***Company Overview***
  
     *Core Business Operations*: Briefly describe their core business activities, including their role in the fuel or energy sector.
     *Key Recent Developments*: Highlight any recent developments, mergers, acquisitions, or significant changes to their operations.
@@ -62,48 +65,41 @@ Intructions: For each task, synthesize the information you gather from multiple 
     *Energy Efficienc*y: Identify their initiatives aimed at improving energy efficiency within their operations.
     *Sustainability Efforts*: Highlight any current or planned sustainability initiatives, such as reducing carbon emissions, transitioning to cleaner energy sources, or adopting innovative fuel solutions. Identify any initiatives that could align with World Fuel Service's offerings.
  
-***3. ***Sustainability Roadmap***
- 
-    *Sustainability Goals*: Outline their specific sustainability goals, targets, or commitments.
-    *Initiatives & Policies*: Detail any existing sustainability policies, programs, or initiatives they have implemented.
-    *Milestones & Future Plans*: Highlight any notable milestones achieved and future plans in relation to their sustainability roadmap.
- 
-***4. ***Financial Insights***
- 
-    *Revenue & Growth Trends*: Provide recent financial data (from reputable sources), such as revenue figures and growth trends over the past [Specify timeframe]. Ensure the data is relevant to a potential partnership with World Fuel Services. Include source
-    *Fuel & Sustainability Investments:* Identify any significant investments they have made in fuel-related or sustainability projects.
-   
- ***5. ***Opportunities for Partnership***
- 
-    *Fuel Products Alignment*: Identify specific areas where World Fuel Services' fuel products could benefit their operations and support their goals.
-    *Sustainability Solutions*: Highlight how World Fuel Services' sustainability solutions can assist them in achieving their sustainability goals.
-    *Concrete Recommendations*: Provide data-driven recommendations for strengthening our relationship, positioning World Fuel Services as a key partner in their sustainability efforts, and driving sales of our products.
- 
-***6. ***Fuel Consumption Strategy Alignment with Industry Trends***
+**3. ***Fuel Consumption Strategy Alignment with Industry Trends***
  
     *Comparisons*: Identify 5 ways in which {company_name}'s fuel consumption strategy aligns with current industry trends in fuel management, efficiency, and innovation.
     *Contrasts*: Identify 5 ways in which {company_name}'s fuel consumption strategy diverges from current industry trends, highlighting potential areas for growth or improvement.
 
-***7. ***Alignment with World Fuel Services***
-   
-    *Commonalities: Based on the first five topics (Company Overview, Business Objectives, Sustainability Roadmap, Financial Insights, Opportunities for Partnership), highlight 5 key commonalities between {company_name} and World Fuel Services. Emphasize shared values, priorities, or potential areas for collaboration.
-   
- ***8.Fleet Information***
+***4.Fleet Information***
  
      Intructions: When searching for informations ensure accuracy by using professional databases like VesselFinder, MarineTraffic,Seasearcher or relevant maritime industry websites and avoid double-counting vessels from multiple sources.
         *Fleet Composition*: Provide an overview of the fleet composition, including the number of vessels and their specific roles (e.g., tankers, bulk carriers, container ships). Provide the total number of vessels.Provide insight into {company_name}'s fleet management strategies and highlight any notable vessels within the fleet.
  
-***9. Main Competitors***
+***5. ***Financial Insights***
+ 
+    *Revenue & Growth Trends*: Provide recent financial data (from reputable sources), such as revenue figures and growth trends over the past [Specify timeframe]. Ensure the data is relevant to a potential partnership with World Fuel Services. Include source
+    *Fuel & Sustainability Investments:* Identify any significant investments they have made in fuel-related or sustainability projects.
+
+***6. Main Competitors***
  
     Instructions:
         Identify each of {company_name}'s direct competitors in the marine market.
         
- ***10. ***Time-Charterers***
+ ***7. ***Time-Charterers***
  
     Instructions:
         Identify {company_name}'s main time-charterers.
+
+***8. ***Sustainability Roadmap***
  
-Finally, please provide any insights you have about emerging trends in the fuel market that might impact {company_name} or their competitors.
+    *Sustainability Goals*: Outline their specific sustainability goals, targets, or commitments.
+    *Initiatives & Policies*: Detail any existing sustainability policies, programs, or initiatives they have implemented.
+    *Milestones & Future Plans*: Highlight any notable milestones achieved and future plans in relation to their sustainability roadmap.        
+        
+ 
+***9. ***Strategic Synthesis & Forward-Looking Analysis***
+    *Finally, based on your complete analysis, provide a brief strategic summary:
+       Emerging Trends Impact: Briefly describe one emerging trend in the fuel or maritime market (e.g., new alternative fuels, carbon trading, digitalization) that is most likely to impact {company_name} in the next 1-3 years.  
 """
 
 def get_welcome_message():

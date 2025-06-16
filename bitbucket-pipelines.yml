@@ -168,6 +168,7 @@ pipelines:
     rw-deploy-to-dev:
       - variables:
           - name: BITBUCKET_BUILD_NUMBER
+          - name: BITBUCKET_DEPLOYMENT_ENVIRONMENT
       - stage:
           name: DEV Deployment Stage
           deployment: dev
@@ -179,6 +180,7 @@ pipelines:
     rw-deploy-to-test:
       - variables:
           - name: BITBUCKET_BUILD_NUMBER
+          - name: BITBUCKET_DEPLOYMENT_ENVIRONMENT
       - stage:
           name: TEST Deployment Stage
           deployment: test
