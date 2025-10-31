@@ -9,7 +9,7 @@ import time
 connection_parameters = {
     "account": "wfs.us-east-1",
     "user": "csalgado@wfscorp.com",
-    "password": "Cs1391!!"
+    "password": ""
 }
 # Create a Snowflake session
 session = Session.builder.configs(connection_parameters).create()
