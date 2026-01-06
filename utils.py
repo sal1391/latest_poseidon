@@ -21,10 +21,10 @@ def generate_llm_response(session, prompt, model="claude-4-sonnet"):
     response = response_df['CONTENT'][0]
     
     # Get token counts
-    input_token_query = f"""SELECT snowflake.cortex.count_tokens('llama3.2-1b', '{safe_prompt}') AS TOKEN_COUNT"""
+    input_token_query = f"""SELECT snowflake.cortex.count_tokens('llama3.1-8b', '{safe_prompt}') AS TOKEN_COUNT"""
     input_token_count = execute_query(session, input_token_query)['TOKEN_COUNT'][0]
     
-    output_token_query = f"""SELECT snowflake.cortex.count_tokens('llama3.2-1b', '{response.replace("'", "''")}') AS TOKEN_COUNT"""
+    output_token_query = f"""SELECT snowflake.cortex.count_tokens('llama3.1-8b', '{response.replace("'", "''")}') AS TOKEN_COUNT"""
     output_token_count = execute_query(session, output_token_query)['TOKEN_COUNT'][0]
     
     # Calculate cost (adjust as needed based on your pricing)
