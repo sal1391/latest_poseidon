@@ -1,4 +1,4 @@
-FROM python:3.10-slim@sha256:7b68a5fa7cf0d20b4cedb1dc9a134fdd394fe27edbc4c2519756c91d21df2313
+FROM wfscorp.jfrog.io/docker/enterprise-python-image:3.12.0
 
 WORKDIR /app
 
