@@ -1,4 +1,4 @@
-FROM wfscorp.jfrog.io/docker/enterprise-python-image:3.12.0
+FROM wfscorp.jfrog.io/docker/enterprise-python-image:3.12.0@sha256:524433c009b8570ce80934b0f4f32bd4a81f7c051e76fe06272e9f8569df7bfa
 
 WORKDIR /app
 
