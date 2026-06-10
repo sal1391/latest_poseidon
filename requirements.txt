@@ -1,6 +1,23 @@
 streamlit
 pandas
-snowflake
 snowflake-snowpark-python
 streamlit-auth0-component-patch
 PyJWT
+perplexityai
+markdown
+# ── WeasyPrint (PDF generation) ──────────────────────────────────────────
+# Requires system-level GTK / Pango libraries that are NOT installed by pip.
+#
+# Linux (Dockerfile / AWS):
+#   RUN apt-get update && apt-get install -y \
+#       libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf2.0-0 libffi-dev
+#
+# Windows (local dev):
+#   1. Install MSYS2:  https://www.msys2.org/
+#   2. In MSYS2 MINGW64 terminal run:
+#        pacman -S mingw-w64-x86_64-pango mingw-w64-x86_64-gdk-pixbuf2
+#   3. Add C:\msys64\mingw64\bin to your system PATH
+# ─────────────────────────────────────────────────────────────────────────
+weasyprint
+boto3
+

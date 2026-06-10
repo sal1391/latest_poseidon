@@ -1,49 +1,89 @@
-# Snowflake connection parameters
-# DO NOT commit this file to version control
+"""
+Hermes App Configuration — Dual Mode (Local / AWS)
+===================================================
+Set DEPLOY_MODE and AUTH0_ENABLED below to control how the app
+resolves credentials and authentication.
 
-import boto3
-import json
+In LOCAL mode, credentials are loaded from environment variables.
+Set them as Windows system environment variables (or in a .env file).
+"""
 import os
+import json
 
-def get_secret(secret_name):
-    region_name = os.getenv("AWS_REGION", "us-east-1")
+# ============================================================
+# DEPLOYMENT MODE: Set to "local" for testing, "aws" for prod
+# ============================================================
+DEPLOY_MODE = os.getenv("DEPLOY_MODE", "local")   # "local" | "aws"
+# Default to True ONLY if aws, False if local
+AUTH0_ENABLED_DEFAULT = "true" if DEPLOY_MODE == "aws" else "false"
+AUTH0_ENABLED = os.getenv("AUTH0_ENABLED", AUTH0_ENABLED_DEFAULT).lower() == "true"
 
-    # Create a Secrets Manager client
-    session = boto3.session.Session()
-    client = session.client(service_name='secretsmanager', region_name=region_name)
 
-    try:
-        get_secret_value_response = client.get_secret_value(SecretId=secret_name)
-        secret = get_secret_value_response['SecretString']
-        return json.loads(secret)
-    except Exception as e:
-        raise Exception(f"Unable to retrieve secret: {e}")
-#######
-# Determine deployment environment
-try:
-    raw_env = os.getenv('BITBUCKET_DEPLOYMENT_ENVIRONMENT')
-except KeyError:
-    raise EnvironmentError("BITBUCKET_DEPLOYMENT_ENVIRONMENT is not set. Please define it in your pipeline.")
-
-# Map environment to subdomain
-if raw_env == "prod":
-    subdomain = ""
-else:
-    subdomain = f"{raw_env}."
-
-# Fetch the secret
-SNOWFLAKE_CONNECTION = get_secret("poseidon_secret_json")
-
-# Auth0 Configuration
-###for dev 
-AUTH0_CONFIG = {
-    "clientId": os.getenv("CLIENTID"),
-    "domain": os.getenv("DOMAIN"),
-    "redirect_uri": f"https://poseidon.{subdomain}aws.wfscorp.com/"
+# ============================================================
+# LOCAL MODE — Reads credentials from environment variables
+# ============================================================
+_LOCAL_SNOWFLAKE_CONNECTION = {
+    "account": os.getenv("SNOWFLAKE_ACCOUNT", ""),
+    "user": os.getenv("SNOWFLAKE_USER", ""),
+    "password": os.getenv("SNOWFLAKE_PASSWORD", ""),
+    "warehouse": os.getenv("SNOWFLAKE_WAREHOUSE", ""),
+    "database": os.getenv("SNOWFLAKE_DATABASE", "SANDBOX"),
+    "schema": os.getenv("SNOWFLAKE_SCHEMA", "MCA"),
+    "role": os.getenv("SNOWFLAKE_ROLE", ""),
 }
 
+_LOCAL_PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY", "")
 
 
+# ============================================================
+# AWS MODE — Retrieves secrets from AWS Secrets Manager
+# ============================================================
+def _get_secret(secret_name):
+    """Fetch a secret from AWS Secrets Manager and return as dict."""
+    import boto3
+    region_name = os.getenv("AWS_REGION", "us-east-1")
+    session = boto3.session.Session()
+    client = session.client(service_name="secretsmanager", region_name=region_name)
+    try:
+        resp = client.get_secret_value(SecretId=secret_name)
+        secret = resp["SecretString"]
+        return json.loads(secret)
+    except Exception as e:
+        raise Exception(f"Unable to retrieve secret '{secret_name}': {e}")
 
 
+def _build_auth0_config():
+    """Build Auth0 config dict from environment variables (AWS mode only)."""
+    env = os.getenv("BITBUCKET_DEPLOYMENT_ENVIRONMENT", "dev")
+    subdomain_map = {
+        "dev": "dev.",
+        "test": "test.",
+        "qa": "qa.",
+        "psup": "psup.",
+        "prod": "",
+    }
+    subdomain = subdomain_map.get(env, "dev.")
+    return {
+        "clientId": os.getenv("CLIENTID"),
+        "domain": os.getenv("DOMAIN"),
+        "redirect_uri": f"https://hermes.{subdomain}aws.wfscorp.com/",
+    }
 
+
+# ============================================================
+# RESOLVED CONFIG — Used by the rest of the app
+# ============================================================
+if DEPLOY_MODE == "local":
+    SNOWFLAKE_CONNECTION = _LOCAL_SNOWFLAKE_CONNECTION
+    PERPLEXITY_API_KEY = _LOCAL_PERPLEXITY_API_KEY
+    AUTH0_CONFIG = {}  # Not used when AUTH0_ENABLED = False
+else:
+    SNOWFLAKE_CONNECTION = _get_secret("hermes_secret_json")
+    PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY", "")
+    AUTH0_CONFIG = _build_auth0_config()
+
+# Auth0 role required for access
+REQUIRED_ROLE = "Poseidon:Sales"
+
+# Snowflake source table (runtime override via env var)
+SNOWFLAKE_TABLE = os.getenv("SNOWFLAKE_TABLE", "MARINE_SALES_PLANNING_V")
