@@ -159,9 +159,10 @@ definitions:
               BITBUCKET_DEPLOYMENT_ENVIRONMENT_UUID: "$BITBUCKET_DEPLOYMENT_ENVIRONMENT_UUID"
               AWS_ACCOUNT_ID: "$AWS_ACCOUNT_ID"
         runs-on:
-          - "workspace"
-          - "linux"
+          - "autoscaler.created"
+          - "eks"
           - "self.hosted"
+          - "linux"
 
 pipelines:
   custom:
