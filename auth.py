@@ -35,7 +35,7 @@ def check_auth():
     )
 
     if not result:
-        st.info("Please log in to access Hermes.")
+        st.info("Please log in to access Poseidon.")
         st.stop()
 
     token = result.get("token")
