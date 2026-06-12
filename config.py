@@ -1,5 +1,5 @@
 """
-Hermes App Configuration — Dual Mode (Local / AWS)
+Poseidon App Configuration — Dual Mode (Local / AWS)
 ===================================================
 Set DEPLOY_MODE and AUTH0_ENABLED below to control how the app
 resolves credentials and authentication.
@@ -13,7 +13,7 @@ import json
 # ============================================================
 # DEPLOYMENT MODE: Set to "local" for testing, "aws" for prod
 # ============================================================
-DEPLOY_MODE = os.getenv("DEPLOY_MODE", "aws")   # "local" | "aws"
+DEPLOY_MODE = os.getenv("DEPLOY_MODE", "local")   # "local" | "aws"
 # Default to True ONLY if aws, False if local
 AUTH0_ENABLED_DEFAULT = "true" if DEPLOY_MODE == "aws" else "false"
 AUTH0_ENABLED = os.getenv("AUTH0_ENABLED", AUTH0_ENABLED_DEFAULT).lower() == "true"
@@ -66,7 +66,7 @@ def _build_auth0_config():
     return {
         "clientId": os.getenv("CLIENTID"),
         "domain": os.getenv("DOMAIN"),
-        "redirect_uri": f"https://hermes.{subdomain}aws.wfscorp.com/",
+        "redirect_uri": f"https://poseidon.{subdomain}aws.wfscorp.com/",
     }
 
 
@@ -78,7 +78,7 @@ if DEPLOY_MODE == "local":
     PERPLEXITY_API_KEY = _LOCAL_PERPLEXITY_API_KEY
     AUTH0_CONFIG = {}  # Not used when AUTH0_ENABLED = False
 else:
-    SNOWFLAKE_CONNECTION = _get_secret("hermes_secret_json")
+    SNOWFLAKE_CONNECTION = _get_secret("poseidon_secret_json")
     PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY", "")
     AUTH0_CONFIG = _build_auth0_config()
 
