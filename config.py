@@ -13,7 +13,7 @@ import json
 # ============================================================
 # DEPLOYMENT MODE: Set to "local" for testing, "aws" for prod
 # ============================================================
-DEPLOY_MODE = os.getenv("DEPLOY_MODE", "local")   # "local" | "aws"
+DEPLOY_MODE = os.getenv("DEPLOY_MODE", "aws")   # "local" | "aws"
 # Default to True ONLY if aws, False if local
 AUTH0_ENABLED_DEFAULT = "true" if DEPLOY_MODE == "aws" else "false"
 AUTH0_ENABLED = os.getenv("AUTH0_ENABLED", AUTH0_ENABLED_DEFAULT).lower() == "true"
