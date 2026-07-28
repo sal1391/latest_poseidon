@@ -1164,6 +1164,25 @@ test("returns no events for a bare fragment", () => {
   expect(events).toEqual([]);
   expect(rest).toBe("event: to");
 });
+
+test("tolerates CRLF framing", () => {
+  const raw =
+    'id: 1\r\nevent: token\r\ndata: {"turn_id":"t1","message_id":"m1","event_seq":1,"text":"Hi"}\r\n\r\n';
+  const { events, rest } = parseSseChunk(raw);
+  expect(events).toEqual([
+    { name: "token", data: { turn_id: "t1", message_id: "m1", event_seq: 1, text: "Hi" } },
+  ]);
+  expect(rest).toBe("");
+});
+
+test("skips a malformed frame and keeps parsing", () => {
+  const raw =
+    'event: token\ndata: {"turn_id":"t1","message_id":"m1","event_seq":1,"text":"a"}\n\n' +
+    "event: token\ndata: {not json}\n\n" +
+    'event: token\ndata: {"turn_id":"t1","message_id":"m1","event_seq":3,"text":"b"}\n\n';
+  const { events } = parseSseChunk(raw);
+  expect(events.map((e) => (e.data as { text?: string }).text)).toEqual(["a", "b"]);
+});
 ```
 
 Run `npm test -- --run` → FAIL.
@@ -1175,16 +1194,24 @@ import type { SseEvent } from "./types";
 
 export function parseSseChunk(buffer: string): { events: SseEvent[]; rest: string } {
   const events: SseEvent[] = [];
-  const blocks = buffer.split("\n\n");
+  const normalized = buffer.replace(/\r\n/g, "\n");
+  const blocks = normalized.split("\n\n");
   const rest = blocks.pop() ?? "";
   for (const block of blocks) {
     let name = "";
-    let data = "";
+    const dataLines: string[] = [];
     for (const line of block.split("\n")) {
       if (line.startsWith("event: ")) name = line.slice(7);
-      else if (line.startsWith("data: ")) data = line.slice(6);
+      else if (line.startsWith("data: ")) dataLines.push(line.slice(6));
     }
-    if (name && data) events.push({ name, data: JSON.parse(data) } as SseEvent);
+    if (!name || dataLines.length === 0) continue;
+    try {
+      events.push({ name, data: JSON.parse(dataLines.join("\n")) } as SseEvent);
+    } catch {
+      // Malformed frame: skip it rather than killing the stream; the envelope's
+      // event_seq lets turn reconciliation recover anything dropped.
+      continue;
+    }
   }
   return { events, rest };
 }
