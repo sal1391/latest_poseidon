@@ -21,12 +21,11 @@ export default function ChatScreen() {
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
-  const booted = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
-    // Ref-guarded so StrictMode's double-mount cannot open two conversations.
-    // A failed bootstrap leaves the shell live; the next send creates one.
-    booted.current ??= bootstrap().catch(() => undefined);
+    // `bootstrap` is re-entrant in the store, so StrictMode's double effect joins
+    // one run. A failed bootstrap leaves the shell live; the next send retries.
+    void bootstrap().catch(() => undefined);
   }, [bootstrap]);
 
   const messages = activeId ? (messagesByConv[activeId] ?? []) : [];
@@ -47,14 +46,16 @@ export default function ChatScreen() {
       if (trimmed === "") return;
       setDraft("");
       void (async () => {
-        // The composer is live before bootstrap settles: wait for the
-        // conversation it opens rather than racing it with a second one.
-        await booted.current;
+        // The composer is live before bootstrap settles. With no conversation
+        // open yet, join the store's in-flight bootstrap rather than racing it;
+        // once one is open this is a no-op, so a send never re-lists and never
+        // yanks the user off the conversation they are reading.
+        if (useChatStore.getState().activeId === null) await bootstrap();
         const cid = useChatStore.getState().activeId ?? (await newConversation());
         await sendMessage(cid, trimmed);
       })().catch(() => undefined); // stream failures surface as an error part
     },
-    [newConversation, sendMessage],
+    [bootstrap, newConversation, sendMessage],
   );
 
   return (

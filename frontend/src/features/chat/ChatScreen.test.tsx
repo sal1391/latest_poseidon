@@ -50,6 +50,10 @@ test("thumbs down opens the comment prompt and submits", async () => {
   render(<ChatScreen />);
   const input = await screen.findByPlaceholderText(/message poseidon/i);
   await userEvent.type(input, "hello{Enter}");
+  // Wait for the streamed answer: the opener is an assistant message too, so
+  // without this the test would pass against its feedback row even if the send
+  // never happened.
+  await waitFor(() => screen.getByText(/Three customers drove April./));
   await waitFor(() => screen.getAllByLabelText("Bad response"));
   await userEvent.click(screen.getAllByLabelText("Bad response").at(-1)!);
   const box = await screen.findByPlaceholderText(/what went wrong/i);

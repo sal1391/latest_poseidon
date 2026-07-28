@@ -72,6 +72,9 @@ export interface ChatState {
   submitFeedback: (mid: string, verdict: "up" | "down", comment?: string) => Promise<void>;
 }
 
+/** Shared by every concurrent caller so one mount can only open one conversation. */
+let bootstrapInFlight: Promise<void> | null = null;
+
 export const useChatStore = create<ChatState>((set, get) => ({
   conversations: [],
   activeId: null,
@@ -79,25 +82,34 @@ export const useChatStore = create<ChatState>((set, get) => ({
   streamingByConv: {},
   feedback: {},
 
-  bootstrap: async () => {
-    const conversations = await api.listConversations();
-    if (conversations.length === 0) {
-      const { conversation, opener } = await api.createConversation();
-      set((s) => ({
-        conversations: [conversation],
-        activeId: conversation.id,
-        messages: { ...s.messages, [conversation.id]: [opener] },
-      }));
-      return;
-    }
-    set({ conversations });
-    await get().openConversation(conversations[0].id);
+  bootstrap: () => {
+    // Re-entrant: StrictMode's double effect, or a send issued before the first
+    // list request lands, joins the in-flight run instead of starting a second.
+    bootstrapInFlight ??= (async () => {
+      const conversations = await api.listConversations();
+      if (conversations.length === 0) {
+        const { conversation, opener } = await api.createConversation();
+        set((s) => ({
+          conversations: [conversation],
+          activeId: conversation.id,
+          messages: { ...s.messages, [conversation.id]: [opener] },
+        }));
+        return;
+      }
+      set({ conversations });
+      await get().openConversation(conversations[0].id);
+    })().finally(() => {
+      bootstrapInFlight = null; // a later mount (or a retry after failure) starts fresh
+    });
+    return bootstrapInFlight;
   },
 
   newConversation: async () => {
     const { conversation, opener } = await api.createConversation();
     set((s) => ({
-      conversations: [...s.conversations, conversation],
+      // Newest first, matching the order `GET /api/conversations` returns and the
+      // position `bootstrap` opens.
+      conversations: [conversation, ...s.conversations],
       activeId: conversation.id,
       messages: { ...s.messages, [conversation.id]: [opener] },
     }));

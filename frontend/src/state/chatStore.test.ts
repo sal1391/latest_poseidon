@@ -1,5 +1,16 @@
 import type { Message, SseEvent } from "../api/types";
-import { applyEventTo } from "./chatStore";
+import * as api from "../api/client";
+import { applyEventTo, useChatStore } from "./chatStore";
+
+vi.mock("../api/client", () => ({
+  listConversations: vi.fn(async () => []),
+  createConversation: vi.fn(async () => ({
+    conversation: { id: "c1", title: "New chat" },
+    opener: { id: "m0", role: "assistant" as const, parts: [] },
+  })),
+  getMessages: vi.fn(async () => []),
+  postFeedback: vi.fn(async () => undefined),
+}));
 
 const env = (event_seq: number) => ({ turn_id: "t1", message_id: "a1", event_seq });
 
@@ -41,4 +52,20 @@ test("events for an unseen message_id create the message (replay-safe)", () => {
 test("error event appends an error part", () => {
   const msgs = run([seq[0], { name: "error", data: { ...env(2), code: "x", message: "boom" } }]);
   expect(msgs[0].parts.at(-1)?.kind).toBe("error");
+});
+
+test("concurrent bootstraps share one run and open a single conversation", async () => {
+  useChatStore.setState({
+    conversations: [], activeId: null, messages: {}, streamingByConv: {}, feedback: {},
+  });
+  const { bootstrap } = useChatStore.getState();
+
+  await Promise.all([bootstrap(), bootstrap()]);
+
+  expect(vi.mocked(api.listConversations)).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(api.createConversation)).toHaveBeenCalledTimes(1);
+  const state = useChatStore.getState();
+  expect(state.conversations).toEqual([{ id: "c1", title: "New chat" }]);
+  expect(state.activeId).toBe("c1");
+  expect(state.messages.c1).toHaveLength(1);
 });
