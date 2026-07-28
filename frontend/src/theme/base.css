@@ -93,6 +93,43 @@ body {
   border-color: var(--ink-muted);
 }
 
+/* Conversation list: quiet rows, the active one lifted onto the base surface. */
+.conversation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  overflow-y: auto;
+}
+
+.conversation-item {
+  overflow: hidden;
+  padding: 0.5rem 0.625rem;
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--ink-muted);
+  font-family: var(--font-body);
+  font-size: 0.875rem;
+  text-align: start;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) ease,
+    color var(--motion-fast) ease;
+}
+
+.conversation-item:hover {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.conversation-item.is-active {
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 500;
+}
+
 .chat-column {
   display: flex;
   flex-direction: column;
@@ -115,12 +152,14 @@ body {
 
 /* Composer: pill input docked at the foot of the thread. */
 .composer {
+  position: relative;
   display: flex;
   align-items: center;
+  gap: 0.5rem;
   width: 100%;
   max-width: 720px;
   margin: 0 auto 1.5rem;
-  padding-inline-start: 1.25rem;
+  padding-inline: 0.5rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-l);
   background: var(--surface);
@@ -137,7 +176,8 @@ body {
 
 .composer input {
   flex: 1;
-  padding: 0.875rem 1.25rem 0.875rem 0;
+  min-width: 0;
+  padding: 0.875rem 0.25rem;
   border: none;
   background: transparent;
   color: var(--ink);
@@ -147,6 +187,104 @@ body {
 
 .composer input::placeholder {
   color: var(--ink-muted);
+}
+
+/* Send affordance: filled circle, muted while there is nothing to send. */
+.send-button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+  cursor: pointer;
+  transition: opacity var(--motion-fast) ease;
+}
+
+.send-button:disabled {
+  background: var(--surface-raised);
+  color: var(--ink-muted);
+  cursor: default;
+}
+
+/* Skills: discovery popover anchored above the composer. */
+.skills {
+  display: flex;
+  flex: none;
+  align-items: center;
+}
+
+.skills-button {
+  padding: 0.375rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  background: var(--surface);
+  color: var(--ink-muted);
+  font-family: var(--font-body);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition:
+    border-color var(--motion-fast) ease,
+    color var(--motion-fast) ease;
+}
+
+.skills-button:hover {
+  border-color: var(--ink-muted);
+  color: var(--ink);
+}
+
+.skills-popover {
+  position: absolute;
+  bottom: calc(100% + 0.5rem);
+  left: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  width: min(26rem, 100%);
+  padding: 0.375rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+}
+
+.skill-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  padding: 0.5rem 0.625rem;
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  text-align: start;
+  cursor: pointer;
+  transition: background-color var(--motion-fast) ease;
+}
+
+.skill-item:hover {
+  background: var(--surface-raised);
+}
+
+.skill-name {
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.skill-desc,
+.skill-example {
+  color: var(--ink-muted);
+  font-family: var(--font-body);
+  font-size: 0.8125rem;
+}
+
+.skill-example {
+  font-style: italic;
 }
 
 /* Mode chip (e.g. default / research). */
@@ -302,5 +440,70 @@ body {
 
 .feedback-row button:hover {
   background: var(--surface-raised);
+  color: var(--ink);
+}
+
+.feedback-row button[aria-pressed="true"] {
+  color: var(--ink);
+}
+
+.thumb-icon.is-down {
+  transform: rotate(180deg);
+}
+
+.feedback-note {
+  color: var(--ink-muted);
+  font-family: var(--font-body);
+  font-size: 0.75rem;
+}
+
+/* Thumbs-down follow-up: "What went wrong?" comment box and its actions. */
+.feedback-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 26rem;
+  margin-top: 0.375rem;
+}
+
+.feedback-comment {
+  min-height: 4.5rem;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 0.875rem;
+  resize: vertical;
+}
+
+.feedback-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.feedback-actions button {
+  padding: 0.375rem 0.75rem;
+  border-radius: var(--radius-s);
+  font-family: var(--font-body);
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.feedback-actions .btn-primary {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.feedback-actions .btn-quiet {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--ink-muted);
+}
+
+.feedback-actions .btn-quiet:hover {
+  border-color: var(--ink-muted);
   color: var(--ink);
 }

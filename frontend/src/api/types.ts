@@ -1,7 +1,7 @@
 export type PartKind = "text" | "chips" | "tool_event" | "error";
 export interface TextPayload { markdown: string }
 export interface ChipOption { id: string; label: string }
-export interface ChipsPayload { options: ChipOption[] }
+export interface ChipsPayload { options: ChipOption[]; disabled?: boolean }
 export interface ToolEventPayload {
   tool_seq: number; tool: string; server: string;
   status: "start" | "done" | "error"; label: string;
