@@ -82,6 +82,10 @@ async def test_error_trigger_emits_error_event(app):
         cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
         events = await read_sse(client, cid, "please !error now")
         assert [n for n, _ in events] == ["accepted", "error"]
+        for _, d in events:  # envelope present on both frames, incl. the error path
+            assert {"turn_id", "message_id", "event_seq"} <= set(d)
+        err = events[1][1]
+        assert err["code"] == "mock_failure" and "message" in err and "hint" in err
 
 
 @pytest.mark.anyio
@@ -99,3 +103,25 @@ async def test_feedback_upsert_roundtrip(app):
         assert r.status_code == 204
         r = await client.get(f"/api/messages/{mid}/feedback")
         assert r.json() == {"verdict": "up", "comment": None}
+
+
+@pytest.mark.anyio
+async def test_list_conversations_newest_first(app):
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        c1 = (await client.post("/api/conversations")).json()["conversation"]["id"]
+        c2 = (await client.post("/api/conversations")).json()["conversation"]["id"]
+        listing = (await client.get("/api/conversations")).json()["conversations"]
+        assert [c["id"] for c in listing[:2]] == [c2, c1]
+
+
+@pytest.mark.anyio
+async def test_unknown_ids_return_404(app):
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        assert (await client.get("/api/conversations/nope/messages")).status_code == 404
+        r = await client.post("/api/conversations/nope/messages", json={"text": "hi"})
+        assert r.status_code == 404
+        assert (await client.post("/api/messages/nope/feedback",
+                                  json={"verdict": "up"})).status_code == 404
+        assert (await client.get("/api/messages/nope/feedback")).status_code == 404
