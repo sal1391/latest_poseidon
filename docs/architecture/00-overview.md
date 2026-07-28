@@ -41,8 +41,8 @@ by the deterministic conversation-state layer (doc 02 §5).
    into router/synthesis prompts and editable by the user (docs 01/05).
 9. Feedback capture on every assistant message, linked to the run log and harvested into the
    router-decision test pipeline (doc 06).
-10. Observability from day one: a run-log table records every turn; router-decision tests are a
-    first-class, in-repo test category.
+10. Observability from day one: the run log records every turn as a parent row plus one row per
+    model call and tool call; router-decision tests are a first-class, in-repo test category.
 11. Local-first: the entire system runs locally (docker-compose, synthetic data adapter — the
     standard local-development practice) and deploys as one container to **SPCS (primary)** and
     **EC2 (secondary)**; **Snowflake** is the production data platform.
@@ -66,7 +66,7 @@ by the deterministic conversation-state layer (doc 02 §5).
 | P3 | Ontology as single source of truth | Schemas, metrics, guardrails, and synthetic data all derive from the certified `ontology.yml` semantic layer. |
 | P4 | Zero trust at every gate | Identity verified at the edge (JWT signature, or the platform-injected SPCS ingress identity); LLM tool arguments validated by schema; dimension values whitelisted before touching SQL. |
 | P5 | Presentation isolated from logic | The React UI renders typed message parts through a renderer registry and theme tokens; a restyle never touches business logic. |
-| P6 | Evidence by construction | Every turn writes a run-log row; every skill returns a deterministic proof block; tests live in the repo and run from day one. |
+| P6 | Evidence by construction | Every turn writes a run-log parent row plus one row per model and tool call; every skill returns a deterministic proof block; tests live in the repo and run from day one. |
 | P7 | Config over code | Model tiers and providers, prompts, data backend, identity mode, and deploy target are configuration, swappable per environment. |
 
 ## 5. System context
@@ -165,10 +165,32 @@ poseidon/
 - D23 Web research reaches Perplexity through a first-class MCP/tool-adapter layer; the direct
   API adapter is the default transport — it is the proven in-house path with schema-pinned
   structured output (doc 02 §7).
-- D24 The per-user memory document is distilled at end of conversation (async, debounced) by a
-  config-driven Sonnet tier — freshest before the next session, no scheduler infra (doc 05 §5).
-- D25 Feedback (thumbs + comment) is stored linked to message and run-log row and harvested
+- D24 (superseded by D31) The per-user memory document is distilled at end of conversation
+  (async, debounced) by a config-driven Sonnet tier (doc 05 §5).
+- D25 Feedback (thumbs + comment) is stored linked to message and `turn_run` row and harvested
   into the router-decision suite; acting on it automatically is out of scope (doc 06 §7).
+- D26 Every SSE event carries a `turn_id`/`message_id`/`event_seq` envelope and an `id:` line, and
+  turn creation is idempotent via a client-generated `client_turn_key` — replay and crash recovery
+  need every event to be self-addressed (doc 01 §5).
+- D27 The run log is `turn_run` + append-only `llm_calls` and `tool_calls`, not one row per turn —
+  a turn is N model calls, and only per-call rows can attribute cost and latency (doc 06 §1).
+- D28 RLS context is transaction-scoped `set_config('app.user_sub', :sub, true)`, policies read it
+  with `missing_ok`, owned tables `FORCE ROW LEVEL SECURITY` — a pooled connection must never
+  inherit the previous user's context (doc 05 §4).
+- D29 Retention windows are configuration with stated defaults; deleting a conversation
+  hard-deletes its content and retains a redacted audit row — the right to delete and the audit
+  obligation are both satisfied only by redaction (doc 05 §7).
+- D30 Web-research calls carry entity names only, never internal metric values — the one call that
+  leaves the boundary must not carry anything computed from the certified views (doc 05 §7).
+- D31 (revises D24) Memory distillation is a durable outbox job fired after an explicit idle
+  threshold with retries, storing typed attributed entries rendered to markdown at assembly and
+  never derived from tool output — an in-process debounce loses work on restart, and free-text
+  accumulation from external text is a poisoning vector (doc 05 §5).
+- D32 The in-service Postgres and MinIO get scheduled logical backups shipped off-service, a
+  rehearsed restore, and stated RPO/RTO — a mounted volume is not a backup (doc 07 §4).
+- D33 Phase 5 ships Bedrock + stub; Cortex arrives in the SPCS phase's preparation with a
+  provider-parity contract test — prove the seam with one live provider before paying for two
+  (doc 03 §1, doc 08).
 
 ## 9. Document map
 
@@ -178,7 +200,7 @@ poseidon/
 | 02-backend-skills | Task/skill folder convention, registry, contracts, parsing pipeline, flow mapping, MCP tool layer |
 | 03-llm-routing | Bedrock + Cortex provider layer, model tier map, prompt assembly, prompts-as-config, router-decision testing |
 | 04-data-ontology | Ontology catalog, `DataClient` interface, synthetic + Snowflake adapters, vector store, extensibility |
-| 05-auth-identity | Identity providers (Auth0 / SPCS ingress), identity propagation, RLS, chat history, personalization data |
-| 06-observability | Run-log schema, audit/replay, token accounting, feedback capture, test taxonomy |
+| 05-auth-identity | Identity providers (Auth0 / SPCS ingress), identity propagation, RLS, chat history, personalization data, privacy/retention/deletion and egress classification |
+| 06-observability | Run-log schema (`turn_run` + `llm_calls` + `tool_calls`), audit/replay, token accounting, feedback capture, test taxonomy |
 | 07-infrastructure | Local topology, SPCS (primary) and EC2 (secondary) targets, environment contract, trial-account setup path |
 | 08-build-phases | Phased implementation plan with validation gates |

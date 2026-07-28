@@ -47,7 +47,7 @@ sequenceDiagram
   B->>API: request with Authorization: Bearer <JWT>
   API->>API: verify signature vs Auth0 JWKS (cached), iss, aud, exp; extract sub, roles
   API->>SK: SkillContext.user = UserContext(sub, name, email, roles)
-  SK->>PG: transaction: SET LOCAL app.user_sub = <sub>; queries
+  SK->>PG: transaction: set_config('app.user_sub', <sub>, true); queries
   PG-->>SK: rows visible only where RLS policy admits app.user_sub
 ```
 
@@ -69,14 +69,34 @@ sequenceDiagram
 Chat data is isolated **in the database**, not by remembering to add `WHERE` clauses:
 
 - Every per-user table carries `user_sub text not null`.
-- The API opens each transaction with `SET LOCAL app.user_sub = :sub` (parameterized).
-- RLS policies: `USING (user_sub = current_setting('app.user_sub'))` for select/update/delete,
-  `WITH CHECK` for insert, on `conversations`, `messages`, `run_log`, `embeddings`,
-  `user_profile`, `user_memory`, `message_feedback` (doc 06 §7).
+- The API sets identity **transaction-scoped**, as the first statement of every transaction:
+  `SELECT set_config('app.user_sub', :sub, true)`. The trailing `true` is the is_local flag — the
+  setting dies with the transaction, so a pooled connection cannot carry it into the next
+  checkout. `SET LOCAL` is deliberately not used: it accepts no bind parameter, which would force
+  string interpolation of an identity value into SQL.
+- Policies read the context in the missing_ok form:
+  `USING (user_sub = current_setting('app.user_sub', true))` for select/update/delete, the same
+  predicate in `WITH CHECK` for insert, on `conversations`, `messages`, `turn_run`, `llm_calls`,
+  `tool_calls`, `embeddings`, `user_profile`, `user_memory`, `message_feedback` (doc 06 §7). With
+  `missing_ok = true` an unset context is NULL, the predicate is never true, and the query returns
+  zero rows — an absent identity fails closed rather than raising an exception a caller could
+  catch and route around.
+- Every owned table is declared `FORCE ROW LEVEL SECURITY` so policies bind the table owner too —
+  migrations and admin sessions are not an accidental bypass.
 - The application connects as a role that is **not** the table owner and has no `BYPASSRLS` —
   a forgotten filter returns zero foreign rows instead of leaking.
-- A dedicated test proves isolation: two `UserContext`s write conversations; each can list only
-  its own; a raw query without `SET LOCAL` sees nothing (doc 06 §5, L1 category).
+
+**Decision D28:** identity context is transaction-scoped, read with `missing_ok`, and enforced with
+`FORCE` — a pooled connection must never hand the next user the previous user's context.
+
+Required tests (doc 06 §5, L1 category):
+
+1. **Two-user isolation** — two `UserContext`s write conversations; each lists only its own.
+2. **No-context** — a connection that never set `app.user_sub` sees zero rows on every RLS table.
+3. **Pooled-connection context leak** — two sequential checkouts of the *same* pooled connection
+   under different `UserContext`s; the second must see none of the first user's rows. This is the
+   test that fails the moment the context is set session-scoped rather than transaction-scoped.
+4. **Owner bypass** — a query as the table owner is still filtered (proves `FORCE`).
 
 Domain data (ontology entities) scoping: today access is role-gated, not row-scoped, and the
 overhaul preserves that default. The design hook for later: an entity in the ontology may declare
@@ -99,26 +119,52 @@ user_profile (
 user_memory (
   user_sub text not null,
   version int not null,                          -- monotonic; current = max(version)
-  content text not null,                         -- markdown, size-capped (8,000 chars ≈ 2k
-                                                 --   tokens) — enforced at write, shown in UI
+  entries jsonb not null,                        -- [{type, statement, source_conversation_id,
+                                                 --   at}] — typed, attributed, never free text
   created_by text not null check (created_by in ('user','distiller')),
   created_at timestamptz not null default now(),
   primary key (user_sub, version)
 );
+memory_outbox (
+  conversation_id uuid primary key
+    references conversations(id) on delete cascade,
+  user_sub text not null,
+  last_turn_at timestamptz not null,             -- bumped every turn; the idle clock
+  status text not null default 'pending'
+    check (status in ('pending','done','failed')),
+  attempts int not null default 0,
+  last_error jsonb,
+  updated_at timestamptz not null default now()
+);
 ```
 
-- **Memory distillation:** the `memory` role (Claude Sonnet by default; config-driven tier,
-  doc 03 §2) rewrites the memory document from its prior version plus the finished
-  conversation. **Decision D24 — trigger is end-of-conversation** (async, debounced, skipped
-  for conversations under a minimum turn count): memory is freshest before the user's next
-  session, the job is naturally scoped to exactly the content being distilled, and no scheduler
-  infrastructure is needed.
-- Distillation writes a **new version** (append-only; the last N versions retained, N config)
-  so a bad distillation is a one-click restore, and every update is a run-log row
-  (`kind = 'memory_update'`, doc 06 §1).
+**Memory is a set of typed, attributed entries — not accumulated prose.** `type` is a closed set
+(`preference`, `scope`, `fact`, `correction`); `statement` is one sentence; every entry names the
+conversation it came from and when. Prompt assembly (doc 03 §3) renders the current version's
+entries to markdown at injection time, and the size cap (`MEMORY_MAX_CHARS`) applies to that
+rendered form. An entry is only admissible if it derives from something **the user said or a choice
+the user confirmed**; text returned by web-research or any other external tool is never eligible to
+become an entry, verbatim or paraphrased — otherwise a poisoned search result becomes a permanent
+instruction injected into every future turn.
+
+- **Distillation is a durable outbox job.** Turn completion writes/upserts a `memory_outbox` row in
+  the same transaction as the turn, bumping `last_turn_at`. A worker claims rows whose
+  `last_turn_at` is older than `MEMORY_IDLE_MINUTES` (default 30) and runs the `memory` role
+  (Claude Sonnet by default; config-driven tier, doc 03 §2) over the prior entries plus the
+  finished conversation. Failures increment `attempts` and retry with backoff; an exhausted row is
+  marked `failed` with `last_error` retained for inspection, never silently dropped. Conversations
+  under a minimum turn count are skipped.
+- **Decision D31 (revises D24):** the trigger is an explicit idle threshold served by a durable
+  queue, not an in-process debounce — a debounce timer loses every pending distillation on restart
+  or redeploy, and "end of conversation" is not an event the server ever receives; only inactivity
+  is observable.
+- Each distillation run is a `turn_run` row with `kind = 'memory_update'` (doc 06 §1), so the
+  background model spend is accounted for exactly like a chat turn.
+- Distillation writes a **new version** (append-only; the last N versions retained, N config) so a
+  bad distillation is a one-click restore.
 - User edits also append a version (`created_by = 'user'`); the distiller treats user-authored
-  content as ground truth it must preserve.
-- Both tables are RLS-scoped (§4); no user can read another's instruction or memory.
+  entries as ground truth it must preserve verbatim.
+- All three tables are RLS-scoped (§4); no user can read another's instruction, memory, or queue.
 
 ## 6. Per-user chat history model
 
@@ -139,7 +185,7 @@ messages (
   user_sub text not null,           -- denormalized for RLS locality
   role text check (role in ('user','assistant','system')),
   parts jsonb not null,             -- typed message parts (doc 01 §4)
-  turn_id uuid,                     -- links to run_log
+  turn_id uuid,                     -- links to turn_run (doc 06 §1)
   created_at timestamptz not null default now()
 );
 ```
@@ -152,10 +198,58 @@ messages (
 - Continue = normal message POST to an existing conversation; new chat = POST creating a
   conversation with the mode-chip opening message.
 - Deletion policy: `archived` soft-flag in the UI; hard delete is a user-initiated
-  `DELETE /api/conversations/{id}` (cascades messages; run-log rows are retained for audit with
-  the conversation id intact — stated in the UI copy).
+  `DELETE /api/conversations/{id}`. What survives it, and for how long, is §7.
 
-## 7. API surface (identity-relevant)
+## 7. Privacy, retention, and deletion
+
+Retention windows are **configuration**, not code. The defaults below are starting values chosen to
+be defensible; the final numbers are an **owner decision** and are recorded per environment.
+
+| Data | Default window | Setting |
+|------|----------------|---------|
+| Conversations + messages | retained until the user deletes them | — |
+| `turn_run` / `llm_calls` / `tool_calls` (audit) | 400 days | `RETENTION_AUDIT_DAYS` |
+| `message_feedback` | kept as long as its `turn_run` | — |
+| `user_memory` versions | last 20 versions | `MEMORY_KEEP_VERSIONS` |
+| Artifacts (PDF briefs) | 90 days, then object-store lifecycle expiry | `RETENTION_ARTIFACT_DAYS` |
+| JSON application logs | 30 days | platform log retention |
+
+**Deletion resolves the audit tension explicitly.** `DELETE /api/conversations/{id}` hard-deletes
+the conversation, its messages, and its conversation state — the user's content is gone, not
+flagged. The `turn_run` rows and their `llm_calls`/`tool_calls` children are **retained with their
+payload columns redacted**: `question`, `answer_summary`, `parsed`, and `tool_calls.args` are
+nulled and the row is stamped `redacted_at`; ids, timestamps, model/provider, token counts,
+latency, and status survive. The audit trail keeps its shape (who ran what, when, at what cost)
+and loses its content. Deletion is what the UI copy promises, so the copy states this in one
+sentence.
+
+**Admin access boundary.** An `admin` database role may read `turn_run`/`llm_calls`/`tool_calls`
+across users — this is the role that runs harvest, cost roll-ups, and incident review. It is
+granted to named operators, never to the application's runtime role, and never to a chat user.
+There is no admin UI: admin reads are direct SQL against the audit tables, so every one of them
+leaves a database-side trace. Admins have no path to another user's `messages`, `user_memory`, or
+`user_profile` — those tables are RLS-scoped with no admin policy, deliberately.
+
+**Egress classification — what may leave the boundary, to whom.**
+
+| Processor | May receive | Must never receive |
+|-----------|-------------|--------------------|
+| LLM provider (Bedrock / Cortex) | conversation messages, user instruction + memory entries, tool schemas, and retrieved internal results (metric values, tables) — this is the processing scope the product requires | credentials, other users' data |
+| Web research (Perplexity, direct or MCP) | entity names only: customer, port, region, and a plain-language topic | any internal metric value, computed figure, period-over-period delta, customer ranking, or anything derived from the certified views |
+| Object store (S3 / MinIO) | generated artifacts and their metadata | raw conversation transcripts |
+| Auth0 | authentication traffic only | conversation content of any kind |
+
+**Decision D29:** retention is configuration with stated defaults, and conversation deletion
+hard-deletes content while retaining a redacted audit row — the user's right to delete and the
+audit obligation are both absolute, and only redaction satisfies both.
+
+**Decision D30:** web-research queries carry entity names, never internal values — the research
+tool is the one call that leaves the corporate boundary with an attacker-visible payload, so
+nothing computed from the certified views may be embedded in it. The research adapter (doc 02 §7)
+builds its query from parsed entity slots, never from a metric result, and a contract test asserts
+that no numeric result value appears in an outbound research query.
+
+## 8. API surface (identity-relevant)
 
 "Authenticated" below means the active `IdentityProvider` admitted the request (§2).
 
@@ -166,6 +260,7 @@ messages (
 | `GET/PUT /api/me/memory`, `GET /api/me/memory/versions` | authenticated + RLS | memory document, size-cap enforced; version list/restore |
 | `GET/POST /api/conversations` | authenticated + RLS | list (cursor) / create |
 | `GET /api/conversations/{id}/messages` | authenticated + RLS | history (cursor) |
+| `DELETE /api/conversations/{id}` | authenticated + RLS | hard-deletes content; audit row redacted and retained (§7) |
 | `POST /api/conversations/{id}/messages` | authenticated + RLS | send turn; SSE response (doc 01 §5) |
 | `POST /api/messages/{id}/feedback` | authenticated + RLS | verdict + optional comment; idempotent upsert (doc 06 §7) |
 | `GET /api/dimensions/customers?q=` | authenticated | type-ahead from `DataClient.list_dimension_values` |
@@ -175,7 +270,7 @@ messages (
 Cross-cutting: explicit CORS origin allowlist (the SPA origin only); token-bucket rate limiting
 on chat POST (per `sub`); every response carries the request's trace id header.
 
-## 8. Auth0 tenant configuration (summarized; setup steps in doc 07)
+## 9. Auth0 tenant configuration (summarized; setup steps in doc 07)
 
 - One **SPA application** (callback/logout URLs per environment) and one **API** (identifier
   e.g. `https://poseidon/api`, RS256).

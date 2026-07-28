@@ -109,20 +109,41 @@ unknown kinds (forward compatibility while backend evolves).
 
 ## 5. Streaming protocol (SSE)
 
-`POST /api/conversations/{id}/messages` returns `text/event-stream`:
+**Request.** `POST /api/conversations/{id}/messages` takes `{text, client_turn_key}`. The client
+generates `client_turn_key` (UUID) once per send and reuses it verbatim on any retry of that same
+send, so a retried POST attaches to the existing turn instead of creating a second one (server-side
+uniqueness on `(user_sub, client_turn_key)`, doc 06 §1).
 
-| event | data | UI effect |
-|-------|------|-----------|
-| `accepted` | `{message_id, turn_id}` | append pending assistant message |
+**Response envelope.** The response is `text/event-stream`. Every event's `data` JSON carries the
+same envelope — `turn_id`, `message_id`, `event_seq` — alongside that event's own fields, and every
+SSE frame also carries an `id: <event_seq>` line. `event_seq` is monotonic within a turn starting at
+1. An event read in isolation therefore states which turn and which message it belongs to and where
+it sits in the stream; nothing depends on arrival position.
+
+| event | data (in addition to the envelope) | UI effect |
+|-------|------------------------------------|-----------|
+| `accepted` | `{turn_index}` | append pending assistant message (ids come from the envelope) |
 | `phase` | `{phase, status: start\|done}` | phase progress indicator on the message |
-| `tool` | `{seq, tool, server, status: start\|done\|error, label}` | append/update a `tool_event` step line (explicit, human-readable tool visibility) |
+| `tool` | `{tool_seq, tool, server, status: start\|done\|error, label}` | append/update a `tool_event` step line (explicit, human-readable tool visibility); `tool_seq` matches the `tool_calls` row (doc 06 §1) |
 | `part` | `{kind, payload}` | append/replace a structured part |
 | `token` | `{text}` | append to the currently streaming `text`/`phase_section` part |
-| `done` | `{usage, run_id}` | finalize message, refresh conversation list title |
+| `done` | `{usage}` | finalize message, refresh conversation list title |
 | `error` | `{code, message}` | render `error` part; composer re-enabled |
 
-Client rules: the store applies events idempotently by `message_id`; on connection drop it calls
-`GET /api/turns/{turn_id}` to reconcile from the run log (doc 06) rather than replaying the model.
+Decision D26: every event is self-addressed (envelope + `id:` line) and turn creation is idempotent
+(`client_turn_key`) — replay and crash recovery require an event to mean the same thing whenever it
+is read, not only in the order it first arrived.
+
+Client rules:
+
+1. The reducer keys message state on `message_id` (from the envelope), never on stream order.
+2. It records the highest `event_seq` applied per message and discards any event at or below it —
+   valid because `event_seq` is monotonic within the turn, so each message sees a strictly
+   increasing subsequence; delivery is treated as at-least-once, and a re-sent frame is a no-op
+   rather than a duplicated part.
+3. On connection drop it calls `GET /api/turns/{turn_id}` to reconcile from the run log (doc 06)
+   rather than replaying the model.
+
 Progressive display from today's app is preserved: each agent phase appears as soon as it
 completes, while later phases still run.
 
@@ -176,10 +197,11 @@ Reached from the user menu. Two user-owned documents, both injected into every t
 
 - **My instructions** — the user's personal system instruction (free-text, e.g. "I cover the
   Singapore book; always show GP in USD k"). `GET/PUT /api/me/settings`.
-- **My memory** — the markdown memory document Poseidon maintains about the user (doc 05 §5).
-  Rendered as editable markdown with a character-budget meter (size cap enforced server-side)
-  and a version list (restore any prior version). `GET/PUT /api/me/memory`,
-  `GET /api/me/memory/versions`.
+- **My memory** — what Poseidon has learned about the user, stored as typed attributed entries
+  (doc 05 §5). Rendered as a reviewable list: each entry shows its statement, its type, and the
+  conversation and date it came from, and can be edited or deleted individually — with a
+  character-budget meter for the rendered form (size cap enforced server-side) and a version list
+  (restore any prior version). `GET/PUT /api/me/memory`, `GET /api/me/memory/versions`.
 
 Copy states clearly when each was last updated and by whom ("Updated by Poseidon after your
 conversation on …" vs "Edited by you"). Editing never blocks chat — saves are optimistic with
@@ -200,7 +222,9 @@ rollback on failure.
   `tool_event` status transitions; unknown kind falls back safely), chip → mode transition,
   default-flow composer with skills picker, feedback interaction (up, down + comment, amend),
   settings/memory editors (size-cap meter, version restore), SSE reducer (event stream → store
-  state, `tool` event in-place updates, idempotency, reconnect reconciliation).
+  state, `tool` event in-place updates, envelope keying by `message_id`, `event_seq` replay
+  dropped as a no-op, retry with the same `client_turn_key` yielding one turn, reconnect
+  reconciliation).
 - MSW handlers for every API route the UI calls (contract-first; doubles as the mock backend for
   Phase 1 of the build plan, doc 08).
 - Playwright smoke: login-stubbed run through all three flows against the mock backend —

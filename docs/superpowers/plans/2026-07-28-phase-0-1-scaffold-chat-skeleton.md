@@ -13,6 +13,7 @@
 - Python package is `poseidon` inside `backend/` (so doc paths `backend/api/...` map to `backend/poseidon/api/...`). Note this mapping in `backend/README.md`.
 - Env contract names come verbatim from `docs/architecture/07-infrastructure.md` §6. Settings crash on missing/malformed values.
 - SSE event names/payloads come verbatim from `docs/architecture/01-frontend.md` §5; message-part kinds from §4. Do not invent new names.
+- **SSE envelope (resumability contract):** every event's `data` JSON carries `turn_id`, `message_id`, and `event_seq` (monotonic per turn, starting at 1) alongside the event's own fields, and every frame carries an `id: <event_seq>` line before `event:`. The send POST body includes `client_turn_key` (client-generated UUID). The reducer addresses messages by `message_id` (never "the last message") and skips any event whose `event_seq` is not greater than the message's last applied seq.
 - Theme: the **Slate** preset is the default `tokens.css` (values in Task 4). Components consume semantic tokens only — never raw hex in component styles.
 - Phase 1 renderer registry implements kinds `text`, `chips`, `tool_event`, `error` + a safe fallback. Other kinds come in later phases.
 - Tests are committed, never gitignored. Every task ends green: `python -m pytest` (backend) / `npm test -- --run` (frontend).
@@ -75,7 +76,7 @@ infra/
 
 **Files:**
 - Create: `backend/pyproject.toml`, `backend/README.md`, `backend/poseidon/__init__.py`, `backend/poseidon/core/__init__.py`, `backend/poseidon/core/config.py`, `backend/tests/__init__.py`
-- Create: `.env.example` (repo root)
+- Create: `backend/.env.example` (the legacy root `.env.example` belongs to the Streamlit app — never modify it)
 - Test: `backend/tests/test_config.py`
 
 **Interfaces:**
@@ -143,8 +144,8 @@ REQUIRED = {
 def make_settings(monkeypatch, **overrides):
     from poseidon.core.config import Settings
 
-    for key in ("DATABASE_URL", "S3_BUCKET", "IDENTITY_MODE", "AUTH0_DOMAIN",
-                "AUTH0_AUDIENCE", "AUTH0_CLIENT_ID", "LLM_MODE", "DEPLOY_MODE"):
+    # Hermetic: clear EVERY Settings env var (derived, so the list can't drift)
+    for key in (name.upper() for name in Settings.model_fields):
         monkeypatch.delenv(key, raising=False)
     env = {**REQUIRED, **overrides}
     for key, value in env.items():
@@ -253,7 +254,7 @@ def get_settings() -> Settings:
 
 Run: `python -m pytest tests/test_config.py -v` → all PASS.
 
-- [ ] **Step 7: Write `.env.example` at repo root**
+- [ ] **Step 7: Write `backend/.env.example`** (do NOT touch the legacy root `.env.example`)
 
 ```bash
 # --- Poseidon environment contract (docs/architecture/07-infrastructure.md §6) ---
@@ -277,7 +278,7 @@ MEMORY_KEEP_VERSIONS=20
 - [ ] **Step 8: Commit**
 
 ```bash
-git add backend/ .env.example
+git add backend/
 git commit -m "feat(backend): project scaffold with validated settings env contract"
 ```
 
@@ -291,7 +292,7 @@ git commit -m "feat(backend): project scaffold with validated settings env contr
 
 **Interfaces:**
 - Consumes: `poseidon.core.config.Settings`, `get_settings`.
-- Produces: `create_app(settings: Settings | None = None) -> FastAPI` in `poseidon.api.app`, plus module-level `app = create_app()` for uvicorn. Health routes: `GET /health/live` → `200 {"status": "ok"}`; `GET /health/ready` → `200 {"status": "ok", "components": {"db": "up"}}` or `503 {"status": "degraded", "components": {"db": "down"}}` (DB probe = SQLAlchemy `SELECT 1`, 2s timeout).
+- Produces: `create_app(settings: Settings | None = None) -> FastAPI` in `poseidon.api.app` — factory ONLY, no module-level `app` (uvicorn runs `poseidon.api.app:create_app --factory`). Health routes: `GET /health/live` → `200 {"status": "ok"}`; `GET /health/ready` → `200 {"status": "ok", "components": {"db": "up"}}` or `503 {"status": "degraded", "components": {"db": "down"}}` (DB probe = SQLAlchemy `SELECT 1`, 2s timeout).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -760,7 +761,7 @@ WORKDIR /app
 
 - [ ] **Step 3: Write `infra/runbooks/local.md`**
 
-Contents (write in full): prerequisites (Docker Desktop, or native Python 3.11+/Node 20+); compose bring-up (`docker compose -f infra/docker-compose.yml up --build`, app at `http://localhost:5173`, API at `:8000`, MinIO console at `:9001`); native fallback path (terminal 1: `cd backend && pip install -e ".[dev]" && copy ..\.env.example ..\..env note → instruct copying `.env.example` to `backend/.env` with `DATABASE_URL` pointed at any reachable Postgres or left as-is for degraded `/health/ready`; `python -m uvicorn poseidon.api.app:create_app --factory --reload --port 8000`; terminal 2: `cd frontend && npm install && npm run dev`); how to run both test suites; note that `/health/ready` reports `db: down` until Postgres is reachable — expected in native mode without a database.
+Contents (write in full): prerequisites (Docker Desktop, or native Python 3.11+/Node 20+); compose bring-up (`docker compose -f infra/docker-compose.yml up --build`, app at `http://localhost:5173`, API at `:8000`, MinIO console at `:9001`); native fallback path (terminal 1: `cd backend`, `pip install -e ".[dev]"`, copy `backend/.env.example` to `backend/.env` with `DATABASE_URL` pointed at any reachable Postgres or left as-is for a degraded `/health/ready`, then `python -m uvicorn poseidon.api.app:create_app --factory --reload --port 8000`; terminal 2: `cd frontend && npm install && npm run dev`); how to run both test suites; note that `/health/ready` reports `db: down` until Postgres is reachable — expected in native mode without a database.
 
 - [ ] **Step 4: Validate what can be validated without Docker**
 
@@ -788,9 +789,9 @@ git commit -m "feat(infra): docker-compose dev topology with pgvector, minio, ba
   - `POST /api/conversations` → `201 {"conversation": {"id": str, "title": "New chat"}, "opener": Message}` where `Message = {"id": str, "role": "assistant"|"user", "parts": [Part, ...]}`. Opener parts: `{"kind":"text","payload":{"markdown":"Ask about your data, or pick a flow:"}}` and `{"kind":"chips","payload":{"options":[{"id":"existing_customer","label":"Existing customer"},{"id":"new_prospect","label":"New customer prospect"}]}}`.
   - `GET /api/conversations` → `200 {"conversations": [{"id","title"}, ...]}` (newest first).
   - `GET /api/conversations/{cid}/messages` → `200 {"messages": [Message, ...]}`; 404 problem JSON if unknown cid.
-  - `POST /api/conversations/{cid}/messages` body `{"text": str}` → `text/event-stream` with events in order: `accepted` `{message_id, turn_id}` · `tool` `{seq:1, tool:"top_customers", server:"internal", status:"start", label:"Running skill · top_customers…"}` · `tool` (same seq, `status:"done"`, label `"top_customers · done · 0.3s"`) · `tool` `{seq:2, tool:"web_research", server:"perplexity", status:"start", label:"Calling Perplexity — marine news search…"}` · `tool` (seq 2 `done`, `"Perplexity — 3 sources"`) · 6+ `token` events streaming a markdown answer · `done` `{"usage":{"input_tokens":0,"output_tokens":0},"run_id": str}`. If the user text contains `!error`, after `accepted` emit only `error` `{"code":"mock_failure","message":"Mock failure requested","hint":"Remove !error from your message"}`. Both user message and final assistant message are appended to the in-memory store (assistant parts: the two completed tool_event parts + one text part).
+  - `POST /api/conversations/{cid}/messages` body `{"text": str, "client_turn_key": str|null}` → `text/event-stream`. **Every event's `data` carries the envelope** `{turn_id, message_id, event_seq}` (event_seq monotonic from 1) plus the event's own fields. Order: `accepted` `{…env, turn_index}` (1-based position of this turn in the conversation) · `tool` `{…env, tool_seq:1, tool:"top_customers", server:"internal", status:"start", label:"Running skill · top_customers…"}` · `tool` (same `tool_seq`, `status:"done"`, label `"top_customers · done · 0.3s"`) · `tool` `{…env, tool_seq:2, tool:"web_research", server:"perplexity", status:"start", label:"Calling Perplexity — marine news search…"}` · `tool` (`tool_seq` 2 `done`, `"Perplexity — 3 sources"`) · 6+ `token` events `{…env, text}` streaming a markdown answer · `done` `{…env, usage:{input_tokens:0, output_tokens:0}}` (no run_id — `turn_id` in the envelope is the run identity). (`tool_seq` is the step number, matching the future `tool_calls` row; `event_seq` is the stream position — both exist, doc 01 §5.) If the user text contains `!error`, after `accepted` emit only `error` `{…env, code:"mock_failure", message:"Mock failure requested", hint:"Remove !error from your message"}`. Both user message and final assistant message are appended to the in-memory store (assistant parts: the two completed tool_event parts + one text part).
   - `POST /api/messages/{mid}/feedback` body `{"verdict":"up"|"down","comment": str|null}` → `204`; idempotent upsert keyed by message id (mock has a single dev user); unknown mid → 404. `GET /api/messages/{mid}/feedback` → `200 {"verdict","comment"}` or `404` (test convenience).
-- SSE wire format per event: `event: <name>\n` + `data: <json>\n\n`.
+- SSE wire format per event: `id: <event_seq>\n` + `event: <name>\n` + `data: <json>\n\n`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -859,9 +860,15 @@ async def test_mock_turn_streams_tools_tokens_done(app):
         assert names[0] == "accepted"
         assert names[-1] == "done"
         tool_events = [d for n, d in events if n == "tool"]
-        assert {(t["seq"], t["status"]) for t in tool_events} == {
+        assert {(t["tool_seq"], t["status"]) for t in tool_events} == {
             (1, "start"), (1, "done"), (2, "start"), (2, "done")}
         assert any(n == "token" for n, _ in events)
+        # envelope on every event: turn_id/message_id/event_seq, strictly increasing
+        payloads = [d for _, d in events]
+        assert all({"turn_id", "message_id", "event_seq"} <= set(d) for d in payloads)
+        seqs = [d["event_seq"] for d in payloads]
+        assert seqs[0] == 1 and seqs == sorted(seqs) and len(set(seqs)) == len(seqs)
+        assert len({d["turn_id"] for d in payloads}) == 1
         # transcript persisted: user + assistant with tool_event + text parts
         msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["messages"]
         assert msgs[-1]["role"] == "assistant"
@@ -931,6 +938,7 @@ _ANSWER_CHUNKS = [
 
 class SendBody(BaseModel):
     text: str
+    client_turn_key: str | None = None
 
 
 class FeedbackBody(BaseModel):
@@ -939,7 +947,7 @@ class FeedbackBody(BaseModel):
 
 
 def _sse(name: str, payload: dict) -> str:
-    return f"event: {name}\ndata: {json.dumps(payload)}\n\n"
+    return f"id: {payload['event_seq']}\nevent: {name}\ndata: {json.dumps(payload)}\n\n"
 
 
 def _message(role: str, parts: list[dict]) -> dict:
@@ -984,11 +992,20 @@ def send_message(cid: str, body: SendBody) -> StreamingResponse:
     turn_id = str(uuid.uuid4())
 
     async def stream():
-        yield _sse("accepted", {"message_id": message_id, "turn_id": turn_id})
+        event_seq = 0
+
+        def ev(name: str, **fields) -> str:
+            nonlocal event_seq
+            event_seq += 1
+            return _sse(name, {"turn_id": turn_id, "message_id": message_id,
+                               "event_seq": event_seq, **fields})
+
+        turn_index = sum(1 for m in _messages[cid] if m["role"] == "user")
+        yield ev("accepted", turn_index=turn_index)
         if "!error" in body.text:
-            yield _sse("error", {"code": "mock_failure",
-                                 "message": "Mock failure requested",
-                                 "hint": "Remove !error from your message"})
+            yield ev("error", code="mock_failure",
+                     message="Mock failure requested",
+                     hint="Remove !error from your message")
             return
         tool_parts = []
         steps = [
@@ -999,25 +1016,24 @@ def send_message(cid: str, body: SendBody) -> StreamingResponse:
              "Calling Perplexity — marine news search…",
              "Perplexity — 3 sources"),
         ]
-        for seq, tool, server, start_label, done_label in steps:
-            yield _sse("tool", {"seq": seq, "tool": tool, "server": server,
-                                "status": "start", "label": start_label})
+        for tool_seq, tool, server, start_label, done_label in steps:
+            yield ev("tool", tool_seq=tool_seq, tool=tool, server=server,
+                     status="start", label=start_label)
             await asyncio.sleep(0.35)
-            done = {"seq": seq, "tool": tool, "server": server,
+            done = {"tool_seq": tool_seq, "tool": tool, "server": server,
                     "status": "done", "label": done_label}
             tool_parts.append({"kind": "tool_event", "payload": done})
-            yield _sse("tool", done)
+            yield ev("tool", **done)
         text = ""
         for chunk in _ANSWER_CHUNKS:
             text += chunk
-            yield _sse("token", {"text": chunk})
+            yield ev("token", text=chunk)
             await asyncio.sleep(0.12)
         _messages[cid].append({"id": message_id, "role": "assistant",
                                "parts": [*tool_parts,
                                          {"kind": "text",
                                           "payload": {"markdown": text}}]})
-        yield _sse("done", {"usage": {"input_tokens": 0, "output_tokens": 0},
-                            "run_id": turn_id})
+        yield ev("done", usage={"input_tokens": 0, "output_tokens": 0})
 
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache"})
@@ -1071,21 +1087,27 @@ export interface TextPayload { markdown: string }
 export interface ChipOption { id: string; label: string }
 export interface ChipsPayload { options: ChipOption[] }
 export interface ToolEventPayload {
-  seq: number; tool: string; server: string;
+  tool_seq: number; tool: string; server: string;
   status: "start" | "done" | "error"; label: string;
 }
 export interface ErrorPayload { code: string; message: string; hint?: string }
 export interface MessagePart { kind: string; payload: unknown }
-export interface Message { id: string; role: "user" | "assistant"; parts: MessagePart[] }
+export interface Message {
+  id: string;
+  role: "user" | "assistant";
+  parts: MessagePart[];
+  lastSeq?: number; // highest applied event_seq (client-side replay guard)
+}
 export interface Conversation { id: string; title: string }
+export interface SseEnvelope { turn_id: string; message_id: string; event_seq: number }
 export type SseEvent =
-  | { name: "accepted"; data: { message_id: string; turn_id: string } }
-  | { name: "tool"; data: ToolEventPayload }
-  | { name: "token"; data: { text: string } }
-  | { name: "part"; data: MessagePart }
-  | { name: "phase"; data: { phase: string; status: "start" | "done" } }
-  | { name: "done"; data: { usage: unknown; run_id: string } }
-  | { name: "error"; data: ErrorPayload };
+  | { name: "accepted"; data: SseEnvelope & { turn_index: number } }
+  | { name: "tool"; data: SseEnvelope & ToolEventPayload }
+  | { name: "token"; data: SseEnvelope & { text: string } }
+  | { name: "part"; data: SseEnvelope & MessagePart }
+  | { name: "phase"; data: SseEnvelope & { phase: string; status: "start" | "done" } }
+  | { name: "done"; data: SseEnvelope & { usage: unknown } }
+  | { name: "error"; data: SseEnvelope & ErrorPayload };
 ```
 
 - Produces `client.ts`: `createConversation(): Promise<{conversation: Conversation; opener: Message}>` · `listConversations(): Promise<Conversation[]>` · `getMessages(cid: string): Promise<Message[]>` · `postFeedback(mid: string, verdict: "up"|"down", comment?: string): Promise<void>` — thin `fetch` wrappers over `/api/...`, throwing on non-2xx.
@@ -1098,17 +1120,17 @@ export type SseEvent =
 ```ts
 import { parseSseChunk } from "./sse";
 
-test("parses complete events and keeps the incomplete tail", () => {
+test("parses enveloped events (ignoring id: lines) and keeps the incomplete tail", () => {
   const raw =
-    'event: accepted\ndata: {"message_id":"m1","turn_id":"t1"}\n\n' +
-    'event: token\ndata: {"text":"Hello"}\n\n' +
-    "event: token\ndata: {\"te";
+    'id: 1\nevent: accepted\ndata: {"turn_id":"t1","message_id":"m1","event_seq":1,"turn_index":1}\n\n' +
+    'id: 2\nevent: token\ndata: {"turn_id":"t1","message_id":"m1","event_seq":2,"text":"Hello"}\n\n' +
+    "id: 3\nevent: token\ndata: {\"te";
   const { events, rest } = parseSseChunk(raw);
   expect(events).toEqual([
-    { name: "accepted", data: { message_id: "m1", turn_id: "t1" } },
-    { name: "token", data: { text: "Hello" } },
+    { name: "accepted", data: { turn_id: "t1", message_id: "m1", event_seq: 1, turn_index: 1 } },
+    { name: "token", data: { turn_id: "t1", message_id: "m1", event_seq: 2, text: "Hello" } },
   ]);
-  expect(rest).toBe('event: token\ndata: {"te');
+  expect(rest).toBe('id: 3\nevent: token\ndata: {"te');
 });
 
 test("returns no events for a bare fragment", () => {
@@ -1150,7 +1172,7 @@ export async function streamTurn(
   const response = await fetch(`/api/conversations/${cid}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ text, client_turn_key: crypto.randomUUID() }),
     signal,
   });
   if (!response.ok || !response.body) {
@@ -1193,7 +1215,7 @@ git commit -m "feat(frontend): typed api client and sse stream parser"
   - `bootstrap(): Promise<void>` — list conversations; if empty, create one (stores opener).
   - `newConversation(): Promise<string>`; `openConversation(cid): Promise<void>` (loads messages via `getMessages`).
   - `sendMessage(cid, text): Promise<void>` — appends user message locally, sets streaming, calls `streamTurn` wiring events to `applyEvent`, clears streaming on completion or thrown error (thrown → append synthetic error part).
-  - `applyEvent(cid, e: SseEvent): void` — pure-ish reducer, exported also as standalone `applyEventTo(messages: Message[], e: SseEvent): Message[]` for tests. Rules: `accepted` appends assistant message `{id: message_id, parts: []}` (idempotent — skip if id exists); `tool` upserts a `tool_event` part matched by `payload.seq` (replace in place, else push); `token` appends text to the LAST part if it is `text`, else pushes a new text part `{markdown: text}`; `part` pushes the part; `error` pushes `{kind:"error", payload}`; `done` is a no-op on parts (frontend refreshes conversation list separately later).
+  - `applyEvent(cid, e: SseEvent): void` — pure-ish reducer, exported also as standalone `applyEventTo(messages: Message[], e: SseEvent): Message[]` for tests. Rules (envelope-addressed, never "the last message"): every event targets the message with `id === e.data.message_id`. `accepted` appends `{id, role:"assistant", parts:[], lastSeq: event_seq}` (idempotent — skip if id exists). All other events: find the message by id (if absent, CREATE it with empty parts — replay-safe), then skip the event unless `e.data.event_seq > (msg.lastSeq ?? 0)` (duplicate-delivery guard), then set `lastSeq = event_seq` and apply: `tool` upserts a `tool_event` part matched by the tool-step `payload.tool_seq` (replace in place, else push), envelope fields stripped from the stored payload; `token` appends text to that message's trailing `text` part, else pushes a new one; `part` pushes the part (envelope stripped); `error` pushes `{kind:"error", payload}` (envelope stripped); `done` only advances `lastSeq` (conversation list refresh comes later).
   - `submitFeedback(mid, verdict, comment?)` — optimistic set + `postFeedback`; on failure, revert and rethrow.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1204,12 +1226,14 @@ git commit -m "feat(frontend): typed api client and sse stream parser"
 import type { Message, SseEvent } from "../api/types";
 import { applyEventTo } from "./chatStore";
 
+const env = (event_seq: number) => ({ turn_id: "t1", message_id: "a1", event_seq });
+
 const seq: SseEvent[] = [
-  { name: "accepted", data: { message_id: "a1", turn_id: "t1" } },
-  { name: "tool", data: { seq: 1, tool: "top_customers", server: "internal", status: "start", label: "Running…" } },
-  { name: "tool", data: { seq: 1, tool: "top_customers", server: "internal", status: "done", label: "done · 0.3s" } },
-  { name: "token", data: { text: "Hello " } },
-  { name: "token", data: { text: "world" } },
+  { name: "accepted", data: { ...env(1), turn_index: 1 } },
+  { name: "tool", data: { ...env(2), tool_seq: 1, tool: "top_customers", server: "internal", status: "start", label: "Running…" } },
+  { name: "tool", data: { ...env(3), tool_seq: 1, tool: "top_customers", server: "internal", status: "done", label: "done · 0.3s" } },
+  { name: "token", data: { ...env(4), text: "Hello " } },
+  { name: "token", data: { ...env(5), text: "world" } },
 ];
 
 function run(events: SseEvent[], initial: Message[] = []): Message[] {
@@ -1223,16 +1247,24 @@ test("builds an assistant message with in-place tool updates and merged tokens",
   expect(parts).toHaveLength(2);
   expect(parts[0].kind).toBe("tool_event");
   expect((parts[0].payload as { status: string }).status).toBe("done");
+  expect((parts[0].payload as { turn_id?: string }).turn_id).toBeUndefined();
   expect((parts[1].payload as { markdown: string }).markdown).toBe("Hello world");
 });
 
-test("accepted is idempotent by message id", () => {
-  const twice = run([seq[0], seq[0]]);
-  expect(twice).toHaveLength(1);
+test("accepted is idempotent and duplicate deliveries are skipped by event_seq", () => {
+  const msgs = run([seq[0], seq[0], seq[3], seq[3]]);
+  expect(msgs).toHaveLength(1);
+  expect((msgs[0].parts[0].payload as { markdown: string }).markdown).toBe("Hello ");
+});
+
+test("events for an unseen message_id create the message (replay-safe)", () => {
+  const msgs = run([{ name: "token", data: { ...env(4), text: "late" } }]);
+  expect(msgs).toHaveLength(1);
+  expect(msgs[0].id).toBe("a1");
 });
 
 test("error event appends an error part", () => {
-  const msgs = run([seq[0], { name: "error", data: { code: "x", message: "boom" } }]);
+  const msgs = run([seq[0], { name: "error", data: { ...env(2), code: "x", message: "boom" } }]);
   expect(msgs[0].parts.at(-1)?.kind).toBe("error");
 });
 ```
@@ -1248,48 +1280,57 @@ import * as api from "./../api/client";
 import { streamTurn } from "../api/sse";
 
 export function applyEventTo(messages: Message[], e: SseEvent): Message[] {
+  const { message_id, event_seq } = e.data;
   const msgs = messages.map((m) => ({ ...m, parts: [...m.parts] }));
-  const last = () => msgs[msgs.length - 1];
+  let msg = msgs.find((m) => m.id === message_id);
+  if (e.name === "accepted") {
+    if (msg) return messages;
+    msgs.push({ id: message_id, role: "assistant", parts: [], lastSeq: event_seq });
+    return msgs;
+  }
+  if (!msg) {
+    // Replay-safe: an event for an unseen message creates it.
+    msg = { id: message_id, role: "assistant", parts: [], lastSeq: 0 };
+    msgs.push(msg);
+  }
+  if (event_seq <= (msg.lastSeq ?? 0)) return messages; // duplicate delivery
+  msg.lastSeq = event_seq;
   switch (e.name) {
-    case "accepted": {
-      if (msgs.some((m) => m.id === e.data.message_id)) return messages;
-      msgs.push({ id: e.data.message_id, role: "assistant", parts: [] });
-      return msgs;
-    }
     case "tool": {
-      const parts = last().parts;
-      const i = parts.findIndex(
+      const { turn_id: _t, message_id: _m, event_seq: _s, ...payload } = e.data;
+      const i = msg.parts.findIndex(
         (p) => p.kind === "tool_event" &&
-          (p.payload as { seq: number }).seq === e.data.seq,
+          (p.payload as { tool_seq: number }).tool_seq === payload.tool_seq,
       );
-      const part = { kind: "tool_event", payload: e.data };
-      if (i >= 0) parts[i] = part;
-      else parts.push(part);
+      const part = { kind: "tool_event", payload };
+      if (i >= 0) msg.parts[i] = part;
+      else msg.parts.push(part);
       return msgs;
     }
     case "token": {
-      const parts = last().parts;
-      const tail = parts[parts.length - 1];
+      const tail = msg.parts[msg.parts.length - 1];
       if (tail?.kind === "text") {
-        parts[parts.length - 1] = {
+        msg.parts[msg.parts.length - 1] = {
           kind: "text",
           payload: { markdown: (tail.payload as { markdown: string }).markdown + e.data.text },
         };
       } else {
-        parts.push({ kind: "text", payload: { markdown: e.data.text } });
+        msg.parts.push({ kind: "text", payload: { markdown: e.data.text } });
       }
       return msgs;
     }
     case "part": {
-      last().parts.push(e.data);
+      const { turn_id: _t, message_id: _m, event_seq: _s, ...part } = e.data;
+      msg.parts.push(part as MessagePart);
       return msgs;
     }
     case "error": {
-      last().parts.push({ kind: "error", payload: e.data });
+      const { turn_id: _t, message_id: _m, event_seq: _s, ...payload } = e.data;
+      msg.parts.push({ kind: "error", payload });
       return msgs;
     }
     default:
-      return messages;
+      return msgs; // done/phase: lastSeq already advanced
   }
 }
 ```
@@ -1328,7 +1369,7 @@ test("renders markdown text", () => {
 
 test("renders tool event with done glyph", () => {
   render(<PartRenderer part={{ kind: "tool_event", payload: {
-    seq: 1, tool: "t", server: "internal", status: "done", label: "top_customers · done" } }} />);
+    tool_seq: 1, tool: "t", server: "internal", status: "done", label: "top_customers · done" } }} />);
   expect(screen.getByText(/top_customers · done/)).toBeInTheDocument();
   expect(screen.getByText(/✓/)).toBeInTheDocument();
 });
@@ -1414,11 +1455,11 @@ import type { SseEvent } from "../../api/types";
 vi.mock("../../api/sse", () => ({
   streamTurn: vi.fn(async (_cid: string, _text: string, onEvent: (e: SseEvent) => void) => {
     const events: SseEvent[] = [
-      { name: "accepted", data: { message_id: "a1", turn_id: "t1" } },
-      { name: "tool", data: { seq: 1, tool: "top_customers", server: "internal", status: "start", label: "Running skill · top_customers…" } },
-      { name: "tool", data: { seq: 1, tool: "top_customers", server: "internal", status: "done", label: "top_customers · done · 0.3s" } },
-      { name: "token", data: { text: "Three customers drove April." } },
-      { name: "done", data: { usage: {}, run_id: "t1" } },
+      { name: "accepted", data: { turn_id: "t1", message_id: "a1", event_seq: 1, turn_index: 1 } },
+      { name: "tool", data: { turn_id: "t1", message_id: "a1", event_seq: 2, tool_seq: 1, tool: "top_customers", server: "internal", status: "start", label: "Running skill · top_customers…" } },
+      { name: "tool", data: { turn_id: "t1", message_id: "a1", event_seq: 3, tool_seq: 1, tool: "top_customers", server: "internal", status: "done", label: "top_customers · done · 0.3s" } },
+      { name: "token", data: { turn_id: "t1", message_id: "a1", event_seq: 4, text: "Three customers drove April." } },
+      { name: "done", data: { turn_id: "t1", message_id: "a1", event_seq: 5, usage: {} } },
     ];
     events.forEach(onEvent);
   }),

@@ -28,6 +28,13 @@ backend/core/llm/
   Access Integration (doc 07 §4).
 - The router-decision suite (§6) runs against whichever provider config selects, so the
   Cortex emulation path is pinned by the same evidence as native tool calling.
+- **Decision D33 — implementation order, not interface.** The abstraction and the config contract
+  above are final and unchanged; the two implementations arrive at different times. Phase 5 (doc
+  08) ships `BedrockProvider` and the stub provider only. `CortexProvider` is built in the
+  preparation for the SPCS deployment phase (Phase 14), where Cortex is the default, and lands
+  with a **provider-parity contract test**: the same recorded tool-calling scenarios asserted to
+  normalize to identical `ToolCall`/`LLMResponse` shapes on both providers. Reason: prove the seam
+  with one live provider before paying for two.
 
 ## 2. Model tier map (config-driven)
 

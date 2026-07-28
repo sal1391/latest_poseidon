@@ -94,6 +94,34 @@ Poseidon's service shape:
   Integration** on the service: start with the provisioned allow-all EAI (`ALLOW_ALL_EAI`, the
   wfs default), tighten to a named EAI with per-host network rules as a hardening step.
 
+**Operating the in-service state** (`infra/runbooks/backup-restore-spcs.md`). A block volume is
+durable storage, not a backup: it does not survive a dropped service, a corrupt write, or a bad
+migration. So the Postgres and MinIO containers get an operations contract of their own.
+
+- **Scheduled logical backups.** A `pg_dump --format=custom` of the app database runs on a
+  schedule (default: every 6 hours) and is shipped **off-service** to an internal stage in the
+  Snowflake account, keyed by timestamp; MinIO's artifact bucket is mirrored to the same stage on
+  the same schedule. Backups off the service are the point — a dump sitting on the volume it is
+  protecting is not a backup. Each run verifies its own dump (`pg_restore --list`) and fails loudly
+  if the archive is unreadable.
+- **Documented restore.** The runbook states the full path: create the service from the current
+  image, `pg_restore` the chosen dump into the fresh `db` container, re-mirror the artifact bucket,
+  verify with the `smoke.md` checklist. The restore is rehearsed as part of the deploy phase gate
+  (doc 08 Phase 14) — an unrehearsed restore procedure is a hypothesis, not a procedure.
+- **Volume expansion.** Block volume size is a property of the service specification; growing it is
+  a service recreate from the spec with a larger `size` on the `PGDATA` volume, restoring from the
+  most recent verified dump. Free space on both volumes is checked in the post-deploy smoke run so
+  expansion is planned rather than discovered.
+- **Migration rollback.** Every Alembic migration ships with a working `downgrade`. Rollback is
+  therefore two paired steps: `alembic downgrade <rev>` then redeploy the **previous image tag**
+  (the image and the schema revision move together; neither is rolled back alone). Migrations that
+  cannot be reversed — a destructive column drop — are expand-and-contract instead, so the rollback
+  path always exists.
+- **RPO / RTO.** Defaults: **RPO 6 hours** (the backup interval — at most one interval of chat
+  history and audit rows is lost) and **RTO 2 hours** (service recreate plus restore plus smoke).
+  Both are stated so they can be argued with; the final targets are an **owner decision**, and
+  tightening RPO means shortening the interval, which is a configuration change.
+
 **Deploy flow** (`infra/runbooks/deploy-spcs.md`):
 
 1. Build the image; `docker login <org>-<acct>.registry.snowflakecomputing.com`.
@@ -104,6 +132,10 @@ Poseidon's service shape:
    `SHOW ENDPOINTS IN SERVICE` → `ingress_url` (the public URL).
 5. Operate: `ALTER SERVICE ... SUSPEND / RESUME` to control spend; redeploy = push new tag +
    recreate service.
+
+Decision D32: the in-service Postgres and MinIO get scheduled logical backups shipped off-service,
+a rehearsed restore, and stated RPO/RTO — a mounted volume protects against container restarts and
+nothing else.
 
 ## 5. EC2 deployment (secondary)
 
@@ -124,7 +156,8 @@ flowchart LR
 - **RDS Postgres** with pgvector — decision D17: managed backups and restarts are not a place
   to economize. The `synthetic` schema exists there too, so a demo environment needs no
   Snowflake connectivity.
-- **S3** artifacts bucket, pre-signed GETs (doc 05 §7), lifecycle expiry after N days.
+- **S3** artifacts bucket, pre-signed GETs (doc 05 §8), lifecycle expiry after N days
+  (`RETENTION_ARTIFACT_DAYS`, doc 05 §7).
 - **IAM instance profile**: `bedrock:InvokeModel*` scoped to the `models.yml` ids, the artifact
   bucket, `secretsmanager:GetSecretValue` — no long-lived keys on the box. Snowflake
   credentials come from Secrets Manager (`DEPLOY_MODE=ec2` merges the secret JSON over the
@@ -150,6 +183,9 @@ flowchart LR
 | `TOOL_TRANSPORT_PERPLEXITY` | `direct` | `direct` | `direct` |
 | `PERPLEXITY_API_KEY` | `.env` | service secret/env | Secrets Manager |
 | `MEMORY_MAX_CHARS` / `MEMORY_KEEP_VERSIONS` | `8000` / `20` | same | same |
+| `MEMORY_IDLE_MINUTES` / `MEMORY_MAX_ATTEMPTS` | `30` / `5` | same | same |
+| `RETENTION_AUDIT_DAYS` / `RETENTION_ARTIFACT_DAYS` | `400` / `90` | same | same |
+| `BACKUP_INTERVAL_HOURS` / `BACKUP_TARGET` | unset (no-op locally) | `6` / internal stage | `6` / S3 prefix |
 
 Startup validates the full schema with pydantic-settings and **crashes on any missing or
 malformed value** — no half-configured server ever accepts traffic. `.env.example` is
@@ -180,6 +216,9 @@ accounts:
 - `infra/runbooks/local.md` — clean-machine bring-up, synthetic regeneration, stub vs live LLM.
 - `infra/runbooks/deploy-spcs.md` — image push, service spec, EAI, identity mode, verify,
   suspend/resume, rollback (previous image tag).
+- `infra/runbooks/backup-restore-spcs.md` — schedule and verify the `pg_dump` + artifact mirror,
+  restore into a fresh service, volume expansion, migration rollback (`alembic downgrade` +
+  previous image tag), and the RPO/RTO the procedure is written to meet (§4).
 - `infra/runbooks/deploy-ec2.md` — account prep, provisioning scripts (small idempotent CLI
   scripts; Terraform deliberately deferred until the topology stabilizes — decision D18), TLS,
   first deploy, rollback.
