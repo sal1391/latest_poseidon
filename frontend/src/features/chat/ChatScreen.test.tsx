@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { setupServer } from "msw/node";
 import { vi, beforeAll, beforeEach, afterAll, afterEach, test, expect } from "vitest";
 import { handlers } from "../../mocks/handlers";
-import { useChatStore } from "../../state/chatStore";
+import { resetChatStore } from "../../state/chatStore";
 import type { SseEvent } from "../../api/types";
 
 vi.mock("../../api/sse", () => ({
@@ -26,16 +26,9 @@ beforeAll(() => server.listen());
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
 
-// The store is a module singleton: reset it so the tests stay order-independent.
-beforeEach(() => {
-  useChatStore.setState({
-    conversations: [],
-    activeId: null,
-    messages: {},
-    streamingByConv: {},
-    feedback: {},
-  });
-});
+// The store is a module singleton (state plus the bootstrap memo): reset both
+// so the tests stay order-independent.
+beforeEach(resetChatStore);
 
 test("send → streamed answer with visible tool step", async () => {
   render(<ChatScreen />);

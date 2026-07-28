@@ -19,6 +19,7 @@ export default function ChatScreen() {
   const submitFeedback = useChatStore((s) => s.submitFeedback);
 
   const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -43,8 +44,11 @@ export default function ChatScreen() {
   const send = useCallback(
     (text: string) => {
       const trimmed = text.trim();
-      if (trimmed === "") return;
+      if (trimmed === "" || sending) return;
       setDraft("");
+      // Set before the first await: until a conversation exists `streaming` is
+      // false, so this is what disables the composer for the very first message.
+      setSending(true);
       void (async () => {
         // The composer is live before bootstrap settles. With no conversation
         // open yet, join the store's in-flight bootstrap rather than racing it;
@@ -53,9 +57,11 @@ export default function ChatScreen() {
         if (useChatStore.getState().activeId === null) await bootstrap();
         const cid = useChatStore.getState().activeId ?? (await newConversation());
         await sendMessage(cid, trimmed);
-      })().catch(() => undefined); // stream failures surface as an error part
+      })()
+        .catch(() => undefined) // stream failures surface as an error part
+        .finally(() => setSending(false));
     },
-    [bootstrap, newConversation, sendMessage],
+    [bootstrap, newConversation, sendMessage, sending],
   );
 
   return (
@@ -92,7 +98,7 @@ export default function ChatScreen() {
           onChange={setDraft}
           onInsert={insert}
           onSubmit={send}
-          disabled={streaming}
+          disabled={sending || streaming}
           inputRef={inputRef}
         />
       </main>

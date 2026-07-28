@@ -123,6 +123,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   sendMessage: async (cid, text) => {
+    // One turn at a time per conversation. Without this, a second send started
+    // while the first is streaming would clear `streamingByConv[cid]` in its own
+    // `finally` and re-enable the composer mid-stream.
+    if (get().streamingByConv[cid]) return;
     const userMessage: Message = {
       id: crypto.randomUUID(),
       role: "user",
@@ -171,3 +175,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 }));
+
+/**
+ * Test helper: return the store to a cold start. `setState` alone cannot reach
+ * `bootstrapInFlight`, which is module state, so tests reset both through here.
+ */
+export function resetChatStore(): void {
+  bootstrapInFlight = null;
+  useChatStore.setState({
+    conversations: [],
+    activeId: null,
+    messages: {},
+    streamingByConv: {},
+    feedback: {},
+  });
+}

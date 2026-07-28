@@ -1,6 +1,9 @@
 import type { Message, SseEvent } from "../api/types";
 import * as api from "../api/client";
-import { applyEventTo, useChatStore } from "./chatStore";
+import { streamTurn } from "../api/sse";
+import { applyEventTo, resetChatStore, useChatStore } from "./chatStore";
+
+vi.mock("../api/sse", () => ({ streamTurn: vi.fn(async () => undefined) }));
 
 vi.mock("../api/client", () => ({
   listConversations: vi.fn(async () => []),
@@ -25,6 +28,11 @@ const seq: SseEvent[] = [
 function run(events: SseEvent[], initial: Message[] = []): Message[] {
   return events.reduce((msgs, e) => applyEventTo(msgs, e), initial);
 }
+
+beforeEach(() => {
+  resetChatStore();
+  vi.clearAllMocks();
+});
 
 test("builds an assistant message with in-place tool updates and merged tokens", () => {
   const msgs = run(seq);
@@ -55,9 +63,6 @@ test("error event appends an error part", () => {
 });
 
 test("concurrent bootstraps share one run and open a single conversation", async () => {
-  useChatStore.setState({
-    conversations: [], activeId: null, messages: {}, streamingByConv: {}, feedback: {},
-  });
   const { bootstrap } = useChatStore.getState();
 
   await Promise.all([bootstrap(), bootstrap()]);
@@ -68,4 +73,26 @@ test("concurrent bootstraps share one run and open a single conversation", async
   expect(state.conversations).toEqual([{ id: "c1", title: "New chat" }]);
   expect(state.activeId).toBe("c1");
   expect(state.messages.c1).toHaveLength(1);
+});
+
+test("a second send while a turn is streaming is dropped", async () => {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  vi.mocked(streamTurn).mockImplementationOnce(() => held);
+  const { sendMessage } = useChatStore.getState();
+
+  const first = sendMessage("c1", "a");
+  const second = sendMessage("c1", "b"); // fired mid-stream, must no-op
+
+  expect(vi.mocked(streamTurn)).toHaveBeenCalledTimes(1);
+  expect(useChatStore.getState().messages.c1).toHaveLength(1);
+  expect(useChatStore.getState().streamingByConv.c1).toBe(true);
+
+  release();
+  await Promise.all([first, second]);
+
+  expect(useChatStore.getState().streamingByConv.c1).toBe(false);
+  expect(useChatStore.getState().messages.c1).toHaveLength(1);
 });
