@@ -23,14 +23,28 @@ export default function ChatScreen() {
   // `null` = launched before bootstrap settled, so it has no conversation yet.
   // Keyed rather than boolean so a send in A cannot disable the composer in B.
   const [sendingFor, setSendingFor] = useState<string | null | undefined>(undefined);
+  // True when the last bootstrap attempt couldn't reach the backend, so the
+  // shell would otherwise sit there looking normal while doing nothing.
+  const [connectionError, setConnectionError] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
+  const runBootstrap = useCallback(
+    () => bootstrap().then(() => setConnectionError(false)).catch(() => setConnectionError(true)),
+    [bootstrap],
+  );
+
   useEffect(() => {
     // `bootstrap` is re-entrant in the store, so StrictMode's double effect joins
-    // one run. A failed bootstrap leaves the shell live; the next send retries.
-    void bootstrap().catch(() => undefined);
-  }, [bootstrap]);
+    // one run. A failed bootstrap surfaces the retry banner below instead of
+    // leaving a silently dead shell.
+    void runBootstrap();
+  }, [runBootstrap]);
+
+  const retry = useCallback(() => {
+    setConnectionError(false);
+    void runBootstrap();
+  }, [runBootstrap]);
 
   const messages = activeId ? (messagesByConv[activeId] ?? []) : [];
   const streaming = activeId ? streamingByConv[activeId] === true : false;
@@ -61,7 +75,12 @@ export default function ChatScreen() {
         // open yet, join the store's in-flight bootstrap rather than racing it;
         // once one is open this is a no-op, so a send never re-lists and never
         // yanks the user off the conversation they are reading.
-        if (useChatStore.getState().activeId === null) await bootstrap();
+        if (useChatStore.getState().activeId === null) {
+          await bootstrap().catch((err) => {
+            setConnectionError(true);
+            throw err;
+          });
+        }
         const cid = useChatStore.getState().activeId ?? (await newConversation());
         await sendMessage(cid, trimmed);
       })()
@@ -75,6 +94,14 @@ export default function ChatScreen() {
     <>
       <Sidebar />
       <main className="chat-column">
+        {connectionError ? (
+          <div className="error-card" role="alert">
+            {"Can't reach the Poseidon backend. Check that it's running (see infra/runbooks/local.md), then retry. "}
+            <button type="button" onClick={retry}>
+              Retry
+            </button>
+          </div>
+        ) : null}
         <div className="thread" aria-live="polite">
           {messages.map((message) => (
             <article

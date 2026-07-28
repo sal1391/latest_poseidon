@@ -108,3 +108,26 @@ test("skills picker inserts an example prompt", async () => {
   expect(screen.getByPlaceholderText(/message poseidon/i)).toHaveValue(
     "Top GP customers for Port of Singapore in April 2026");
 });
+
+test("backend-unreachable bootstrap surfaces a retry banner instead of a silent no-op", async () => {
+  // Both requests bootstrap can issue (list, then create-if-empty) fail, so the
+  // banner has to come from the catch path rather than from a specific request.
+  server.use(
+    http.get("/api/conversations", () => new HttpResponse(null, { status: 500 })),
+    http.post("/api/conversations", () => new HttpResponse(null, { status: 500 })),
+  );
+
+  render(<ChatScreen />);
+
+  const alert = await screen.findByRole("alert");
+  expect(alert).toHaveTextContent(/can't reach the poseidon backend/i);
+  const retry = screen.getByRole("button", { name: /retry/i });
+
+  // Back to the happy-path handlers before retrying, same as the backend coming
+  // back up.
+  server.resetHandlers();
+  await userEvent.click(retry);
+
+  await screen.findByText(/Ask about your data/);
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
