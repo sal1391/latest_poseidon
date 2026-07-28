@@ -10,3 +10,13 @@ __pycache__/
 # IDE
 .vscode/
 .idea/
+
+# Infra / local dev (Task 5)
+# __pycache__/ and .env are already covered above.
+node_modules/
+frontend/dist/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+.maestro/

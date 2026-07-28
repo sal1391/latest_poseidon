@@ -1,0 +1,57 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: poseidon
+      POSTGRES_PASSWORD: poseidon
+      POSTGRES_DB: poseidon
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U poseidon -d poseidon"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: poseidon
+      MINIO_ROOT_PASSWORD: poseidon123
+    ports: ["9000:9000", "9001:9001"]
+    volumes: [miniodata:/data]
+
+  backend:
+    build: { context: ../backend, dockerfile: ../infra/backend.Dockerfile.dev }
+    command: >
+      sh -c "python -m alembic upgrade head &&
+             python -m uvicorn poseidon.api.app:create_app --factory --host 0.0.0.0 --port 8000 --reload"
+    environment:
+      DEPLOY_MODE: local
+      DATABASE_URL: postgresql+psycopg://poseidon:poseidon@db:5432/poseidon
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_BUCKET: poseidon-artifacts
+      DATA_BACKEND: synthetic
+      IDENTITY_MODE: disabled
+      LLM_PROFILE: bedrock
+      LLM_MODE: stub
+      TOOL_TRANSPORT_PERPLEXITY: direct
+    volumes: ["../backend:/app"]
+    ports: ["8000:8000"]
+    depends_on:
+      db: { condition: service_healthy }
+      minio: { condition: service_started }
+
+  frontend:
+    build: { context: ../frontend, dockerfile: ../infra/frontend.Dockerfile.dev }
+    command: sh -c "npm install && npm run dev -- --host"
+    environment:
+      VITE_PROXY_TARGET: http://backend:8000
+    volumes: ["../frontend:/app", "/app/node_modules"]
+    ports: ["5173:5173"]
+    depends_on: [backend]
+
+volumes:
+  pgdata:
+  miniodata:
