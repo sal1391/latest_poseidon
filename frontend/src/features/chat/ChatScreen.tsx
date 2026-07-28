@@ -19,7 +19,10 @@ export default function ChatScreen() {
   const submitFeedback = useChatStore((s) => s.submitFeedback);
 
   const [draft, setDraft] = useState("");
-  const [sending, setSending] = useState(false);
+  // Which conversation the in-flight send belongs to. `undefined` = idle;
+  // `null` = launched before bootstrap settled, so it has no conversation yet.
+  // Keyed rather than boolean so a send in A cannot disable the composer in B.
+  const [sendingFor, setSendingFor] = useState<string | null | undefined>(undefined);
   const inputRef = useRef<HTMLInputElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -31,6 +34,9 @@ export default function ChatScreen() {
 
   const messages = activeId ? (messagesByConv[activeId] ?? []) : [];
   const streaming = activeId ? streamingByConv[activeId] === true : false;
+  // A pre-bootstrap send (`null`) has no home yet, so it blocks everywhere until
+  // it settles; once a send is tied to a conversation it blocks only that one.
+  const blocked = sendingFor !== undefined && (sendingFor === null || sendingFor === activeId);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
@@ -44,11 +50,12 @@ export default function ChatScreen() {
   const send = useCallback(
     (text: string) => {
       const trimmed = text.trim();
-      if (trimmed === "" || sending) return;
+      if (trimmed === "" || sendingFor !== undefined) return;
       setDraft("");
-      // Set before the first await: until a conversation exists `streaming` is
-      // false, so this is what disables the composer for the very first message.
-      setSending(true);
+      // Captured before the first await: until a conversation exists `streaming`
+      // is false, so this is what disables the composer for the very first
+      // message. `null` here means bootstrap has not landed yet.
+      setSendingFor(useChatStore.getState().activeId);
       void (async () => {
         // The composer is live before bootstrap settles. With no conversation
         // open yet, join the store's in-flight bootstrap rather than racing it;
@@ -59,9 +66,9 @@ export default function ChatScreen() {
         await sendMessage(cid, trimmed);
       })()
         .catch(() => undefined) // stream failures surface as an error part
-        .finally(() => setSending(false));
+        .finally(() => setSendingFor(undefined));
     },
-    [bootstrap, newConversation, sendMessage, sending],
+    [bootstrap, newConversation, sendMessage, sendingFor],
   );
 
   return (
@@ -98,7 +105,7 @@ export default function ChatScreen() {
           onChange={setDraft}
           onInsert={insert}
           onSubmit={send}
-          disabled={sending || streaming}
+          disabled={blocked || streaming}
           inputRef={inputRef}
         />
       </main>

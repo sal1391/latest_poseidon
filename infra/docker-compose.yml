@@ -28,6 +28,9 @@ services:
       sh -c "python -m alembic upgrade head &&
              python -m uvicorn poseidon.api.app:create_app --factory --host 0.0.0.0 --port 8000 --reload"
     environment:
+      # Empty = read no dotenv, so a host `backend/.env` (bind-mounted at /app)
+      # cannot shadow the values below.
+      POSEIDON_ENV_FILE: ""
       DEPLOY_MODE: local
       DATABASE_URL: postgresql+psycopg://poseidon:poseidon@db:5432/poseidon
       S3_ENDPOINT_URL: http://minio:9000

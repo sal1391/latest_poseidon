@@ -80,6 +80,13 @@ def send_message(cid: str, body: SendBody) -> StreamingResponse:
         {"kind": "text", "payload": {"markdown": body.text}}]))
     message_id = str(uuid.uuid4())
     turn_id = str(uuid.uuid4())
+    # Register the assistant message before the first frame goes out, then fill
+    # it in place as the turn runs. The UI renders its feedback row as soon as
+    # the message appears, so feedback can arrive mid-stream: publishing the id
+    # up front is what makes `_known_message` true for that whole window
+    # instead of only after `done`.
+    assistant: dict[str, Any] = {"id": message_id, "role": "assistant", "parts": []}
+    _messages[cid].append(assistant)
 
     async def stream():
         event_seq = 0
@@ -93,11 +100,12 @@ def send_message(cid: str, body: SendBody) -> StreamingResponse:
         turn_index = sum(1 for m in _messages[cid] if m["role"] == "user")
         yield ev("accepted", turn_index=turn_index)
         if "!error" in body.text:
+            # The assistant message stays in the transcript with empty parts —
+            # the error is a stream event, not a persisted part, in this mock.
             yield ev("error", code="mock_failure",
                      message="Mock failure requested",
                      hint="Remove !error from your message")
             return
-        tool_parts = []
         steps = [
             (1, "top_customers", "internal",
              "Running skill · top_customers (GP · Singapore · Apr 2026)",
@@ -112,17 +120,14 @@ def send_message(cid: str, body: SendBody) -> StreamingResponse:
             await asyncio.sleep(0.35)
             done = {"tool_seq": tool_seq, "tool": tool, "server": server,
                     "status": "done", "label": done_label}
-            tool_parts.append({"kind": "tool_event", "payload": done})
+            assistant["parts"].append({"kind": "tool_event", "payload": done})
             yield ev("tool", **done)
         text = ""
         for chunk in _ANSWER_CHUNKS:
             text += chunk
             yield ev("token", text=chunk)
             await asyncio.sleep(0.12)
-        _messages[cid].append({"id": message_id, "role": "assistant",
-                               "parts": [*tool_parts,
-                                         {"kind": "text",
-                                          "payload": {"markdown": text}}]})
+        assistant["parts"].append({"kind": "text", "payload": {"markdown": text}})
         yield ev("done", usage={"input_tokens": 0, "output_tokens": 0})
 
     return StreamingResponse(stream(), media_type="text/event-stream",

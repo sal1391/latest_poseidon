@@ -106,6 +106,41 @@ async def test_feedback_upsert_roundtrip(app):
 
 
 @pytest.mark.anyio
+async def test_feedback_mid_stream_is_stored_not_404(app):
+    """The UI renders the feedback row as soon as the assistant message appears,
+    so a thumbs can land long before `done`. That used to 404."""
+    from poseidon.api.mock_chat import SendBody, send_message
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
+        # `read_sse` cannot hold a turn open: httpx's ASGITransport runs the app
+        # to completion and buffers the body before `client.stream()` yields.
+        # Driving the route's generator directly suspends the turn for real —
+        # only `accepted` has been emitted here, no tool or token frames yet.
+        frames = send_message(cid, SendBody(text="hello")).body_iterator
+        first = await frames.__anext__()
+        assert "event: accepted" in first
+        mid = json.loads(first.split("data: ", 1)[1])["message_id"]
+
+        # The regression: this used to 404, because the assistant message was
+        # only appended after the last token.
+        r = await client.post(f"/api/messages/{mid}/feedback", json={"verdict": "up"})
+        assert r.status_code == 204
+        # ...and the turn really is still mid-flight: known id, no parts yet.
+        partial = (await client.get(f"/api/conversations/{cid}/messages")).json()["messages"]
+        assert partial[-1]["id"] == mid and partial[-1]["parts"] == []
+
+        async for _ in frames:  # finish the turn
+            pass
+        assert (await client.get(f"/api/messages/{mid}/feedback")).json()["verdict"] == "up"
+        # ...and the completed transcript is still one message of the usual shape
+        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["messages"]
+        assert [m["id"] for m in msgs].count(mid) == 1
+        assert [p["kind"] for p in msgs[-1]["parts"]] == ["tool_event", "tool_event", "text"]
+
+
+@pytest.mark.anyio
 async def test_list_conversations_newest_first(app):
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:

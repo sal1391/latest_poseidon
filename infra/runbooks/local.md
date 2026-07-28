@@ -77,6 +77,27 @@ Frontend, from `frontend/`:
 npm test -- --run
 ```
 
+## Verifying crash-on-missing configuration
+
+`Settings` refuses to build when a required value is missing, so a
+half-configured server never accepts traffic. To see it, comment out
+`S3_BUCKET` from the `backend` service's `environment` block in
+`infra/docker-compose.yml` and bring the stack up: `alembic upgrade head`
+still succeeds, then uvicorn's app factory raises a `ValidationError` for the
+missing field and the container exits instead of serving.
+
+Use `S3_BUCKET`, not `DATABASE_URL`, for this check. The backend command runs
+`alembic upgrade head` first, and `migrations/env.py` raises its own
+`RuntimeError: DATABASE_URL is required to run migrations` before the app is
+ever imported — so dropping `DATABASE_URL` proves the migration guard, not the
+Settings validator.
+
+The container ignores any `backend/.env` you have on the host, even though
+`../backend` is bind-mounted at `/app`: compose sets `POSEIDON_ENV_FILE=""`,
+which tells `Settings` to read no dotenv at all. Without that, a stray host
+`.env` would silently supply the value you just removed and the check would
+appear to fail. Restore the line when you're done.
+
 ## Note on `/health/ready` and the database
 
 `/health/ready` reports `db: down` until Postgres is actually reachable at

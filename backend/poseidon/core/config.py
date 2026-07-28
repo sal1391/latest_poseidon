@@ -1,3 +1,4 @@
+import os
 from functools import lru_cache
 from typing import Literal
 
@@ -12,7 +13,11 @@ class Settings(BaseSettings):
     server ever accepts traffic.
     """
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # POSEIDON_ENV_FILE selects the dotenv to read; set it to "" to read none.
+    # Containers bind-mount the repo, so a host `backend/.env` would otherwise
+    # shadow the environment the orchestrator passes in — compose sets it empty.
+    model_config = SettingsConfigDict(
+        env_file=os.getenv("POSEIDON_ENV_FILE", ".env"), extra="ignore")
 
     deploy_mode: Literal["local", "spcs", "ec2"] = "local"
     database_url: str

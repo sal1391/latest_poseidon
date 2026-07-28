@@ -1,10 +1,10 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { setupServer } from "msw/node";
 import { http, HttpResponse, delay } from "msw";
 import { vi, beforeAll, beforeEach, afterAll, afterEach, test, expect } from "vitest";
 import { handlers } from "../../mocks/handlers";
-import { resetChatStore } from "../../state/chatStore";
+import { resetChatStore, useChatStore } from "../../state/chatStore";
 import { streamTurn } from "../../api/sse";
 import type { SseEvent } from "../../api/types";
 
@@ -74,6 +74,30 @@ test("composer is disabled while a send waits on the bootstrap window", async ()
   expect(input).not.toBeDisabled();
   await userEvent.type(input, "hello{Enter}");
   expect(input).toBeDisabled();
+});
+
+test("a send in one conversation leaves another conversation's composer live", async () => {
+  // The turn never settles. A boolean `sending` flag would keep the composer
+  // disabled everywhere for its whole life — including in a conversation that
+  // has no turn of its own running.
+  vi.mocked(streamTurn).mockImplementationOnce(() => new Promise<void>(() => {}));
+
+  render(<ChatScreen />);
+  // The opener only renders once bootstrap has landed, so waiting on it is what
+  // guarantees the send below is tied to c1 rather than to the null window.
+  await screen.findByText(/Ask about your data/);
+  const input = screen.getByPlaceholderText(/message poseidon/i);
+  await userEvent.type(input, "hello{Enter}");
+  expect(input).toBeDisabled();
+
+  act(() => {
+    useChatStore.setState((s) => ({
+      conversations: [{ id: "c2", title: "Second chat" }, ...s.conversations],
+      activeId: "c2",
+      messages: { ...s.messages, c2: [] },
+    }));
+  });
+  expect(screen.getByPlaceholderText(/message poseidon/i)).not.toBeDisabled();
 });
 
 test("skills picker inserts an example prompt", async () => {
