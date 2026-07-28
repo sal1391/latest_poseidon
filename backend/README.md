@@ -19,7 +19,7 @@ pip install -e ".[dev]"
 ## Run
 
 ```bash
-python -m uvicorn poseidon.api.app:app --reload --port 8000
+python -m uvicorn poseidon.api.app:create_app --factory --reload --port 8000
 ```
 
 ## Test
