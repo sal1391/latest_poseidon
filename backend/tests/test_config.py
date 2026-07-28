@@ -11,8 +11,8 @@ REQUIRED = {
 def make_settings(monkeypatch, **overrides):
     from poseidon.core.config import Settings
 
-    for key in ("DATABASE_URL", "S3_BUCKET", "IDENTITY_MODE", "AUTH0_DOMAIN",
-                "AUTH0_AUDIENCE", "AUTH0_CLIENT_ID", "LLM_MODE", "DEPLOY_MODE"):
+    # Hermetic: clear EVERY Settings env var (derived, so the list can't drift)
+    for key in (name.upper() for name in Settings.model_fields):
         monkeypatch.delenv(key, raising=False)
     env = {**REQUIRED, **overrides}
     for key, value in env.items():
