@@ -179,6 +179,11 @@ body {
   color: var(--accent-ink);
 }
 
+/* Space out adjacent chips (e.g. a row of message-part options). */
+.chip + .chip {
+  margin-inline-start: 0.5rem;
+}
+
 /* Tool-call step row: muted, compact status line. */
 .tool-step {
   display: flex;
@@ -188,6 +193,64 @@ body {
   color: var(--ink-muted);
   font-family: var(--font-body);
   font-size: 13px;
+}
+
+/* Pulsing dot shown beside an in-flight tool step. */
+.tool-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink-muted);
+  animation: tool-dot-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes tool-dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* Bordered card for a surfaced error part: message plus an optional muted hint. */
+.error-card {
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--negative);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.error-card p {
+  margin: 0;
+}
+
+.error-card p + p {
+  margin-top: 0.25rem;
+  color: var(--ink-muted);
+  font-size: 0.8125rem;
+}
+
+/* Collapsible raw-payload viewer for message-part kinds the registry doesn't recognize. */
+.fallback-part {
+  padding: 0.5rem 0.75rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-s);
+  color: var(--ink-muted);
+  font-size: 0.8125rem;
+}
+
+.fallback-part summary {
+  cursor: pointer;
+}
+
+.fallback-part pre {
+  margin: 0.5rem 0 0;
+  overflow-x: auto;
+  font-family: var(--font-data);
+  color: var(--ink);
 }
 
 /* User turn: right-aligned bubble on the raised surface. */
