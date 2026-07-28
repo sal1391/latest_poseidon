@@ -2,16 +2,24 @@ import type { SseEvent } from "./types";
 
 export function parseSseChunk(buffer: string): { events: SseEvent[]; rest: string } {
   const events: SseEvent[] = [];
-  const blocks = buffer.split("\n\n");
+  const normalized = buffer.replace(/\r\n/g, "\n");
+  const blocks = normalized.split("\n\n");
   const rest = blocks.pop() ?? "";
   for (const block of blocks) {
     let name = "";
-    let data = "";
+    const dataLines: string[] = [];
     for (const line of block.split("\n")) {
       if (line.startsWith("event: ")) name = line.slice(7);
-      else if (line.startsWith("data: ")) data = line.slice(6);
+      else if (line.startsWith("data: ")) dataLines.push(line.slice(6));
     }
-    if (name && data) events.push({ name, data: JSON.parse(data) } as SseEvent);
+    if (!name || dataLines.length === 0) continue;
+    try {
+      events.push({ name, data: JSON.parse(dataLines.join("\n")) } as SseEvent);
+    } catch {
+      // Malformed frame: skip it rather than killing the stream; the envelope's
+      // event_seq lets turn reconciliation recover anything dropped.
+      continue;
+    }
   }
   return { events, rest };
 }
