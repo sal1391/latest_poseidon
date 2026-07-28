@@ -788,7 +788,7 @@ git commit -m "feat(infra): docker-compose dev topology with pgvector, minio, ba
 - Produces (Phase-6 swaps internals, routes stay):
   - `POST /api/conversations` → `201 {"conversation": {"id": str, "title": "New chat"}, "opener": Message}` where `Message = {"id": str, "role": "assistant"|"user", "parts": [Part, ...]}`. Opener parts: `{"kind":"text","payload":{"markdown":"Ask about your data, or pick a flow:"}}` and `{"kind":"chips","payload":{"options":[{"id":"existing_customer","label":"Existing customer"},{"id":"new_prospect","label":"New customer prospect"}]}}`.
   - `GET /api/conversations` → `200 {"conversations": [{"id","title"}, ...]}` (newest first).
-  - `GET /api/conversations/{cid}/messages` → `200 {"messages": [Message, ...]}`; 404 problem JSON if unknown cid.
+  - `GET /api/conversations/{cid}/messages` → `200 {"messages": [Message, ...]}`; 404 if unknown cid (FastAPI default detail JSON in the mock; RFC-7807 arrives with the real API).
   - `POST /api/conversations/{cid}/messages` body `{"text": str, "client_turn_key": str|null}` → `text/event-stream`. **Every event's `data` carries the envelope** `{turn_id, message_id, event_seq}` (event_seq monotonic from 1) plus the event's own fields. Order: `accepted` `{…env, turn_index}` (1-based position of this turn in the conversation) · `tool` `{…env, tool_seq:1, tool:"top_customers", server:"internal", status:"start", label:"Running skill · top_customers…"}` · `tool` (same `tool_seq`, `status:"done"`, label `"top_customers · done · 0.3s"`) · `tool` `{…env, tool_seq:2, tool:"web_research", server:"perplexity", status:"start", label:"Calling Perplexity — marine news search…"}` · `tool` (`tool_seq` 2 `done`, `"Perplexity — 3 sources"`) · 6+ `token` events `{…env, text}` streaming a markdown answer · `done` `{…env, usage:{input_tokens:0, output_tokens:0}}` (no run_id — `turn_id` in the envelope is the run identity). (`tool_seq` is the step number, matching the future `tool_calls` row; `event_seq` is the stream position — both exist, doc 01 §5.) If the user text contains `!error`, after `accepted` emit only `error` `{…env, code:"mock_failure", message:"Mock failure requested", hint:"Remove !error from your message"}`. Both user message and final assistant message are appended to the in-memory store (assistant parts: the two completed tool_event parts + one text part).
   - `POST /api/messages/{mid}/feedback` body `{"verdict":"up"|"down","comment": str|null}` → `204`; idempotent upsert keyed by message id (mock has a single dev user); unknown mid → 404. `GET /api/messages/{mid}/feedback` → `200 {"verdict","comment"}` or `404` (test convenience).
 - SSE wire format per event: `id: <event_seq>\n` + `event: <name>\n` + `data: <json>\n\n`.
@@ -882,6 +882,32 @@ async def test_error_trigger_emits_error_event(app):
         cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
         events = await read_sse(client, cid, "please !error now")
         assert [n for n, _ in events] == ["accepted", "error"]
+        for _, d in events:  # envelope present on both frames, incl. the error path
+            assert {"turn_id", "message_id", "event_seq"} <= set(d)
+        err = events[1][1]
+        assert err["code"] == "mock_failure" and "message" in err and "hint" in err
+
+
+@pytest.mark.anyio
+async def test_list_conversations_newest_first(app):
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        c1 = (await client.post("/api/conversations")).json()["conversation"]["id"]
+        c2 = (await client.post("/api/conversations")).json()["conversation"]["id"]
+        listing = (await client.get("/api/conversations")).json()["conversations"]
+        assert [c["id"] for c in listing[:2]] == [c2, c1]
+
+
+@pytest.mark.anyio
+async def test_unknown_ids_return_404(app):
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        assert (await client.get("/api/conversations/nope/messages")).status_code == 404
+        r = await client.post("/api/conversations/nope/messages", json={"text": "hi"})
+        assert r.status_code == 404
+        assert (await client.post("/api/messages/nope/feedback",
+                                  json={"verdict": "up"})).status_code == 404
+        assert (await client.get("/api/messages/nope/feedback")).status_code == 404
 
 
 @pytest.mark.anyio
