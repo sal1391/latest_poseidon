@@ -1,9 +1,11 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { setupServer } from "msw/node";
+import { http, HttpResponse, delay } from "msw";
 import { vi, beforeAll, beforeEach, afterAll, afterEach, test, expect } from "vitest";
 import { handlers } from "../../mocks/handlers";
 import { resetChatStore } from "../../state/chatStore";
+import { streamTurn } from "../../api/sse";
 import type { SseEvent } from "../../api/types";
 
 vi.mock("../../api/sse", () => ({
@@ -54,6 +56,24 @@ test("thumbs down opens the comment prompt and submits", async () => {
   await userEvent.click(screen.getByRole("button", { name: /send feedback/i }));
   await waitFor(() =>
     expect(screen.queryByPlaceholderText(/what went wrong/i)).not.toBeInTheDocument());
+});
+
+test("composer is disabled while a send waits on the bootstrap window", async () => {
+  // Bootstrap still in flight and the turn never settles, so `streamingByConv`
+  // cannot be what disables the input — only ChatScreen's own `sending` flag can.
+  server.use(
+    http.get("/api/conversations", async () => {
+      await delay(300);
+      return HttpResponse.json({ conversations: [] });
+    }),
+  );
+  vi.mocked(streamTurn).mockImplementationOnce(() => new Promise<void>(() => {}));
+
+  render(<ChatScreen />);
+  const input = await screen.findByPlaceholderText(/message poseidon/i);
+  expect(input).not.toBeDisabled();
+  await userEvent.type(input, "hello{Enter}");
+  expect(input).toBeDisabled();
 });
 
 test("skills picker inserts an example prompt", async () => {
