@@ -1,0 +1,25 @@
+:root {
+  /* color */
+  --surface: #ffffff;
+  --surface-raised: #f7f7f8;
+  --ink: #202123;
+  --ink-muted: #8e9196;
+  --accent: #202123;
+  --accent-ink: #ffffff;
+  --positive: #10a37f;
+  --negative: #d92d20;
+  --border: #e5e5e5;
+  /* shape + elevation */
+  --radius-s: 8px;
+  --radius-m: 12px;
+  --radius-l: 24px;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-2: 0 4px 16px rgba(0, 0, 0, 0.08);
+  /* type */
+  --font-display: "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-body: "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-data: "Segoe UI", system-ui, sans-serif;
+  /* motion */
+  --motion-fast: 120ms;
+  --motion-slow: 240ms;
+}
