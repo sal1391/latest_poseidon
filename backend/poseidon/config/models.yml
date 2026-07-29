@@ -1,0 +1,16 @@
+# config/models.yml (illustrative — verify current ids per provider console)
+profiles:
+  bedrock:   # default for local / EC2 (region us-east-1)
+    router:     { provider: bedrock, model: us.anthropic.claude-sonnet-4-5-20250929-v1:0, max_tokens: 4096, temperature: 0.2 }
+    synthesis:  { provider: bedrock, model: us.anthropic.claude-sonnet-4-5-20250929-v1:0, max_tokens: 8192, temperature: 0.3 }
+    supervisor: { provider: bedrock, model: us.anthropic.claude-opus-4-1-20250805-v1:0,   enabled: false }
+    memory:     { provider: bedrock, model: us.anthropic.claude-sonnet-4-5-20250929-v1:0, max_tokens: 2048, temperature: 0.1 }
+    utility:    { provider: bedrock, model: us.amazon.nova-lite-v1:0,  max_tokens: 512, temperature: 0.0 }
+    micro:      { provider: bedrock, model: us.amazon.nova-micro-v1:0, max_tokens: 256, temperature: 0.0 }
+  cortex:    # default for SPCS (models resolved by Cortex inside the account)
+    router:     { provider: cortex, model: claude-sonnet-4-5, max_tokens: 4096, temperature: 0.2 }
+    synthesis:  { provider: cortex, model: claude-sonnet-4-5, max_tokens: 8192, temperature: 0.3 }
+    supervisor: { provider: cortex, model: claude-opus-4-1, enabled: false }
+    memory:     { provider: cortex, model: claude-sonnet-4-5, max_tokens: 2048, temperature: 0.1 }
+    utility:    { provider: cortex, model: claude-haiku-4-5, max_tokens: 512, temperature: 0.0 }
+    micro:      { provider: cortex, model: claude-haiku-4-5, max_tokens: 256, temperature: 0.0 }

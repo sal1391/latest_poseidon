@@ -1,5 +1,6 @@
 import os
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import field_validator, model_validator
@@ -36,6 +37,16 @@ class Settings(BaseSettings):
     auth0_client_id: str | None = None
     llm_profile: Literal["bedrock", "cortex"] = "bedrock"
     llm_mode: Literal["stub", "live"] = "stub"
+    # Phase 5 (doc 03 sections 1-2): LLM role routing. ``None`` defers to the
+    # packaged default resolved by the LLM layer itself
+    # (core/llm/roles.py's DEFAULT_MODELS_PATH) -- this file stays a pure
+    # environment contract with no filesystem knowledge of its own.
+    models_path: Path | None = None
+    prompts_dir: Path | None = None
+    # Agent loop iteration cap (doc 03 section 3): generous enough for a
+    # data_qa/research tool chain, finite so a self-correction loop can't
+    # spin forever.
+    agent_max_iterations: int = 10
     tool_transport_perplexity: Literal["direct", "mcp"] = "direct"
     perplexity_api_key: str | None = None
     memory_max_chars: int = 8000
