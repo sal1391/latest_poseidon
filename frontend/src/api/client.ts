@@ -1,4 +1,4 @@
-import type { Conversation, Message } from "./types";
+import type { Conversation, Message, SkillSummary } from "./types";
 
 async function apiFetch(input: string, init?: RequestInit): Promise<Response> {
   const r = await fetch(input, init);
@@ -33,4 +33,12 @@ export async function postFeedback(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ verdict, comment: comment ?? null }),
   });
+}
+
+/** Live-chat-only (poseidon.api.live_chat's own module docstring) -- mock
+ * mode has no such route, so a 404 here is expected, not exceptional; the
+ * caller (SkillsPicker) is the one that decides what "no answer" means. */
+export async function listSkills(): Promise<SkillSummary[]> {
+  const r = await apiFetch("/api/skills");
+  return (await r.json()) as SkillSummary[];
 }

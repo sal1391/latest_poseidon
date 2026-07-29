@@ -27,11 +27,13 @@ module docstring), so the same parsing works unchanged against either.
 """
 
 import json
+import logging
 
 import httpx
 import pytest
 
 from poseidon.core.config import Settings
+from poseidon.core.skills.registry import SkillRegistry
 from tests.test_chat_orchestrator import REGISTRY, FakeDataClient, RecordingWriter
 
 # U+2014 EM DASH, written as an escape (not a typed literal) -- the same
@@ -143,6 +145,28 @@ def test_live_mode_app_wires_the_expected_app_state():
     assert app.state.run_log_writer is not None
 
 
+def test_live_mode_local_deploy_discovers_the_skill_registry_exactly_once(monkeypatch):
+    """Fix round 1, MINOR M1: ``chat_mode="live"`` + ``deploy_mode="local"``
+    (the DEFAULT ``deploy_mode`` -- every ``_live_app()`` call in this file
+    already exercises this exact combination) used to call ``SkillRegistry.
+    discover()`` TWICE at boot -- once in ``_wire_live_chat``, once again in
+    the local-mode dev-runner block -- building two independent,
+    structurally-identical registries and silently discarding the first.
+    One boot of a local live app is one discovery walk."""
+    calls: list[object] = []
+    original_discover = SkillRegistry.discover  # already bound to SkillRegistry
+
+    def counting_discover(*args, **kwargs):
+        calls.append(None)
+        return original_discover(*args, **kwargs)
+
+    monkeypatch.setattr(SkillRegistry, "discover", counting_discover)
+
+    _live_app()
+
+    assert len(calls) == 1
+
+
 def test_run_log_writer_is_none_when_the_engine_cannot_be_built(capsys):
     """``create_engine`` -- unlike ``SyntheticDataClient.__init__`` -- DOES
     eagerly parse its URL argument, so a value ``Settings.database_url``'s
@@ -247,6 +271,107 @@ async def test_client_turn_key_retry_gets_pinned_duplicate_turn_error_and_no_sec
     # Both attempts were recorded by start_turn (the idempotent-insert path
     # is exercised both times), but only the first one created a row.
     assert len(writer.start_turn_calls) == 2
+
+
+# ===========================================================================
+# Fix round 1, REQUIRED F1 -- an unhandled exception mid-turn (the realistic
+# case: a Bedrock network hiccup once LLM_MODE=live) must still end the
+# stream cleanly with ONE pinned error frame, finalize the run-log row as
+# failed, and leave the app healthy for the next request.
+# ===========================================================================
+
+
+def _crashing_execute_turn(**kwargs):
+    """Stands in for the real ``execute_turn``: emits a partial turn (an
+    ``accepted`` frame and one token, exactly like a real turn that got as
+    far as streaming some of its answer) then raises, unhandled -- the
+    realistic shape of a mid-turn provider failure (a network hiccup calling
+    Bedrock), not a failure at the very first line."""
+    sink = kwargs["sink"]
+    sink.accepted(1)
+    sink.push_token("partial reply")
+    raise RuntimeError("simulated bedrock network hiccup")
+
+
+@pytest.mark.anyio
+async def test_unhandled_exception_mid_turn_emits_pinned_internal_error_and_ends_stream_cleanly(
+    monkeypatch, caplog
+):
+    writer = RecordingWriter()
+    app = _live_app(data_client=FakeDataClient(), writer=writer)
+    monkeypatch.setattr("poseidon.api.live_chat.execute_turn", _crashing_execute_turn)
+
+    transport = httpx.ASGITransport(app=app)
+    with caplog.at_level(logging.ERROR, logger="poseidon.api.live_chat"):
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+            events = await read_sse(client, "conv-crash", "hello", None)
+
+    # The client sees the partial turn, then ONE pinned error frame, then a
+    # clean stream end -- never a raw protocol error (no more frames, no
+    # exception raised out of read_sse/the ASGI transport).
+    names = [name for name, _data in events]
+    assert names == ["accepted", "token", "error"]
+    turn_id = events[0][1]["turn_id"]
+    error_data = events[2][1]
+    assert error_data["code"] == "internal_error"
+    assert error_data["message"] == (
+        "the turn failed unexpectedly " + _EM_DASH + " the error has been logged"
+    )
+
+    # The run-log row is finalized as failed exactly once, keyed by the SAME
+    # turn_id every frame carried (the turn-id unification amendment applies
+    # on the crash path too), never left orphaned at status='running'.
+    assert len(writer.finalize_calls) == 1
+    finalize = writer.finalize_calls[0]
+    assert finalize["turn_run_id"] == turn_id
+    assert finalize["status"] == "error"
+    assert finalize["message_id"] is None
+    assert finalize["answer_summary"] is None
+    assert finalize["input_tokens"] == 0
+    assert finalize["output_tokens"] == 0
+    assert isinstance(finalize["latency_ms"], int)
+    assert finalize["latency_ms"] >= 0
+    assert finalize["error"]["title"] == "internal_error"
+    assert "RuntimeError" in finalize["error"]["detail"]
+    assert "simulated bedrock network hiccup" in finalize["error"]["detail"]
+
+    # Logged at ERROR, once, naming the exception type.
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1
+    assert "RuntimeError" in errors[0].message
+
+    # A follow-up request on the SAME app (real execute_turn restored)
+    # succeeds -- the crash left nothing wedged.
+    monkeypatch.undo()
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        follow_up = await read_sse(
+            client, "conv-crash-2", "Top GP customers for Port of Singapore in April 2026", None
+        )
+    assert [name for name, _data in follow_up] == [
+        "accepted",
+        "tool",
+        "tool",
+        "part",
+        "part",
+        "token",
+        "done",
+    ]
+
+
+@pytest.mark.anyio
+async def test_unhandled_exception_with_no_writer_still_ends_stream_cleanly(monkeypatch):
+    """``writer=None`` (no DATABASE_URL) must not change the crash-handling
+    shape -- only the run-log gains no finalize call, mirroring execute_turn's
+    own `writer is not None` guard convention throughout."""
+    app = _live_app(data_client=FakeDataClient())
+    app.state.run_log_writer = None
+    monkeypatch.setattr("poseidon.api.live_chat.execute_turn", _crashing_execute_turn)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        events = await read_sse(client, "conv-crash-no-writer", "hello", None)
+
+    assert [name for name, _data in events] == ["accepted", "token", "error"]
 
 
 # ===========================================================================

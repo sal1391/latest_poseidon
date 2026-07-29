@@ -61,11 +61,49 @@ there is no connection pool or other per-call state to leak between
 requests either way. A test therefore swaps ``app.state.data_client`` for a
 fake after construction, the same substitution ``test_dev_runner.py``
 already uses for ``app.state.skill_registry``.
+
+**An unhandled exception mid-turn (fix round 1, REQUIRED F1).**
+``execute_turn`` already turns every failure ITS OWN pinned contract
+recognizes into a structured ``turn_error`` frame (an LLM provider error, a
+skill dispatch failure, the duplicate-turn retry short-circuit -- see
+``orchestrator.py``'s own module docstring). It does not, and cannot,
+promise to catch EVERYTHING -- a genuine bug, or a real network exception a
+provider layer failed to normalize into its own ``LLMResponse(stop_
+reason="error", ...)`` contract (decision D11's own normalization promise,
+not this module's to re-verify), can still escape it. Before this fix,
+letting that exception propagate out of ``run_turn_sync`` crashed the whole
+``anyio`` task group with an ``ExceptionGroup``, which Starlette's streaming
+response machinery turns into a raw ``httpx.RemoteProtocolError`` on the
+client side and a crash trace in the server log -- the frontend recovers
+(its own ``sendMessage``'s ``finally`` unsticks the composer) but the user
+sees a silently truncated answer with no error shown, and the ``turn_run``
+row (when a writer is configured) is left orphaned at ``status='running'``
+forever, since ``execute_turn``'s own ``finalize`` call is never reached.
+``run_turn_sync`` therefore wraps the WHOLE ``execute_turn`` call in one
+more ``except Exception`` (not ``BaseException`` -- the same "a cancelled
+request must keep unwinding" discipline ``registry.py``'s own ``dispatch``
+uses): it logs the failure at ERROR, emits ONE more pinned ``turn_error``
+frame (``code="internal_error"``, a generic, byte-pinned message that
+never leaks exception internals to the client), and -- when a writer is
+configured -- finalizes the run-log row itself, keyed by ``sink.turn_id``
+(the turn-id unification amendment is what makes this possible from the
+HTTP layer at all: without it, this function would have no id to finalize
+against). Calling ``finalize`` unconditionally here is safe even when the
+crash happened before ``execute_turn`` ever reached its own ``start_turn``
+call: the ``UPDATE ... WHERE id = :turn_run_id`` simply matches zero rows,
+which the never-raises writer absorbs exactly as harmlessly as any other
+finalize call against an id it does not recognize (``runlog.py``'s own
+module docstring). The stream still ends cleanly either way -- the
+``finally: frame_queue.put(_DONE)`` below is untouched, so a crash now looks
+to the client like any other terminal ``error`` frame, never a broken
+connection.
 """
 
+import logging
 import queue
 import uuid
 from datetime import date
+from time import monotonic
 
 import anyio
 from fastapi import APIRouter, Request
@@ -75,6 +113,9 @@ from pydantic import BaseModel
 from poseidon.core.chat.events import SseEnvelopeSink
 from poseidon.core.chat.orchestrator import execute_turn
 from poseidon.core.skills.registry import SkillRegistry
+from poseidon.core.skills.result import problem
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["chat-live"])
 
@@ -83,6 +124,24 @@ router = APIRouter(prefix="/api", tags=["chat-live"])
 # (always a non-empty str), so the async generator knows when to stop
 # draining without a separate "is it done" flag to keep in sync.
 _DONE = object()
+
+# U+2014 EM DASH, built via chr() rather than typed literally so this file
+# stays pure ASCII on disk (house rule: backend .py files are ASCII-only) --
+# the same convention orchestrator.py's own _EM_DASH constant uses.
+_EM_DASH = chr(0x2014)
+
+# Fix round 1, REQUIRED F1: an unhandled exception mid-turn (the realistic
+# case once LLM_MODE=live -- a Bedrock network hiccup, a database blip inside
+# a skill dispatch, anything execute_turn itself does not already turn into a
+# structured `error` frame) must still end the stream cleanly, not crash the
+# whole ASGI response with an ExceptionGroup and leave the turn_run row
+# orphaned at status='running' forever. `title` is shared between the
+# user-facing SSE frame (generic, byte-pinned -- never leaks exception
+# internals to the client) and the run-log's own `error` dict (which DOES
+# carry the exception class name and message, for whoever reads the row
+# later); only `detail` differs between the two uses.
+_INTERNAL_ERROR_TITLE = "internal_error"
+_INTERNAL_ERROR_DETAIL = "the turn failed unexpectedly " + _EM_DASH + " the error has been logged"
 
 
 class SendBody(BaseModel):
@@ -143,6 +202,7 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
     sink = SseEnvelopeSink(turn_id=turn_id, message_id=message_id, send=send, registry=registry)
 
     def run_turn_sync() -> None:
+        started = monotonic()
         try:
             execute_turn(
                 conversation_id=cid,
@@ -158,6 +218,44 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
                 sink=sink,
                 reference_date=date.today(),
             )
+        except Exception as exc:  # noqa: BLE001 - a crash mid-turn must still end the stream cleanly
+            # execute_turn's own contract only produces a `turn_error` frame
+            # for the failures it already recognizes (an LLM provider error, a
+            # skill dispatch it can structure -- see loop.py's own "structured
+            # failures"). Anything else escaping here -- a genuine bug, a
+            # network exception the provider layer did not itself catch -- is
+            # exactly what mock_chat.py never had to handle (its own turn is a
+            # canned script that cannot fail this way) and doc 01 section 5
+            # has no frame for: this is that frame, deliberately generic so
+            # nothing about the exception leaks to the client.
+            logger.error(
+                "live chat turn failed: conversation_id=%s: %s: %s",
+                cid,
+                type(exc).__name__,
+                exc,
+            )
+            sink.emit(
+                "turn_error",
+                {"problem": problem(500, _INTERNAL_ERROR_TITLE, _INTERNAL_ERROR_DETAIL)},
+            )
+            writer = app_state.run_log_writer
+            if writer is not None:
+                # turn_run_id is sink.turn_id UNCONDITIONALLY (the turn-id
+                # unification amendment) -- correct even when the crash
+                # happened before start_turn ever ran: the UPDATE simply
+                # matches zero rows, which the never-raises writer absorbs
+                # harmlessly (runlog.py's own module docstring), never a
+                # doomed insert against a row that was never created.
+                writer.finalize(
+                    turn_run_id=sink.turn_id,
+                    status="error",
+                    message_id=None,
+                    answer_summary=None,
+                    input_tokens=0,
+                    output_tokens=0,
+                    latency_ms=int((monotonic() - started) * 1000),
+                    error=problem(500, _INTERNAL_ERROR_TITLE, f"{type(exc).__name__}: {exc}"),
+                )
         finally:
             frame_queue.put(_DONE)
 

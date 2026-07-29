@@ -19,6 +19,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="Poseidon API", version="0.1.0")
     app.state.settings = settings or get_settings()
     app.include_router(health.router)
+
+    # Discovery walks and imports the whole poseidon.tasks tree (SkillRegistry.
+    # discover's own fail-fast contract) -- built ONCE per app/process here,
+    # ahead of both blocks below, and shared by whichever of them actually
+    # need it: live chat wiring, the local dev runner, or both at once when an
+    # operator runs CHAT_MODE=live locally (fix round 1, MINOR M1 -- these two
+    # conditions used to each build their own registry independently, quietly
+    # discarding one of the two identical walks whenever both fired). A
+    # mock-mode, non-local app needs neither and builds nothing, unchanged.
+    if app.state.settings.chat_mode == "live" or app.state.settings.deploy_mode == "local":
+        app.state.skill_registry = SkillRegistry.discover()
+
     if app.state.settings.chat_mode == "live":
         _wire_live_chat(app)
     else:
@@ -27,16 +39,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # (mock_chat.py's own module docstring). The two routers are never
         # mounted together.
         app.include_router(mock_chat.router)
+
     if app.state.settings.deploy_mode == "local":
         # The dev skill runner is a local-only surface (poseidon.api.dev_runner's
-        # module docstring): built once per app/process rather than per request,
-        # since discovery walks and imports the whole poseidon.tasks tree
-        # (SkillRegistry.discover's own fail-fast contract). Non-local habitats
-        # build neither the registry nor the router here -- Phase 6's own answer
-        # for spcs/ec2 needing a registry is CHAT_MODE=live above, which builds
-        # its OWN registry independent of deploy_mode (a live chat pipeline
-        # needs one in every habitat, not just local dev).
-        app.state.skill_registry = SkillRegistry.discover()
+        # module docstring): app.state.skill_registry is already built above,
+        # since deploy_mode == "local" is one of the two conditions that
+        # triggers it.
         # One store per app/process, shared by every request (dev_runner's
         # _build_ctx reads it off app.state), and one bucket check at boot so
         # the first skill that writes a PDF does not meet a NoSuchBucket.
@@ -71,27 +79,31 @@ def _wire_live_chat(app: FastAPI) -> None:
     4): everything ``live_chat.py``'s route handlers read off ``app.state``
     per request, then mount ``live_chat.router``.
 
-    Built once per app/process, the same "cheap to construct, safe to share"
-    discipline ``deploy_mode == "local"``'s own ``skill_registry``/
-    ``artifact_store`` wiring above already uses: ``SkillRegistry.discover()``
-    is deterministic and import-only (registry.py's own module docstring),
-    ``RoleClient``/``PromptRegistry`` touch only a packaged YAML file and a
-    prompts directory, ``ConversationStateStore`` is explicitly meant to be
-    ONE shared instance (its whole job is being shared mutable state across
-    requests -- see its own module docstring), and ``SyntheticDataClient``
-    holds nothing but a DSN string (its own module docstring), so one
-    long-lived instance behaves identically to a fresh one per request --
-    unlike ``dev_runner.py``'s per-request construction, there is no
-    connection or other per-call state here to keep isolated between
-    requests. ``RoleClient`` registers BOTH the stub router
-    (``DevDeterministicRouter``, what actually answers in ``LLM_MODE=stub``)
-    and the real Bedrock provider (what answers in ``LLM_MODE=live`` with
-    ``llm_profile=bedrock``) -- the two canonical shapes ``roles.py``'s own
-    docstring documents; registering both at once is harmless
-    (``RoleClient.invoke`` reads exactly one key per call).
+    ``app.state.skill_registry`` is NOT built here -- ``create_app`` already
+    built it above, before calling this function, since ``chat_mode ==
+    "live"`` is one of the two conditions that triggers that discovery walk
+    (fix round 1, MINOR M1: this function used to call ``SkillRegistry.
+    discover()`` a second time whenever ``deploy_mode == "local"`` ALSO held,
+    silently discarding one of the two identical walks).
+
+    Everything else here is built once per app/process, the same "cheap to
+    construct, safe to share" discipline ``deploy_mode == "local"``'s own
+    ``artifact_store`` wiring uses: ``RoleClient``/``PromptRegistry`` touch
+    only a packaged YAML file and a prompts directory, ``ConversationState
+    Store`` is explicitly meant to be ONE shared instance (its whole job is
+    being shared mutable state across requests -- see its own module
+    docstring), and ``SyntheticDataClient`` holds nothing but a DSN string
+    (its own module docstring), so one long-lived instance behaves
+    identically to a fresh one per request -- unlike ``dev_runner.py``'s
+    per-request construction, there is no connection or other per-call state
+    here to keep isolated between requests. ``RoleClient`` registers BOTH the
+    stub router (``DevDeterministicRouter``, what actually answers in
+    ``LLM_MODE=stub``) and the real Bedrock provider (what answers in
+    ``LLM_MODE=live`` with ``llm_profile=bedrock``) -- the two canonical
+    shapes ``roles.py``'s own docstring documents; registering both at once
+    is harmless (``RoleClient.invoke`` reads exactly one key per call).
     """
     settings = app.state.settings
-    app.state.skill_registry = SkillRegistry.discover()
     app.state.conversation_state_store = ConversationStateStore()
     app.state.role_client = RoleClient(
         settings, providers={"stub": DevDeterministicRouter(), "bedrock": BedrockProvider()}

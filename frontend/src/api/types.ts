@@ -23,6 +23,10 @@ export interface Message {
   lastSeq?: number; // highest applied event_seq (client-side replay guard)
 }
 export interface Conversation { id: string; title: string }
+// GET /api/skills's wire shape (poseidon.api.live_chat.list_skills) -- no
+// curated example prompt field; see SkillsPicker.tsx's own fallback list for
+// where an example comes from instead.
+export interface SkillSummary { id: string; label: string; description: string }
 export interface SseEnvelope { turn_id: string; message_id: string; event_seq: number }
 export type SseEvent =
   | { name: "accepted"; data: SseEnvelope & { turn_index: number } }

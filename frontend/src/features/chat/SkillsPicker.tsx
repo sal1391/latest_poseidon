@@ -1,21 +1,14 @@
 import { useState } from "react";
+import { listSkills } from "../../api/client";
 
 interface Skill {
   id: string;
   name: string;
   description: string;
   /** A runnable example question -- present on the curated fallback list;
-   * GET /api/skills carries no such field (see ApiSkill below), so a
-   * skill sourced from there has none. */
+   * GET /api/skills carries no such field (see api/types.ts's SkillSummary),
+   * so a skill sourced from there has none. */
   example?: string;
-}
-
-/** The wire shape of GET /api/skills (poseidon.api.live_chat.list_skills):
- * registry-backed, no curated example prompt. */
-interface ApiSkill {
-  id: string;
-  label: string;
-  description: string;
 }
 
 /** The registered skills, surfaced for discovery only — the backend router still decides.
@@ -66,9 +59,7 @@ export function SkillsPicker({ onPick }: SkillsPickerProps) {
 
   async function loadSkills(): Promise<void> {
     try {
-      const response = await fetch("/api/skills");
-      if (!response.ok) throw new Error(`request failed: ${response.status}`);
-      const body = (await response.json()) as ApiSkill[];
+      const body = await listSkills();
       setSkills(
         body.map((skill) => ({ id: skill.id, name: skill.label, description: skill.description })),
       );
