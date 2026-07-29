@@ -1,0 +1,240 @@
+"""Deterministic SQL rendering for certified specs (see ``specs.py``).
+
+The LLM never authors SQL: skills build a :class:`~poseidon.core.data.specs.
+MetricQuerySpec` or :class:`~poseidon.core.data.specs.BreakdownQuerySpec`
+naming only certified entities/metrics/dimensions (per
+``poseidon.core.ontology.loader.get_ontology()``), and the functions below
+render that spec into a parameterized SQL string for one of two dialects:
+
+- ``"postgres"`` — the local ``synthetic`` schema (the synthetic data client).
+- ``"snowflake"`` — the certified Snowflake tables/views (the live client).
+
+Every function returns ``(sql, params)``: one deterministic SQL string
+(clauses joined by ``\\n``, in ``SELECT / FROM / WHERE / GROUP BY / HAVING /
+ORDER BY / LIMIT`` order — clauses that don't apply are simply omitted) and a
+parallel list of ``%s`` placeholder values, in the exact order they appear in
+the string. Everything here is dialect-agnostic except three small hooks:
+table naming (``_table_name``), date-column rendering (``_date_expr`` —
+``TO_DATE(...)`` only for a VARCHAR-typed date column on Snowflake), and the
+``ORDER BY ... NULLS LAST`` suffix (Postgres only). See
+``backend/tests/test_query_builder_snapshots.py`` for the full pinned
+contract, including exact error strings.
+
+Validation always happens before rendering. An unknown entity name raises the
+loader's own ``KeyError`` (``Ontology.entity`` — see
+``poseidon.core.ontology.models``) verbatim, never wrapped. Every other spec
+mistake — an uncertified metric, a filter/group-by column that isn't a
+certified dimension of the entity, an ``order_by_metric`` outside
+``metrics``, or ``top_n < 1`` — raises :class:`SpecValidationError`, whose
+message text is itself part of the pinned snapshot contract.
+"""
+
+from collections.abc import Mapping
+
+from poseidon.core.ontology.loader import get_ontology
+from poseidon.core.ontology.models import Entity
+
+from .specs import BreakdownQuerySpec, MetricQuerySpec, PeriodWindow
+
+_SYNTHETIC_SCHEMA = "synthetic"
+
+# WIN_RATE is a diagnostic-only ratio (see ontology.yml's rule text on the
+# metric); the small-sample guard has no structured ontology field, so —
+# unlike the GL dual-purpose exclusion below — it is legitimately hardcoded
+# here.
+_SMALL_SAMPLE_METRIC = "WIN_RATE"
+_SMALL_SAMPLE_HAVING = 'HAVING SUM("#_INQUIRIES") >= 5'
+
+# The only metric on W_MARINE_GL_SOURCE_AI that measures the dual-purpose
+# AMOUNT_USD column. The guard's *clause text* always comes from the
+# ontology's `dual_purpose_exclusion` field at render time (never hardcoded);
+# this name only identifies *when* to apply it.
+_MONETARY_METRIC = "MONETARY_TOTAL"
+
+
+class SpecValidationError(ValueError):
+    """A spec references something outside the certified ontology.
+
+    Message strings are part of the snapshot contract — see the error-case
+    tests in ``test_query_builder_snapshots.py``.
+    """
+
+
+def _entity(name: str) -> Entity:
+    """Resolve ``name`` via the loader.
+
+    An unknown or not-yet-certified (``planned``) name raises the loader's
+    own ``KeyError`` (``Ontology.entity``) unmodified — that message is the
+    "unknown entity (loader's)" case in the rendering-rules contract.
+    """
+    return get_ontology().entity(name)
+
+
+def _require_certified_metrics(entity: Entity, metrics: tuple[str, ...]) -> None:
+    for m in metrics:
+        if m not in entity.metrics:
+            raise SpecValidationError(
+                f"unknown metric {m!r} for entity {entity.name} — "
+                f"certified: {sorted(entity.metrics)}"
+            )
+
+
+def _require_dimension(entity: Entity, col: str) -> None:
+    """Raise unless ``col`` is a certified dimension of ``entity``.
+
+    Covers both the "non-dimension filter/group_by column" case (``col``
+    exists but has a different role, e.g. a measure) and the "unknown filter
+    column" case (``col`` doesn't exist at all) with the same message — a
+    column that was never certified as a dimension "is not a dimension"
+    either way.
+    """
+    if col not in entity.dimensions():
+        raise SpecValidationError(f"{col!r} is not a dimension of {entity.name}")
+
+
+def _table_name(entity: Entity, dialect: str) -> str:
+    if dialect == "postgres":
+        return f"{_SYNTHETIC_SCHEMA}.{entity.name.lower()}"
+    if dialect == "snowflake":
+        return entity.fqn
+    raise SpecValidationError(f"unknown dialect {dialect!r}")
+
+
+def _date_expr(entity: Entity, dialect: str) -> str:
+    """Render the entity's date column for use in a comparison.
+
+    Snowflake wraps a VARCHAR-typed date column in ``TO_DATE(...)``
+    (``W_MARINE_GL_SOURCE_AI.PERIOD_DATE``); a DATE-typed column, and every
+    Postgres query regardless of column type, compares the bare column.
+    """
+    date_col = entity.date_column
+    if dialect == "snowflake" and entity.columns[date_col].type == "VARCHAR":
+        return f"TO_DATE({date_col})"
+    return date_col
+
+
+def _metric_expr(entity: Entity, metric_name: str) -> str:
+    """The certified metric SQL, verbatim, aliased to its (quoted) name."""
+    return f'{entity.metrics[metric_name].sql} AS "{metric_name}"'
+
+
+def _where_clause(
+    entity: Entity,
+    dialect: str,
+    metrics: tuple[str, ...],
+    period: PeriodWindow,
+    filters: Mapping[str, tuple[str, ...]],
+    params: list,
+) -> str:
+    """Build the single-line WHERE clause and extend ``params`` in place.
+
+    Condition order: the half-open period window, then each filter column in
+    the order given (OR within a column's IN-list, AND across columns), then
+    — only for W_MARINE_GL_SOURCE_AI queries touching MONETARY_TOTAL — the
+    dual-purpose exclusion guard, sourced from the ontology's
+    ``dual_purpose_exclusion`` field, never hardcoded here.
+    """
+    date_expr = _date_expr(entity, dialect)
+    conditions = [f"{date_expr} >= %s AND {date_expr} < %s"]
+    params.extend([period.start, period.end])
+
+    for col, values in filters.items():
+        placeholders = ", ".join(["%s"] * len(values))
+        conditions.append(f"COALESCE({col}, 'Unknown') IN ({placeholders})")
+        params.extend(values)
+
+    if entity.dual_purpose_exclusion and _MONETARY_METRIC in metrics:
+        conditions.append(entity.dual_purpose_exclusion)
+
+    return " AND ".join(conditions)
+
+
+def build_metric_query(spec: MetricQuerySpec, dialect: str) -> tuple[str, list]:
+    entity = _entity(spec.entity)
+    _require_certified_metrics(entity, spec.metrics)
+    for col in spec.filters:
+        _require_dimension(entity, col)
+
+    params: list = []
+    select_list = ", ".join(_metric_expr(entity, m) for m in spec.metrics)
+    where = _where_clause(entity, dialect, spec.metrics, spec.period, spec.filters, params)
+
+    clauses = [
+        f"SELECT {select_list}",
+        f"FROM {_table_name(entity, dialect)}",
+        f"WHERE {where}",
+    ]
+    if _SMALL_SAMPLE_METRIC in spec.metrics:
+        clauses.append(_SMALL_SAMPLE_HAVING)
+
+    return "\n".join(clauses), params
+
+
+def build_breakdown_query(spec: BreakdownQuerySpec, dialect: str) -> tuple[str, list]:
+    entity = _entity(spec.entity)
+    _require_certified_metrics(entity, spec.metrics)
+    _require_dimension(entity, spec.group_by)
+    for col in spec.filters:
+        _require_dimension(entity, col)
+    if spec.order_by_metric not in spec.metrics:
+        raise SpecValidationError(
+            f"order_by_metric {spec.order_by_metric!r} must be one of "
+            f"the requested metrics {spec.metrics!r}"
+        )
+    if spec.top_n < 1:
+        raise SpecValidationError(f"top_n must be >= 1, got {spec.top_n}")
+
+    params: list = []
+    select_list = ", ".join(
+        [f"COALESCE({spec.group_by}, 'Unknown') AS {spec.group_by}"]
+        + [_metric_expr(entity, m) for m in spec.metrics]
+    )
+    where = _where_clause(entity, dialect, spec.metrics, spec.period, spec.filters, params)
+
+    clauses = [
+        f"SELECT {select_list}",
+        f"FROM {_table_name(entity, dialect)}",
+        f"WHERE {where}",
+        "GROUP BY 1",
+    ]
+    if _SMALL_SAMPLE_METRIC in spec.metrics:
+        clauses.append(_SMALL_SAMPLE_HAVING)
+
+    nulls_last = " NULLS LAST" if dialect == "postgres" else ""
+    clauses.append(f'ORDER BY "{spec.order_by_metric}" DESC{nulls_last}')
+    clauses.append("LIMIT %s")
+    params.append(spec.top_n)
+
+    return "\n".join(clauses), params
+
+
+def build_dimension_values_query(
+    entity: str, column: str, search: str | None, dialect: str
+) -> tuple[str, list]:
+    entity_obj = _entity(entity)
+    _require_dimension(entity_obj, column)
+
+    params: list = []
+    conditions = [f"{column} IS NOT NULL"]
+    if search is not None:
+        conditions.append(f"{column} ILIKE %s")
+        params.append(f"%{search}%")
+
+    clauses = [
+        f"SELECT DISTINCT {column}",
+        f"FROM {_table_name(entity_obj, dialect)}",
+        f"WHERE {' AND '.join(conditions)}",
+        f"ORDER BY {column}",
+    ]
+    return "\n".join(clauses), params
+
+
+def build_period_range_query(entity: str, dialect: str) -> tuple[str, list]:
+    entity_obj = _entity(entity)
+    date_expr = _date_expr(entity_obj, dialect)
+
+    clauses = [
+        f'SELECT MIN({date_expr}) AS "MIN_DATE", MAX({date_expr}) AS "MAX_DATE"',
+        f"FROM {_table_name(entity_obj, dialect)}",
+    ]
+    return "\n".join(clauses), []
