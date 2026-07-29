@@ -32,14 +32,15 @@ pinned snapshot contract.
 **Volume mode** (currently only ``W_MARINE_GL_SOURCE_AI``, but driven
 entirely by the ontology's ``dual_purpose_measures[0].unit_pivot`` — see
 ``_is_volume_mode``): when a spec's filters pin the entity's dual-purpose
-pivot column to exactly its pivot value (e.g. ``{"CLASS4": ("Volume",)}`` —
-not a mixed IN-list that merely includes it alongside other values), the
-filter itself already scopes the dual-purpose measure to one unit, so the
-exclusion guard is dropped and a plain aggregate is refused instead:
-``build_metric_query`` always raises in volume mode, and
-``build_breakdown_query`` only accepts a ``group_by`` equal to the hierarchy
-level immediately below the pivot column (``CLASS4`` -> ``CLASS3``). Outside
-volume mode, nothing here changes.
+pivot column to *only* its pivot value — comparing distinct values, so
+``{"CLASS4": ("Volume",)}`` and a duplicate-laden ``{"CLASS4": ("Volume",
+"Volume")}`` both qualify, but a mixed IN-list that includes a *different*
+value alongside it does not — the filter itself already scopes the
+dual-purpose measure to one unit, so the exclusion guard is dropped and a
+plain aggregate is refused instead: ``build_metric_query`` always raises in
+volume mode, and ``build_breakdown_query`` only accepts a ``group_by`` equal
+to the hierarchy level immediately below the pivot column (``CLASS4`` ->
+``CLASS3``). Outside volume mode, nothing here changes.
 """
 
 from collections.abc import Mapping
@@ -135,14 +136,16 @@ def _metric_expr(entity: Entity, metric_name: str) -> str:
 
 def _is_volume_mode(entity: Entity, filters: Mapping[str, tuple[str, ...]]) -> bool:
     """True when ``filters`` pins the entity's dual-purpose measure to
-    exactly its certified unit-pivot value — e.g. ``{"CLASS4": ("Volume",)}``
-    on ``W_MARINE_GL_SOURCE_AI``.
+    *only* its certified unit-pivot value — e.g. ``{"CLASS4": ("Volume",)}``
+    on ``W_MARINE_GL_SOURCE_AI`` — comparing the **distinct** values given so
+    a duplicate like ``("Volume", "Volume")`` (or a caller passing a list
+    instead of a tuple) still counts.
 
     This is the ontology's own signal (``business_rules``: "Volume queries
     drop the exclusion and carry a unit") that the caller has already scoped
     the query to one unit, so the dual-purpose guard must be dropped and no
-    plain aggregate is allowed. A mixed IN-list that merely *includes* the
-    pivot value alongside others (e.g. ``CLASS4 IN ('Volume', 'Trade GP')``)
+    plain aggregate is allowed. A mixed IN-list that includes the pivot value
+    alongside a *different* value (e.g. ``CLASS4 IN ('Volume', 'Trade GP')``)
     is deliberately NOT volume mode — that query is still asking for a
     monetary total, so the guard still applies and simply drops the Volume
     rows from it. Entities with no dual-purpose measure (``dual_purpose_
@@ -151,7 +154,7 @@ def _is_volume_mode(entity: Entity, filters: Mapping[str, tuple[str, ...]]) -> b
     pivot_col = entity.dual_purpose_pivot_column
     if pivot_col is None:
         return False
-    return filters.get(pivot_col) == (entity.dual_purpose_pivot_value,)
+    return set(filters.get(pivot_col) or ()) == {entity.dual_purpose_pivot_value}
 
 
 def _volume_mode_required_group_by(entity: Entity) -> str:
@@ -160,9 +163,27 @@ def _volume_mode_required_group_by(entity: Entity) -> str:
     (``CLASS4`` -> ``CLASS3`` on ``W_MARINE_GL_SOURCE_AI``) — every level at
     or above the pivot still mixes incompatible units within one pivot
     value; only the level below is guaranteed single-unit per row group.
+
+    Raises :class:`SpecValidationError` (never a bare ``ValueError``/
+    ``IndexError``) if the pivot column isn't one of the entity's
+    ``hierarchy_levels`` at all, or if it's the last (narrowest) one with no
+    level below it — both cases are structurally unreachable through the
+    vendored ontology today (``CLASS4`` is always present and never last),
+    but a future ontology edit could hit either, and a bare Python exception
+    here would leak an internal ``IndexError`` past the spec-validation
+    contract.
     """
     levels = entity.hierarchy_levels
-    pivot_index = levels.index(entity.dual_purpose_pivot_column)
+    pivot = entity.dual_purpose_pivot_column
+    if pivot not in levels:
+        raise SpecValidationError(
+            f"pivot column {pivot!r} is not a hierarchy level of {entity.name}"
+        )
+    pivot_index = levels.index(pivot)
+    if pivot_index + 1 >= len(levels):
+        raise SpecValidationError(
+            f"pivot column {pivot!r} has no level below it in {entity.name}"
+        )
     return levels[pivot_index + 1]
 
 
@@ -247,7 +268,7 @@ def build_breakdown_query(spec: BreakdownQuerySpec, dialect: str) -> tuple[str, 
         required = _volume_mode_required_group_by(entity)
         if spec.group_by != required:
             raise SpecValidationError(
-                f"volume-mode breakdowns must group by {required!r} "
+                f"volume-mode breakdowns must group by {required} "
                 f"(each {required} is one unit); got {spec.group_by!r}"
             )
 

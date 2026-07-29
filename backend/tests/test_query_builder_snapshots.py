@@ -17,6 +17,7 @@ import pytest
 
 from poseidon.core.data import query_builder as qb
 from poseidon.core.data.specs import BreakdownQuerySpec, MetricQuerySpec, PeriodWindow
+from poseidon.core.ontology.models import Entity
 
 APRIL = PeriodWindow(dt.date(2026, 4, 1), dt.date(2026, 5, 1))
 
@@ -329,6 +330,36 @@ def test_volume_mode_class3_breakdown_snowflake_drops_guard():
     assert params == [dt.date(2026, 4, 1), dt.date(2026, 5, 1), "Volume", 5]
 
 
+def test_volume_mode_breakdown_duplicate_pivot_values_snowflake():
+    """`_is_volume_mode` compares DISTINCT filter values, so a duplicate-
+    laden tuple like `("Volume", "Volume")` is still volume mode — the
+    guard stays dropped — even though it isn't the single-element tuple the
+    simplest reading of the rule would expect. Rendering itself doesn't
+    dedupe: the IN-list carries both %s params exactly as given."""
+    spec = BreakdownQuerySpec(
+        entity="W_MARINE_GL_SOURCE_AI",
+        metrics=("MONETARY_TOTAL",),
+        period=APRIL,
+        group_by="CLASS3",
+        order_by_metric="MONETARY_TOTAL",
+        top_n=5,
+        filters={"CLASS4": ("Volume", "Volume")},
+    )
+    sql, params = qb.build_breakdown_query(spec, "snowflake")
+    assert sql == (
+        "SELECT COALESCE(CLASS3, 'Unknown') AS CLASS3, "
+        'SUM(AMOUNT_USD) AS "MONETARY_TOTAL"\n'
+        "FROM SANDBOX.MCA.W_MARINE_GL_SOURCE_AI\n"
+        "WHERE TO_DATE(PERIOD_DATE) >= %s AND TO_DATE(PERIOD_DATE) < %s "
+        "AND COALESCE(CLASS4, 'Unknown') IN (%s, %s)\n"
+        "GROUP BY 1\n"
+        'ORDER BY "MONETARY_TOTAL" DESC\n'
+        "LIMIT %s")
+    assert params == [
+        dt.date(2026, 4, 1), dt.date(2026, 5, 1), "Volume", "Volume", 5,
+    ]
+
+
 # ---------------------------------------------------------------------------
 # build_dimension_values_query
 # ---------------------------------------------------------------------------
@@ -536,5 +567,37 @@ def test_volume_mode_breakdown_wrong_group_by_rejects():
     with pytest.raises(qb.SpecValidationError) as exc_info:
         qb.build_breakdown_query(spec, "postgres")
     assert str(exc_info.value) == (
-        "volume-mode breakdowns must group by 'CLASS3' "
+        "volume-mode breakdowns must group by CLASS3 "
         "(each CLASS3 is one unit); got 'COMPANY'")
+
+
+def test_volume_mode_required_group_by_defensive_errors():
+    """`_volume_mode_required_group_by`'s two defensive branches are
+    unreachable through `build_metric_query`/`build_breakdown_query` against
+    the vendored ontology — W_MARINE_GL_SOURCE_AI's CLASS4 pivot is always
+    present in `hierarchy_levels` and is never the last (narrowest) level —
+    so both are exercised directly here, against synthetic `Entity` objects
+    constructed inline rather than the loaded ontology."""
+    pivot_not_a_level = Entity(
+        name="SYNTHETIC_MISSING_PIVOT",
+        fqn="X.Y.SYNTHETIC_MISSING_PIVOT",
+        hierarchy_levels=["L1", "L2"],
+        dual_purpose_pivot_column="NOT_A_LEVEL",
+        dual_purpose_pivot_value="Volume",
+    )
+    with pytest.raises(qb.SpecValidationError) as exc_info:
+        qb._volume_mode_required_group_by(pivot_not_a_level)
+    assert str(exc_info.value) == (
+        "pivot column 'NOT_A_LEVEL' is not a hierarchy level of SYNTHETIC_MISSING_PIVOT")
+
+    pivot_is_last_level = Entity(
+        name="SYNTHETIC_LAST_LEVEL",
+        fqn="X.Y.SYNTHETIC_LAST_LEVEL",
+        hierarchy_levels=["L1", "L2", "PIVOT"],
+        dual_purpose_pivot_column="PIVOT",
+        dual_purpose_pivot_value="Volume",
+    )
+    with pytest.raises(qb.SpecValidationError) as exc_info:
+        qb._volume_mode_required_group_by(pivot_is_last_level)
+    assert str(exc_info.value) == (
+        "pivot column 'PIVOT' has no level below it in SYNTHETIC_LAST_LEVEL")

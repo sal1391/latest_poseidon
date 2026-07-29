@@ -20,6 +20,7 @@ def test_inventory_is_pinned():
     assert msp.columns["LOC_NM"].friendly == "Port"
     assert len(msp.negative_constraints) == 21
     assert all(nc.observed for nc in msp.negative_constraints)
+    assert msp.dual_purpose_pivot_column is None and msp.dual_purpose_pivot_value is None
 
     gl = ont.entity("W_MARINE_GL_SOURCE_AI")
     assert gl.date_column == "PERIOD_DATE"
