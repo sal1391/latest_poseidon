@@ -405,6 +405,24 @@ def test_bedrock_unsafe_name_collision_fails_discovery(tasks_package: Callable[.
     assert "data.qa__metric_query" in str(err.value)
 
 
+def test_bedrock_unsafe_non_round_tripping_id_fails_discovery_without_a_collision(
+    tasks_package: Callable[..., str],
+):
+    """One id is enough: a skill id carrying its own internal ``"__"`` maps to
+    a wire name the provider's reverse map (``"__" -> "."``) cannot turn back
+    into it, so the model's tool call would dispatch to a name that was never
+    registered -- a 404 on the skill's OWN id. The collision check above only
+    catches this when a second id happens to share the mapped name; the
+    per-id round trip catches it alone, at start-up, naming both spellings."""
+    pkg = tasks_package("roundtrip_tasks", _files("data", "qa__metric_query"))
+
+    with pytest.raises(SkillDefinitionError) as err:
+        SkillRegistry.discover(pkg)
+
+    assert "data.qa__metric_query" in str(err.value)
+    assert "data__qa__metric_query" in str(err.value)
+
+
 def test_bedrock_unsafe_overlong_name_fails_discovery(tasks_package: Callable[..., str]):
     """A skill id whose Bedrock tool name (post ``"." -> "__"``) exceeds
     ToolName's 64-character cap must fail discovery, naming the id and its

@@ -149,7 +149,7 @@ def _render_real_router_prompt(
     isolate one placeholder's actual contribution to the rendered text from
     the others -- see the false-pass this isolation exists to catch,
     documented on ``test_router_prompt_metric_names_present_independent_of_
-    skill_lines`` below."""
+    other_blocks`` below."""
     entity = get_ontology().entity(SALES_ENTITY)
     skills = SkillRegistry.discover()
     registry = PromptRegistry(DEFAULT_PROMPTS_DIR)
@@ -296,7 +296,7 @@ def test_metric_definitions_block_contains_every_certified_metric_name():
     contract: dynamic against the ontology's own metric inventory, asserted
     directly on ``metric_definitions_block``'s own return value with no
     Jinja template involved at all. Unlike
-    ``test_router_prompt_metric_names_present_independent_of_skill_lines``
+    ``test_router_prompt_metric_names_present_independent_of_other_blocks``
     (which proves the real ``router/system.md`` placeholder is wired
     correctly), this test is immune to ANY future template change --
     including a future placeholder overlap nobody has thought of yet --

@@ -24,7 +24,7 @@ file and the two modules it tests.
 
 import json
 import os
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date
 from pathlib import Path
 
@@ -219,12 +219,18 @@ def _run(
     window=None,
     slots: ConversationSlots | None = None,
     provider_key: str = "stub",
+    sink: RecordingSink | None = None,
 ) -> tuple[TurnResult, RecordingSink, StubProvider]:
     """One offline turn. Returns the result plus the two recorders every
-    assertion in this file reads: the event sink and the provider stub."""
+    assertion in this file reads: the event sink and the provider stub.
+
+    ``sink`` overrides the default recorder, which is what lets a test run
+    the identical turn through a DELIBERATELY misbehaving sink (see
+    ``_ArgumentMutatingSink``) without a second copy of this helper.
+    """
     provider = StubProvider(script)
     role_client = RoleClient(settings, providers={provider_key: provider})
-    sink = RecordingSink()
+    sink = RecordingSink() if sink is None else sink
     result = run_turn(
         role_client=role_client,
         registry=REGISTRY,
@@ -575,6 +581,23 @@ def test_the_callers_window_list_is_never_mutated(settings):
     assert window == [{"role": "user", "content": USER_QUESTION}]
 
 
+def test_each_provider_call_receives_the_history_as_it_stood_at_call_time(settings):
+    """Every call gets a SNAPSHOT of the message list (``RoleClient.invoke``),
+    never the loop's own growing one -- so a recording double, and a provider
+    that keeps a request to retry it, both hold what THIS call carried rather
+    than what the history became two iterations later. Two tool iterations
+    then a reply: 1, then 3, then 5 messages at call time."""
+    script = [
+        _tool_use(_call(GOOD_ARGS, call_id="tool-1")),
+        _tool_use(_call({**GOOD_ARGS, "metrics": ["VOLUME"]}, call_id="tool-2")),
+        _end_turn("Both answered."),
+    ]
+    _, _, provider = _run(settings, script)
+
+    assert [len(call["messages"]) for call in provider.calls] == [1, 3, 5]
+    assert provider.calls[0]["messages"] == WINDOW
+
+
 # ===========================================================================
 # Loop: events, payload by payload
 # ===========================================================================
@@ -619,6 +642,41 @@ def test_tool_done_event_carries_the_parts_the_ui_needs(settings):
     assert [part["kind"] for part in payload["parts"]] == ["table"]
     assert payload["parts"][0]["payload"]["rows"][0][0] == "Northstar Lines"
     assert payload["proof"][-1] == "Rows: 3"
+
+
+class _ArgumentMutatingSink(RecordingSink):
+    """A sink that EDITS the arguments it is handed before recording them.
+
+    Phase 6 binds the sink to an SSE stream and any later consumer (a run-log
+    tap, a dev harness) is equally free to normalize a payload it received --
+    a sink is an observer, and an observer must not be able to rewrite the
+    turn it is observing.
+    """
+
+    def emit(self, kind: str, payload: dict) -> None:
+        if kind == "tool_start":
+            payload["arguments"]["top_n"] = 1
+        super().emit(kind, payload)
+
+
+def test_a_sink_editing_the_tool_start_arguments_changes_nothing_downstream(settings):
+    """The event payload carries a COPY of ``ToolCall.arguments``, so a sink
+    that mutates it cannot reach the dispatch that follows (still top 5 ->
+    3 rows), the record Phase 6 will log, or the assistant echo the next
+    request carries."""
+    sink = _ArgumentMutatingSink()
+    result, _, provider = _run(
+        settings, [_tool_use(_call(dict(GOOD_ARGS))), _end_turn("done")], sink=sink
+    )
+
+    record = result.tool_records[0]
+    assert record.arguments["top_n"] == 5
+    assert "parts: table(rows=3)" in record.result_digest
+    echo = provider.calls[1]["messages"][1]["content"][0]["toolUse"]
+    assert echo["input"]["top_n"] == 5
+    # The sink kept what it was given, edit and all -- proving the mutation
+    # really happened and this test is not passing for want of one.
+    assert sink.events[1][1]["arguments"]["top_n"] == 1
 
 
 def test_tool_done_event_carries_the_problem_on_a_failed_dispatch(settings):
@@ -728,6 +786,35 @@ def test_unknown_skill_404_twice_fails_the_turn(settings):
     assert sink.kinds[-1] == "turn_error"
 
 
+def test_same_skill_failing_non_consecutively_still_fails_the_turn(settings):
+    """A skill's one correction chance is spent for the whole TURN, not until
+    its next success: fail -> succeed -> fail on the same id ends the turn
+    with the second failure's problem.
+
+    Permanent rather than reasoned about, because the tempting simplification
+    -- clearing the id from ``spent_corrections`` when it later succeeds --
+    leaves every other test in this section green while letting one skill
+    alternate failure and success for all ten iterations of a turn."""
+    script = [
+        _tool_use(_call(MISSING_METRICS_ARGS, call_id="bad-1")),
+        _tool_use(_call(GOOD_ARGS, call_id="good")),
+        _tool_use(_call(INVERTED_PERIOD_ARGS, call_id="bad-2")),
+        _end_turn("never reached"),
+    ]
+    result, sink, provider = _run(settings, script)
+
+    assert result.status == "error"
+    assert [(record.tool_seq, record.status) for record in result.tool_records] == [
+        (1, "error"),
+        (2, "ok"),
+        (3, "error"),
+    ]
+    assert result.problem["status"] == 422
+    assert "period" in result.problem["detail"]  # the LAST failure, not the first
+    assert sink.kinds[-1] == "turn_error"
+    assert len(provider.calls) == 3  # the scripted reply is never reached
+
+
 def test_two_different_skills_failing_once_each_does_not_fail_the_turn(settings):
     """The contract is per-SKILL, not per-turn: two different names each get
     their own single self-correction chance."""
@@ -811,6 +898,37 @@ def test_unsupported_stop_reason_fails_the_turn(settings):
     assert result.status == "error"
     assert result.problem["detail"] == (
         "provider reported unsupported stop_reason 'content_filtered'"
+    )
+
+
+def test_empty_end_turn_reply_fails_the_turn_instead_of_returning_a_blank_ok(settings):
+    """The symmetric half of the empty-tool_use guard below: Bedrock folds
+    ``content_filtered``/``guardrail_intervened`` into ``end_turn`` with no
+    text (``bedrock.py``'s deliberate lossy normalization), and returning
+    that as a successful turn would put an empty assistant bubble in the chat
+    and leave Phase 6's run log with nothing to explain it."""
+    result, sink, _ = _run(settings, [_end_turn("")])
+
+    assert result.status == "error"
+    assert result.text == ""
+    assert result.problem == {
+        "type": "about:blank",
+        "title": "llm provider error",
+        "detail": "provider reported stop_reason 'end_turn' with an empty reply",
+        "status": 502,
+    }
+    assert sink.kinds == ["llm_call", "turn_error"]
+    assert sink.events[-1] == ("turn_error", {"problem": result.problem})
+
+
+def test_whitespace_only_end_turn_reply_fails_the_turn_the_same_way(settings):
+    """Whitespace is not a reply: a turn whose whole text is spaces and
+    newlines renders as the identical empty bubble."""
+    result, _, _ = _run(settings, [_end_turn("  \n\t ")])
+
+    assert result.status == "error"
+    assert result.problem["detail"] == (
+        "provider reported stop_reason 'end_turn' with an empty reply"
     )
 
 
@@ -910,6 +1028,109 @@ def test_unregistered_provider_surfaces_before_any_tool_runs(monkeypatch):
 
     assert "no provider registered for key 'bedrock'" in str(err.value)
     assert sink.kinds == ["llm_call"]
+
+
+# ===========================================================================
+# Loop -> BedrockProvider, chained: the wire name lives only on the wire
+# ===========================================================================
+
+
+class _RecordingConverseClient:
+    """A bedrock-runtime client double -- the role ``_FakeClient`` plays in
+    ``test_llm_bedrock.py``, kept local so this file needs no cross-test
+    import. Records every ``converse`` request and replays one scripted
+    ConverseResponse per call."""
+
+    def __init__(self, responses):
+        self.requests: list[dict] = []
+        self._responses = list(responses)
+
+    def converse(self, **kwargs):
+        self.requests.append(kwargs)
+        return self._responses.pop(0)
+
+
+# The Bedrock-safe wire spelling of METRIC_QUERY -- what toolConfig carries
+# and what the model echoes back, since a dotted ToolName is rejected by
+# Converse (see bedrock.py's translation paragraph).
+_WIRE_NAME = "data_qa__metric_query"
+
+_CONVERSE_TOOL_USE = {
+    "output": {
+        "message": {
+            "role": "assistant",
+            "content": [
+                {"toolUse": {"toolUseId": "tool-1", "name": _WIRE_NAME, "input": dict(GOOD_ARGS)}}
+            ],
+        }
+    },
+    "stopReason": "tool_use",
+    "usage": {"inputTokens": 1000, "outputTokens": 40, "totalTokens": 1040},
+}
+
+_CONVERSE_END_TURN = {
+    "output": {"message": {"role": "assistant", "content": [{"text": "Here you go."}]}},
+    "stopReason": "end_turn",
+    "usage": {"inputTokens": 1200, "outputTokens": 25, "totalTokens": 1225},
+}
+
+
+def test_loop_through_bedrock_provider_keeps_the_wire_name_on_the_wire(monkeypatch):
+    """The two halves pinned separately above and in ``test_llm_bedrock.py``,
+    chained for real: the loop, a ``RoleClient`` in live mode, and a
+    ``BedrockProvider`` over a fake ``converse`` client, running two
+    iterations so the SECOND request is built from the loop's own history.
+
+    What it proves that neither half can alone: the Bedrock-safe wire name
+    exists only inside the converse payload (the tool definitions, and the
+    assistant echo the provider translated on the way out), while every
+    record, event and digest the loop produced stays dotted -- and the fake
+    rows' customer names, which reached the UI through ``tool_done``, are
+    nowhere in the request that goes back to the model."""
+    from poseidon.core.llm.bedrock import BedrockProvider
+
+    live_settings = _settings(monkeypatch, LLM_MODE="live", LLM_PROFILE="bedrock")
+    client = _RecordingConverseClient([_CONVERSE_TOOL_USE, _CONVERSE_END_TURN])
+    sink = RecordingSink()
+
+    result = run_turn(
+        role_client=RoleClient(
+            live_settings, providers={"bedrock": BedrockProvider(client=client)}
+        ),
+        registry=REGISTRY,
+        context=_context(live_settings),
+        prompt_registry=PromptRegistry(DEFAULT_PROMPTS_DIR),
+        user_instruction="",
+        memory_doc="",
+        parsed=None,
+        window=WINDOW,
+        sink=sink,
+        max_iterations=10,
+    )
+
+    assert result.status == "ok"
+    assert result.text == "Here you go."
+
+    # Nothing the loop produced ever spells the wire name.
+    records = json.dumps([asdict(record) for record in result.tool_records], default=str)
+    assert result.tool_records[0].skill_id == METRIC_QUERY
+    assert result.tool_records[0].result_digest.startswith(f"{METRIC_QUERY} ok")
+    assert _WIRE_NAME not in records
+    assert _WIRE_NAME not in json.dumps(sink.events, default=str)
+    assert METRIC_QUERY in json.dumps(sink.events, default=str)
+
+    # The wire name exists exactly where Converse requires it: the tool
+    # definitions, and the assistant turn echoed back on iteration 2.
+    second = client.requests[1]
+    assert [tool["toolSpec"]["name"] for tool in second["toolConfig"]["tools"]] == [_WIRE_NAME]
+    assert second["messages"][1]["content"][0]["toolUse"]["name"] == _WIRE_NAME
+    assert len(client.requests) == 2
+
+    # Context hygiene across the same seam: the rows went to the UI, not back
+    # into the window.
+    payload = json.dumps(second, default=str)
+    for customer in _CUSTOMERS:
+        assert customer not in payload
 
 
 # ===========================================================================

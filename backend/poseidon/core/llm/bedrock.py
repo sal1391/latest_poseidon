@@ -36,17 +36,26 @@ touch point (plan amendment aa33a2f, fix round 1): Bedrock's ``ToolName``
 pattern (``[a-zA-Z0-9_-]+``, verified in service-2.json) excludes ``.``
 entirely, but this codebase's skill ids are dotted (``"data_qa.metric_
 query"``). :func:`_to_bedrock_tool_name`/:func:`_from_bedrock_tool_name`
-translate ``"." <-> "__"`` at exactly three sites -- forward in
-``_build_tool_config``, reverse in both tool_use normalization paths
-(``_normalize_response``, ``_consume_stream``) -- and are deliberately pure,
-unconditional, and mechanical: no registry lookup and no validation happen
-here. A hallucinated wire name the model invented (never produced by the
-forward function for any real skill id) still reverse-maps to SOME string
-without raising; an unknown skill id is dispatch's existing 404 to catch,
-never this provider's job. The injectivity this translation relies on --
-that no two DIFFERENT registered skill ids ever map to the same wire name --
-is guaranteed one layer up, at discovery time, by
-``core/skills/registry.py``'s own ``SkillDefinitionError`` check (the
+translate ``"." <-> "__"`` at exactly four sites -- forward in
+``_build_tool_config`` (the tool definitions) and in
+:func:`_build_content_block` (the assistant history's own echoed
+``toolUse``, Task 4's discovery), reverse in both tool_use normalization
+paths (``_normalize_response``, ``_consume_stream``) -- and are deliberately
+pure, unconditional, and mechanical: no registry lookup and no validation
+happen here. A hallucinated wire name the model invented (never produced by
+the forward function for any real skill id) still reverse-maps to SOME
+string without raising; an unknown skill id is dispatch's existing 404 to
+catch, never this provider's job. The reverse map is likewise a NO-OP on a
+name that is already dotted (there is no ``"__"`` in it to replace), which
+matters more than it looks: the router prompt shows skill ids dotted while
+``toolConfig`` carries the wire spelling -- a deliberate split -- so a model
+that copies the prompt's spelling into its ``toolUse`` instead of the tool
+definition's still dispatches to the right skill. Whether that split costs
+routing accuracy is a live-key question, not one an offline test can
+answer. The invariant this translation relies on -- that every registered
+skill id survives the round trip, and so that no two DIFFERENT ids ever map
+to the same wire name -- is guaranteed one layer up, at discovery time, by
+``core/skills/registry.py``'s own ``SkillDefinitionError`` checks (the
 registry is where ids are minted; this module only ever consumes them).
 
 The client is built lazily (:meth:`BedrockProvider._client_or_build`, first

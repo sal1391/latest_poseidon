@@ -67,6 +67,18 @@ class LLMProvider(Protocol):
     above this seam (``RoleClient.invoke``, and later the agent loop) is
     written once against this Protocol and never branches on which
     provider actually answered.
+
+    The REQUEST side of that shape has a dialect, and it is worth stating
+    once: ``messages`` are Converse-native content blocks -- ``toolUse`` /
+    ``toolResult`` keyed by ``toolUseId``, whose ``status`` is Converse's
+    own ``ToolResultStatus`` ("success"/"error") -- because the agent loop
+    speaks that grammar natively (see ``loop.py``). It is the canonical
+    interchange format above this seam, not a Bedrock detail leaking
+    through: ``BedrockProvider`` therefore forwards it nearly verbatim,
+    while a future non-Bedrock provider (Cortex, Phase 14) owns translating
+    FROM it into whatever its own API wants. Skill ids in those blocks are
+    always dotted; a provider whose wire format forbids that translates at
+    its own boundary, as ``bedrock.py`` does.
     """
 
     def invoke(
@@ -124,10 +136,20 @@ class RoleClient:
     seam described in the module docstring.
 
     Provider instances are supplied by the caller (``providers``), never
-    constructed here -- Task 1 ships no real provider, so the default is
-    empty. A caller wanting ``invoke()`` to actually answer must register a
-    ``"stub"`` entry (stub mode) or an entry named for the resolved role's
-    provider (live mode).
+    constructed here: constructing one can touch credentials, and a class
+    whose mere existence needs AWS configured would break every offline
+    boot. The default is empty, so a caller wanting ``invoke()`` to actually
+    answer must register a ``"stub"`` entry (stub mode) or an entry named
+    for the resolved role's provider (live mode). Those are the two
+    canonical shapes, and Phase 6's app wiring is expected to pick between
+    them on ``settings.llm_mode``::
+
+        RoleClient(settings, providers={"stub": StubProvider(script)})
+        RoleClient(settings, providers={"bedrock": BedrockProvider()})
+
+    Registering both at once is harmless -- ``invoke()`` reads exactly one
+    key per call -- and is what a live suite that also wants scripted
+    fixtures does.
     """
 
     def __init__(
@@ -181,12 +203,21 @@ class RoleClient:
         provider, except ``cortex``, which raises rather than silently
         doing nothing (decision D33: not implemented until Phase 14).
         """
-        # Defensive copy (Task 1 review carry, sanctioned for Task 3): a
+        # Defensive copies (Task 1 review carry, sanctioned for Task 3; the
+        # `messages` half added in the final-review wave). For `tools`: a
         # misbehaving provider that mutated the list it was handed would
         # otherwise corrupt the mutable default `[]` above for every later
         # call that also omits `tools` -- copying here protects that shared
         # default regardless of what any given provider does with its copy.
+        # For `messages`: the agent loop hands its OWN growing history list
+        # to every call of a turn, so the same rule read one step further
+        # gives each call a SNAPSHOT of what it actually carried -- a
+        # recording double and a provider that keeps a request to retry it
+        # both see this call's history, not what it became two iterations
+        # later. Shallow on purpose: the loop only ever APPENDS message
+        # dicts, it never edits a block already in the list.
         tools = list(tools)
+        messages = list(messages)
         config = self.resolve(role)
         mode = self._settings.llm_mode
         if mode == "stub":

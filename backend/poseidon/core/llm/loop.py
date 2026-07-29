@@ -40,6 +40,17 @@ a failed :class:`TurnResult`, it does not raise. The one exception is a
 MISCONFIGURATION (no provider registered for the mode's key), which
 ``RoleClient`` raises and this loop deliberately does not catch: that is a
 deployment fault, not a conversation outcome.
+
+An EMPTY reply is one of those structured failures, both ways round: a
+``tool_use`` response carrying no tool calls, and an ``end_turn`` response
+whose text is blank. The second matters because ``bedrock.py`` folds every
+non-``tool_use`` StopReason into ``end_turn`` on purpose (a deliberately
+lossy normalization -- ``content_filtered`` and ``guardrail_intervened``
+arrive here as ``end_turn`` with no text), so accepting a blank reply as
+"ok" would put an empty assistant bubble in the chat and leave Phase 6's
+run log with a successful turn and nothing to explain it. Failing loudly is
+what keeps that recoverable; surfacing the richer stop reason itself is a
+later product decision, not this loop's.
 """
 
 from dataclasses import dataclass
@@ -78,6 +89,7 @@ ROUTER_GUARDRAIL_ENTITY = "MARINE_SALES_PLANNING_V"
 _CAP_TITLE = "agent loop exceeded max iterations"
 _PROVIDER_ERROR_TITLE = "llm provider error"
 _NO_TOOL_CALLS_DETAIL = "provider reported stop_reason 'tool_use' with no tool calls"
+_EMPTY_REPLY_DETAIL = "provider reported stop_reason 'end_turn' with an empty reply"
 
 _EMPTY_PARTS = "(none)"
 
@@ -288,6 +300,16 @@ def run_turn(
         )
 
         if response.stop_reason == "end_turn":
+            if not response.text.strip():
+                # The symmetric half of the empty-tool_use guard below; see
+                # the module docstring's structured-failures paragraph for
+                # why a blank reply is a failure and not a short answer.
+                return _failed_turn(
+                    sink,
+                    problem(502, _PROVIDER_ERROR_TITLE, _EMPTY_REPLY_DETAIL),
+                    tool_records,
+                    llm_records,
+                )
             return TurnResult(
                 text=response.text,
                 status="ok",
@@ -387,9 +409,15 @@ def _dispatch_one(
     wall clock that steps backwards mid-turn would produce a negative one.
     It is the only clock this module reads.
     """
+    # `dict(call.arguments)`, not the ToolCall's own dict: a sink is an
+    # OBSERVER (Phase 6 streams these as SSE; a run-log tap or dev harness
+    # may normalize what it receives), and an observer editing its payload
+    # must not be able to change the dispatch that follows, the record that
+    # gets logged, or the assistant echo the next request carries. Same
+    # reason `ToolRecord.arguments` is copied below.
     sink.emit(
         "tool_start",
-        {"tool_seq": tool_seq, "skill_id": call.name, "arguments": call.arguments},
+        {"tool_seq": tool_seq, "skill_id": call.name, "arguments": dict(call.arguments)},
     )
     started = monotonic()
     result = registry.dispatch(call.name, dict(call.arguments), context)
@@ -459,11 +487,16 @@ def _assistant_tool_use_message(calls: tuple[ToolCall, ...]) -> dict:
     alternating user/assistant roles -- a results message with no assistant
     turn before it is a rejected request, not a shorter one. Names stay
     dotted; ``bedrock.py`` translates them at its own boundary.
+
+    ``input`` is a copy of the call's arguments for the same reason the
+    event payload and the record are: this dict outlives the iteration that
+    built it (it stays in the history for every later call of the turn), so
+    it must not alias a dict anyone downstream still holds a reference to.
     """
     return {
         "role": "assistant",
         "content": [
-            {"toolUse": {"toolUseId": call.id, "name": call.name, "input": call.arguments}}
+            {"toolUse": {"toolUseId": call.id, "name": call.name, "input": dict(call.arguments)}}
             for call in calls
         ],
     }

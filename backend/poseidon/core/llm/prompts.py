@@ -108,10 +108,18 @@ def metric_definitions_block(entity: Entity) -> str:
     run -- matching ``Entity.dimensions()``/``measures()``'s own "in file
     order" convention).
 
-    The SQL expression, not a separate prose field, IS a metric's
-    definition here: :class:`~poseidon.core.ontology.models.Metric` has no
-    ``description`` field, only ``sql`` (the certified expression, verbatim)
-    -- see that module's docstring.
+    The certified SQL expression, and only it, is what this block carries.
+    :class:`~poseidon.core.ontology.models.Metric` does also hold ``rule``
+    -- router-facing prose on 3 of the sales entity's 7 metrics (MARGIN,
+    NUM_LOST, WIN_RATE), e.g. "NEVER sum or average a raw margin column" --
+    and leaving it out is a v1 scope decision, not an absence. The router's
+    job here is to pick a skill and fill its ARGUMENTS; it never writes SQL,
+    and the certified expression (rules and all) is applied downstream by
+    the deterministic skill, so the prose guards a step the model does not
+    take. It is also the most expensive kind of prompt text to be wrong
+    about -- paid on every turn, and unfalsifiable offline. Phase 6 revisits
+    it against live router evidence: a real misroute those three rules would
+    have prevented is the thing that decides it.
     """
     return "\n".join(f"{metric.name}: {metric.sql}" for metric in entity.metrics.values())
 

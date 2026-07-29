@@ -334,12 +334,16 @@ def _check_bedrock_safe_names(skills: dict[str, "RegisteredSkill"]) -> None:
     where ids are minted, so this is where the guarantee belongs, not where
     it is consumed.
 
-    This does not (and is not asked to) prove every individual id round-trips
-    losslessly through ``"__" -> "."`` in isolation -- an id that itself
-    already contains a literal ``"__"`` is exactly the shape that risks
-    colliding with some other id's mapped name, which is what this check
-    actually catches in practice for the realistic id space (task/skill
-    names built from single underscores as word separators, never double).
+    Every id must also survive the ROUND TRIP on its own --
+    ``reverse(forward(id)) == id`` -- which is the stronger property and the
+    one ``bedrock.py`` actually relies on: a name the model returns is
+    reverse-mapped and dispatched, so an id that does not come back
+    unchanged would 404 on its own skill even with no other skill in the
+    registry to collide with. Only an id carrying its own literal ``"__"``
+    can fail it. That subsumes injectivity (a left inverse on the whole set
+    implies it), so the collision check above is kept for its message rather
+    than for its coverage: a colliding PAIR is better reported by naming
+    both offenders than by naming one of them twice.
     """
     mapped_to_skill_id: dict[str, str] = {}
     for skill_id in skills:
@@ -358,6 +362,20 @@ def _check_bedrock_safe_names(skills: dict[str, "RegisteredSkill"]) -> None:
                 "one so the provider's reverse map can tell them apart"
             )
         mapped_to_skill_id[mapped] = skill_id
+
+    # A SECOND pass, deliberately: every colliding id also fails the round
+    # trip, and running this one first would report a two-id collision one id
+    # at a time. Whichever check fires, the rename it asks for is the same.
+    for mapped, skill_id in mapped_to_skill_id.items():
+        reversed_id = mapped.replace("__", ".")
+        if reversed_id != skill_id:
+            raise SkillDefinitionError(
+                f"skill '{skill_id}': Bedrock tool name '{mapped}' does not map "
+                f"back to it -- the provider's reverse map ('__' -> '.') returns "
+                f"'{reversed_id}', which is registered as nothing, so the model's "
+                "own tool call would 404. Rename the task or skill directory so "
+                "the id carries no '__' of its own"
+            )
 
 
 def _import(module_name: str, skill_id: str) -> ModuleType:
