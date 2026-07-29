@@ -52,16 +52,65 @@ is not a weaker stand-in for the missing half of the condition -- it is
 independently necessary regardless of hints: ``data_qa.metric_query``'s own
 ``Args.period`` is a REQUIRED field with no default (see
 ``metric_query/schema.py``), so no valid tool call could exist without one
-either way. It is also, in TODAY's registry, close to the same signal
-hints would have given: ``data_qa.metric_query`` is the only enabled,
-hintable skill (``customer_insight`` is ``enabled: false``,
-``research.web_research`` has no task directory yet -- see ``lexicon.py``'s
-own module docstring), so any non-empty hint shortlist already leads with
-it. ``test_tool_call_is_identical_regardless_of_hints_value`` in the test
-suite pins this directly: an otherwise-identical state block with
-``hints=()`` and with a non-empty ``hints`` both produce the byte-identical
-tool call, proving this router's output is genuinely invariant to hints,
-not accidentally coupled to them through some other field.
+either way, and hints have no channel into ``system`` today regardless (see
+above).
+
+**Fix round 1 correction (Important I1).** An earlier draft of this
+docstring additionally claimed the dropped hints condition was "close to
+the same signal" because ``data_qa.metric_query`` was "the only enabled,
+hintable skill" in today's registry. **That claim is FALSE**, with
+reproduced counterexamples, and has been struck. The error was conflating
+"the only DISPATCHABLE skill" (``SkillRegistry`` state -- ``customer_
+insight`` is ``enabled: false``, ``research.web_research`` has no task
+directory yet) with "the only skill the HINTER can score" (``lexicon.py``
+state) -- two different things. ``lexicon.py``'s own module docstring
+already says the hinter is "advisory lexicon data, decoupled from what is
+registered TODAY," and scores ``research.web_research``/``customer_
+insight.*`` ids regardless of registry state; a research- or brief-shaped
+message is scored against those ids whether or not anything would actually
+dispatch them. Reproduced directly against the real hinter:
+``hint("Any market news on our competitor in April 2026",
+ConversationSlots())`` returns only ``(CandidateSkill('research.
+web_research', 3.0),)`` -- no ``data_qa.metric_query`` candidate anywhere
+-- and ``hint("Give me an overview of Maersk in April 2026", ...)`` leads
+with ``customer_insight.existing_customer_brief``/``new_prospect_brief``,
+again with no metric_query candidate. Both messages also resolve "April
+2026" as a real period (independently reconfirmed via ``period_parser.
+parse_periods`` -- period resolution has no concept of what the period is
+"about").
+
+**Known, disclosed over-trigger.** Because of the above, the period-alone
+gate WILL mis-fire on this counterexample class: a research- or
+brief-shaped question that also names a period gets a ``data_qa.
+metric_query`` tool call from this router, and two invokes later, a
+confident ``"Certified answer for..."`` label on a question it never
+actually answered. There is no code-level mitigation for this today; it is
+a known, accepted limitation of the dev/demo router, not a silent one.
+``test_tool_call_is_identical_regardless_of_hints_value`` in the test suite
+pins TODAY's actual behavior -- an otherwise-identical state block with
+``hints=()`` and with a non-empty, metric-query-led ``hints`` both produce
+the byte-identical tool call -- which is a symptom of this gap, not a
+guarantee that should hold forever (see "Planned endgame" below).
+
+**Architecture-wide, not dev-router-specific (Important I2).**
+``render_state_block`` is SHARED infrastructure: ``loop.py``'s own
+``_router_system`` calls ``render_state_block(context.state, parsed)`` to
+build the REAL router's system prompt too (see ``loop.py``'s module
+docstring and ``_router_system``). So no router -- the live Bedrock router
+included -- can see ``ParsedTurn.hints`` today. This is a gap in the shared
+prompt-assembly layer, not a shortcut this fake alone takes.
+
+**Planned endgame.** Task 3 is sanctioned to extend ``render_state_block``
+with an additive hints line (never reshaping the existing pinned lines --
+the same "additive growth only" convention :class:`~poseidon.core.skills.
+context.ConversationSlots`'s own docstring already established for slot
+growth). Once that lands, this router's gate should upgrade to the plan's
+literal condition -- "hints lead with data_qa.metric_query AND a resolved
+period" -- which closes the over-trigger named above, and
+``test_tool_call_is_identical_regardless_of_hints_value`` should flip from
+proving invariance to proving the router RESPECTS hints (a research-led
+hints tuple should then produce the capability message, or no tool call,
+rather than a metric_query dispatch).
 
 Behavior table (the phase-6 plan; case (a), ambiguous turns, is the
 orchestrator's short-circuit -- Task 3 -- and never reaches this class, so

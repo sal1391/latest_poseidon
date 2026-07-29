@@ -17,9 +17,17 @@ See ``dev_router.py``'s own module docstring for the full, disclosed
 (confirmed there against ``prompts.py`` and against ``test_llm_prompts.py``'s
 own goldens), so this router's tool-call gate is "a period is resolved"
 alone, not "hints lead with data_qa.metric_query AND a resolved period" as
-the phase-6 plan's behavior table literally states.
-``test_tool_call_is_identical_regardless_of_hints_value`` below pins that
-decision directly.
+the phase-6 plan's behavior table literally states. As of fix round 1 that
+docstring also names the consequence honestly: the period-alone gate is a
+KNOWN, DISCLOSED OVER-TRIGGER for research-/brief-shaped questions that
+also name a period (e.g. "market news ... in April 2026"), it is
+architecture-wide -- ``loop.py``'s real router shares the same
+``render_state_block`` and so cannot see hints either -- and there is a
+planned endgame (Task 3 extends ``render_state_block`` with an additive
+hints line, after which this gate upgrades to the plan's literal
+condition). ``test_tool_call_is_identical_regardless_of_hints_value``
+below pins TODAY's gap-driven behavior, not a permanent guarantee -- see
+its own docstring.
 
 Non-ASCII characters in expected strings are written as explicit
 ``\\uXXXX`` escapes (see ``_EM_DASH``), the same convention every earlier
@@ -27,13 +35,16 @@ Phase 4/5 suite uses: an em dash, an en dash and a hyphen are visually
 indistinguishable in most editors, so a byte-pinned message that used a
 typed character could silently pin the wrong codepoint.
 ``test_chat_module_files_are_ascii_on_disk`` enforces that for this file
-and the two ``chat`` package modules it tests.
+and the three ``chat`` package modules it tests (fix round 1 added
+``__init__.py`` to the scanned set -- clean today, and the guard should
+keep it so).
 """
 
 import threading
 from datetime import date
 from pathlib import Path
 
+from poseidon.core import chat
 from poseidon.core.chat import dev_router, state
 from poseidon.core.chat.dev_router import DevDeterministicRouter
 from poseidon.core.chat.state import ConversationStateStore
@@ -51,6 +62,7 @@ from poseidon.core.llm.prompts import (
 from poseidon.core.llm.roles import RoleClient
 from poseidon.core.llm.types import LLMResponse, ToolCall
 from poseidon.core.ontology.loader import get_ontology
+from poseidon.core.parsing.pipeline import DEFAULT_ENTITY
 from poseidon.core.parsing.types import CandidateSkill, ParsedTurn, ResolvedEntity
 from poseidon.core.skills.context import ConversationSlots
 from poseidon.core.skills.registry import SkillRegistry
@@ -496,6 +508,16 @@ def test_tool_call_is_identical_regardless_of_hints_value():
     byte-identical tool call -- this router's decision is genuinely
     independent of ``ParsedTurn.hints``, not accidentally coupled to it
     through some other field.
+
+    This pins TODAY's gap-driven behavior, not a permanent guarantee: it is
+    the SAME reason a research- or brief-shaped question that also names a
+    period gets mis-routed to ``data_qa.metric_query`` (the "known,
+    disclosed over-trigger" in ``dev_router.py``'s module docstring, added
+    fix round 1). Once ``render_state_block`` renders hints and this
+    router's gate upgrades to also require them, this test should flip to
+    proving the OPPOSITE -- that a research-led ``hints`` tuple changes the
+    response (no tool call / the capability message) rather than producing
+    an identical one.
     """
     router = DevDeterministicRouter()
     messages = [_user_message("gp this period")]
@@ -660,6 +682,26 @@ def test_tool_result_present_but_no_period_resolved_falls_back_to_capability_mes
 
 
 # ---------------------------------------------------------------------------
+# Cross-module consistency: this router's hardcoded entity must match the
+# entity the deterministic parser actually parses against (fix round 1,
+# minor fold-in 2)
+# ---------------------------------------------------------------------------
+
+
+def test_default_entity_matches_the_parser_default_entity():
+    """Mirrors ``loop.py``'s own ``ROUTER_GUARDRAIL_ENTITY == DEFAULT_ENTITY``
+    pin (``test_llm_loop.py``'s ``test_router_guardrail_entity_matches_the_
+    parser_default_entity``): this router's hardcoded entity must be the
+    same default sales entity the deterministic parser probes
+    (``parsing.pipeline.DEFAULT_ENTITY``), or a tool call this router builds
+    would name an entity the turn was never actually parsed against. Pinned
+    as an equality against the module's own private constant, not an import
+    into the router itself -- the same decoupling ``loop.py``'s own
+    precedent uses."""
+    assert dev_router._DEFAULT_ENTITY == DEFAULT_ENTITY
+
+
+# ---------------------------------------------------------------------------
 # Integration: the REAL rendered router/system.md as the base section, and
 # real interop through RoleClient's stub-provider seam
 # ---------------------------------------------------------------------------
@@ -735,7 +777,15 @@ def test_registers_as_the_role_clients_stub_provider(monkeypatch):
 
 
 def test_chat_module_files_are_ascii_on_disk():
-    paths = (Path(state.__file__), Path(dev_router.__file__), Path(__file__))
+    # fix round 1, minor fold-in 1: `chat.__file__` (the package's
+    # `__init__.py`) added to the scanned set -- clean today, and this
+    # guard should keep it so.
+    paths = (
+        Path(chat.__file__),
+        Path(state.__file__),
+        Path(dev_router.__file__),
+        Path(__file__),
+    )
     for path in paths:
         offending = sorted({byte for byte in path.read_bytes() if byte > 0x7F})
         assert not offending, f"{path.name} holds non-ASCII bytes: {offending}"
