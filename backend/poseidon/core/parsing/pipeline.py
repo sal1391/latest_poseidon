@@ -9,9 +9,10 @@ Order
 1. ``normalize`` the raw message once. The result is ``ParsedTurn.
    normalized_text`` verbatim -- the record of what the user said -- and
    the base text every later step works from.
-2. Detect a PORT phrase in the normalized text: a "port of X" or "at X"
-   cue immediately followed by a TitleCase run (see "Phrase detection"
-   below). Detection only -- no data call yet.
+2. Detect a PORT phrase in the normalized text: a "port of X" (strong) or
+   "at X" (weak) cue immediately followed by a TitleCase run (see "Phrase
+   detection" and "Strong and weak port cues" below). Detection only -- no
+   data call yet.
 3. Detect a CUSTOMER phrase, in priority order: a quoted span, then a
    "for/about/on X" cue + TitleCase run (scanned over a scratch copy with
    the port span already blanked out -- see "Why the port span is blanked
@@ -31,9 +32,13 @@ Order
    same length, so every other offset stays stable) before period parsing.
 6. Parse periods over the MASKED working text, via
    ``period_parser.parse_periods(working_text, slots, reference_date,
-   data.available_periods(entity))``. ``parse_periods`` normalizes its own
-   input, so handing it already-normalized (and now also masked) text is
-   safe and idempotent.
+   data.available_periods(entity))``. The masked text is NOT itself
+   normalized -- masking replaces a span with spaces of the same length, so
+   it deliberately leaves a run of spaces behind, which is exactly what
+   normalized text does not contain. What makes handing it over safe is
+   that ``parse_periods`` runs ``normalize`` on its own input, collapsing
+   that space run before it parses anything; the safety is that second
+   normalize pass, not any idempotence property of the masking step.
 7. Fold this turn's resolutions into ``SlotUpdates`` (see "Slot write-back"
    below) and apply them to the PRIOR ``slots`` via ``carry.apply_carry``.
 8. Hint skills from the UNMASKED normalized text and the POST-carry slots
@@ -59,9 +64,21 @@ NO customer/port and NO issue -- resolution is only ever attempted when a
 cue word (quotes, for/about/on, port of, at) is actually present. This
 guards against false "unknown customer" issues on ordinary capitalized
 text (a sentence-initial word, an entity name that is not a cue target).
-The other direction holds too, on purpose: a cue word PLUS a TitleCase run
-that fails to resolve DOES produce an issue -- the cue is exactly what
-turns an ordinary sentence into a claim worth checking.
+The other direction holds too, on purpose: a STRONG cue word (quotes,
+for/about/on, port of) PLUS a TitleCase run that fails to resolve DOES
+produce an issue -- the cue is exactly what turns an ordinary sentence into
+a claim worth checking. The one exception is the weak "at X" port cue,
+which stays silent on a miss for precisely the same reason the no-cue case
+does; see "Strong and weak port cues" below.
+
+The run regex is ASCII-only (``[A-Z][\\w'-]*`` -- the ``[A-Z]`` initial
+does not include accented capitals), so a name whose first letter is
+non-ASCII (an "Elan Maritime" spelled with a capital E-acute) is silently
+undetectable today: no customer, no port, no issue. Harmless at the moment
+-- all 40 seeded CUST_NM and 30 seeded LOC_NM values are ASCII, verified
+against the live seed -- and widening the class is a certification-time
+concern, to be decided against real (non-synthetic) dimension data rather
+than guessed at now.
 
 A single-word TitleCase run that is ALSO a calendar month name (see
 ``_MONTH_WORDS``) is excluded from customer/port detection -- but a LONGER
@@ -78,6 +95,31 @@ period parser needs to see. "May Shipping" itself (two words) is unaffected
 word. A quoted span is exempt from this guard entirely: explicit quoting is
 the strongest possible signal and overrides the heuristic.
 
+Strong and weak port cues
+---------------------------
+The two port cues do NOT carry the same weight, and the difference decides
+whether a miss is worth telling the user about:
+
+* **"port of X" is a STRONG cue.** Nobody writes "port of" by accident, so
+  the phrase is a claim that a port was named. It always resolves, and a
+  miss always surfaces its issue (``customer_unknown`` on nothing close,
+  ``customer_ambiguous`` with chips on a candidate-band near-miss).
+* **"at X" is a WEAK cue.** "at" is an ordinary English preposition that
+  happens to precede ports often enough to be worth trying. When the phrase
+  does NOT auto-resolve -- ``entity is None``, whether the result was
+  unknown OR candidate-band -- the conclusion is simply that the sentence
+  did not contain a port: NO issue is emitted and no slot is written. "gp
+  at Q3" and "take a look at Northstar Lines" are not failed port lookups;
+  they are sentences with no port in them, and a clarification prompt on
+  either is noise the user never invited. A weak cue that DOES auto-resolve
+  behaves exactly like a strong one (resolved entity, masked span, slot
+  replaced) -- the weakness only ever governs what happens on a miss.
+
+Mechanically ``_detect_port`` reports which pattern matched and
+``parse_turn`` drops the resolver's issue for a weak-cue miss; nothing else
+about the plan changes, since a non-auto-applied result already masks
+nothing and already leaves the slot UNSET.
+
 Why the port span is blanked first
 ------------------------------------
 "for Port of Singapore" would otherwise read as a customer cue ("for") plus
@@ -89,6 +131,18 @@ port span FIRST and blanking it out of a scratch copy used only for
 customer-cue scanning (never the real working text) removes the false
 "Port" candidate regardless of which customer cue word happened to precede
 it, without hardcoding "port" as a stopword inside the customer regex.
+
+Known limitation, quoted spans: the quoted-span branch of
+``_detect_customer`` runs BEFORE the port blanking is consulted (quotes win
+outright, by design -- see "Phrase detection"), so quoting a port name
+('gp at "Port of Singapore"') resolves the port correctly AND hands
+"Port of Singapore" to the customer resolver as a quoted phrase, which
+misses and raises a spurious ``customer_unknown`` beside the correct port.
+Documented rather than fixed: the reorder that would fix it (blank the port
+span before the quoted-span search too) changes which phrase wins for every
+quoted input, and that surface is not worth disturbing for a phrasing
+nobody has actually used. Ordinary '... at Port of Singapore' without the
+quotes is unaffected.
 
 Masking
 -------
@@ -119,18 +173,30 @@ slot:
   UNSET` (carry). A mention that fails to resolve deliberately does NOT
   clear the slot: the issue is the signal to the user, not a silent reset
   of context that might still be correct.
-* Period: mirrors ``PeriodParse.a_source``/``b_source`` directly --
-  ``"text"`` REPLACES the slot with that window's first-of-period start
-  date (even when the window is also flagged ``period_unavailable``: the
-  user did name a period this turn, in their own words, and persisting it
-  is more transparent than silently reverting to something they did not
-  ask for); ``"carry"``/``"none"`` are both UNSET, since neither reflects a
-  NEW value from this turn's own text. One consequence worth naming: an
+* ``period_a``: mirrors ``PeriodParse.a_source`` directly -- ``"text"``
+  REPLACES the slot with that window's first-of-period start date (even
+  when the window is also flagged ``period_unavailable``: the user did name
+  a period this turn, in their own words, and persisting it is more
+  transparent than silently reverting to something they did not ask for);
+  ``"carry"``/``"none"`` are both UNSET, since neither reflects a NEW value
+  from this turn's own text. One consequence worth naming: an
   explicit-but-unresolvable phrase (year-to-date at a January 1 reference,
   ``a_source == "none"`` despite text being present -- see
   ``period_parser``'s own docstring) also leaves the slot untouched rather
   than clearing it, for the same "an issue is not a silent reset" reason as
   customer/port above.
+* ``period_b`` does NOT mirror ``period_a``'s rule: ``b_source == "text"``
+  replaces, and anything else CLEARS the slot to ``None`` -- never UNSET.
+  ``period_parser``'s own contract is that ``period_b`` is never carried (a
+  comparison has to be asked for again, so ``b_source`` is only ever
+  ``"text"`` or ``"none"``), and the slot has to obey that same rule or the
+  two disagree: ``ParsedTurn.period_b`` would correctly go ``None`` on a
+  follow-up turn while ``ParsedTurn.slots.period_b`` still held turn 1's
+  comparison window, ready to be picked back up by a later turn the user
+  never asked to compare. Note this is a genuine exception to the
+  "an issue is not a silent reset" reasoning above, and deliberately so:
+  clearing here reflects the ABSENCE of a comparison phrase, not a failure
+  to resolve one.
 * ``mode``/``region``/``topic``/``pass_through`` are never touched here
   (``SlotUpdates`` has no fields for them) -- ``apply_carry`` always carries
   them forward unchanged; ``pass_through`` population is wired by whichever
@@ -157,7 +223,7 @@ oversight -- disclosed in the task report.
 
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 
 from poseidon.core.data.client import DataClient
@@ -296,21 +362,25 @@ def _quoted_match(text: str) -> _Detected | None:
     return _Detected(match.group(1), (match.start(1), match.end(1)))
 
 
-def _detect_port(text: str) -> tuple[_Detected, tuple[int, int]] | None:
+def _detect_port(text: str) -> tuple[_Detected, tuple[int, int], bool] | None:
     """ "port of X" first, then "at X" -- the brief's own cue ordering.
 
-    Returns the detected phrase (captured name only) alongside the WHOLE
-    cue+run match span -- the latter is what ``_detect_customer`` blanks out
-    of its scratch copy, and it must cover the cue word too ("Port of"), not
-    just the captured name, or "for Port of Singapore" would still read as
-    customer cue "for" + a false one-word TitleCase run "Port"; see the
-    module docstring's "Why the port span is blanked first".
+    Returns the detected phrase (captured name only), the WHOLE cue+run
+    match span, and whether the cue was the STRONG one ("port of") -- see
+    the module docstring's "Strong and weak port cues" for what the last
+    flag decides.
+
+    The span is the whole match, not just the captured name: it is what
+    ``_detect_customer`` blanks out of its scratch copy, and it must cover
+    the cue word too ("Port of"), or "for Port of Singapore" would still
+    read as customer cue "for" + a false one-word TitleCase run "Port"; see
+    the module docstring's "Why the port span is blanked first".
     """
     for pattern in (_PORT_OF_RE, _PORT_AT_RE):
         found = _titlecase_run_match(pattern, text)
         if found is not None:
             detected, match = found
-            return detected, (match.start(0), match.end(0))
+            return detected, (match.start(0), match.end(0)), pattern is _PORT_OF_RE
     return None
 
 
@@ -400,6 +470,7 @@ def parse_turn(
     port_found = None if port_clear else _detect_port(normalized)
     port_detected = port_found[0] if port_found is not None else None
     port_exclude_span = port_found[1] if port_found is not None else None
+    port_cue_is_weak = port_found is not None and not port_found[2]
 
     customer_clear = _CLEAR_CUSTOMER_RE.search(normalized) is not None
     customer_detected = (
@@ -415,6 +486,12 @@ def parse_turn(
 
     port_values = data.list_dimension_values(entity, _LOC_NM) if port_detected is not None else ()
     port_plan = _plan_resolution(port_detected, port_clear, port_values, _KIND_PORT)
+    # A WEAK cue that did not auto-resolve made no claim to check -- drop the
+    # resolver's issue (see "Strong and weak port cues"). Everything else the
+    # plan holds stays as it is: no entity, no mask, and slot_update already
+    # UNSET, so nothing is written either way.
+    if port_cue_is_weak and port_plan.entity is None:
+        port_plan = replace(port_plan, issue=None)
 
     working_text = normalized
     for span in (customer_plan.mask_span, port_plan.mask_span):
@@ -428,7 +505,9 @@ def parse_turn(
         customer=customer_plan.slot_update,
         port=port_plan.slot_update,
         period_a=(period_parse.period_a.start if period_parse.a_source == "text" else UNSET),
-        period_b=(period_parse.period_b.start if period_parse.b_source == "text" else UNSET),
+        # Not UNSET: period_b CLEARS whenever this turn's text did not ask
+        # for a comparison -- see "Slot write-back" above.
+        period_b=(period_parse.period_b.start if period_parse.b_source == "text" else None),
     )
     post_carry_slots = apply_carry(slots, updates)
 

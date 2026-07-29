@@ -20,8 +20,12 @@ Four things are pinned here:
   ``pipeline``'s own module docstring), explicit clear/reset phrases, the
   conservative detection rule in BOTH directions (an unmatched TitleCase run
   with no cue word never produces an issue, even when it exactly names a
-  real customer; a cue word plus a run that fails to resolve DOES), and
-  multi-issue ordering (customer, then port, then period).
+  real customer; a STRONG cue word plus a run that fails to resolve DOES),
+  the strong/weak port cue split (the same missing port surfaces an issue
+  after "port of" and stays silent after "at", for both the unknown and the
+  candidate-band outcome), the ``period_b`` slot clearing when a follow-up
+  turn asks no comparison, and multi-issue ordering (customer, then port,
+  then period).
 * ``@pytest.mark.pg`` goldens -- the resolver and the full pipeline against
   the live seeded Postgres database (the established skip-guard pattern from
   ``test_synthetic_client_pg.py``).
@@ -430,6 +434,9 @@ def _turn(
 _UNAVAILABLE_2019_04 = (
     "no data for 2019-04-01..2019-05-01 " + _EM_DASH + " available 2025-01-01..2026-06-30"
 )
+_UNAVAILABLE_2026_Q3 = (
+    "no data for 2026-07-01..2026-10-01 " + _EM_DASH + " available 2025-01-01..2026-06-30"
+)
 
 
 class PipelineCase(NamedTuple):
@@ -555,9 +562,27 @@ PIPELINE_CASES = [
         ),
     ),
     PipelineCase(
-        # Port cue "at X" resolving to nothing: kind="port" wording, code
-        # stays customer_unknown (customer_resolver's documented vocabulary).
-        "port_cue_at_unknown_value",
+        # STRONG port cue ("port of X") resolving to nothing: the claim is
+        # explicit, so the miss surfaces. kind="port" wording, code stays
+        # customer_unknown (customer_resolver's documented vocabulary).
+        "port_cue_of_unknown_value",
+        "gp for Port of Nowhereland in april 2026",
+        NO_SLOTS,
+        _turn(
+            "gp for Port of Nowhereland in april 2026",
+            ConversationSlots(period_a=date(2026, 4, 1)),
+            period_a=_month(2026, 4),
+            hints=(CandidateSkill(METRIC_QUERY, 1.0),),
+            issues=(ParseIssue("customer_unknown", "no port matching 'Nowhereland'"),),
+        ),
+    ),
+    PipelineCase(
+        # WEAK port cue ("at X") resolving to nothing: same phrase, same
+        # empty pool, but "at" is an ordinary English preposition, so a miss
+        # means the sentence simply did not name a port -- silence, not a
+        # clarification the user never invited (see pipeline.py's "Strong
+        # and weak port cues").
+        "port_cue_at_unknown_value_is_silent",
         "gp at Nowhereland in april 2026",
         NO_SLOTS,
         _turn(
@@ -565,7 +590,69 @@ PIPELINE_CASES = [
             ConversationSlots(period_a=date(2026, 4, 1)),
             period_a=_month(2026, 4),
             hints=(CandidateSkill(METRIC_QUERY, 1.0),),
-            issues=(ParseIssue("customer_unknown", "no port matching 'Nowhereland'"),),
+        ),
+    ),
+    PipelineCase(
+        # Strong cue, CANDIDATE band (not unknown): "Rottervale" scores
+        # ~0.74 against "Rotterdam" -- inside [0.60, 0.80) -- so the strong
+        # claim surfaces did-you-mean chips.
+        "port_cue_of_candidate_band_surfaces_chips",
+        "gp for Port of Rottervale in april 2026",
+        NO_SLOTS,
+        _turn(
+            "gp for Port of Rottervale in april 2026",
+            ConversationSlots(period_a=date(2026, 4, 1)),
+            period_a=_month(2026, 4),
+            hints=(CandidateSkill(METRIC_QUERY, 1.0),),
+            issues=(
+                ParseIssue("customer_ambiguous", "did you mean one of: Rotterdam?", ("Rotterdam",)),
+            ),
+        ),
+    ),
+    PipelineCase(
+        # Weak cue, same candidate band: the weak-cue rule covers the WHOLE
+        # not-auto-resolved space, band as well as unknown -- "at" plus a
+        # near-miss is still not a port claim.
+        "port_cue_at_candidate_band_is_silent",
+        "gp at Rottervale in april 2026",
+        NO_SLOTS,
+        _turn(
+            "gp at Rottervale in april 2026",
+            ConversationSlots(period_a=date(2026, 4, 1)),
+            period_a=_month(2026, 4),
+            hints=(CandidateSkill(METRIC_QUERY, 1.0),),
+        ),
+    ),
+    PipelineCase(
+        # Regression pin (final-review repro): "at Q3" is a period phrase
+        # wearing a TitleCase run. The only issue left is the period's own
+        # availability miss -- no port issue at all.
+        "port_cue_at_bare_quarter_is_only_a_period",
+        "gp at Q3",
+        NO_SLOTS,
+        _turn(
+            "gp at Q3",
+            ConversationSlots(period_a=date(2026, 7, 1)),
+            period_a=PeriodWindow(date(2026, 7, 1), date(2026, 10, 1)),
+            hints=(CandidateSkill(METRIC_QUERY, 1.0),),
+            issues=(ParseIssue("period_unavailable", _UNAVAILABLE_2026_Q3),),
+        ),
+    ),
+    PipelineCase(
+        # Regression pin (final-review repro): "take a look at <customer>"
+        # is ordinary English, not a port claim -- zero issues. (The customer
+        # goes undetected here because the port span is blanked before the
+        # customer scan and no for/about/on cue precedes the name; that
+        # asymmetry is the port-symmetry decision the plan parks, not this
+        # rule's doing.)
+        "port_cue_at_inside_ordinary_english_is_silent",
+        "take a look at Northstar Lines gp for april 2026",
+        NO_SLOTS,
+        _turn(
+            "take a look at Northstar Lines gp for april 2026",
+            ConversationSlots(period_a=date(2026, 4, 1)),
+            period_a=_month(2026, 4),
+            hints=(CandidateSkill(METRIC_QUERY, 1.0),),
         ),
     ),
     PipelineCase(
@@ -633,12 +720,14 @@ PIPELINE_CASES = [
     ),
     PipelineCase(
         # Multi-issue combination and order: customer, then port, then
-        # period -- all three fail in the same turn.
+        # period -- all three fail in the same turn. The port miss needs the
+        # STRONG cue to surface at all (see the weak-cue cases above), so
+        # the port phrase here is "Port of Nowhereland".
         "multi_issue_combination_customer_then_port_then_period",
-        "gp for Acme Corp at Nowhereland in april 2019",
+        "gp for Acme Corp at Port of Nowhereland in april 2019",
         NO_SLOTS,
         _turn(
-            "gp for Acme Corp at Nowhereland in april 2019",
+            "gp for Acme Corp at Port of Nowhereland in april 2019",
             ConversationSlots(period_a=date(2019, 4, 1)),
             period_a=_month(2019, 4),
             hints=(CandidateSkill(METRIC_QUERY, 1.0),),
@@ -793,6 +882,25 @@ def test_parse_turn_slots_is_post_carry():
     result = parse_turn("gp for Blue Anchor Marine", prior, REF, FakeDataClient())
     assert result.slots.customer == "Blue Anchor Marine"
     assert prior.customer == "Northstar Lines"  # the input is never mutated
+
+
+def test_period_b_slot_clears_when_the_next_turn_asks_no_comparison():
+    """``period_b`` is NEVER carried (``period_parser``'s own contract: a
+    comparison has to be asked for again). The slot has to follow the same
+    rule as the field, or turn 2 answers a comparison the user only asked
+    for in turn 1 -- run as a real two-turn sequence so the stale value can
+    only come from turn 1's own write-back, never from a hand-built prior.
+    """
+    client = FakeDataClient()
+    first = parse_turn("gp april 2026 vs march 2026", NO_SLOTS, REF, client)
+    assert first.period_b == _month(2026, 3)
+    assert first.slots.period_b == date(2026, 3, 1)
+
+    second = parse_turn("and volume?", first.slots, REF, client)
+    assert second.period_a == _month(2026, 4)  # period_a still carries
+    assert second.slots.period_a == date(2026, 4, 1)
+    assert second.period_b is None
+    assert second.slots.period_b is None
 
 
 def test_parse_turn_mode_region_topic_pass_through_carry_untouched():

@@ -22,14 +22,20 @@ source (never a literal typed character), so a decomposed (NFD) input and
 its precomposed (NFC) expected output can never be silently confused with
 each other by an editor or encoding round-trip -- the escape text itself is
 plain ASCII; Python resolves it to the real codepoint at parse time.
+``test_task_one_files_are_ascii_on_disk`` enforces that convention on the
+bytes (the same guard the Task 2/3/4 suites carry), over this task's three
+modules and this file: a promise about escapes that nothing reads back is
+exactly the promise a stray paste breaks.
 """
 
 from dataclasses import FrozenInstanceError, fields, replace
 from datetime import date
+from pathlib import Path
 
 import pytest
 
 from poseidon.core.data.specs import PeriodWindow
+from poseidon.core.parsing import carry, types
 from poseidon.core.parsing.carry import UNSET, SlotUpdates, _UnsetType, apply_carry
 from poseidon.core.parsing.normalize import normalize
 from poseidon.core.parsing.types import CandidateSkill, ParsedTurn, ParseIssue, ResolvedEntity
@@ -73,10 +79,18 @@ def test_new_fields_are_frozen():
 # codepoints) -- same composition rule applied to a bare "e" + combining
 # accent in the last row. Escapes only, so input/expected can never drift
 # into the same (already-composed) bytes by accident.
-NFD_CAFE = "café today"
-NFC_CAFE = "café today"
-NFD_E_ACUTE = "é"
-NFC_E_ACUTE = "é"
+NFD_CAFE = "cafe\u0301 today"
+NFC_CAFE = "caf\u00e9 today"
+NFD_E_ACUTE = "e\u0301"
+NFC_E_ACUTE = "\u00e9"
+
+# U+00A0 NO-BREAK SPACE -- the whitespace character a user's paste from Word,
+# a PDF or a web page most often carries in. ``normalize`` collapses it to a
+# plain space like any other whitespace run (``str.split()`` splits on the
+# full Unicode whitespace set, not just ASCII), so no later stage has to
+# special-case it: an invisible non-breaking space would otherwise defeat
+# every ``\b``-anchored cue regex in the pipeline.
+NBSP_INPUT = "a\u00a0b"
 
 NORMALIZE_TABLE = [
     ("already normal", "already normal"),
@@ -93,6 +107,7 @@ NORMALIZE_TABLE = [
     ("single", "single"),
     (NFD_CAFE, NFC_CAFE),
     (NFD_E_ACUTE, NFC_E_ACUTE),
+    (NBSP_INPUT, "a b"),
 ]
 
 
@@ -368,3 +383,32 @@ def test_pass_through_replace_is_wholesale_never_a_merge():
     assert next_turn.pass_through == (("Region", "APAC"),)
     assert len(next_turn.pass_through) == 1
     assert ("Top GP customer", "Acme Shipping") not in next_turn.pass_through
+
+
+# ---------------------------------------------------------------------------
+# ASCII-only source, matching the Task 2/3/4 convention
+# ---------------------------------------------------------------------------
+
+
+def test_task_one_files_are_ascii_on_disk():
+    """The escapes-only convention this module's docstring promises is only
+    actually enforced by reading the bytes back: a literal NFD/NFC character
+    typed into the source looks identical to its escape in every editor, and
+    the two normalize rows that pin composition would then be comparing
+    whatever the file happened to be saved as. The same guard the other three
+    parsing suites carry, over this task's own three modules plus this file.
+
+    ``normalize.py``'s path comes from the function's own code object rather
+    than a module attribute: the package ``__init__`` re-exports the
+    FUNCTION under the submodule's name, so ``parsing.normalize`` resolves
+    to the function, not the module.
+    """
+    paths = (
+        Path(normalize.__code__.co_filename),
+        Path(carry.__file__),
+        Path(types.__file__),
+        Path(__file__),
+    )
+    for path in paths:
+        offending = sorted({byte for byte in path.read_bytes() if byte > 0x7F})
+        assert not offending, f"{path.name} holds non-ASCII bytes: {offending}"

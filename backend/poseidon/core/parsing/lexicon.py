@@ -13,9 +13,12 @@ through :class:`~poseidon.core.skills.registry.SkillRegistry`:
 * ``customer_insight.existing_customer_brief`` /
   ``customer_insight.new_prospect_brief`` -- the ``customer_insight`` task
   directory exists (``poseidon/tasks/customer_insight/``) but its
-  ``task.yml`` is ``enabled: false`` and neither brief skill has a
-  ``schema.py`` yet, so ``SkillRegistry.discover`` skips the whole task
-  (Phase 8 finishes and enables it; see that package's own docstrings).
+  ``task.yml`` is ``enabled: false``. Of the two brief skills, only
+  ``existing_customer_brief`` has a skill directory at all (with tools and
+  tests, but no ``schema.py``); ``new_prospect_brief`` has no directory yet.
+  Either way ``SkillRegistry.discover`` skips the whole task, so both ids
+  are future ids today (Phase 8 finishes and enables it; see that package's
+  own docstrings).
 
 Referencing all three here is deliberate, not a typo: the hinter is advisory
 lexicon data, decoupled from what is registered TODAY, so each id turns real
@@ -39,6 +42,16 @@ overview") comes back with a decisive leader instead of a tie. A bare generic
 word alone still returns both, tied, sorted alphabetically by skill id --
 that is a legitimate, harmless outcome (hints are advisory, never a
 dispatch; see ``skill_hinter.hint``'s docstring for the tie-break rule).
+
+Deferred: doc 02 section 5 describes the hinter's output as a ranked skill
+list "+ mode hints", i.e. a mode signal surfaced alongside the skills. The
+shipped :func:`~poseidon.core.parsing.skill_hinter.hint` folds
+:data:`MODE_HINTS` INTO the skill scores instead and returns only
+``CandidateSkill`` tuples; ``ParsedTurn`` carries no ``mode`` field of its
+own, and ``ConversationSlots.mode`` is written by the bubble-entry flow,
+not by parsing. Emitting a separate mode hint is deferred to Phase 6, which
+owns mode end to end -- doing it here would mean inventing a second output
+shape for a consumer that does not exist yet.
 
 :data:`MODE_SLOT_ALIASES` is a third, smaller table beyond the two the task
 interface names (``KEYWORDS``, ``MODE_HINTS``). It maps the two mode values

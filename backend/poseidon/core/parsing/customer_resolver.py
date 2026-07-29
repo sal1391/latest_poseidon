@@ -32,6 +32,15 @@ Tiers, first hit wins
    are closed toward the HIGHER tier: exactly 0.80 auto-applies, exactly
    0.60 lands in the candidate band rather than being unknown.
 
+Deferred tier: doc 02 section 5 specifies tier 1 as "exact/alias" -- an
+alias lookup (trade names, abbreviations, legal-entity variants) sharing
+tier 1's confidence with an exact match. No alias data exists anywhere in
+this repo, so the alias tier is deferred rather than stubbed: a lookup
+against an empty table would be dead code pretending to be a contract.
+Flagged as a certification concern -- the tier has to land before real
+customer data does, since that is exactly when "Northstar" for "Northstar
+Lines Pte Ltd" starts arriving.
+
 The fuzzy candidate tuple is the top ``_MAX_CANDIDATES`` (3) values by score
 that EACH individually clear ``CANDIDATE_THRESHOLD`` -- the same 0.60 floor
 that gates whether the call lands in the candidate band at all is applied a
