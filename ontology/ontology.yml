@@ -1,0 +1,591 @@
+# =============================================================================
+# ontology.yml — the workspace's CERTIFIED-ONLY semantic layer.
+# =============================================================================
+# Schema v2 per _meta/specs/2026-07-06-ontology-harness-design.md. Loaded and
+# VALIDATED by wfs_core.ontology.model.Ontology.load (presence == certified;
+# there is no per-entity `status: certified` — only planned/retired are stamped
+# [S1]). Machine PROPOSES (proposed/<key>.proposed.yml), a human CERTIFIES into
+# this file, compile regenerates what apps consume. Do NOT hand-edit human
+# fields the wrong way: this file is the source of truth for metric formulas,
+# grain, joins and negative constraints.
+#
+# This seed was hand-authored from the existing hand-written truth [M1, M2
+# bootstrap]. Where the source docs DISAGREE, the conflict is recorded verbatim
+# in each entity's `bootstrap_conflicts:` list rather than silently resolved.
+# =============================================================================
+version: 2
+
+entities:
+
+  # ===========================================================================
+  # MARINE_SALES_PLANNING_V — flat marine fuel sales planning view.
+  # Union of three divergent hand-written copies (streamlit-in-snowflake,
+  # table-chatbot, research-platform) + the table-chatbot columns.txt manifest +
+  # the SiS skills playbook + segments/marine.yml.
+  # ===========================================================================
+  MARINE_SALES_PLANNING_V:
+    kind: snowflake_table
+    fqn: SANDBOX.MCA.MARINE_SALES_PLANNING_V
+    source_type: view
+    owner: Marine Commercial Analytics (MCA)
+    date_column: LIFT_ETA_DATE
+    grain: one row per marine fuel transaction (point-of-interest / POI)
+    columns:
+      POI_ID:
+        type: VARCHAR
+        role: identifier
+        friendly: POI ID
+        description: Unique transaction ID. Always referred to as "POI".
+        description_source: human
+        verified: true
+      "#_FIXTURES":
+        type: FLOAT
+        role: measure
+        friendly: "# Won"
+        agg: sum
+        quoted: true
+        description: Won-transaction flag/count — 1 if the transaction was won, 0 otherwise. Summed -> NUM_WON. Double-quote the leading "#".
+        description_source: human
+        verified: true
+      "#_INQUIRIES":
+        type: FLOAT
+        role: measure
+        friendly: "# Inquiries"
+        agg: sum
+        quoted: true
+        description: Inquiry count — 1 per row (one inquiry per transaction). Summed -> NUM_INQUIRIES. Double-quote the leading "#".
+        description_source: human
+        verified: true
+      LIFT_ETA_DATE:
+        type: DATE
+        role: date
+        friendly: Delivery / ETA Date
+        description: Fuel delivery date, or expected (ETA) delivery date if not yet delivered. Drives all period filtering.
+        description_source: human
+        verified: true
+      GROSS_PROFIT:
+        type: DOUBLE
+        role: measure
+        friendly: Gross Profit
+        unit: USD
+        agg: sum
+        description: Gross profit (USD) for this transaction. Summed -> GP.
+        description_source: human
+        verified: true
+      FIXED_TONS:
+        type: DOUBLE
+        role: measure
+        friendly: Volume
+        unit: tons
+        agg: sum
+        description: Volume of marine fuel delivered, in tons. Summed -> VOLUME.
+        description_source: human
+        verified: true
+      CUST_NM:
+        type: VARCHAR
+        role: dimension
+        friendly: Customer
+        description: Customer name (Customer category). The researched entity / default company filter in research-platform.
+        description_source: human
+        verified: true
+      SUPPLIER_NM:
+        type: VARCHAR
+        role: dimension
+        friendly: Supplier
+        description: Supplier name (Supplier category).
+        description_source: human
+        verified: true
+      LOC_NM:
+        type: VARCHAR
+        role: dimension
+        friendly: Port
+        description: Port location (Location category). Default top-dimension breakdown.
+        description_source: human
+        verified: true
+      SUPPLY_TEAM_NAME:
+        type: VARCHAR
+        role: dimension
+        friendly: Supply Region
+        description: Supply region / team (Location category).
+        description_source: human
+        verified: true
+      SUPP_BRKR:
+        type: VARCHAR
+        role: dimension
+        friendly: Supply Broker
+        description: Supply broker for the transaction (Broker category).
+        description_source: human
+        verified: true
+      PRIMARY_SUPPLY_TEAM_OFFICE:
+        type: VARCHAR
+        role: dimension
+        friendly: Supply Team Office
+        description: Supply team office (Broker category).
+        description_source: human
+        verified: true
+      PRIMARY_SUPPLY_TEAM_OFFICE_REGION:
+        type: VARCHAR
+        role: dimension
+        friendly: Supply Team Region
+        description: Supply team region (Broker category).
+        description_source: human
+        verified: true
+      PRIMARY_BRKR:
+        type: VARCHAR
+        role: dimension
+        friendly: Primary Broker
+        description: Account owner / primary broker (Broker category).
+        description_source: human
+        verified: true
+      PRIMARY_BRKR_OFFICE:
+        type: VARCHAR
+        role: dimension
+        friendly: Primary Broker Office
+        description: Primary broker's office (Broker category).
+        description_source: human
+        verified: true
+      PRIMARY_BRKR_REGION:
+        type: VARCHAR
+        role: dimension
+        friendly: Primary Broker Region
+        description: Primary broker's region (Broker category).
+        description_source: human
+        verified: true
+      CUSTOMER_BRKR:
+        type: VARCHAR
+        role: dimension
+        friendly: Customer Broker
+        description: Customer broker for the transaction (Broker category).
+        description_source: human
+        verified: true
+      CUSTOMER_TEAM_NAME:
+        type: VARCHAR
+        role: dimension
+        friendly: Customer Broker Office
+        description: Customer broker's office (Broker category).
+        description_source: human
+        verified: true
+      CBO_REGION:
+        type: VARCHAR
+        role: dimension
+        friendly: Customer Broker Region
+        description: Customer broker's region (Broker category).
+        description_source: human
+        verified: true
+      DEAL_CLASSIFICATION_TRADE_CUT:
+        type: VARCHAR
+        role: dimension
+        friendly: Deal Class
+        description: Deal Class / Deal Type (e.g. TRADED, INVENTORY).
+        description_source: human
+        verified: true
+      VESSEL_DASHBOARD_SHIPTYPE_GRP:
+        type: VARCHAR
+        role: dimension
+        friendly: Ship Type
+        description: Ship type of the individual vessel on this transaction (Tanker/Bulker/Container). Per-ship classification. See disambiguation.
+        description_source: human
+        verified: true
+      CUST_DASHBOARD_SHIPTYPE_GRP:
+        type: VARCHAR
+        role: dimension
+        friendly: Customer Ship Type
+        description: The customer's overall ship-type classification. Per-customer label. See disambiguation.
+        description_source: human
+        verified: true
+    metrics:
+      # Base metric names follow the research-platform / segments/marine.yml
+      # canonical (NUM_WON/NUM_INQUIRIES/NUM_LOST); per-app WON/INQUIRIES/LOST
+      # naming is carried in apps.*.overrides.metric_aliases (bootstrap conflict).
+      VOLUME:
+        sql: SUM(FIXED_TONS)
+        kind: sum
+        depends_on: [FIXED_TONS]
+      GP:
+        sql: SUM(GROSS_PROFIT)
+        kind: sum
+        depends_on: [GROSS_PROFIT]
+      MARGIN:
+        sql: SUM(GROSS_PROFIT) / NULLIF(SUM(FIXED_TONS), 0)
+        kind: ratio
+        rule: Profit per ton (USD/ton). NEVER sum or average a raw margin column — recompute as a ratio of aggregated GP over aggregated volume. NULLIF guards divide-by-zero.
+        depends_on: [GROSS_PROFIT, FIXED_TONS]
+      NUM_WON:
+        sql: SUM("#_FIXTURES")
+        kind: sum
+        depends_on: ["#_FIXTURES"]
+      NUM_INQUIRIES:
+        sql: SUM("#_INQUIRIES")
+        kind: sum
+        depends_on: ["#_INQUIRIES"]
+      NUM_LOST:
+        sql: SUM("#_INQUIRIES") - SUM("#_FIXTURES")
+        kind: derived
+        rule: Inquiries that did not convert. Derived, not a column.
+        depends_on: ["#_INQUIRIES", "#_FIXTURES"]
+      WIN_RATE:
+        sql: SUM("#_FIXTURES") / NULLIF(SUM("#_INQUIRIES"), 0)
+        kind: ratio
+        rule: Diagnostic-only ratio; add HAVING SUM("#_INQUIRIES") >= 5 to filter noise. Defined in the SiS/table-chatbot docs; absent from segments/marine.yml.
+        depends_on: ["#_FIXTURES", "#_INQUIRIES"]
+    disambiguations:
+      - columns: [VESSEL_DASHBOARD_SHIPTYPE_GRP, CUST_DASHBOARD_SHIPTYPE_GRP]
+        text: >-
+          Per-vessel vs customer-level ship type. VESSEL_DASHBOARD_SHIPTYPE_GRP is the ship
+          type of the individual vessel on this transaction (a single customer can have
+          transactions across multiple ship types); CUST_DASHBOARD_SHIPTYPE_GRP is the
+          customer's overall classification (every transaction for that customer rolls up to
+          the same value). Pair the two to see fleet-mix vs customer-classification divergence.
+      - columns: ["#_INQUIRIES", "#_FIXTURES"]
+        text: >-
+          Inquiries are every opportunity (1 per row); fixtures are the subset that were won.
+          Lost = inquiries - fixtures. Never treat fixtures as a standalone total without the
+          inquiry denominator, and never divide fixtures by anything but inquiries for win-rate.
+    negative_constraints:
+      # Observed hallucinations from the two LLM-SQL apps (streamlit-in-snowflake,
+      # table-chatbot). observed: true — these are the shipped, known-bad guesses.
+      - {wrong: FIXTURES, right: '"#_FIXTURES"', observed: true, app: streamlit-in-snowflake, first_seen: 2026-05-01}
+      - {wrong: FIXTURE_STATUS, right: '"#_FIXTURES"', observed: true, app: streamlit-in-snowflake}
+      - {wrong: TRANSACTIONS_WON, right: '"#_FIXTURES"', observed: true, app: streamlit-in-snowflake}
+      - {wrong: WON_FLAG, right: '"#_FIXTURES"', observed: true, app: streamlit-in-snowflake}
+      - {wrong: IS_WON, right: '"#_FIXTURES"', observed: true, app: streamlit-in-snowflake}
+      - {wrong: STATUS, right: '"#_FIXTURES"', observed: true, app: streamlit-in-snowflake}
+      - {wrong: INQUIRY_ID, right: '"#_INQUIRIES"', observed: true, app: streamlit-in-snowflake}
+      - {wrong: INQUIRY_COUNT, right: '"#_INQUIRIES"', observed: true, app: streamlit-in-snowflake}
+      - {wrong: CUSTOMER_NAME, right: CUST_NM, observed: true, app: streamlit-in-snowflake}
+      - {wrong: CUSTOMER_NM, right: CUST_NM, observed: true, app: streamlit-in-snowflake}
+      - {wrong: PORT_NM, right: LOC_NM, observed: true, app: table-chatbot}
+      - {wrong: PORT_NAME, right: LOC_NM, observed: true, app: streamlit-in-snowflake}
+      - {wrong: PORT, right: LOC_NM, observed: true, app: research-platform}
+      - {wrong: TONS, right: FIXED_TONS, observed: true, app: streamlit-in-snowflake}
+      - {wrong: TONNAGE, right: FIXED_TONS, observed: true, app: research-platform}
+      - {wrong: VOLUME, right: FIXED_TONS, observed: true, app: research-platform}
+      - {wrong: GP_AMOUNT, right: GROSS_PROFIT, observed: true, app: streamlit-in-snowflake}
+      - {wrong: GROSS_PROFIT_AMOUNT, right: GROSS_PROFIT, observed: true, app: streamlit-in-snowflake}
+      - {wrong: PROFIT, right: GROSS_PROFIT, observed: true, app: research-platform}
+      - {wrong: DELIVERY_DATE, right: LIFT_ETA_DATE, observed: true, app: streamlit-in-snowflake}
+      - {wrong: ETA_DATE, right: LIFT_ETA_DATE, observed: true, app: streamlit-in-snowflake}
+    business_rules:
+      - Filter by month with DATE_TRUNC('MONTH', LIFT_ETA_DATE). The research-platform app compares two windows — prior full calendar year vs current YTD.
+      - GROUP BY exactly the dimensions the user selected.
+      - MARGIN is always SUM(GROSS_PROFIT)/NULLIF(SUM(FIXED_TONS),0) — never summed or averaged.
+      - COALESCE(col, 'Unknown') on dimension columns before grouping.
+      - SELECT only — no DDL/DML (also enforced by wfs_core.snowflake_client.execute_query).
+      - NUM_LOST/LOST is derived — SUM("#_INQUIRIES")-SUM("#_FIXTURES") — not a column.
+      - Double-quote "#_FIXTURES" and "#_INQUIRIES" in every query, or Snowflake fails to parse the identifier.
+      - VOLUME, GP, MARGIN, NUM_WON, NUM_INQUIRIES, NUM_LOST and WIN_RATE are metrics (SQL formulas), never bareword columns.
+    provenance:
+      method: seeded-from-table-docs (union of three divergent copies)
+      seed_sources:
+        - archetypes/streamlit-in-snowflake/docs/tables/MARINE_SALES_PLANNING_V.md
+        - archetypes/streamlit-in-snowflake/skills/SKILL.md
+        - archetypes/table-chatbot/docs/tables/MARINE_SALES_PLANNING_V.md
+        - archetypes/table-chatbot/docs/tables/MARINE_SALES_PLANNING_V.columns.txt
+        - archetypes/research-platform/docs/tables/MARINE_SALES_PLANNING_V.md
+        - archetypes/research-platform/segments/marine.yml
+      certified_by: carlos
+      at: 2026-07-07
+    bootstrap_conflicts:
+      - '"#_FIXTURES"/"#_INQUIRIES" type: streamlit-in-snowflake and table-chatbot docs declare FLOAT; research-platform doc declares NUMBER. Seed uses FLOAT (2 of 3 sources); reconcile against the live schema.'
+      - 'POI_ID identifier: present in the streamlit-in-snowflake and table-chatbot catalogs (and in columns.txt); absent from the research-platform catalog. Seed includes POI_ID because columns.txt carries it.'
+      - 'Metric names: research-platform / segments/marine.yml use NUM_WON / NUM_INQUIRIES / NUM_LOST; streamlit-in-snowflake and table-chatbot use WON / INQUIRIES / LOST. Seed base names = NUM_WON / NUM_INQUIRIES / NUM_LOST; the WON/INQUIRIES/LOST naming is carried per-app in apps.*.overrides.metric_aliases.'
+      - 'WIN_RATE metric: defined in the streamlit-in-snowflake and table-chatbot table docs; absent from segments/marine.yml metrics. Seed includes it as a diagnostic-only ratio.'
+      - 'Owner / refresh cadence: only the research-platform doc names an owner (Marine Commercial Analytics / MCA); none of the three states a concrete refresh cadence (research-platform records only "Snowflake view over marine sales planning data"). Seed adopts the MCA owner and leaves refresh_cadence unset.'
+
+  # ===========================================================================
+  # W_MARINE_GL_SOURCE_AI — hierarchical / GL-style finance source table.
+  # Seeded from the container-agent-app table doc + columns.txt + the taxonomy/
+  # hierarchy kit (structure certified here; DATA lives as hashed snapshots [S2]).
+  # ===========================================================================
+  W_MARINE_GL_SOURCE_AI:
+    kind: snowflake_table
+    fqn: SANDBOX.MCA.W_MARINE_GL_SOURCE_AI
+    source_type: table
+    owner: Marine finance / MCA (TM1 GL export); agent "Athena"
+    refresh_cadence: Batch export of the TM1 GL string mapping (periodic; treat as a slowly-changing snapshot, reloaded on deploy)
+    date_column: PERIOD_DATE
+    grain: one row per GL string — a fully-qualified GL line carrying the complete CLASS hierarchy path + all six orthogonal dimensions + one AMOUNT_USD value for one period (~21,729 distinct GL strings in the source profile)
+    columns:
+      CLASS6_Calc:
+        type: VARCHAR
+        role: dimension
+        friendly: CLASS6 (calculated, broadest)
+        description: Top calculated grouping (L1, broadest). 4 distinct, 0 null — Profit and Loss / Balance Sheet / Headcount STAT / Grand Total. Where a name exists at both CLASS6_Calc and CLASS6, the loader treats CLASS6 as the "real" level.
+        description_source: human
+        verified: true
+      CLASS6:
+        type: VARCHAR
+        role: dimension
+        friendly: CLASS6
+        description: Report section (L2). 4 distinct, 0 null (Grand Total -> Total).
+        description_source: human
+        verified: true
+      CLASS5:
+        type: VARCHAR
+        role: dimension
+        friendly: CLASS5
+        description: Major reporting area (L3). 8 distinct, 0 null; Operating Income dominates (~17,221 rows).
+        description_source: human
+        verified: true
+      CLASS4:
+        type: VARCHAR
+        role: dimension
+        friendly: CLASS4
+        description: Sub-section (L4). 19 distinct, 753 null. Value 'Volume' (2,092 rows) is the pivot of the unit rule (see dual_purpose_measures).
+        description_source: human
+        verified: true
+      CLASS3:
+        type: VARCHAR
+        role: dimension
+        friendly: CLASS3
+        description: Category (L5). 58 distinct, 1,779 null. Includes the 9 Volume categories.
+        description_source: human
+        verified: true
+      CLASS2:
+        type: VARCHAR
+        role: dimension
+        friendly: CLASS2
+        description: Sub-category (L6). 85 distinct, 5,018 null.
+        description_source: human
+        verified: true
+      CLASS1:
+        type: VARCHAR
+        role: dimension
+        friendly: CLASS1 (narrowest)
+        description: Leaf detail (L7, narrowest). 31 distinct, 16,516 null (mostly NULL). Always COALESCE(CLASS1,'Unassigned') in a GROUP BY.
+        description_source: human
+        verified: true
+      COMPANY:
+        type: VARCHAR
+        role: dimension
+        friendly: Company
+        description: Legal entity. 99 distinct, 0 null, never 'Default'. The dim users ask about most.
+        description_source: human
+        verified: true
+      OFFICE:
+        type: VARCHAR
+        role: dimension
+        friendly: Office
+        description: Geographic office (not legal). 167 distinct; ~80% are 'Default'. Do not offer as a breakdown axis unless the metric is known populated across it.
+        description_source: human
+        verified: true
+      DEPARTMENT:
+        type: VARCHAR
+        role: dimension
+        friendly: Department
+        description: Functional department (not legal). 94 distinct; most rows 'Default'.
+        description_source: human
+        verified: true
+      ACCOUNT:
+        type: VARCHAR
+        role: dimension
+        friendly: Account
+        description: Leaf-level GL account. 1,002 distinct, 0 null. The lowest addressable line item — denser than CLASS1 (mostly null); sits below CLASS1 in the drill chain. Volume rows' ACCOUNTs begin "Tonnage-…".
+        description_source: human
+        verified: true
+      BROKER:
+        type: VARCHAR
+        role: dimension
+        friendly: Broker
+        description: Deal broker on a trade-side transaction. 265 distinct; ~58.8% 'Default' (non-trade rows). Deepest drill axis (below ACCOUNT). Do not suggest as a breakdown for Balance Sheet / OpEx / tax questions.
+        description_source: human
+        verified: true
+      FUTURE:
+        type: VARCHAR
+        role: dimension
+        friendly: Future
+        description: Reserved-for-expansion placeholder dim. 38 distinct; ~97.7% 'Default'. Plumbed through but not worth synonyms yet.
+        description_source: human
+        verified: true
+      AMOUNT_USD:
+        type: NUMBER
+        role: measure
+        friendly: Amount (USD)
+        unit: USD
+        agg: sum
+        description: The single fact measure — the only column you ever SUM. Dual-purpose — dollars for monetary rows; a physical quantity (tons or gallons) for CLASS4='Volume' rows. See dual_purpose_measures.
+        description_source: human
+        verified: true
+      PERIOD_DATE:
+        type: VARCHAR
+        role: date
+        friendly: Period Date
+        description: GL accounting period this line belongs to. May be stored as VARCHAR — always wrap in TO_DATE(PERIOD_DATE) before DATE_TRUNC.
+        description_source: human
+        verified: true
+    metrics:
+      MONETARY_TOTAL:
+        sql: SUM(AMOUNT_USD)
+        kind: sum
+        rule: Scope to the resolved CLASS node, then aggregate. Monetary queries MUST append AND COALESCE(CLASS4,'') <> 'Volume' so tonnage/gallons never leak into a dollar sum. Sign convention — revenue positive, cost/expense negative, profit = revenue + cost.
+        depends_on: [AMOUNT_USD]
+    disambiguations:
+      - columns: [AMOUNT_USD, CLASS4]
+        text: >-
+          AMOUNT_USD (the measure) vs "Gross Profit"/"Volume" (CLASS4 VALUES). AMOUNT_USD is
+          the only numeric column you ever SUM. "Gross Profit", "Volume", "Trade GP" etc. are
+          values in the CLASS columns, not columns. "What is Gross Profit?" -> WHERE
+          CLASS4='Gross Profit' then SUM(AMOUNT_USD). Do not look for a GROSS_PROFIT/VOLUME column.
+      - columns: [CLASS1, ACCOUNT]
+        text: >-
+          CLASS1 is the narrowest CLASS hierarchy level and is NULL on ~76% of rows. ACCOUNT is
+          a dimension that is always populated and is effectively the addressable leaf below
+          CLASS1. When a user drills a CLASS1 leaf one level further, the next level is ACCOUNT
+          (a dim), not another CLASS.
+      - columns: [COMPANY, OFFICE, DEPARTMENT]
+        text: >-
+          All three are "where/who" slicers on different axes — legal entity (COMPANY, always
+          populated), geography (OFFICE, ~80% Default), function (DEPARTMENT, mostly Default).
+          Because OFFICE/DEPARTMENT are mostly 'Default', do not offer them as a breakdown axis
+          unless the metric is known to be populated across them.
+      - columns: [BROKER, ACCOUNT]
+        text: >-
+          Both are deep dims. ACCOUNT is universal (every row); BROKER is meaningful only for
+          trade-side rows (Trade GP, Trade Rev, Commission GP …) and is 'Default' on ~59% of
+          rows. Do not suggest BROKER as a breakdown for Balance Sheet / OpEx / tax questions.
+    negative_constraints:
+      # Anticipated (not yet observed) — the container-agent-app has not been
+      # exercised live yet; seeded from the confusable-column analysis + the
+      # sibling flat table. Prune to the ones that actually fire once exercised.
+      - {wrong: GROSS_PROFIT, right: CLASS4, observed: false, app: container-agent-app}
+      - {wrong: GP, right: CLASS4, observed: false, app: container-agent-app}
+      - {wrong: MARGIN, right: CLASS4, observed: false, app: container-agent-app}
+      - {wrong: GROSS_MARGIN, right: CLASS4, observed: false, app: container-agent-app}
+      - {wrong: FIXED_TONS, right: AMOUNT_USD, observed: false, app: container-agent-app}
+      - {wrong: TONS, right: AMOUNT_USD, observed: false, app: container-agent-app}
+      - {wrong: GALLONS, right: AMOUNT_USD, observed: false, app: container-agent-app}
+      - {wrong: QUANTITY, right: AMOUNT_USD, observed: false, app: container-agent-app}
+      - {wrong: AMOUNT, right: AMOUNT_USD, observed: false, app: container-agent-app}
+      - {wrong: AMT, right: AMOUNT_USD, observed: false, app: container-agent-app}
+      - {wrong: VALUE, right: AMOUNT_USD, observed: false, app: container-agent-app}
+      - {wrong: USD_AMOUNT, right: AMOUNT_USD, observed: false, app: container-agent-app}
+      - {wrong: TOTAL, right: AMOUNT_USD, observed: false, app: container-agent-app}
+      - {wrong: TRANSACTION_DATE, right: PERIOD_DATE, observed: false, app: container-agent-app}
+      - {wrong: GL_DATE, right: PERIOD_DATE, observed: false, app: container-agent-app}
+      - {wrong: MONTH, right: PERIOD_DATE, observed: false, app: container-agent-app}
+      - {wrong: PERIOD, right: PERIOD_DATE, observed: false, app: container-agent-app}
+    business_rules:
+      - Resolve the phrase to a canonical CLASS node, then filter that CLASS column — WHERE <CLASS_LEVEL> = '<canonical name>'.
+      - Aggregate only SUM(AMOUNT_USD) — it is the sole measure. Never sum any CLASS column or a made-up numeric column.
+      - Monetary queries must exclude Volume — append AND COALESCE(CLASS4,'') <> 'Volume' (belt-and-suspenders, universal).
+      - Volume queries drop the exclusion and carry a unit. At CLASS4='Volume' (unit-mixed) never emit a single aggregate — force a per-CLASS3 breakdown.
+      - COALESCE(<col>,'Unassigned') on every GROUP BY — CLASS1 is NULL on 16,516/21,729 rows.
+      - Date filter uses DATE_TRUNC('<grain>', TO_DATE(PERIOD_DATE)); TO_DATE is required because PERIOD_DATE may be VARCHAR.
+      - ORDER BY the alias (e.g. ORDER BY AMOUNT_USD DESC) — Snowflake rejects ORDER BY SUM(AMOUNT_USD) in these templates.
+      - "'Default' is data, not absence — never filter it out, treat it as NULL, or coalesce it away without intent."
+      - dim_filters values are whitelisted against taxonomy/dim_canonicals.csv before reaching SQL — unknown values are rejected with a "did you mean", not passed through.
+      - dim_filters carry-over — omit = carry prior filters, {} = clear, a new non-empty dict = replace (never merge). group_by_dim is per-question and never carried.
+      - SELECT/WITH only — no DDL, DML, or GRANT (enforced at the execution layer).
+      - Cycle hazard — "Profit and Loss" appears at both CLASS6_Calc and CLASS6, and "Other G&A Expenses" at both CLASS2 and CLASS1; any child-walking traversal MUST carry a visited set or it stack-overflows.
+      - "CUST_NM, LOC_NM, POI_ID, \"#_FIXTURES\" and \"#_INQUIRIES\" belong to the flat MARINE_SALES_PLANNING_V table, not this GL table. There is no CLASS0 and no BUSINESS/SCENARIO/SEGMENT filter column — Marine + Actuals are the inherent scope of the source."
+    hierarchies:
+      level_columns: [CLASS6_Calc, CLASS6, CLASS5, CLASS4, CLASS3, CLASS2, CLASS1]
+      dim_columns: [COMPANY, OFFICE, DEPARTMENT, ACCOUNT, BROKER, FUTURE]
+      dual_purpose_measures:
+        - measure: AMOUNT_USD
+          unit_pivot: {column: CLASS4, value: Volume}
+          exclusion_clause: COALESCE(CLASS4,'') <> 'Volume'
+          sign_convention: revenue positive, cost/expense negative, profit = revenue + cost (cost already negative)
+      # DATA snapshots — content-hashed references to the EXISTING taxonomy kit
+      # files (structure certified above; data refreshed by investigate [S2]).
+      # dim_aliases.yml is the M3 hand-written fast-path lane and is NOT a
+      # compiled snapshot.
+      data_snapshots:
+        - path: archetypes/container-agent-app/taxonomy/tm1_raw_hierarchy.csv
+          sha256: 18e6b9f7a629b7a545ee354eae1efaca133aca090e761adc51eabd21a7e7bd6a
+          refreshed_at: 2026-07-06
+        - path: archetypes/container-agent-app/taxonomy/dim_canonicals.csv
+          sha256: 0c7d6b5837e47923ae4045c78e384f00bee743f96f3a8029acb0ee7edbc773c5
+          refreshed_at: 2026-07-06
+        - path: archetypes/container-agent-app/taxonomy/measure_units.yml
+          sha256: e7d45610643b9ced2150f28a186a5717553dec4fa8c3cf2a28295f00c926d116
+          refreshed_at: 2026-07-06
+    provenance:
+      method: seeded-from-table-docs + hierarchy-kit
+      seed_sources:
+        - archetypes/container-agent-app/docs/tables/W_MARINE_GL_SOURCE_AI.md
+        - archetypes/container-agent-app/docs/tables/W_MARINE_GL_SOURCE_AI.columns.txt
+        - archetypes/container-agent-app/taxonomy/tm1_raw_hierarchy.csv
+        - archetypes/container-agent-app/taxonomy/measure_units.yml
+        - archetypes/container-agent-app/taxonomy/dim_canonicals.csv
+      certified_by: carlos
+      at: 2026-07-07
+    bootstrap_conflicts:
+      - 'AMOUNT_USD type: the doc lists "NUMBER/DOUBLE" (inferred, not read back from the live schema). Seed uses NUMBER; reconcile against the live schema.'
+      - 'PERIOD_DATE type: the doc lists "DATE or VARCHAR" (may be stored as VARCHAR). Seed uses VARCHAR — the defensive assumption the query builder makes with TO_DATE(); reconcile against the live schema.'
+      - 'The onboarding brief suggested seeding "no AMOUNT_USD" as a negative constraint; the doc rejects this — AMOUNT_USD is the real, and only, measure column. Seed does NOT add that constraint.'
+      - 'Column-type source: all 15 SQL types are inferred from the reference ground truth (app/config.py, query_builder.py), not from a live get_table_columns() pull. Re-investigate confirms them.'
+
+  # ===========================================================================
+  # AR_INVOICES — planned registry slot (NOT yet onboarded). Present so the
+  # table-chatbot app binding can name it; excluded from compile except as a
+  # commented registry slot [M2]. Certify it via the ontology lifecycle before
+  # any relationship or metric is trusted.
+  # ===========================================================================
+  AR_INVOICES:
+    kind: snowflake_table
+    fqn: SANDBOX.MCA.AR_INVOICES
+    status: planned
+    provenance:
+      method: registry-slot (unonboarded)
+      seed_sources:
+        - archetypes/table-chatbot/registry.yml
+      at: 2026-07-07
+    bootstrap_conflicts:
+      - 'AR_INVOICES is a placeholder slot mirrored from the table-chatbot registry.yml onboarding checklist. Its FQN, columns, date column and the MARINE_SALES_PLANNING_V.CUST_NM -> AR_INVOICES join are all TODO — run investigate against the real AR table before certifying.'
+
+# ---------------------------------------------------------------------------
+# relationships: certified only; BOTH endpoints must be certified entities [S1].
+# The seed has none — MARINE_SALES_PLANNING_V (sales POI grain) and
+# W_MARINE_GL_SOURCE_AI (GL-string grain) do not join, and AR_INVOICES is only a
+# planned slot. Candidate joins land in proposed/<key>.proposed.yml and are
+# certified in here one at a time (30-70% of data-inferred FK proposals are false
+# — check the orphan examples at certify time).
+# ---------------------------------------------------------------------------
+
+apps:
+
+  # --- MARINE_SALES_PLANNING_V consumers (three archetypes) ------------------
+  streamlit-in-snowflake-marine:
+    root: archetypes/streamlit-in-snowflake
+    entities: [MARINE_SALES_PLANNING_V]
+    overrides:
+      MARINE_SALES_PLANNING_V:
+        # SiS skills playbook labels the win/inquiry/lost metrics "# Won" etc.
+        # but keys them WON/INQUIRIES/LOST.
+        metric_aliases: {NUM_WON: WON, NUM_INQUIRIES: INQUIRIES, NUM_LOST: LOST}
+
+  table-chatbot-marine:
+    root: archetypes/table-chatbot
+    entities: [MARINE_SALES_PLANNING_V, AR_INVOICES]
+    registry_path: registry.yml
+    overrides:
+      MARINE_SALES_PLANNING_V:
+        metric_aliases: {NUM_WON: WON, NUM_INQUIRIES: INQUIRIES, NUM_LOST: LOST}
+        # manifest_extra_columns is intentionally NOT set: the shipped
+        # backend/tools/__init__.py::marine_config() TableConfig and
+        # backend/tests/fixtures/sample_sales.csv key the port dimension as
+        # PORT_NM, which is NOT a certified column (the real one is LOC_NM — see
+        # MARINE_SALES_PLANNING_V.negative_constraints). PORT_NM would fail
+        # ontology validation as a manifest_extra_column; reconcile PORT_NM ->
+        # LOC_NM before pointing this app at the live table.
+        manifest_note: shipped registry/TableConfig/fixture key the port dimension as PORT_NM; reconcile to LOC_NM (see negative_constraints) before live.
+
+  research-platform-marine:
+    root: archetypes/research-platform
+    entities: [MARINE_SALES_PLANNING_V]
+    overrides:
+      MARINE_SALES_PLANNING_V:
+        # research-platform uses the base metric names directly (NUM_WON etc.);
+        # no metric_aliases needed. It exposes a 6-dimension SUBSET, order
+        # preserved (segments/marine.yml `dimensions`); LOC_NM is the default
+        # top-dimension breakdown.
+        dimension_subset: [LOC_NM, CUST_NM, SUPPLIER_NM, SUPPLY_TEAM_NAME, DEAL_CLASSIFICATION_TRADE_CUT, VESSEL_DASHBOARD_SHIPTYPE_GRP]
+
+  # --- W_MARINE_GL_SOURCE_AI consumer ----------------------------------------
+  container-agent-app-marine-gl:
+    root: archetypes/container-agent-app
+    entities: [W_MARINE_GL_SOURCE_AI]
+    # No metric/dimension aliasing: the container-agent-app consumes the
+    # hierarchy structure + the single AMOUNT_USD measure directly; its query
+    # shapes are deterministic templates, not per-app metric names.
