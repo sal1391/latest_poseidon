@@ -14,7 +14,7 @@ reproducible and ontology upgrades are explicit diffs).
 **`MARINE_SALES_PLANNING_V`** (`SANDBOX.MCA`, view) — flat sales fact, grain: one row per marine
 fuel transaction (POI), date column `LIFT_ETA_DATE`, identifier `POI_ID`.
 
-- 24 columns: measures `FIXED_TONS`, `GROSS_PROFIT`, `"#_FIXTURES"`, `"#_INQUIRIES"` (the last
+- 22 columns: measures `FIXED_TONS`, `GROSS_PROFIT`, `"#_FIXTURES"`, `"#_INQUIRIES"` (the last
   two require double-quoting); dimensions `CUST_NM`, `SUPPLIER_NM`, `LOC_NM` (port, default
   breakdown), supply-team/broker hierarchy columns (`SUPP_BRKR → PRIMARY_SUPPLY_TEAM_OFFICE →
   ..._REGION`; `PRIMARY_BRKR → OFFICE → REGION`; `CUSTOMER_BRKR → CUSTOMER_TEAM_NAME →

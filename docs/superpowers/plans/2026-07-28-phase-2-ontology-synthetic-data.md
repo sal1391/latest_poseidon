@@ -152,7 +152,7 @@ def test_inventory_is_pinned():
     msp = ont.entity("MARINE_SALES_PLANNING_V")
     assert msp.fqn == "SANDBOX.MCA.MARINE_SALES_PLANNING_V"
     assert msp.date_column == "LIFT_ETA_DATE"
-    assert len(msp.columns) == 24
+    assert len(msp.columns) == 22
     assert sorted(msp.metrics) == [
         "GP", "MARGIN", "NUM_INQUIRIES", "NUM_LOST", "NUM_WON", "VOLUME", "WIN_RATE"]
     assert msp.metrics["MARGIN"].sql == "SUM(GROSS_PROFIT) / NULLIF(SUM(FIXED_TONS), 0)"
@@ -182,7 +182,7 @@ def test_planned_entity_is_not_queryable():
 def test_dimension_order_preserved():
     ont = load()
     dims = ont.entity("MARINE_SALES_PLANNING_V").dimensions()
-    assert dims[0] == "CUST_NM" and "LOC_NM" in dims and len(dims) == 17
+    assert dims[0] == "CUST_NM" and "LOC_NM" in dims and len(dims) == 16
 ```
 
 - [ ] **Step 2a: Run to verify failure** — `python -m pytest tests/test_ontology_loader.py -v` → FAIL (module missing). (`pip install -e ".[dev]"` after the pyproject edit.)
