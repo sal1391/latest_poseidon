@@ -170,6 +170,15 @@ hands back to the frontend is a presigned GET URL (one-hour expiry) pointing
 at an object there — the backend uploads once and then gets out of the way;
 the browser fetches the file directly from MinIO.
 
+Caveat for whichever phase wires up the real frontend download: a presigned
+URL is signed for whatever `S3_ENDPOINT_URL` the backend used to generate it
+— inside the `backend` container that is `http://minio:9000`, a hostname
+that only resolves on the compose network. That is fine for tests and
+server-to-server fetches running inside the same network, but a browser
+outside it cannot resolve `minio` at all; serving artifact links to a real
+browser will need either a publicly reachable MinIO endpoint or a proxy/
+rewrite step, not just today's `ArtifactStore.put_pdf`.
+
 ## Native fallback
 
 Use this path when Docker isn't available. It runs the backend and frontend

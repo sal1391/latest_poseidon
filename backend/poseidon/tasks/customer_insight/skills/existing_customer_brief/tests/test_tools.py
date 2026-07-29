@@ -459,6 +459,23 @@ def test_slug_keeps_digits_as_part_of_a_word():
     assert slug("Q3 2026 Update") == "q3-2026-update"
 
 
+@pytest.mark.parametrize(
+    "title",
+    ["", "   ", "---", "日本語"],
+    ids=["empty", "whitespace-only", "punctuation-only", "non-latin-only"],
+)
+def test_slug_falls_back_to_untitled_when_nothing_survives(title: str):
+    """Empty, whitespace-only, punctuation-only, and non-Latin-only titles
+    all collapse to the empty string under the ASCII-only ``[a-z0-9]``
+    pattern — without a fallback they would all silently share the same
+    object key (``f"{key_prefix}/.pdf"``) and overwrite one another."""
+    assert slug(title) == "untitled"
+
+
+def test_slug_keeps_the_latin_remainder_of_a_mixed_script_title():
+    assert slug("日本語 Brief 2026") == "brief-2026"
+
+
 @pytest.mark.pdf
 @pytest.mark.minio
 @pytest.mark.skipif(

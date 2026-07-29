@@ -49,6 +49,16 @@ _SIGNING_REGION = "us-east-1"
 
 _PRESIGNED_GET_EXPIRY_SECONDS = 3600
 
+# Every network client in this codebase is bounded explicitly (see
+# poseidon.core.data.synthetic_client.DEFAULT_CONNECT_TIMEOUT_SECONDS and the
+# connect_timeout on poseidon.api.health's readiness check) — botocore's own
+# defaults are far looser (60s connect/read timeouts, and standard-mode
+# retries with their own exponential backoff on top), which would let a real
+# S3/MinIO blip hang put_pdf for minutes instead of failing fast.
+_CONNECT_TIMEOUT_SECONDS = 5
+_READ_TIMEOUT_SECONDS = 30
+_MAX_RETRY_ATTEMPTS = 2
+
 
 class ArtifactStore:
     """A thin, habitat-agnostic wrapper over one S3-compatible bucket.
@@ -66,7 +76,13 @@ class ArtifactStore:
             aws_access_key_id=settings.s3_access_key,
             aws_secret_access_key=settings.s3_secret_key,
             region_name=_SIGNING_REGION,
-            config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+            config=Config(
+                signature_version="s3v4",
+                s3={"addressing_style": "path"},
+                connect_timeout=_CONNECT_TIMEOUT_SECONDS,
+                read_timeout=_READ_TIMEOUT_SECONDS,
+                retries={"max_attempts": _MAX_RETRY_ATTEMPTS, "mode": "standard"},
+            ),
         )
 
     def ensure_bucket(self) -> None:
@@ -99,6 +115,10 @@ class ArtifactStore:
 
     def put_pdf(self, key: str, content: bytes) -> ArtifactRef:
         """Upload ``content`` as ``key`` and return a presigned-GET reference.
+
+        Call :meth:`ensure_bucket` once per process/startup before using
+        this — ``put_pdf`` assumes the bucket already exists and does not
+        check.
 
         The presigned URL expires in one hour — long enough for the browser
         that just received it in a chat response to fetch the file, short
