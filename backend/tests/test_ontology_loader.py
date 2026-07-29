@@ -28,6 +28,8 @@ def test_inventory_is_pinned():
     assert gl.hierarchy_levels == [
         "CLASS6_Calc", "CLASS6", "CLASS5", "CLASS4", "CLASS3", "CLASS2", "CLASS1"]
     assert gl.dual_purpose_exclusion == "COALESCE(CLASS4,'') <> 'Volume'"
+    assert gl.dual_purpose_pivot_column == "CLASS4"
+    assert gl.dual_purpose_pivot_value == "Volume"
     assert len(gl.negative_constraints) == 17
 
 

@@ -122,6 +122,29 @@ def test_gl_monetary_total_snowflake_volume_exclusion_and_to_date():
     assert params == [dt.date(2026, 4, 1), dt.date(2026, 5, 1)]
 
 
+def test_gl_metric_query_mixed_class4_filter_keeps_guard_snowflake():
+    """CLASS4 IN ('Volume', 'Trade GP') is a mixed IN-list, not volume mode
+    (the filter isn't pinned to *exactly* the pivot value) — this is still a
+    monetary query, so the dual-purpose guard still applies, silently
+    narrowing the IN-list to the monetary-compatible category."""
+    spec = MetricQuerySpec(
+        entity="W_MARINE_GL_SOURCE_AI",
+        metrics=("MONETARY_TOTAL",),
+        period=APRIL,
+        filters={"CLASS4": ("Volume", "Trade GP")},
+    )
+    sql, params = qb.build_metric_query(spec, "snowflake")
+    assert sql == (
+        'SELECT SUM(AMOUNT_USD) AS "MONETARY_TOTAL"\n'
+        "FROM SANDBOX.MCA.W_MARINE_GL_SOURCE_AI\n"
+        "WHERE TO_DATE(PERIOD_DATE) >= %s AND TO_DATE(PERIOD_DATE) < %s "
+        "AND COALESCE(CLASS4, 'Unknown') IN (%s, %s) "
+        "AND COALESCE(CLASS4,'') <> 'Volume'")
+    assert params == [
+        dt.date(2026, 4, 1), dt.date(2026, 5, 1), "Volume", "Trade GP",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # build_breakdown_query — postgres
 # ---------------------------------------------------------------------------
@@ -220,6 +243,34 @@ def test_gl_breakdown_by_company_postgres_dual_purpose_and_plain_date():
     assert params == [dt.date(2026, 4, 1), dt.date(2026, 5, 1), 5]
 
 
+def test_volume_mode_class3_breakdown_postgres_drops_guard():
+    """Volume mode (CLASS4 pinned to exactly ('Volume',)) drops the
+    dual-purpose guard entirely — the filter itself already scopes
+    AMOUNT_USD to one unit — under postgres; the guard drop isn't
+    snowflake-specific, and postgres's usual NULLS LAST/plain-date rules
+    still apply on top of it."""
+    spec = BreakdownQuerySpec(
+        entity="W_MARINE_GL_SOURCE_AI",
+        metrics=("MONETARY_TOTAL",),
+        period=APRIL,
+        group_by="CLASS3",
+        order_by_metric="MONETARY_TOTAL",
+        top_n=5,
+        filters={"CLASS4": ("Volume",)},
+    )
+    sql, params = qb.build_breakdown_query(spec, "postgres")
+    assert sql == (
+        "SELECT COALESCE(CLASS3, 'Unknown') AS CLASS3, "
+        'SUM(AMOUNT_USD) AS "MONETARY_TOTAL"\n'
+        "FROM synthetic.w_marine_gl_source_ai\n"
+        "WHERE PERIOD_DATE >= %s AND PERIOD_DATE < %s "
+        "AND COALESCE(CLASS4, 'Unknown') IN (%s)\n"
+        "GROUP BY 1\n"
+        'ORDER BY "MONETARY_TOTAL" DESC NULLS LAST\n'
+        "LIMIT %s")
+    assert params == [dt.date(2026, 4, 1), dt.date(2026, 5, 1), "Volume", 5]
+
+
 # ---------------------------------------------------------------------------
 # build_breakdown_query — snowflake
 # ---------------------------------------------------------------------------
@@ -246,6 +297,36 @@ def test_breakdown_top_suppliers_by_volume_snowflake():
         'ORDER BY "VOLUME" DESC\n'
         "LIMIT %s")
     assert params == [dt.date(2026, 4, 1), dt.date(2026, 5, 1), 5]
+
+
+def test_volume_mode_class3_breakdown_snowflake_drops_guard():
+    """Volume mode drops the dual-purpose guard under snowflake too, and
+    CLASS3 is the certified required group_by — the hierarchy level
+    immediately below the CLASS4 pivot (`hierarchy_levels`), computed from
+    the loader's pivot fields, not a hardcoded name. This is the case that
+    used to be a self-contradicting WHERE clause before volume mode:
+    `CLASS4 = 'Volume'` and the guard `<> 'Volume'` can no longer both
+    appear at once."""
+    spec = BreakdownQuerySpec(
+        entity="W_MARINE_GL_SOURCE_AI",
+        metrics=("MONETARY_TOTAL",),
+        period=APRIL,
+        group_by="CLASS3",
+        order_by_metric="MONETARY_TOTAL",
+        top_n=5,
+        filters={"CLASS4": ("Volume",)},
+    )
+    sql, params = qb.build_breakdown_query(spec, "snowflake")
+    assert sql == (
+        "SELECT COALESCE(CLASS3, 'Unknown') AS CLASS3, "
+        'SUM(AMOUNT_USD) AS "MONETARY_TOTAL"\n'
+        "FROM SANDBOX.MCA.W_MARINE_GL_SOURCE_AI\n"
+        "WHERE TO_DATE(PERIOD_DATE) >= %s AND TO_DATE(PERIOD_DATE) < %s "
+        "AND COALESCE(CLASS4, 'Unknown') IN (%s)\n"
+        "GROUP BY 1\n"
+        'ORDER BY "MONETARY_TOTAL" DESC\n'
+        "LIMIT %s")
+    assert params == [dt.date(2026, 4, 1), dt.date(2026, 5, 1), "Volume", 5]
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +366,21 @@ def test_dimension_values_with_search_snowflake():
         "WHERE LOC_NM IS NOT NULL AND LOC_NM ILIKE %s\n"
         "ORDER BY LOC_NM")
     assert params == ["%Sing%"]
+
+
+def test_gl_dimension_values_with_search_snowflake():
+    """Dimension-values queries never touch the dual-purpose guard (that
+    clause is only ever appended inside `_where_clause`, which this builder
+    doesn't call) — this case exercises the one snowflake/entity combination
+    the existing snapshots don't: W_MARINE_GL_SOURCE_AI's FQN table name."""
+    sql, params = qb.build_dimension_values_query(
+        "W_MARINE_GL_SOURCE_AI", "COMPANY", "Acme", "snowflake")
+    assert sql == (
+        "SELECT DISTINCT COMPANY\n"
+        "FROM SANDBOX.MCA.W_MARINE_GL_SOURCE_AI\n"
+        "WHERE COMPANY IS NOT NULL AND COMPANY ILIKE %s\n"
+        "ORDER BY COMPANY")
+    assert params == ["%Acme%"]
 
 
 def test_dimension_values_query_rejects_non_dimension_column():
@@ -401,3 +497,44 @@ def test_unknown_entity_raises_loader_keyerror():
     )
     with pytest.raises(KeyError, match="unknown entity 'NOT_AN_ENTITY'"):
         qb.build_metric_query(spec, "postgres")
+
+
+def test_volume_mode_metric_query_rejects_single_aggregate():
+    """CLASS4 pinned to exactly ('Volume',) on a plain MetricQuerySpec is
+    volume mode — refused outright, since a single aggregate mixes
+    incompatible units (tons, gallons, ...) across CLASS3 categories. The
+    message is built from the entity's own pivot fields (never a hardcoded
+    'CLASS4'/'Volume' literal) plus the computed required breakdown level."""
+    spec = MetricQuerySpec(
+        entity="W_MARINE_GL_SOURCE_AI",
+        metrics=("MONETARY_TOTAL",),
+        period=APRIL,
+        filters={"CLASS4": ("Volume",)},
+    )
+    with pytest.raises(qb.SpecValidationError) as exc_info:
+        qb.build_metric_query(spec, "postgres")
+    assert str(exc_info.value) == (
+        "CLASS4 = 'Volume' is unit-mixed — a single aggregate is not "
+        "allowed; use a breakdown grouped by CLASS3")
+
+
+def test_volume_mode_breakdown_wrong_group_by_rejects():
+    """Volume mode further restricts group_by to CLASS3 (the hierarchy
+    level immediately below the CLASS4 pivot) — COMPANY is a perfectly
+    certified dimension of this entity outside volume mode (see
+    `test_gl_breakdown_by_company_postgres_dual_purpose_and_plain_date`),
+    but not once CLASS4 is pinned to 'Volume'."""
+    spec = BreakdownQuerySpec(
+        entity="W_MARINE_GL_SOURCE_AI",
+        metrics=("MONETARY_TOTAL",),
+        period=APRIL,
+        group_by="COMPANY",
+        order_by_metric="MONETARY_TOTAL",
+        top_n=5,
+        filters={"CLASS4": ("Volume",)},
+    )
+    with pytest.raises(qb.SpecValidationError) as exc_info:
+        qb.build_breakdown_query(spec, "postgres")
+    assert str(exc_info.value) == (
+        "volume-mode breakdowns must group by 'CLASS3' "
+        "(each CLASS3 is one unit); got 'COMPANY'")

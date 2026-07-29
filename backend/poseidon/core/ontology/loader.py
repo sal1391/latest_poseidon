@@ -27,6 +27,10 @@ Parsing notes (see task brief / docs/architecture/04-data-ontology.md §2):
 - ``hierarchies.level_columns`` -> ``Entity.hierarchy_levels``.
 - ``hierarchies.dual_purpose_measures[0].exclusion_clause`` ->
   ``Entity.dual_purpose_exclusion``.
+- ``hierarchies.dual_purpose_measures[0].unit_pivot.column`` ->
+  ``Entity.dual_purpose_pivot_column``; ``...unit_pivot.value`` ->
+  ``Entity.dual_purpose_pivot_value`` (e.g. ``"CLASS4"`` / ``"Volume"`` —
+  the query builder's volume-mode trigger).
 - Top-level keys the loader does not model (``apps``, provenance blocks,
   ``bootstrap_conflicts``, ``disambiguations``, ``data_snapshots``, ...)
   are simply never read, so they can't crash parsing.
@@ -56,18 +60,37 @@ def _parse_negative_constraints(raw: list[dict[str, Any]] | None) -> list[Negati
     return [NegativeConstraint(**item) for item in (raw or [])]
 
 
-def _parse_hierarchies(raw: dict[str, Any] | None) -> tuple[list[str], str | None]:
+def _parse_hierarchies(
+    raw: dict[str, Any] | None,
+) -> tuple[list[str], str | None, str | None, str | None]:
     hierarchies = raw or {}
     hierarchy_levels = list(hierarchies.get("level_columns") or [])
     dual_purpose_measures = hierarchies.get("dual_purpose_measures") or []
-    dual_purpose_exclusion = (
-        dual_purpose_measures[0].get("exclusion_clause") if dual_purpose_measures else None
+    if dual_purpose_measures:
+        first = dual_purpose_measures[0]
+        dual_purpose_exclusion = first.get("exclusion_clause")
+        unit_pivot = first.get("unit_pivot") or {}
+        dual_purpose_pivot_column = unit_pivot.get("column")
+        dual_purpose_pivot_value = unit_pivot.get("value")
+    else:
+        dual_purpose_exclusion = None
+        dual_purpose_pivot_column = None
+        dual_purpose_pivot_value = None
+    return (
+        hierarchy_levels,
+        dual_purpose_exclusion,
+        dual_purpose_pivot_column,
+        dual_purpose_pivot_value,
     )
-    return hierarchy_levels, dual_purpose_exclusion
 
 
 def _parse_entity(name: str, raw: dict[str, Any]) -> Entity:
-    hierarchy_levels, dual_purpose_exclusion = _parse_hierarchies(raw.get("hierarchies"))
+    (
+        hierarchy_levels,
+        dual_purpose_exclusion,
+        dual_purpose_pivot_column,
+        dual_purpose_pivot_value,
+    ) = _parse_hierarchies(raw.get("hierarchies"))
     return Entity(
         name=name,
         fqn=raw.get("fqn", ""),
@@ -80,6 +103,8 @@ def _parse_entity(name: str, raw: dict[str, Any]) -> Entity:
         business_rules=list(raw.get("business_rules") or []),
         hierarchy_levels=hierarchy_levels,
         dual_purpose_exclusion=dual_purpose_exclusion,
+        dual_purpose_pivot_column=dual_purpose_pivot_column,
+        dual_purpose_pivot_value=dual_purpose_pivot_value,
     )
 
 

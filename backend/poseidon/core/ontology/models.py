@@ -67,6 +67,8 @@ class Entity(BaseModel):
     business_rules: list[str] = []
     hierarchy_levels: list[str] = []  # W_MARINE_GL: the 7 CLASS level_columns
     dual_purpose_exclusion: str | None = None  # "COALESCE(CLASS4,'') <> 'Volume'"
+    dual_purpose_pivot_column: str | None = None  # "CLASS4" — the unit-pivot column
+    dual_purpose_pivot_value: str | None = None  # "Volume" — the unit-pivot value
 
     def dimensions(self) -> list[str]:
         """Column names with role == "dimension", in file order."""

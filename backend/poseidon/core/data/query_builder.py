@@ -25,8 +25,21 @@ loader's own ``KeyError`` (``Ontology.entity`` — see
 ``poseidon.core.ontology.models``) verbatim, never wrapped. Every other spec
 mistake — an uncertified metric, a filter/group-by column that isn't a
 certified dimension of the entity, an ``order_by_metric`` outside
-``metrics``, or ``top_n < 1`` — raises :class:`SpecValidationError`, whose
-message text is itself part of the pinned snapshot contract.
+``metrics``, ``top_n < 1``, or a *volume-mode* violation (see below) — raises
+:class:`SpecValidationError`, whose message text is itself part of the
+pinned snapshot contract.
+
+**Volume mode** (currently only ``W_MARINE_GL_SOURCE_AI``, but driven
+entirely by the ontology's ``dual_purpose_measures[0].unit_pivot`` — see
+``_is_volume_mode``): when a spec's filters pin the entity's dual-purpose
+pivot column to exactly its pivot value (e.g. ``{"CLASS4": ("Volume",)}`` —
+not a mixed IN-list that merely includes it alongside other values), the
+filter itself already scopes the dual-purpose measure to one unit, so the
+exclusion guard is dropped and a plain aggregate is refused instead:
+``build_metric_query`` always raises in volume mode, and
+``build_breakdown_query`` only accepts a ``group_by`` equal to the hierarchy
+level immediately below the pivot column (``CLASS4`` -> ``CLASS3``). Outside
+volume mode, nothing here changes.
 """
 
 from collections.abc import Mapping
@@ -48,7 +61,9 @@ _SMALL_SAMPLE_HAVING = 'HAVING SUM("#_INQUIRIES") >= 5'
 # The only metric on W_MARINE_GL_SOURCE_AI that measures the dual-purpose
 # AMOUNT_USD column. The guard's *clause text* always comes from the
 # ontology's `dual_purpose_exclusion` field at render time (never hardcoded);
-# this name only identifies *when* to apply it.
+# this name only identifies *when* to apply it — except in volume mode (see
+# `_is_volume_mode`), where the caller's own filter already scopes to one
+# unit and the guard would otherwise contradict it.
 _MONETARY_METRIC = "MONETARY_TOTAL"
 
 
@@ -118,6 +133,39 @@ def _metric_expr(entity: Entity, metric_name: str) -> str:
     return f'{entity.metrics[metric_name].sql} AS "{metric_name}"'
 
 
+def _is_volume_mode(entity: Entity, filters: Mapping[str, tuple[str, ...]]) -> bool:
+    """True when ``filters`` pins the entity's dual-purpose measure to
+    exactly its certified unit-pivot value — e.g. ``{"CLASS4": ("Volume",)}``
+    on ``W_MARINE_GL_SOURCE_AI``.
+
+    This is the ontology's own signal (``business_rules``: "Volume queries
+    drop the exclusion and carry a unit") that the caller has already scoped
+    the query to one unit, so the dual-purpose guard must be dropped and no
+    plain aggregate is allowed. A mixed IN-list that merely *includes* the
+    pivot value alongside others (e.g. ``CLASS4 IN ('Volume', 'Trade GP')``)
+    is deliberately NOT volume mode — that query is still asking for a
+    monetary total, so the guard still applies and simply drops the Volume
+    rows from it. Entities with no dual-purpose measure (``dual_purpose_
+    pivot_column is None``) are never in volume mode.
+    """
+    pivot_col = entity.dual_purpose_pivot_column
+    if pivot_col is None:
+        return False
+    return filters.get(pivot_col) == (entity.dual_purpose_pivot_value,)
+
+
+def _volume_mode_required_group_by(entity: Entity) -> str:
+    """The only valid ``group_by`` for a volume-mode breakdown: the
+    hierarchy level immediately below the dual-purpose pivot column
+    (``CLASS4`` -> ``CLASS3`` on ``W_MARINE_GL_SOURCE_AI``) — every level at
+    or above the pivot still mixes incompatible units within one pivot
+    value; only the level below is guaranteed single-unit per row group.
+    """
+    levels = entity.hierarchy_levels
+    pivot_index = levels.index(entity.dual_purpose_pivot_column)
+    return levels[pivot_index + 1]
+
+
 def _where_clause(
     entity: Entity,
     dialect: str,
@@ -130,9 +178,10 @@ def _where_clause(
 
     Condition order: the half-open period window, then each filter column in
     the order given (OR within a column's IN-list, AND across columns), then
-    — only for W_MARINE_GL_SOURCE_AI queries touching MONETARY_TOTAL — the
-    dual-purpose exclusion guard, sourced from the ontology's
-    ``dual_purpose_exclusion`` field, never hardcoded here.
+    — only for W_MARINE_GL_SOURCE_AI queries touching MONETARY_TOTAL, and
+    only outside volume mode (see ``_is_volume_mode``) — the dual-purpose
+    exclusion guard, sourced from the ontology's ``dual_purpose_exclusion``
+    field, never hardcoded here.
     """
     date_expr = _date_expr(entity, dialect)
     conditions = [f"{date_expr} >= %s AND {date_expr} < %s"]
@@ -143,7 +192,11 @@ def _where_clause(
         conditions.append(f"COALESCE({col}, 'Unknown') IN ({placeholders})")
         params.extend(values)
 
-    if entity.dual_purpose_exclusion and _MONETARY_METRIC in metrics:
+    if (
+        entity.dual_purpose_exclusion
+        and _MONETARY_METRIC in metrics
+        and not _is_volume_mode(entity, filters)
+    ):
         conditions.append(entity.dual_purpose_exclusion)
 
     return " AND ".join(conditions)
@@ -154,6 +207,13 @@ def build_metric_query(spec: MetricQuerySpec, dialect: str) -> tuple[str, list]:
     _require_certified_metrics(entity, spec.metrics)
     for col in spec.filters:
         _require_dimension(entity, col)
+    if _is_volume_mode(entity, spec.filters):
+        required = _volume_mode_required_group_by(entity)
+        raise SpecValidationError(
+            f"{entity.dual_purpose_pivot_column} = {entity.dual_purpose_pivot_value!r} "
+            f"is unit-mixed — a single aggregate is not allowed; use a "
+            f"breakdown grouped by {required}"
+        )
 
     params: list = []
     select_list = ", ".join(_metric_expr(entity, m) for m in spec.metrics)
@@ -183,6 +243,13 @@ def build_breakdown_query(spec: BreakdownQuerySpec, dialect: str) -> tuple[str, 
         )
     if spec.top_n < 1:
         raise SpecValidationError(f"top_n must be >= 1, got {spec.top_n}")
+    if _is_volume_mode(entity, spec.filters):
+        required = _volume_mode_required_group_by(entity)
+        if spec.group_by != required:
+            raise SpecValidationError(
+                f"volume-mode breakdowns must group by {required!r} "
+                f"(each {required} is one unit); got {spec.group_by!r}"
+            )
 
     params: list = []
     select_list = ", ".join(
