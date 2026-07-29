@@ -1,0 +1,273 @@
+"""The SSE envelope sink (doc 01 section 5; Phase 6 Task 3): translates P5's
+agent-loop :class:`~poseidon.core.llm.loop.EventSink` protocol AND the
+orchestrator's own direct part/token/lifecycle pushes into doc-01-section-5
+SSE frames, byte-for-byte the same wire shape ``poseidon/api/mock_chat.py``'s
+``_sse()`` already produces (``id: <event_seq>\\nevent: <name>\\ndata:
+<json>\\n\\n``) -- the frontend's SSE parser is not this task's to touch, so
+the wire format has to match exactly.
+
+Two call surfaces, one instance
+---------------------------------
+:class:`SseEnvelopeSink` is handed to :func:`~poseidon.core.llm.loop.run_turn`
+as its ``sink`` argument (satisfying the ``EventSink`` protocol's
+``emit(kind, payload)`` method -- called synchronously, from inside
+``run_turn``'s own loop, for ``llm_call``/``tool_start``/``tool_done``/
+``turn_error``), AND called directly by
+:func:`~poseidon.core.chat.orchestrator.execute_turn` itself for everything
+``run_turn`` does not produce on its own: :meth:`accepted` (before dispatch
+even starts), :meth:`push_part`/:meth:`push_token` (the clarify short-circuit
+and the final-answer text), and :meth:`done` (the terminal, non-error
+signal). One instance serves both roles because both need the SAME
+``event_seq`` counter -- doc 01 section 5's contract is that ``event_seq`` is
+monotonic across EVERY frame of the turn, not per-source.
+
+Translation table (loop.py's ``EventSink.emit`` kinds -> doc 01 section 5
+events):
+
+- ``llm_call`` -> no frame at all (recorded by ``run_turn`` itself into the
+  ``TurnResult.llm_records`` the orchestrator reads directly; nothing here
+  needs re-deriving from a live event stream).
+- ``tool_start`` -> one ``tool`` frame, ``status="start"``.
+- ``tool_done`` -> one ``tool`` frame first (``status`` translated from
+  loop.py's ``ok``/``error`` vocabulary to doc 01 section 5's
+  ``start|done|error`` -- see "The one real translation" below), then one
+  ``part`` frame per entry in the payload's ``parts`` list, then -- only
+  when the payload's ``proof`` is non-empty -- one more ``part`` frame,
+  ``kind="proof"``, ``payload={"lines": [...]}`` (the doc-01/doc-02 proof
+  reconciliation the phase-6 plan adjudicates: skills keep ``proof`` as a
+  FIELD on their result; the chat emitter is what turns it into a part).
+- ``turn_error`` -> one ``error`` frame. ``code`` is the RFC-7807 problem's
+  ``title`` (a stable, roughly-constant string per failure TYPE -- "llm
+  provider error", "agent loop exceeded max iterations", "unknown skill" --
+  the closest thing this loop's problem dicts have to a machine code);
+  ``message`` is the problem's ``detail`` (the occurrence-specific text).
+  No ``hint``: doc 01 section 5's own event table lists only
+  ``{code, message}`` for the STREAM event (unlike the richer ``error``
+  PART kind in doc 01 section 4, which is a client-side rendering concern,
+  not this sink's).
+
+The one real translation, and why it matters
+-----------------------------------------------
+loop.py's ``tool_done`` payload carries ``status`` in ``{"ok", "error"}``
+(``_dispatch_one``'s own vocabulary). Doc 01 section 5's ``tool`` event
+documents ITS ``status`` field as ``start|done|error`` -- ``"ok"`` is never
+a valid value on the wire. Sending the payload's status through unchanged
+would put a value the frontend's own type (``ToolEventPayload.status``) does
+not declare onto the wire for every single successful dispatch. This sink
+maps ``"ok"`` -> ``"done"`` and passes ``"error"`` through unchanged.
+
+Human labels (doc 01 section 4's ``tool_event``/``tool`` ``label`` field)
+-----------------------------------------------------------------------------
+The interface this task's brief pins names three constructor keywords
+(``turn_id``, ``message_id``, ``send``); this implementation adds a fourth,
+required, keyword-only ``registry: SkillRegistry`` -- disclosed here and in
+the task report as a necessary, minimal interface extension: "human label
+from SKILL_META description, or skill id fallback" cannot be implemented
+without SOME way to look up a skill's ``SKILL_META['description']``, and
+``SkillRegistry.get(skill_id).description`` (the exact accessor
+``prompts.py``'s own ``skill_lines_block`` already uses) is the natural,
+already-established way to get it -- passing the whole registry, not a
+pre-computed ``dict[str, str]``, mirrors how every other chat/llm module in
+this codebase that needs a skill's description reaches for the registry
+directly rather than a derived mapping. The fallback (skill id verbatim) is
+not just defensive: a dispatch aimed at an UNKNOWN skill id (a genuine
+404, or a live model hallucinating a name) has no ``SKILL_META`` to read at
+all, and ``registry.get`` raising ``KeyError`` for exactly that case is what
+makes the fallback reachable by construction, not just by accident.
+
+Parts retained for pass-through (doc 02 section 5)
+------------------------------------------------------
+``tool_done``'s payload carries the dispatch's raw ``parts`` (the ONLY place
+they ever appear -- ``ToolRecord.result_digest`` is a lossy string summary,
+and ``TurnResult`` carries no parts of its own, doc 03's context-hygiene
+split). The orchestrator's pass-through repopulation (a ranked/tabular
+dimension-value table becomes ``ConversationSlots.pass_through`` for the
+next turn) needs those raw rows AFTER ``run_turn`` has already returned, so
+this sink retains them, keyed by ``tool_seq``, on the public
+:attr:`tool_result_parts` attribute -- the one piece of state this sink
+keeps beyond simply forwarding frames, and the only way the orchestrator can
+reach data that otherwise only ever flowed to the wire.
+
+Artifacts: coded, currently unreachable
+-------------------------------------------
+The phase-6 plan adjudicates ``ArtifactRef -> part{kind:"artifact",
+payload:{name,url,mime}}`` as part of the same proof/artifact reconciliation
+above. loop.py's own ``_dispatch_one``, however, never forwards
+``SkillResult.artifacts`` into the ``tool_done`` payload at all (verified
+directly against that function's source: it emits ``parts``/``proof``, not
+``artifacts``) -- a real, disclosed gap in P5's shipped code that is NOT
+this task's to fix (``loop.py`` is not in this task's sanctioned edit list).
+This sink still implements the conversion defensively, reading
+``payload.get("artifacts", ())`` -- harmless today (no currently-dispatchable
+skill populates it; ``data_qa.metric_query`` always returns
+``artifacts=[]``, and the one artifact-producing skill,
+``customer_insight.existing_customer_brief``, is ``enabled: false``) and
+ready the moment a future task closes the loop.py gap, proven by a synthetic
+test that constructs the payload shape loop.py cannot produce yet.
+
+Synchronous by construction
+-------------------------------
+Every method here is a plain, synchronous function -- required, since
+``EventSink.emit`` is itself a synchronous Protocol method that
+:func:`~poseidon.core.llm.loop.run_turn` calls with no ``await``, and
+:func:`~poseidon.core.chat.orchestrator.execute_turn` (this sink's other
+caller) is equally synchronous. ``send``'s pinned type,
+``Callable[[str], Awaitable[None] | None]``, is deliberately liberal about
+what a caller MAY hand in, but this sink never inspects or awaits whatever
+``send`` returns -- it calls ``send(frame)`` and moves on. Bridging into an
+async world (Task 4's "queue-bridged async send": a StreamingResponse's
+async generator reading off a queue this synchronous ``send`` pushes onto,
+e.g. via a thread-safe queue or ``loop.call_soon_threadsafe``) is entirely
+the CALLER's responsibility to make appear synchronous from here -- this
+module imports no ``asyncio`` and makes no assumption that an event loop is
+even running in the thread that calls it, which is what keeps it trivially
+testable offline with a plain list-appending ``send``.
+"""
+
+import json
+from collections.abc import Awaitable, Callable
+
+from poseidon.core.skills.registry import SkillRegistry
+
+# doc 01 section 5's tool-event status vocabulary is start|done|error;
+# loop.py's own tool_done payload status is ok|error (_dispatch_one's
+# vocabulary) -- this is the one translation table this sink needs, since
+# "ok" is never a valid value on the wire (see the module docstring's "The
+# one real translation").
+_TOOL_STATUS_ON_WIRE = {"ok": "done", "error": "error"}
+
+
+class SseEnvelopeSink:
+    """Implements the P5 :class:`~poseidon.core.llm.loop.EventSink` protocol
+    (``emit``) AND the orchestrator's direct part/token/lifecycle pushes
+    (``push_part``/``push_token``/``accepted``/``done``). See the module
+    docstring for the full translation table and every disclosed judgment
+    call.
+    """
+
+    def __init__(
+        self,
+        *,
+        turn_id: str,
+        message_id: str,
+        send: Callable[[str], Awaitable[None] | None],
+        registry: SkillRegistry,
+    ) -> None:
+        self._turn_id = turn_id
+        self._message_id = message_id
+        self._send = send
+        self._registry = registry
+        self._event_seq = 0
+        # tool_seq -> that dispatch's raw parts list -- see the module
+        # docstring's "Parts retained for pass-through".
+        self.tool_result_parts: dict[int, list[dict]] = {}
+
+    @property
+    def turn_id(self) -> str:
+        return self._turn_id
+
+    @property
+    def message_id(self) -> str:
+        """Read back by :func:`~poseidon.core.chat.orchestrator.execute_turn`
+        for ``TurnOutcome.message_id`` and every ``RunLogWriter`` call that
+        needs it -- this sink, not the orchestrator, is where the caller
+        (Task 4's HTTP layer in production; a test directly in this suite)
+        actually mints/supplies the id, so this is the one place downstream
+        code can read it back from."""
+        return self._message_id
+
+    # -----------------------------------------------------------------
+    # EventSink protocol -- called BY run_turn, synchronously, mid-loop
+    # -----------------------------------------------------------------
+
+    def emit(self, kind: str, payload: dict) -> None:
+        """See the module docstring's translation table."""
+        if kind == "llm_call":
+            return
+        if kind == "tool_start":
+            self._send_tool_frame(payload["tool_seq"], payload["skill_id"], status="start")
+            return
+        if kind == "tool_done":
+            self._handle_tool_done(payload)
+            return
+        if kind == "turn_error":
+            problem = payload["problem"]
+            self._frame("error", {"code": problem["title"], "message": problem["detail"]})
+            return
+        raise ValueError(f"SseEnvelopeSink.emit: unknown event kind {kind!r}")
+
+    def _handle_tool_done(self, payload: dict) -> None:
+        tool_seq = payload["tool_seq"]
+        self.tool_result_parts[tool_seq] = payload["parts"]
+        wire_status = _TOOL_STATUS_ON_WIRE[payload["status"]]
+        self._send_tool_frame(tool_seq, payload["skill_id"], status=wire_status)
+        for part in payload["parts"]:
+            self.push_part(part["kind"], part["payload"])
+        if payload["proof"]:
+            self.push_part("proof", {"lines": list(payload["proof"])})
+        # Defensive, currently-unreachable conversion -- see the module
+        # docstring's "Artifacts: coded, currently unreachable".
+        for artifact in payload.get("artifacts", ()):
+            self.push_part(
+                "artifact",
+                {"name": artifact.name, "url": artifact.url, "mime": artifact.mime},
+            )
+
+    def _send_tool_frame(self, tool_seq: int, skill_id: str, *, status: str) -> None:
+        self._frame(
+            "tool",
+            {
+                "tool_seq": tool_seq,
+                "tool": skill_id,
+                # No MCP server / adapter for an in-process skill dispatch
+                # today (doc 06's own `tool_calls.server` is nullable for
+                # exactly this reason) -- mirrors the run-log writer's own
+                # `server=None` for the same dispatch.
+                "server": None,
+                "status": status,
+                "label": self._label(skill_id),
+            },
+        )
+
+    def _label(self, skill_id: str) -> str:
+        """``SKILL_META['description']``, or the bare skill id when the
+        registry has never heard of it -- see the module docstring's "Human
+        labels"."""
+        try:
+            return self._registry.get(skill_id).description
+        except KeyError:
+            return skill_id
+
+    # -----------------------------------------------------------------
+    # Direct pushes -- called BY execute_turn, never by run_turn
+    # -----------------------------------------------------------------
+
+    def push_part(self, kind: str, payload: dict) -> None:
+        self._frame("part", {"kind": kind, "payload": payload})
+
+    def push_token(self, text: str) -> None:
+        self._frame("token", {"text": text})
+
+    def accepted(self, turn_index: int) -> None:
+        self._frame("accepted", {"turn_index": turn_index})
+
+    def done(self, usage: dict) -> None:
+        self._frame("done", {"usage": usage})
+
+    # -----------------------------------------------------------------
+    # Wire format -- byte-for-byte mock_chat.py's own `_sse()`
+    # -----------------------------------------------------------------
+
+    def _frame(self, name: str, fields: dict) -> None:
+        self._event_seq += 1
+        data = {
+            "turn_id": self._turn_id,
+            "message_id": self._message_id,
+            "event_seq": self._event_seq,
+            **fields,
+        }
+        frame = f"id: {self._event_seq}\nevent: {name}\ndata: {json.dumps(data)}\n\n"
+        self._send(frame)
+
+
+__all__ = ["SseEnvelopeSink"]

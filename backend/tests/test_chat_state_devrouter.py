@@ -12,22 +12,21 @@ what makes this suite fail loudly (an unexpected parse, not a silent
 pass) if a future change to either function's line format ever drifts
 from what ``dev_router.py``'s regexes target.
 
-See ``dev_router.py``'s own module docstring for the full, disclosed
-"hints gap": ``ParsedTurn.hints`` is never rendered by ``render_state_block``
-(confirmed there against ``prompts.py`` and against ``test_llm_prompts.py``'s
-own goldens), so this router's tool-call gate is "a period is resolved"
-alone, not "hints lead with data_qa.metric_query AND a resolved period" as
-the phase-6 plan's behavior table literally states. As of fix round 1 that
-docstring also names the consequence honestly: the period-alone gate is a
-KNOWN, DISCLOSED OVER-TRIGGER for research-/brief-shaped questions that
-also name a period (e.g. "market news ... in April 2026"), it is
-architecture-wide -- ``loop.py``'s real router shares the same
-``render_state_block`` and so cannot see hints either -- and there is a
-planned endgame (Task 3 extends ``render_state_block`` with an additive
-hints line, after which this gate upgrades to the plan's literal
-condition). ``test_tool_call_is_identical_regardless_of_hints_value``
-below pins TODAY's gap-driven behavior, not a permanent guarantee -- see
-its own docstring.
+See ``dev_router.py``'s own module docstring for the full history of the
+"hints gap" and its Task 3 closure: ``ParsedTurn.hints`` used to be
+invisible to every router (dev and real alike) because ``render_state_
+block`` never rendered it, so this router's tool-call gate was "a period is
+resolved" alone -- a KNOWN, DISCLOSED OVER-TRIGGER for research-/brief-
+shaped questions that also name a period (e.g. "market news ... in April
+2026"). Task 3 closed it: ``render_state_block`` now renders an additive
+"Skill hints: ..." line, and this router's gate upgrades to the plan's
+literal condition, permissively -- see ``dev_router.py``'s "Task 3 CLOSURE"
+for the exact rule (no hints line at all still permits dispatch; a hints
+line present and leading with something other than ``data_qa.metric_query``
+now refuses). ``test_hints_gate_permits_empty_or_metric_leading_but_
+refuses_research_leading`` below (formerly ``test_tool_call_is_identical_
+regardless_of_hints_value``, flipped per the Task 3 brief) pins the new
+behavior.
 
 Non-ASCII characters in expected strings are written as explicit
 ``\\uXXXX`` escapes (see ``_EM_DASH``), the same convention every earlier
@@ -501,43 +500,67 @@ def test_compare_period_takes_priority_over_a_top_mention():
     _assert_valid_metric_query_args(call)
 
 
-def test_tool_call_is_identical_regardless_of_hints_value():
-    """Direct proof of the module docstring's "hints gap" disclosure: an
-    empty hints shortlist and a non-empty one (as ``skill_hinter.hint``
-    would actually return for a metric-shaped message) produce the
-    byte-identical tool call -- this router's decision is genuinely
-    independent of ``ParsedTurn.hints``, not accidentally coupled to it
-    through some other field.
+def test_hints_gate_permits_empty_or_metric_leading_but_refuses_research_leading():
+    """Post-Task-3 behavior (formerly ``test_tool_call_is_identical_
+    regardless_of_hints_value``, flipped per the Task 3 brief instead of
+    deleted -- see the module docstring and ``dev_router.py``'s "Task 3
+    CLOSURE"): ``render_state_block`` now renders ``parsed.hints``, and this
+    router's gate respects it, permissively.
 
-    This pins TODAY's gap-driven behavior, not a permanent guarantee: it is
-    the SAME reason a research- or brief-shaped question that also names a
-    period gets mis-routed to ``data_qa.metric_query`` (the "known,
-    disclosed over-trigger" in ``dev_router.py``'s module docstring, added
-    fix round 1). Once ``render_state_block`` renders hints and this
-    router's gate upgrades to also require them, this test should flip to
-    proving the OPPOSITE -- that a research-led ``hints`` tuple changes the
-    response (no tool call / the capability message) rather than producing
-    an identical one.
+    Three states, one gate: an EMPTY hints shortlist (no line at all) and a
+    hints shortlist LEADING with ``data_qa.metric_query`` both still
+    dispatch the tool call, byte-identically to each other and to every
+    other case-(b) test in this file that never sets ``hints=`` (the
+    permissive-when-absent half of the rule -- an advisory hinter with
+    nothing to say is not a vote against dispatching). A hints shortlist
+    LEADING with something else (``research.web_research``, as
+    ``skill_hinter.hint`` actually returns for a research-shaped message
+    per fix round 1's reproduced counterexamples) now refuses and falls
+    back to the capability message instead -- this is the disclosed
+    over-trigger, closed.
     """
     router = DevDeterministicRouter()
     messages = [_user_message("gp this period")]
 
     empty_hints_system = _system(_parsed(period_a=_PERIOD_A, hints=()))
-    ranked_hints_system = _system(
+    metric_leading_system = _system(
         _parsed(
             period_a=_PERIOD_A,
             hints=(CandidateSkill(skill_id=_METRIC_QUERY, score=3.0),),
+        )
+    )
+    research_leading_system = _system(
+        _parsed(
+            period_a=_PERIOD_A,
+            hints=(CandidateSkill(skill_id="research.web_research", score=3.0),),
         )
     )
 
     empty_response = router.invoke(
         system=empty_hints_system, messages=messages, tools=[], model="m", params={}
     )
-    ranked_response = router.invoke(
-        system=ranked_hints_system, messages=messages, tools=[], model="m", params={}
+    metric_response = router.invoke(
+        system=metric_leading_system, messages=messages, tools=[], model="m", params={}
+    )
+    research_response = router.invoke(
+        system=research_leading_system, messages=messages, tools=[], model="m", params={}
     )
 
-    assert empty_response == ranked_response
+    assert empty_response == metric_response
+    assert empty_response.stop_reason == "tool_use"
+    assert empty_response.tool_calls[0].name == _METRIC_QUERY
+
+    assert research_response == LLMResponse(
+        text=(
+            "I can answer certified metric questions "
+            + _EM_DASH
+            + " try a metric, a customer or port, and a period."
+        ),
+        tool_calls=(),
+        stop_reason="end_turn",
+        input_tokens=0,
+        output_tokens=0,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -112,13 +112,50 @@ proving invariance to proving the router RESPECTS hints (a research-led
 hints tuple should then produce the capability message, or no tool call,
 rather than a metric_query dispatch).
 
+**Task 3 CLOSURE.** The planned endgame above has landed: ``render_state_
+block`` now renders an additive ``"Skill hints: <id> (<score>), ..."`` line
+(best-first, one line, only when ``parsed.hints`` is non-empty -- see that
+function's own docstring's "Skill hints" section) directly beneath the
+``Period:``/``Compare period:`` lines this router already parses. This is
+architecture-wide, not a dev-router-only fix (Important I2 above): the SAME
+render call builds the real, live-model router's system prompt
+(``loop.py``'s ``_router_system``), so a real model gains this signal too,
+the moment it lands, with no other change.
+
+The gate below is upgraded to ``_parse_state``'s new ``hints_permit_
+dispatch`` field, computed as: **no "Skill hints:" line at all -> permit
+(``True``); a line present and its FIRST (best-scored) entry is
+``data_qa.metric_query`` -> permit; a line present and its first entry is
+anything else -> refuse (``False``).** This is deliberately NOT the plan's
+literal condition read as a bare conjunction ("hints lead with metric_query
+AND a period is resolved") -- a STRICT reading would refuse dispatch on
+every ParsedTurn that produced no hints whatsoever (an empty shortlist is
+"advisory, never a hard dispatch" per ``skill_hinter.hint``'s own docstring,
+not a vote against dispatching), which would also silently break every
+existing case-(b) test in this suite that never populates ``hints`` -- a
+regression the plan's own author could not have intended, since this
+task's OWN instructions name only ONE test as needing a flip, not the other
+ten. The permissive-when-absent reading is the one that actually CLOSES the
+disclosed over-trigger (a hints line that ACTIVELY leads toward research/
+brief content now refuses to dispatch metric_query) while changing nothing
+for a turn the hinter has no opinion about -- which is every turn in this
+file's OWN test fixtures unless a test opts into an explicit ``hints=``
+value. Pinned by ``test_hints_gate_permits_empty_or_metric_leading_but_
+refuses_research_leading`` (formerly ``test_tool_call_is_identical_
+regardless_of_hints_value`` -- flipped per this task's instructions, not
+deleted): metric-leading and empty hints both still dispatch identically to
+before; a research-leading hints line now produces the capability message
+instead.
+
 Behavior table (the phase-6 plan; case (a), ambiguous turns, is the
 orchestrator's short-circuit -- Task 3 -- and never reaches this class, so
 there is no code for it here):
 
-(b) A period is resolved (the state block's ``Period:`` line) and no
-    ``toolResult`` block is anywhere in ``messages`` yet -> ONE ``tool_use``
-    for ``data_qa.metric_query``. Metric defaults to ``["GP"]``. The last
+(b) A period is resolved (the state block's ``Period:`` line), the hints
+    gate permits it (see "Task 3 CLOSURE" above: no ``"Skill hints:"`` line
+    at all, or one present and leading with ``data_qa.metric_query``), and
+    no ``toolResult`` block is anywhere in ``messages`` yet -> ONE
+    ``tool_use`` for ``data_qa.metric_query``. Metric defaults to ``["GP"]``. The last
     ``user``-role message in ``messages`` that carries a text block (see
     :func:`_last_user_text`) containing the standalone, casefolded word
     "top" adds ``group_by="CUST_NM"``/``top_n=5``. A resolved port/customer
@@ -217,6 +254,16 @@ _COMPARE_PERIOD_RE = re.compile(
     r"^Compare period: (?P<start>\d{4}-\d{2}-\d{2})\.\.(?P<end>\d{4}-\d{2}-\d{2})$", re.MULTILINE
 )
 
+# Anchored to the WHOLE pinned line format `prompts.py`'s new `_render_hints`
+# produces ("Skill hints: <id> (<score>), ..."), same discipline as every
+# regex above -- only the FIRST (best-scored) entry is captured, since the
+# gate below only ever asks "what does this line LEAD with" (see the module
+# docstring's "Task 3 CLOSURE"). Skill ids are dotted words
+# (`[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)+`); `[\w.]+` is simpler and just as safe
+# here since nothing else in the line's prefix can produce a `\w` or `.` run
+# before the first ` (`.
+_HINTS_RE = re.compile(r"^Skill hints: (?P<first_skill>[\w.]+) \([0-9.]+\)", re.MULTILINE)
+
 # Word-boundary, casefolded -- the same discipline skill_hinter.py's own
 # lexicon matching uses (its module docstring: a lexeme like "top" matches
 # the standalone word "top" but never a substring inside a longer word
@@ -230,12 +277,18 @@ _TOP_WORD_RE = re.compile(r"\btop\b")
 class _ParsedState:
     """What this router could read out of one ``system`` string's
     conversation-state section -- ``None`` per field when that field's line
-    was not present."""
+    was not present.
+
+    ``hints_permit_dispatch`` is not a straight field read -- see the
+    module docstring's "Task 3 CLOSURE" for the permissive-when-absent rule
+    it implements.
+    """
 
     customer: str | None
     port: str | None
     period: tuple[str, str] | None
     compare_period: tuple[str, str] | None
+    hints_permit_dispatch: bool
 
 
 class DevDeterministicRouter:
@@ -262,7 +315,7 @@ class DevDeterministicRouter:
         parsed_state = _parse_state(system)
         if _has_tool_result(messages) and parsed_state.period is not None:
             return _certified_answer(parsed_state)
-        if parsed_state.period is not None:
+        if parsed_state.period is not None and parsed_state.hints_permit_dispatch:
             return _metric_query_call(parsed_state, messages)
         return _capability_response()
 
@@ -278,6 +331,7 @@ def _parse_state(system: str) -> _ParsedState:
     port_match = _RESOLVED_PORT_RE.search(block)
     period_match = _PERIOD_RE.search(block)
     compare_match = _COMPARE_PERIOD_RE.search(block)
+    hints_match = _HINTS_RE.search(block)
     return _ParsedState(
         customer=customer_match.group("value") if customer_match else None,
         port=port_match.group("value") if port_match else None,
@@ -285,6 +339,13 @@ def _parse_state(system: str) -> _ParsedState:
         compare_period=(compare_match.group("start"), compare_match.group("end"))
         if compare_match
         else None,
+        # Permissive when the line is absent altogether (no opinion to
+        # respect); refuses only when a line IS present and its best-scored
+        # entry names something other than the metric skill -- see the
+        # module docstring's "Task 3 CLOSURE".
+        hints_permit_dispatch=(
+            hints_match is None or hints_match.group("first_skill") == _METRIC_QUERY_SKILL_ID
+        ),
     )
 
 

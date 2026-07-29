@@ -68,7 +68,7 @@ import jinja2
 
 from poseidon.core.data.specs import PeriodWindow
 from poseidon.core.ontology.models import Entity
-from poseidon.core.parsing.types import ParsedTurn, ResolvedEntity
+from poseidon.core.parsing.types import CandidateSkill, ParsedTurn, ResolvedEntity
 from poseidon.core.skills.context import ConversationSlots
 from poseidon.core.skills.registry import SkillRegistry
 
@@ -284,9 +284,44 @@ def render_state_block(slots: ConversationSlots, parsed: ParsedTurn | None) -> s
       actually resolved): the freshly resolved customer/port entities with
       tier and confidence, the period window(s) rendered ISO half-open
       (``start..end``, matching ``format_parts.py``'s proof-line
-      convention), then every issue's message verbatim, one per line, in
-      the order the parser produced them -- never re-sorted or
-      re-summarized, so a clarifying question can quote it directly.
+      convention), the skill hinter's ranked shortlist (Phase 6 Task 3,
+      additive -- see "Skill hints" below), then every issue's message
+      verbatim, one per line, in the order the parser produced them --
+      never re-sorted or re-summarized, so a clarifying question can quote
+      it directly.
+
+    Skill hints (Phase 6 Task 3, additive). ``parsed.hints`` -- the skill
+    hinter's ranked, advisory shortlist (doc 02 section 5) -- was never
+    rendered by this function before this task: verified directly against
+    the pre-Task-3 source (this function read ``parsed.customer``,
+    ``.port``, ``.period_a``, ``.period_b`` and ``.issues``, never
+    ``.hints``) and against ``test_render_state_block_parsed_turn_with_
+    issues_golden``'s own pinned golden, whose ``ParsedTurn`` fixture set
+    ``hints=()`` while every other field was populated and the golden
+    output carried no trace of hints anywhere. That gap was
+    architecture-wide, not specific to any one caller: this function is
+    SHARED infrastructure (``loop.py``'s ``_router_system`` calls it to
+    build the real, live-model router's system prompt too; Phase 6's
+    ``DevDeterministicRouter`` calls it through the identical seam), so no
+    router -- including a real one -- could see the hinter's opinion.
+    Rendered only when ``parsed.hints`` is non-empty, one line, best-first
+    (the hinter's own ``(-score, skill_id)`` sort -- see
+    ``skill_hinter.hint``'s docstring -- so this function does no
+    re-sorting of its own), each candidate as ``"<skill_id> (<score>)"``
+    joined by ``", "``, score formatted to one decimal place (every
+    lexicon weight is ``1.0``, so scores are always whole numbers as
+    floats -- see ``lexicon.py``): e.g. ``"Skill hints: data_qa.
+    metric_query (2.0), research.web_research (1.0)"``. This is purely
+    ADDITIVE growth of the pinned line format (the same convention
+    ``ConversationSlots``'s own docstring established for slot growth):
+    every existing line this function already produced is untouched, so
+    every pre-existing golden in ``test_llm_prompts.py`` (none of which
+    populate ``hints``) stays byte-identical. Placed after the period/
+    compare-period lines and before ``Issues:`` -- the turn's resolved
+    facts first, then the derived advisory signal, then any problems --
+    since it is itself derived FROM the normalized text and the post-carry
+    slots (see ``pipeline.py``'s own step 8), not a raw resolution like
+    customer/port/period.
 
     ``slots.period_a``/``period_b`` are single first-of-period DATES (see
     ``ConversationSlots``'s own docstring), not a window pair, so they
@@ -330,6 +365,8 @@ def _render_parsed(parsed: ParsedTurn) -> list[str]:
         lines.append(_render_window("Period", parsed.period_a))
     if parsed.period_b is not None:
         lines.append(_render_window("Compare period", parsed.period_b))
+    if parsed.hints:
+        lines.append(_render_hints(parsed.hints))
     if parsed.issues:
         lines.append("Issues:")
         lines.extend(f"- [{issue.code}] {issue.message}" for issue in parsed.issues)
@@ -342,3 +379,12 @@ def _render_entity(label: str, entity: ResolvedEntity) -> str:
 
 def _render_window(label: str, window: PeriodWindow) -> str:
     return f"{label}: {window.start.isoformat()}..{window.end.isoformat()}"
+
+
+def _render_hints(hints: tuple[CandidateSkill, ...]) -> str:
+    """The pinned "Skill hints: ..." line -- see :func:`render_state_block`'s
+    docstring ("Skill hints") for the exact format and why this task adds
+    it. ``hints`` is already best-first (``skill_hinter.hint``'s own sort),
+    so this does no re-sorting or filtering of its own -- it renders
+    exactly the shortlist it was handed, in the order it was handed."""
+    return "Skill hints: " + ", ".join(f"{hint.skill_id} ({hint.score:.1f})" for hint in hints)

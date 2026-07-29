@@ -38,7 +38,7 @@ from poseidon.core.llm.prompts import (
     skill_lines_block,
 )
 from poseidon.core.ontology.loader import get_ontology
-from poseidon.core.parsing.types import ParsedTurn, ParseIssue, ResolvedEntity
+from poseidon.core.parsing.types import CandidateSkill, ParsedTurn, ParseIssue, ResolvedEntity
 from poseidon.core.skills.context import ConversationSlots
 from poseidon.core.skills.registry import SkillRegistry
 
@@ -487,6 +487,89 @@ def test_render_state_block_parsed_turn_with_issues_golden():
         "- [period_unavailable] No data available for April 2026.\n"
         '- [customer_ambiguous] Multiple customers match "maersk": MAERSK LINE, MAERSK BROKER.'
     )
+
+
+def test_render_state_block_hints_golden():
+    """Phase 6 Task 3, additive: ``parsed.hints`` (the skill hinter's ranked
+    shortlist) now renders as one "Skill hints: ..." line, best-first, score
+    to one decimal place -- see ``render_state_block``'s docstring ("Skill
+    hints") for the full rationale. Placed after the period lines and
+    before ``Issues:``. Every pre-existing golden in this file sets
+    ``hints=()`` and is asserted unchanged elsewhere; this is the one new
+    golden for the non-empty case."""
+    parsed = ParsedTurn(
+        normalized_text="top gp customers for port of singapore in april 2026",
+        slots=ConversationSlots(),
+        period_a=PeriodWindow(start=date(2026, 4, 1), end=date(2026, 5, 1)),
+        period_b=None,
+        customer=None,
+        port=ResolvedEntity(
+            value="SINGAPORE", source_text="singapore", confidence=1.0, tier="exact"
+        ),
+        hints=(
+            CandidateSkill(skill_id="data_qa.metric_query", score=2.0),
+            CandidateSkill(skill_id="research.web_research", score=1.0),
+        ),
+        issues=(),
+    )
+
+    result = render_state_block(ConversationSlots(), parsed)
+
+    assert result == (
+        "Mode: default\n\n"
+        "Resolved port: SINGAPORE (tier=exact, confidence=1.00)\n"
+        "Period: 2026-04-01..2026-05-01\n"
+        "Skill hints: data_qa.metric_query (2.0), research.web_research (1.0)"
+    )
+
+
+def test_render_state_block_hints_render_between_periods_and_issues():
+    """Field-order pin, independent of the golden above: hints sit after the
+    period lines and before ``Issues:`` even when both are present at once."""
+    parsed = ParsedTurn(
+        normalized_text="gp this period",
+        slots=ConversationSlots(),
+        period_a=PeriodWindow(start=date(2026, 4, 1), end=date(2026, 5, 1)),
+        period_b=None,
+        customer=None,
+        port=None,
+        hints=(CandidateSkill(skill_id="data_qa.metric_query", score=1.0),),
+        issues=(
+            ParseIssue(code="period_unavailable", message="No data available.", candidates=()),
+        ),
+    )
+
+    result = render_state_block(ConversationSlots(), parsed)
+
+    assert result == (
+        "Mode: default\n\n"
+        "Period: 2026-04-01..2026-05-01\n"
+        "Skill hints: data_qa.metric_query (1.0)\n"
+        "Issues:\n"
+        "- [period_unavailable] No data available."
+    )
+
+
+def test_render_state_block_empty_hints_renders_no_hints_line():
+    """The omission half of the additive contract: an empty ``hints`` tuple
+    (every pre-existing ParsedTurn fixture in this file) contributes nothing
+    -- no header, no blank line -- matching the "independently-omittable"
+    rule every other ``parsed`` field already follows."""
+    parsed = ParsedTurn(
+        normalized_text="gp this period",
+        slots=ConversationSlots(),
+        period_a=PeriodWindow(start=date(2026, 4, 1), end=date(2026, 5, 1)),
+        period_b=None,
+        customer=None,
+        port=None,
+        hints=(),
+        issues=(),
+    )
+
+    result = render_state_block(ConversationSlots(), parsed)
+
+    assert "Skill hints" not in result
+    assert result == "Mode: default\n\nPeriod: 2026-04-01..2026-05-01"
 
 
 def test_render_state_block_carried_port_region_topic_pass_through():
