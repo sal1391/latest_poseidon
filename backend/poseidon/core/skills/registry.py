@@ -60,6 +60,12 @@ SKILL_MODULE = "skill"
 # the cap is a hard error rather than a silent truncation.
 MAX_DESCRIPTION_CHARS = 300
 
+# Bedrock's ToolName shape (bedrock-runtime service-2.json: {"type": "string",
+# "max": 64, "min": 1, "pattern": "[a-zA-Z0-9_-]+"}) caps a tool name at 64
+# characters -- the limit the Bedrock-safe name check below enforces on every
+# registered skill id's mapped name (plan amendment aa33a2f).
+_BEDROCK_TOOL_NAME_MAX_CHARS = 64
+
 
 class SkillDefinitionError(Exception):
     """A task or skill package violates the folder law. Raised at discovery."""
@@ -119,6 +125,7 @@ class SkillRegistry:
                         f"'{tasks_pkg}' claim it, so one would silently shadow the other"
                     )
                 skills[skill_id] = _register(tasks_pkg, task_name, skill_name, skill_id)
+        _check_bedrock_safe_names(skills)
         return cls(skills)
 
     @property
@@ -309,6 +316,48 @@ def _skill_dirs(task_dir: Path) -> list[tuple[str, Path]]:
         if child.is_dir() and (child / f"{SCHEMA_MODULE}.py").is_file()
     ]
     return sorted(found, key=lambda pair: pair[0])
+
+
+def _check_bedrock_safe_names(skills: dict[str, "RegisteredSkill"]) -> None:
+    """Every registered skill id must map INJECTIVELY onto a Bedrock tool
+    name under ``"." -> "__"`` (the exact translation ``bedrock.py``'s
+    request/response boundary applies -- ``_to_bedrock_tool_name``/
+    ``_from_bedrock_tool_name``) and stay within Bedrock's 64-character
+    ``ToolName`` cap. Checked once here, over the WHOLE final registered set,
+    not at the Bedrock boundary itself (plan amendment aa33a2f): two
+    DIFFERENT skill ids sharing one mapped name would be indistinguishable
+    once translated, so the provider's reverse map would dispatch to
+    whichever REAL skill happened to be looked up -- silently. Failing here,
+    at start-up, in one legible line naming both offenders, is this module's
+    own fail-fast philosophy (see the module docstring) applied to an
+    invariant a DIFFERENT layer (bedrock.py) depends on -- the registry is
+    where ids are minted, so this is where the guarantee belongs, not where
+    it is consumed.
+
+    This does not (and is not asked to) prove every individual id round-trips
+    losslessly through ``"__" -> "."`` in isolation -- an id that itself
+    already contains a literal ``"__"`` is exactly the shape that risks
+    colliding with some other id's mapped name, which is what this check
+    actually catches in practice for the realistic id space (task/skill
+    names built from single underscores as word separators, never double).
+    """
+    mapped_to_skill_id: dict[str, str] = {}
+    for skill_id in skills:
+        mapped = skill_id.replace(".", "__")
+        if len(mapped) > _BEDROCK_TOOL_NAME_MAX_CHARS:
+            raise SkillDefinitionError(
+                f"skill '{skill_id}': Bedrock tool name '{mapped}' is "
+                f"{len(mapped)} characters, over the "
+                f"{_BEDROCK_TOOL_NAME_MAX_CHARS}-character ToolName cap"
+            )
+        colliding_id = mapped_to_skill_id.get(mapped)
+        if colliding_id is not None:
+            raise SkillDefinitionError(
+                f"skill ids '{colliding_id}' and '{skill_id}' both map to "
+                f"Bedrock tool name '{mapped}' under '.' -> '__' -- rename "
+                "one so the provider's reverse map can tell them apart"
+            )
+        mapped_to_skill_id[mapped] = skill_id
 
 
 def _import(module_name: str, skill_id: str) -> ModuleType:

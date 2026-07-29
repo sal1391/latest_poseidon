@@ -31,6 +31,24 @@ file states them locally:
   structured response -- a streaming caller already saw it live via
   ``on_text`` (see :meth:`BedrockProvider.invoke_stream`).
 
+Tool names cross a translation boundary at every ``toolConfig``/``toolUse``
+touch point (plan amendment aa33a2f, fix round 1): Bedrock's ``ToolName``
+pattern (``[a-zA-Z0-9_-]+``, verified in service-2.json) excludes ``.``
+entirely, but this codebase's skill ids are dotted (``"data_qa.metric_
+query"``). :func:`_to_bedrock_tool_name`/:func:`_from_bedrock_tool_name`
+translate ``"." <-> "__"`` at exactly three sites -- forward in
+``_build_tool_config``, reverse in both tool_use normalization paths
+(``_normalize_response``, ``_consume_stream``) -- and are deliberately pure,
+unconditional, and mechanical: no registry lookup and no validation happen
+here. A hallucinated wire name the model invented (never produced by the
+forward function for any real skill id) still reverse-maps to SOME string
+without raising; an unknown skill id is dispatch's existing 404 to catch,
+never this provider's job. The injectivity this translation relies on --
+that no two DIFFERENT registered skill ids ever map to the same wire name --
+is guaranteed one layer up, at discovery time, by
+``core/skills/registry.py``'s own ``SkillDefinitionError`` check (the
+registry is where ids are minted; this module only ever consumes them).
+
 The client is built lazily (:meth:`BedrockProvider._client_or_build`, first
 call only) rather than in ``__init__``: constructing a ``boto3``
 bedrock-runtime client touches AWS config/credential resolution, and
@@ -62,6 +80,24 @@ from poseidon.core.llm.types import LLMResponse, ToolCall
 # to tool_calls instead of text. Named so every branch below reads as "is
 # this the tool-use case" rather than repeating a bare string literal.
 _TOOL_USE_STOP_REASON = "tool_use"
+
+
+def _to_bedrock_tool_name(skill_id: str) -> str:
+    """Skill id -> Bedrock-safe wire ``ToolName`` (``"data_qa.metric_query"``
+    -> ``"data_qa__metric_query"``). Pure and unconditional -- see the module
+    docstring's tool-name-translation paragraph for why this needs no
+    validation of its own (the registry already guarantees injectivity
+    across every id this is ever called with)."""
+    return skill_id.replace(".", "__")
+
+
+def _from_bedrock_tool_name(wire_name: str) -> str:
+    """The mechanical inverse of :func:`_to_bedrock_tool_name`. Unconditional
+    on purpose: no registry lookup, no validation. A wire name the model
+    hallucinated (never produced by the forward function for any real skill
+    id) still reverse-maps to SOME string here -- it fails later, at
+    dispatch's existing 404, never in this provider."""
+    return wire_name.replace("__", ".")
 
 
 class BedrockProvider:
@@ -181,8 +217,11 @@ def _build_messages(messages: list[dict]) -> list[dict]:
 
 def _build_message(message: dict) -> dict:
     """``content`` may already be a list of Converse content blocks (passed
-    through as a NEW list, never the caller's own -- e.g. a future
-    toolResult message from Task 4's agent loop) or plain text (the shape
+    through as a NEW list -- never the caller's own list object, e.g. a
+    future toolResult message from Task 4's agent loop -- though the block
+    DICTS inside it are shared, shallow-copy only: this list-level copy is
+    what the mutation-discipline tests pin, since nothing in this module ever
+    writes into a block dict after reading it) or plain text (the shape
     ``RoleClient``'s own tests pass), wrapped as the one-block
     ``[{"text": content}]`` Converse requires."""
     content = message["content"]
@@ -213,12 +252,14 @@ def _build_tool_config(tools: list[dict]) -> dict:
     ``ToolConfigurationToolsList`` has a ``min: 1`` constraint, so an empty
     ``toolConfig.tools`` would be a guaranteed ``ValidationException``, not
     a harmless no-op -- omitting the whole key is the only correct
-    representation of "no tools this call"."""
+    representation of "no tools this call". ``name`` is translated to its
+    Bedrock-safe wire form (see the module docstring) -- the dotted skill id
+    itself is never sent."""
     return {
         "tools": [
             {
                 "toolSpec": {
-                    "name": schema["name"],
+                    "name": _to_bedrock_tool_name(schema["name"]),
                     "description": schema["description"],
                     "inputSchema": {"json": schema["input_schema"]},
                 }
@@ -244,7 +285,7 @@ def _normalize_response(response: dict) -> LLMResponse:
         tool_calls = tuple(
             ToolCall(
                 id=block["toolUse"]["toolUseId"],
-                name=block["toolUse"]["name"],
+                name=_from_bedrock_tool_name(block["toolUse"]["name"]),
                 arguments=block["toolUse"]["input"],
             )
             for block in content
@@ -310,6 +351,10 @@ def _consume_stream(stream, on_text: Callable[[str], None]) -> LLMResponse:
                 on_text(delta["text"])
             elif "toolUse" in delta:
                 index = delta_event["contentBlockIndex"]
+                # Relies on AWS's documented event ordering -- a
+                # contentBlockStart always precedes any contentBlockDelta for
+                # the same contentBlockIndex, so pending_tool_use[index] is
+                # guaranteed to exist here; no defensive .get()/KeyError guard.
                 pending_tool_use[index]["fragments"].append(delta["toolUse"]["input"])
         elif "messageStop" in event:
             stop_reason = event["messageStop"]["stopReason"]
@@ -323,7 +368,9 @@ def _consume_stream(stream, on_text: Callable[[str], None]) -> LLMResponse:
     if stop_reason == _TOOL_USE_STOP_REASON:
         tool_calls = tuple(
             ToolCall(
-                id=entry["id"], name=entry["name"], arguments=_parse_tool_input(entry["fragments"])
+                id=entry["id"],
+                name=_from_bedrock_tool_name(entry["name"]),
+                arguments=_parse_tool_input(entry["fragments"]),
             )
             for _, entry in sorted(pending_tool_use.items())
         )

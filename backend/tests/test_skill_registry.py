@@ -385,6 +385,50 @@ def test_duplicate_skill_id_fails_discovery(tasks_package: Callable[..., str]):
     assert "duplicate" in str(err.value).lower()
 
 
+def test_bedrock_unsafe_name_collision_fails_discovery(tasks_package: Callable[..., str]):
+    """Two DIFFERENT skill ids that collide once mapped onto a Bedrock tool
+    name (``"." -> "__"``, the same translation ``bedrock.py``'s boundary
+    applies -- plan amendment aa33a2f) must fail discovery: silently sharing
+    one Bedrock tool name would make the provider's reverse map dispatch to
+    the wrong REAL skill, so this is caught at start-up in one legible line
+    instead, where ids are minted."""
+    files = {
+        **_files("data__qa", "metric_query"),
+        **_files("data", "qa__metric_query"),
+    }
+    pkg = tasks_package("collide_tasks", files)
+
+    with pytest.raises(SkillDefinitionError) as err:
+        SkillRegistry.discover(pkg)
+
+    assert "data__qa.metric_query" in str(err.value)
+    assert "data.qa__metric_query" in str(err.value)
+
+
+def test_bedrock_unsafe_overlong_name_fails_discovery(tasks_package: Callable[..., str]):
+    """A skill id whose Bedrock tool name (post ``"." -> "__"``) exceeds
+    ToolName's 64-character cap must fail discovery, naming the id and its
+    mapped length."""
+    task_name = "a" * 32
+    skill_name = "b" * 32  # mapped length: 32 + len("__") + 32 = 66 > 64
+    pkg = tasks_package("overlong_tasks", _files(task_name, skill_name))
+
+    with pytest.raises(SkillDefinitionError) as err:
+        SkillRegistry.discover(pkg)
+
+    assert f"{task_name}.{skill_name}" in str(err.value)
+    assert "66" in str(err.value)
+
+
+def test_real_tasks_pass_the_bedrock_safe_name_check():
+    """The one real registered skill today (``data_qa.metric_query``) maps to
+    a well-under-cap, collision-free Bedrock tool name -- discovery must not
+    raise on the actual repo tree, not just on throwaway fixtures built to
+    trigger the check."""
+    reg = SkillRegistry.discover()
+    assert reg.skill_ids == ["data_qa.metric_query"]
+
+
 def test_malformed_task_manifest_fails_discovery_as_a_definition_error(
     tasks_package: Callable[..., str],
 ):

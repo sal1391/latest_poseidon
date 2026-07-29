@@ -108,7 +108,12 @@ _TOOL_USE_RESPONSE = {
                 {
                     "toolUse": {
                         "toolUseId": "tooluse_abc123",
-                        "name": "data_qa.metric_query",
+                        # Bedrock-safe WIRE form of "data_qa.metric_query" --
+                        # what the model actually echoes back, since
+                        # toolConfig never contains a dotted name (see
+                        # _to_bedrock_tool_name). The tests below assert the
+                        # normalized ToolCall.name comes back dotted.
+                        "name": "data_qa__metric_query",
                         "input": {"metric": "GP", "port": "SINGAPORE"},
                     }
                 }
@@ -298,6 +303,10 @@ def test_invoke_omits_tool_config_when_tools_empty():
 
 
 def test_invoke_builds_tool_config_from_tool_schema_entries():
+    """The wire ``toolSpec.name`` is the Bedrock-safe TRANSLATED form
+    ("data_qa__metric_query") -- Bedrock's ToolName pattern excludes "."
+    (verified in service-2.json), so the dotted skill id itself is never
+    sent; see _to_bedrock_tool_name."""
     fake = _FakeClient(converse_response=_TOOL_USE_RESPONSE)
     provider = BedrockProvider(client=fake)
 
@@ -313,7 +322,7 @@ def test_invoke_builds_tool_config_from_tool_schema_entries():
         "tools": [
             {
                 "toolSpec": {
-                    "name": "data_qa.metric_query",
+                    "name": "data_qa__metric_query",
                     "description": "Answer a metric question over certified sales/GL data.",
                     "inputSchema": {"json": _TOOL_SCHEMA["input_schema"]},
                 }
@@ -377,6 +386,35 @@ def test_invoke_normalizes_mixed_text_and_tool_use_response_drops_the_text():
     assert result.text == ""
     assert result.tool_calls == (ToolCall(id="t1", name="skill_a", arguments={"x": 1}),)
     assert result.stop_reason == "tool_use"
+
+
+def test_invoke_normalizes_hallucinated_tool_name_passthrough_without_error():
+    """A wire name the model invented -- never produced by
+    _to_bedrock_tool_name for any real, registered skill id -- reverse-maps
+    MECHANICALLY (plan amendment aa33a2f: "unconditional-mechanical"). No
+    registry lookup and no validation happen in the provider: dispatch's
+    existing 404 path is where an unknown skill id actually gets caught, not
+    here. "totally__made__up" has no special status; it just has two "__"
+    substrings to reverse-replace, same as any real translated name would."""
+    response = {
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"toolUse": {"toolUseId": "t1", "name": "totally__made__up", "input": {}}}
+                ],
+            }
+        },
+        "stopReason": "tool_use",
+        "usage": {"inputTokens": 5, "outputTokens": 5, "totalTokens": 10},
+        "metrics": {},
+    }
+    provider = _client(converse_response=response)
+
+    result = provider.invoke(system="s", messages=[], tools=[], model="m", params={})
+
+    assert result.tool_calls == (ToolCall(id="t1", name="totally.made.up", arguments={}),)
+    assert result.stop_reason == "tool_use"  # no error raised
 
 
 def test_invoke_normalizes_end_turn_response_to_text():
@@ -499,6 +537,31 @@ def test_invoke_never_mutates_messages_argument():
 
 
 # ---------------------------------------------------------------------------
+# tool name translation -- Bedrock's ToolName pattern ([a-zA-Z0-9_-]+,
+# verified in service-2.json) excludes "." entirely, so every dotted skill id
+# is translated at the toolConfig/toolUse boundary ("." <-> "__"). Injectivity
+# across the whole registered skill set is core/skills/registry.py's job
+# (discovery-time SkillDefinitionError); these two functions are deliberately
+# pure and mechanical, with no registry knowledge of their own.
+# ---------------------------------------------------------------------------
+
+
+def test_tool_name_translation_round_trips_for_real_skill_ids():
+    wire = bedrock._to_bedrock_tool_name("data_qa.metric_query")
+
+    assert wire == "data_qa__metric_query"
+    assert bedrock._from_bedrock_tool_name(wire) == "data_qa.metric_query"
+
+
+def test_parse_tool_input_with_no_fragments_returns_empty_dict():
+    """A streamed tool call with no arguments (contentBlockStart straight to
+    contentBlockStop, no delta in between) has an empty fragment list --
+    json.loads("") would raise, so this stays the documented {} default,
+    matching the non-stream missing-usage default's same defensive style."""
+    assert bedrock._parse_tool_input([]) == {}
+
+
+# ---------------------------------------------------------------------------
 # lazy client construction (region/client __init__ contract)
 # ---------------------------------------------------------------------------
 
@@ -519,6 +582,27 @@ def test_client_is_not_constructed_until_first_invoke(monkeypatch):
 
     provider.invoke(system="s", messages=[], tools=[], model="m", params={})
     assert calls == [("bedrock-runtime", {"region_name": "us-west-2"})]  # built once, reused
+
+
+def test_client_is_not_constructed_until_first_invoke_stream(monkeypatch):
+    """Mirrors the invoke() lazy-client test above, entered from
+    invoke_stream instead -- both public methods share the same
+    _client_or_build, but this proves the stream entry point does not build
+    its own client independently or skip the laziness rule."""
+    calls = []
+
+    def fake_boto3_client(service_name, **kwargs):
+        calls.append((service_name, kwargs))
+        return _FakeClient(converse_stream_response={"stream": []})
+
+    monkeypatch.setattr(bedrock.boto3, "client", fake_boto3_client)
+    provider = BedrockProvider(region="eu-west-1")
+    assert calls == []  # construction alone touches nothing
+
+    provider.invoke_stream(
+        system="s", messages=[], tools=[], model="m", params={}, on_text=lambda _: None
+    )
+    assert calls == [("bedrock-runtime", {"region_name": "eu-west-1"})]
 
 
 def test_default_region_is_us_east_1(monkeypatch):
@@ -576,7 +660,8 @@ _TOOL_USE_STREAM_EVENTS = [
     {
         "contentBlockStart": {
             "contentBlockIndex": 0,
-            "start": {"toolUse": {"toolUseId": "tooluse_abc123", "name": "data_qa.metric_query"}},
+            # Bedrock-safe WIRE form -- see _TOOL_USE_RESPONSE's comment.
+            "start": {"toolUse": {"toolUseId": "tooluse_abc123", "name": "data_qa__metric_query"}},
         }
     },
     {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"toolUse": {"input": '{"met'}}}},
