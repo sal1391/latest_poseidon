@@ -188,7 +188,7 @@ Lexicon starter (author fully): metric words (gp, gross profit, volume, tons, ma
 
 1. Offline: `python -m pytest tests/test_parsing_*.py -v` — the four suites green, table counts visible.
 2. Live: `python -m pytest -m pg -v` — resolution goldens against the seeded customers.
-3. Spot-check REPL (commands in the report): `parse_turn("Top GP customers for Port of Singapore in April 2026", ...)` printed ParsedTurn shows the resolved port, April window, metric_query hint, no issues; the "Northstar Linez" misspelling resolves; "meridian" returns the candidate chips list.
+3. Spot-check REPL (commands in the report): `parse_turn("Top GP customers for Port of Singapore in April 2026", ...)` printed ParsedTurn shows the resolved port, April window, metric_query hint, no issues; the "Northstar Linez" misspelling resolves; "Meridiann" returns the candidate chips list (AMENDED post-T4: live-verified that bare "meridian" AUTO-applies at fuzzy 1.0 to "Meridian Bunkering" against the seeded pool, so the double-n misspelling is the banding case — chips Meridian Tankers / Meridian Lines / Meridian Shipping).
 
 ## Self-Review Notes
 
