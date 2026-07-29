@@ -21,6 +21,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+# The COALESCE() literal for any entity whose certified rules don't name a
+# different one — MARINE_SALES_PLANNING_V's own rule ("COALESCE(col,
+# 'Unknown') on dimension columns before grouping.") happens to be exactly
+# this, so that entity needs no override. See the loader's
+# `_NULL_PLACEHOLDERS` for the entities that do.
+DEFAULT_NULL_PLACEHOLDER = "Unknown"
+
 
 class Column(BaseModel):
     model_config = ConfigDict(frozen=True, extra="ignore")
@@ -69,6 +76,11 @@ class Entity(BaseModel):
     dual_purpose_exclusion: str | None = None  # "COALESCE(CLASS4,'') <> 'Volume'"
     dual_purpose_pivot_column: str | None = None  # "CLASS4" — the unit-pivot column
     dual_purpose_pivot_value: str | None = None  # "Volume" — the unit-pivot value
+    # The literal every COALESCE() over this entity's dimensions must use —
+    # see the loader's `_NULL_PLACEHOLDERS` for the certified rules that fix
+    # it per entity. "Unknown" is the default (MARINE_SALES_PLANNING_V's own
+    # certified rule); W_MARINE_GL_SOURCE_AI overrides it to "Unassigned".
+    null_placeholder: str = DEFAULT_NULL_PLACEHOLDER
 
     def dimensions(self) -> list[str]:
         """Column names with role == "dimension", in file order."""

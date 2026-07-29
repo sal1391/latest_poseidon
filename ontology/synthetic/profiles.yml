@@ -76,6 +76,17 @@ W_MARINE_GL_SOURCE_AI:
   volume_share: 0.10        # fraction of rows with CLASS4 = Volume (exercises the guard)
   # ~24 curated full paths: CLASS6_Calc..CLASS1, null-padded. Majority P&L
   # (revenue / cost / OpEx branches below), >=2 Balance Sheet, >=3 Volume.
+  # CLASS1 (the last element — the narrowest leaf level) is populated on
+  # exactly 5 of the 20 non-Volume paths and null on every other path. That
+  # is deliberate: the certified CLASS1 is NULL on 16,516/21,729 rows (~76%),
+  # and since path choice is uniform within its group, 5/20 non-Volume paths
+  # at a 90% non-Volume share lands ~22.5% non-null — i.e. the 'Unassigned'
+  # bucket stays dominant, matching the certified column's character rather
+  # than filling in a leaf everywhere. The 5 populated leaves are also chosen
+  # to carry no Cost/Expense/OpEx/Tax keyword of their own, so adding them
+  # cannot flip a path's revenue-vs-cost sign under _is_cost_path()'s
+  # whole-path keyword scan (they sit under branches whose sign is already
+  # decided by a higher level).
   # Volume CLASS3 values are written "Tonnage - <suffix>"; the generator
   # derives ACCOUNT as "Tonnage-<suffix>" from that CLASS3 text (see
   # _tonnage_account). Cost-vs-revenue sign is decided by the generator's
@@ -85,7 +96,7 @@ W_MARINE_GL_SOURCE_AI:
   # them.
   hierarchy_paths:
     # --- Profit and Loss / Operating Income / revenue (7) -------------------
-    - [Profit and Loss, Profit and Loss, Operating Income, Gross Profit, Trade GP, Cargo GP, null]
+    - [Profit and Loss, Profit and Loss, Operating Income, Gross Profit, Trade GP, Cargo GP, Freight Margin]
     - [Profit and Loss, Profit and Loss, Operating Income, Gross Profit, Trade GP, Bunker GP, null]
     - [Profit and Loss, Profit and Loss, Operating Income, Gross Profit, Trade GP, Commission GP, null]
     - [Profit and Loss, Profit and Loss, Operating Income, Gross Profit, Charter GP, Voyage GP, null]
@@ -96,10 +107,10 @@ W_MARINE_GL_SOURCE_AI:
     - [Profit and Loss, Profit and Loss, Operating Income, Cost of Goods Sold, Trade Cost, Cargo Cost, null]
     - [Profit and Loss, Profit and Loss, Operating Income, Cost of Goods Sold, Trade Cost, Bunker Cost, null]
     - [Profit and Loss, Profit and Loss, Operating Income, Cost of Goods Sold, Charter Cost, Voyage Cost, null]
-    - [Profit and Loss, Profit and Loss, Operating Income, Operating Expenses, Vessel OpEx, Crew Cost, null]
-    - [Profit and Loss, Profit and Loss, Operating Income, Operating Expenses, Vessel OpEx, Fuel Cost, null]
-    - [Profit and Loss, Profit and Loss, Operating Income, Operating Expenses, Corporate Overhead, SG&A Expense, null]
-    - [Profit and Loss, Profit and Loss, Operating Income, Operating Expenses, Corporate Overhead, IT Expense, null]
+    - [Profit and Loss, Profit and Loss, Operating Income, Operating Expenses, Vessel OpEx, Crew Cost, Salaries]
+    - [Profit and Loss, Profit and Loss, Operating Income, Operating Expenses, Vessel OpEx, Fuel Cost, Lubricants]
+    - [Profit and Loss, Profit and Loss, Operating Income, Operating Expenses, Corporate Overhead, SG&A Expense, Office Rent]
+    - [Profit and Loss, Profit and Loss, Operating Income, Operating Expenses, Corporate Overhead, IT Expense, Software Licenses]
     - [Profit and Loss, Profit and Loss, Operating Income, Operating Expenses, Corporate Overhead, Professional Fees Expense, null]
     # --- Profit and Loss / non-operating + tax (3) ---------------------------
     - [Profit and Loss, Profit and Loss, Non-Operating Income, Other Expense, Interest Expense, null, null]

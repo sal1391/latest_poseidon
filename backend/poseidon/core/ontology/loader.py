@@ -31,6 +31,10 @@ Parsing notes (see task brief / docs/architecture/04-data-ontology.md §2):
   ``Entity.dual_purpose_pivot_column``; ``...unit_pivot.value`` ->
   ``Entity.dual_purpose_pivot_value`` (e.g. ``"CLASS4"`` / ``"Volume"`` —
   the query builder's volume-mode trigger).
+- ``Entity.null_placeholder`` is NOT parsed from the YAML: the certified
+  rule lives in prose (``business_rules`` / a column ``description``), so
+  it is transcribed into the explicit ``_NULL_PLACEHOLDERS`` mapping below,
+  with the quoted source rules alongside it.
 - Top-level keys the loader does not model (``apps``, provenance blocks,
   ``bootstrap_conflicts``, ``disambiguations``, ``data_snapshots``, ...)
   are simply never read, so they can't crash parsing.
@@ -42,10 +46,38 @@ from typing import Any
 
 import yaml
 
-from .models import Column, Entity, Metric, NegativeConstraint, Ontology
+from .models import (
+    DEFAULT_NULL_PLACEHOLDER,
+    Column,
+    Entity,
+    Metric,
+    NegativeConstraint,
+    Ontology,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_ONTOLOGY_PATH = _REPO_ROOT / "ontology" / "ontology.yml"
+
+# Per-entity NULL placeholder for COALESCE() over dimension columns. The
+# certified ontology states this rule in prose (inside `business_rules` and
+# a column `description`) rather than in a structured field, so the mapping
+# is transcribed here explicitly, with its sources, rather than parsed:
+#
+#   W_MARINE_GL_SOURCE_AI -> "Unassigned"
+#     business_rules: "COALESCE(<col>,'Unassigned') on every GROUP BY —
+#     CLASS1 is NULL on 16,516/21,729 rows."
+#     columns.CLASS1.description: "Leaf detail (L7, narrowest). 31 distinct,
+#     16,516 null (mostly NULL). Always COALESCE(CLASS1,'Unassigned') in a
+#     GROUP BY."
+#
+# MARINE_SALES_PLANNING_V is deliberately absent: its own certified rule
+# ("COALESCE(col, 'Unknown') on dimension columns before grouping.") is
+# exactly `Entity.null_placeholder`'s default, so the default covers it and
+# any future entity that doesn't say otherwise. Adding an entity here is a
+# contract change — the pins live in
+# `backend/tests/test_ontology_loader.py` and the GL snapshot strings in
+# `backend/tests/test_query_builder_snapshots.py`.
+_NULL_PLACEHOLDERS = {"W_MARINE_GL_SOURCE_AI": "Unassigned"}
 
 
 def _parse_columns(raw: dict[str, Any] | None) -> dict[str, Column]:
@@ -105,6 +137,7 @@ def _parse_entity(name: str, raw: dict[str, Any]) -> Entity:
         dual_purpose_exclusion=dual_purpose_exclusion,
         dual_purpose_pivot_column=dual_purpose_pivot_column,
         dual_purpose_pivot_value=dual_purpose_pivot_value,
+        null_placeholder=_NULL_PLACEHOLDERS.get(name, DEFAULT_NULL_PLACEHOLDER),
     )
 
 

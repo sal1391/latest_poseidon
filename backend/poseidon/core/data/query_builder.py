@@ -24,10 +24,19 @@ Validation always happens before rendering. An unknown entity name raises the
 loader's own ``KeyError`` (``Ontology.entity`` — see
 ``poseidon.core.ontology.models``) verbatim, never wrapped. Every other spec
 mistake — an uncertified metric, a filter/group-by column that isn't a
-certified dimension of the entity, an ``order_by_metric`` outside
+certified dimension of the entity, a filter whose value collection is empty
+(which would render an invalid ``IN ()``), an ``order_by_metric`` outside
 ``metrics``, ``top_n < 1``, or a *volume-mode* violation (see below) — raises
 :class:`SpecValidationError`, whose message text is itself part of the
-pinned snapshot contract.
+pinned snapshot contract. An inverted/empty period window is rejected even
+earlier, by ``PeriodWindow`` itself (a plain ``ValueError`` at construction).
+
+**NULL placeholder.** Every ``COALESCE(...)`` this module renders — group-by
+projections and filter predicates alike — uses the entity's own certified
+``null_placeholder`` (``poseidon.core.ontology.models.Entity``), never a
+hardcoded literal: ``'Unassigned'`` on ``W_MARINE_GL_SOURCE_AI``,
+``'Unknown'`` everywhere else. See the loader's ``_NULL_PLACEHOLDERS`` for
+the certified rules behind that mapping.
 
 **Volume mode** (currently only ``W_MARINE_GL_SOURCE_AI``, but driven
 entirely by the ontology's ``dual_purpose_measures[0].unit_pivot`` — see
@@ -106,6 +115,33 @@ def _require_dimension(entity: Entity, col: str) -> None:
     """
     if col not in entity.dimensions():
         raise SpecValidationError(f"{col!r} is not a dimension of {entity.name}")
+
+
+def _require_filter_values(col: str, values: tuple[str, ...]) -> None:
+    """Raise unless ``col``'s filter carries at least one value.
+
+    An empty collection would render as ``IN ()`` — a syntax error on both
+    dialects — so it can never be a legitimate query. "Filter on nothing"
+    is also semantically ambiguous (match everything? match nothing?), so
+    it is refused outright rather than being silently dropped or silently
+    rendered into invalid SQL.
+    """
+    if not values:
+        raise SpecValidationError(
+            f"filter on {col!r} has no values — omit the column or "
+            f"provide at least one value"
+        )
+
+
+def _validate_filters(entity: Entity, filters: Mapping[str, tuple[str, ...]]) -> None:
+    """Every filter column must be a certified dimension AND carry values.
+
+    Column-level checks run first, per column, so a filter that is both
+    uncertified and empty reports the more fundamental problem.
+    """
+    for col, values in filters.items():
+        _require_dimension(entity, col)
+        _require_filter_values(col, values)
 
 
 def _table_name(entity: Entity, dialect: str) -> str:
@@ -210,7 +246,9 @@ def _where_clause(
 
     for col, values in filters.items():
         placeholders = ", ".join(["%s"] * len(values))
-        conditions.append(f"COALESCE({col}, 'Unknown') IN ({placeholders})")
+        conditions.append(
+            f"COALESCE({col}, '{entity.null_placeholder}') IN ({placeholders})"
+        )
         params.extend(values)
 
     if (
@@ -226,8 +264,7 @@ def _where_clause(
 def build_metric_query(spec: MetricQuerySpec, dialect: str) -> tuple[str, list]:
     entity = _entity(spec.entity)
     _require_certified_metrics(entity, spec.metrics)
-    for col in spec.filters:
-        _require_dimension(entity, col)
+    _validate_filters(entity, spec.filters)
     if _is_volume_mode(entity, spec.filters):
         required = _volume_mode_required_group_by(entity)
         raise SpecValidationError(
@@ -255,8 +292,7 @@ def build_breakdown_query(spec: BreakdownQuerySpec, dialect: str) -> tuple[str, 
     entity = _entity(spec.entity)
     _require_certified_metrics(entity, spec.metrics)
     _require_dimension(entity, spec.group_by)
-    for col in spec.filters:
-        _require_dimension(entity, col)
+    _validate_filters(entity, spec.filters)
     if spec.order_by_metric not in spec.metrics:
         raise SpecValidationError(
             f"order_by_metric {spec.order_by_metric!r} must be one of "
@@ -274,7 +310,7 @@ def build_breakdown_query(spec: BreakdownQuerySpec, dialect: str) -> tuple[str, 
 
     params: list = []
     select_list = ", ".join(
-        [f"COALESCE({spec.group_by}, 'Unknown') AS {spec.group_by}"]
+        [f"COALESCE({spec.group_by}, '{entity.null_placeholder}') AS {spec.group_by}"]
         + [_metric_expr(entity, m) for m in spec.metrics]
     )
     where = _where_clause(entity, dialect, spec.metrics, spec.period, spec.filters, params)

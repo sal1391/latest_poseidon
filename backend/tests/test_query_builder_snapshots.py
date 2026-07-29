@@ -9,6 +9,17 @@ around.
 Error-message tests pin the exact `SpecValidationError` text (and, for an
 unknown entity, the loader's own `KeyError` text) since those strings are
 part of the contract too.
+
+ADJUDICATED CONTRACT CHANGE (final-review wave) — the COALESCE() NULL
+placeholder is now per-entity, read from `Entity.null_placeholder` instead
+of a hardcoded 'Unknown'. Every W_MARINE_GL_SOURCE_AI snapshot below
+therefore expects `'Unassigned'`, in both group-by projections and filter
+predicates: that is what the GL table's own certified rules require
+(ontology.yml business_rules "COALESCE(<col>,'Unassigned') on every GROUP
+BY", and the CLASS1 column description). MARINE_SALES_PLANNING_V snapshots
+are UNCHANGED at 'Unknown' — that entity's certified rule says 'Unknown',
+which is `null_placeholder`'s default. The previous GL strings were wrong
+against the certified rules, not merely different; they are not preserved.
 """
 
 import datetime as dt
@@ -139,7 +150,7 @@ def test_gl_metric_query_mixed_class4_filter_keeps_guard_snowflake():
         'SELECT SUM(AMOUNT_USD) AS "MONETARY_TOTAL"\n'
         "FROM SANDBOX.MCA.W_MARINE_GL_SOURCE_AI\n"
         "WHERE TO_DATE(PERIOD_DATE) >= %s AND TO_DATE(PERIOD_DATE) < %s "
-        "AND COALESCE(CLASS4, 'Unknown') IN (%s, %s) "
+        "AND COALESCE(CLASS4, 'Unassigned') IN (%s, %s) "
         "AND COALESCE(CLASS4,'') <> 'Volume'")
     assert params == [
         dt.date(2026, 4, 1), dt.date(2026, 5, 1), "Volume", "Trade GP",
@@ -233,7 +244,7 @@ def test_gl_breakdown_by_company_postgres_dual_purpose_and_plain_date():
     )
     sql, params = qb.build_breakdown_query(spec, "postgres")
     assert sql == (
-        "SELECT COALESCE(COMPANY, 'Unknown') AS COMPANY, "
+        "SELECT COALESCE(COMPANY, 'Unassigned') AS COMPANY, "
         'SUM(AMOUNT_USD) AS "MONETARY_TOTAL"\n'
         "FROM synthetic.w_marine_gl_source_ai\n"
         "WHERE PERIOD_DATE >= %s AND PERIOD_DATE < %s "
@@ -242,6 +253,39 @@ def test_gl_breakdown_by_company_postgres_dual_purpose_and_plain_date():
         'ORDER BY "MONETARY_TOTAL" DESC NULLS LAST\n'
         "LIMIT %s")
     assert params == [dt.date(2026, 4, 1), dt.date(2026, 5, 1), 5]
+
+
+def test_gl_breakdown_by_class1_postgres_uses_unassigned_placeholder():
+    """The certified-placeholder case, on the column the rule was written
+    for: CLASS1 is NULL on ~76% of GL rows, and ontology.yml requires
+    `COALESCE(<col>,'Unassigned')` on every GL GROUP BY. Both COALESCE sites
+    — the group-by projection AND the filter predicate — must render
+    'Unassigned', not the default 'Unknown' the sales snapshots still use.
+    COMPANY is filtered here purely so the filter site appears in the same
+    snapshot as the projection site."""
+    spec = BreakdownQuerySpec(
+        entity="W_MARINE_GL_SOURCE_AI",
+        metrics=("MONETARY_TOTAL",),
+        period=APRIL,
+        group_by="CLASS1",
+        order_by_metric="MONETARY_TOTAL",
+        top_n=10,
+        filters={"COMPANY": ("Poseidon Marine Fuels Ltd",)},
+    )
+    sql, params = qb.build_breakdown_query(spec, "postgres")
+    assert sql == (
+        "SELECT COALESCE(CLASS1, 'Unassigned') AS CLASS1, "
+        'SUM(AMOUNT_USD) AS "MONETARY_TOTAL"\n'
+        "FROM synthetic.w_marine_gl_source_ai\n"
+        "WHERE PERIOD_DATE >= %s AND PERIOD_DATE < %s "
+        "AND COALESCE(COMPANY, 'Unassigned') IN (%s) "
+        "AND COALESCE(CLASS4,'') <> 'Volume'\n"
+        "GROUP BY 1\n"
+        'ORDER BY "MONETARY_TOTAL" DESC NULLS LAST\n'
+        "LIMIT %s")
+    assert params == [
+        dt.date(2026, 4, 1), dt.date(2026, 5, 1), "Poseidon Marine Fuels Ltd", 10,
+    ]
 
 
 def test_volume_mode_class3_breakdown_postgres_drops_guard():
@@ -261,11 +305,11 @@ def test_volume_mode_class3_breakdown_postgres_drops_guard():
     )
     sql, params = qb.build_breakdown_query(spec, "postgres")
     assert sql == (
-        "SELECT COALESCE(CLASS3, 'Unknown') AS CLASS3, "
+        "SELECT COALESCE(CLASS3, 'Unassigned') AS CLASS3, "
         'SUM(AMOUNT_USD) AS "MONETARY_TOTAL"\n'
         "FROM synthetic.w_marine_gl_source_ai\n"
         "WHERE PERIOD_DATE >= %s AND PERIOD_DATE < %s "
-        "AND COALESCE(CLASS4, 'Unknown') IN (%s)\n"
+        "AND COALESCE(CLASS4, 'Unassigned') IN (%s)\n"
         "GROUP BY 1\n"
         'ORDER BY "MONETARY_TOTAL" DESC NULLS LAST\n'
         "LIMIT %s")
@@ -319,11 +363,11 @@ def test_volume_mode_class3_breakdown_snowflake_drops_guard():
     )
     sql, params = qb.build_breakdown_query(spec, "snowflake")
     assert sql == (
-        "SELECT COALESCE(CLASS3, 'Unknown') AS CLASS3, "
+        "SELECT COALESCE(CLASS3, 'Unassigned') AS CLASS3, "
         'SUM(AMOUNT_USD) AS "MONETARY_TOTAL"\n'
         "FROM SANDBOX.MCA.W_MARINE_GL_SOURCE_AI\n"
         "WHERE TO_DATE(PERIOD_DATE) >= %s AND TO_DATE(PERIOD_DATE) < %s "
-        "AND COALESCE(CLASS4, 'Unknown') IN (%s)\n"
+        "AND COALESCE(CLASS4, 'Unassigned') IN (%s)\n"
         "GROUP BY 1\n"
         'ORDER BY "MONETARY_TOTAL" DESC\n'
         "LIMIT %s")
@@ -347,11 +391,11 @@ def test_volume_mode_breakdown_duplicate_pivot_values_snowflake():
     )
     sql, params = qb.build_breakdown_query(spec, "snowflake")
     assert sql == (
-        "SELECT COALESCE(CLASS3, 'Unknown') AS CLASS3, "
+        "SELECT COALESCE(CLASS3, 'Unassigned') AS CLASS3, "
         'SUM(AMOUNT_USD) AS "MONETARY_TOTAL"\n'
         "FROM SANDBOX.MCA.W_MARINE_GL_SOURCE_AI\n"
         "WHERE TO_DATE(PERIOD_DATE) >= %s AND TO_DATE(PERIOD_DATE) < %s "
-        "AND COALESCE(CLASS4, 'Unknown') IN (%s, %s)\n"
+        "AND COALESCE(CLASS4, 'Unassigned') IN (%s, %s)\n"
         "GROUP BY 1\n"
         'ORDER BY "MONETARY_TOTAL" DESC\n'
         "LIMIT %s")
@@ -488,6 +532,56 @@ def test_filter_on_unknown_column_raises():
     with pytest.raises(qb.SpecValidationError) as exc_info:
         qb.build_metric_query(spec, "postgres")
     assert str(exc_info.value) == "'PORT_NM' is not a dimension of MARINE_SALES_PLANNING_V"
+
+
+def test_empty_filter_values_raises():
+    """A filter column whose value collection is EMPTY used to render an
+    invalid `IN ()` (a syntax error on both dialects) instead of failing —
+    it is now refused before rendering, in both spec shapes. The message is
+    asserted by exact equality, snapshot-style: it is part of the contract,
+    not an informal hint."""
+    metric_spec = MetricQuerySpec(
+        entity="MARINE_SALES_PLANNING_V",
+        metrics=("GP",),
+        period=APRIL,
+        filters={"LOC_NM": ()},
+    )
+    with pytest.raises(qb.SpecValidationError) as exc_info:
+        qb.build_metric_query(metric_spec, "postgres")
+    assert str(exc_info.value) == (
+        "filter on 'LOC_NM' has no values — omit the column or provide "
+        "at least one value")
+
+    breakdown_spec = BreakdownQuerySpec(
+        entity="MARINE_SALES_PLANNING_V",
+        metrics=("GP",),
+        period=APRIL,
+        group_by="CUST_NM",
+        order_by_metric="GP",
+        filters={"LOC_NM": ()},
+    )
+    with pytest.raises(qb.SpecValidationError) as exc_info:
+        qb.build_breakdown_query(breakdown_spec, "postgres")
+    assert str(exc_info.value) == (
+        "filter on 'LOC_NM' has no values — omit the column or provide "
+        "at least one value")
+
+
+def test_inverted_period_window_raises():
+    """`PeriodWindow` rejects `start >= end` at construction — before any
+    builder call — so an inverted window can never reach SQL and quietly
+    return "no data". Both the strictly-inverted case and the degenerate
+    `start == end` case (a half-open window with coincident bounds is empty
+    by definition) raise, with the same message shape."""
+    with pytest.raises(ValueError) as exc_info:
+        PeriodWindow(dt.date(2026, 5, 1), dt.date(2026, 4, 1))
+    assert str(exc_info.value) == (
+        "period window start 2026-05-01 must be before end 2026-04-01")
+
+    with pytest.raises(ValueError) as exc_info:
+        PeriodWindow(dt.date(2026, 4, 1), dt.date(2026, 4, 1))
+    assert str(exc_info.value) == (
+        "period window start 2026-04-01 must be before end 2026-04-01")
 
 
 def test_order_by_metric_not_in_metrics_raises():

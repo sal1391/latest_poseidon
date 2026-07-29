@@ -21,6 +21,12 @@ def test_inventory_is_pinned():
     assert len(msp.negative_constraints) == 21
     assert all(nc.observed for nc in msp.negative_constraints)
     assert msp.dual_purpose_pivot_column is None and msp.dual_purpose_pivot_value is None
+    # Certified COALESCE placeholder, per entity. Sales keeps the default
+    # ("COALESCE(col, 'Unknown') on dimension columns before grouping.");
+    # GL overrides it ("COALESCE(<col>,'Unassigned') on every GROUP BY").
+    # These two literals are what query_builder renders — see the GL
+    # snapshots in test_query_builder_snapshots.py.
+    assert msp.null_placeholder == "Unknown"
 
     gl = ont.entity("W_MARINE_GL_SOURCE_AI")
     assert gl.date_column == "PERIOD_DATE"
@@ -31,6 +37,7 @@ def test_inventory_is_pinned():
     assert gl.dual_purpose_exclusion == "COALESCE(CLASS4,'') <> 'Volume'"
     assert gl.dual_purpose_pivot_column == "CLASS4"
     assert gl.dual_purpose_pivot_value == "Volume"
+    assert gl.null_placeholder == "Unassigned"
     assert len(gl.negative_constraints) == 17
 
 

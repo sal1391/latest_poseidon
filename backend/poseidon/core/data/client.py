@@ -42,6 +42,12 @@ class BreakdownResult:
 
 @dataclass(frozen=True)
 class PeriodRange:
+    """The span of dates an entity actually holds (MIN/MAX of its date column).
+
+    ``end`` is inclusive — the newest date present, not a half-open bound; do
+    NOT feed directly into PeriodWindow.end.
+    """
+
     start: date | None
     end: date | None  # None/None when the entity has no rows
 

@@ -366,6 +366,60 @@ def test_gl_monetary_total_excludes_volume_rows():
     assert result.values["MONETARY_TOTAL"] == pytest.approx(expected)
 
 
+def test_gl_class1_breakdown_buckets_nulls_as_unassigned():
+    """The certified NULL placeholder, end to end. CLASS1 is NULL on ~77% of
+    generated GL rows (profiles.yml populates it on 5 of 20 non-Volume
+    paths, mirroring the certified column's ~76%-null character), and the GL
+    entity's ``null_placeholder`` is 'Unassigned' — so the SQL's
+    ``COALESCE(CLASS1, 'Unassigned')`` must fold every one of those NULLs
+    into a single 'Unassigned' bucket alongside the named leaves. The
+    expectation is the pure-Python twin of exactly that COALESCE. Volume
+    rows are excluded because MONETARY_TOTAL carries the dual-purpose
+    guard. The COMPANY filter is narrowed to one real company so the changed
+    filter-side COALESCE executes against Postgres too, not just the
+    projection."""
+    april = "2026-04-01"
+    company = sorted({row["COMPANY"] for row in DATASET.gl_rows})[0]
+    month_rows = [
+        row
+        for row in DATASET.gl_rows
+        if row["PERIOD_DATE"] == april
+        and row["CLASS4"] != "Volume"
+        and row["COMPANY"] == company
+    ]
+    assert month_rows
+    expected: dict[str, float] = {}
+    for row in month_rows:
+        key = row["CLASS1"] if row["CLASS1"] is not None else "Unassigned"
+        expected[key] = expected.get(key, 0.0) + row["AMOUNT_USD"]
+    named_leaves = set(expected) - {"Unassigned"}
+    assert "Unassigned" in expected, "the month must contain CLASS1-null rows"
+    assert named_leaves, "the month must contain at least one named CLASS1 leaf"
+
+    result = CLIENT.run_breakdown_query(
+        BreakdownQuerySpec(
+            entity=GL,
+            metrics=("MONETARY_TOTAL",),
+            period=APRIL_2026,
+            group_by="CLASS1",
+            order_by_metric="MONETARY_TOTAL",
+            top_n=50,  # comfortably above the number of distinct CLASS1 values
+            filters={"COMPANY": (company,)},
+        )
+    )
+
+    assert result.group_by == "CLASS1"
+    keys = [row.key for row in result.rows]
+    assert set(keys) == set(expected)
+    assert "Unassigned" in keys
+    assert named_leaves <= set(keys)
+    for row in result.rows:
+        assert row.values["MONETARY_TOTAL"] == pytest.approx(expected[row.key]), row.key
+    # ORDER BY "MONETARY_TOTAL" DESC, not incidental table order
+    totals = [row.values["MONETARY_TOTAL"] for row in result.rows]
+    assert totals == sorted(totals, reverse=True)
+
+
 def test_gl_volume_mode_breakdown_sums_tonnage_by_class3():
     """The mirror image of the guard: pinning CLASS4='Volume' drops the
     exclusion and the CLASS3 breakdown returns tonnage, not dollars."""

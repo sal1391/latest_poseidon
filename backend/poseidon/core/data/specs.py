@@ -17,6 +17,26 @@ class PeriodWindow:
     start: date  # inclusive
     end: date  # exclusive (half-open — renders as >= start AND < end)
 
+    def __post_init__(self) -> None:
+        """Reject an inverted or empty window at construction time.
+
+        ``start >= end`` can only ever select zero rows, so it is a caller
+        mistake, not a query: rendering it would silently return "no data"
+        for what is really a bug. ``start == end`` is included — a half-open
+        window whose bounds coincide is empty by definition. The message
+        text is pinned in ``test_query_builder_snapshots.py``.
+
+        Note the asymmetry with :class:`~poseidon.core.data.client.
+        PeriodRange`, whose ``end`` is INCLUSIVE (the newest date present):
+        feeding a ``PeriodRange`` straight into a ``PeriodWindow`` silently
+        drops the last day, and a single-day range would raise here.
+        """
+        if self.start >= self.end:
+            raise ValueError(
+                f"period window start {self.start.isoformat()} must be "
+                f"before end {self.end.isoformat()}"
+            )
+
 
 @dataclass(frozen=True)
 class MetricQuerySpec:
