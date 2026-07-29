@@ -1,0 +1,6 @@
+id: data_qa
+title: Data Q&A
+description: >-
+  Ask-anything questions over the certified ontology: metric totals, period
+  comparisons and top-N breakdowns, answered from the certified views only.
+enabled: true

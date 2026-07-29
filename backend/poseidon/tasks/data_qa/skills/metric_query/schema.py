@@ -1,0 +1,41 @@
+"""The router-facing contract of ``data_qa.metric_query``.
+
+``Args`` is the only thing the model is allowed to author. Everything the
+answer is made of — the SQL, the metric formulas, the rounding, the proof
+block — is deterministic Python downstream of this model, so the JSON Schema
+generated here is exactly the surface area of the LLM's influence over the
+data layer.
+"""
+
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+from poseidon.tasks._shared.fragments import DimFilter, PeriodArg
+
+
+class Args(BaseModel):
+    """Ask a metric question over a certified entity."""
+
+    entity: Literal[
+        "MARINE_SALES_PLANNING_V", "W_MARINE_GL_SOURCE_AI"
+    ] = "MARINE_SALES_PLANNING_V"
+    metrics: list[str] = Field(min_length=1, description="Certified metric names, e.g. GP, VOLUME")
+    period: PeriodArg
+    compare_period: PeriodArg | None = None  # side-by-side comparison window
+    filters: list[DimFilter] = Field(default_factory=list)
+    group_by: str | None = None  # dimension column -> breakdown
+    top_n: int = Field(default=5, ge=1, le=50)
+
+
+SKILL_META = {
+    "description": (
+        "Query certified metrics (GP, VOLUME, MARGIN, NUM_WON, NUM_INQUIRIES, "
+        "NUM_LOST, WIN_RATE) over sales or GL data: totals, period comparisons, "
+        "or top-N breakdowns by a dimension."
+    ),
+    "examples": [
+        "Top GP customers for Port of Singapore in April 2026",
+        "Total volume prior year vs YTD",
+    ],
+}
