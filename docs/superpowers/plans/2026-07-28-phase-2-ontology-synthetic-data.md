@@ -66,7 +66,10 @@ infra/runbooks/local.md           # + synthetic regeneration section (Task 6)
 **Interfaces (exact — later tasks depend on these):**
 
 ```python
-# models.py (pydantic BaseModel throughout)
+# models.py (pydantic BaseModel throughout; every model sets
+# model_config = ConfigDict(frozen=True) — get_ontology() serves a cached
+# shared singleton, so instances are attribute-immutable and consumers treat
+# the whole object graph as read-only)
 class Column(BaseModel):
     name: str                    # e.g. "#_FIXTURES" (unquoted form; YAML key)
     type: str
@@ -101,6 +104,8 @@ class Entity(BaseModel):
     business_rules: list[str] = []
     hierarchy_levels: list[str] = []     # W_MARINE_GL: the 7 CLASS level_columns
     dual_purpose_exclusion: str | None = None  # "COALESCE(CLASS4,'') <> 'Volume'"
+    dual_purpose_pivot_column: str | None = None  # "CLASS4" (from hierarchies.dual_purpose_measures[0].unit_pivot.column)
+    dual_purpose_pivot_value: str | None = None   # "Volume" (from ...unit_pivot.value)
 
     def dimensions(self) -> list[str]: ...   # column names with role == "dimension", file order
     def measures(self) -> list[str]: ...
@@ -245,7 +250,7 @@ def build_period_range_query(entity: str, dialect: str) -> tuple[str, list]: ...
 - Filters: `COALESCE({col}, 'Unknown') IN (%s, ...)` — the COALESCE business rule; values parameterized.
 - Group-by: `COALESCE({col}, 'Unknown') AS {col}` in SELECT, `GROUP BY 1`, `ORDER BY "{order_by_metric}" DESC NULLS LAST` (postgres) / `ORDER BY "{order_by_metric}" DESC` (snowflake), `LIMIT %s` (postgres) / `LIMIT %s` (snowflake — same).
 - `WIN_RATE` in the metric list appends `HAVING SUM("#_INQUIRIES") >= 5` (the certified small-sample guard) — in both query shapes.
-- `W_MARINE_GL_SOURCE_AI` + `MONETARY_TOTAL` always appends the dual-purpose guard `AND COALESCE(CLASS4,'') <> 'Volume'` to the WHERE clause (from `dual_purpose_exclusion` — never hardcode it in the builder).
+- `W_MARINE_GL_SOURCE_AI` + `MONETARY_TOTAL` appends the dual-purpose guard `AND COALESCE(CLASS4,'') <> 'Volume'` to the WHERE clause (from `dual_purpose_exclusion` — never hardcode it in the builder) — EXCEPT in **volume mode**. Volume mode (certified rule, ontology business_rules): the spec's filters pin the pivot column to the pivot value and nothing else — detection normalizes the filter collection and compares DISTINCT values: `set(filters.get(pivot_column) or ()) == {pivot_value}` — so `("Volume",)`, `("Volume", "Volume")`, and a mistakenly-passed list all count, while any mix with other values does not. In volume mode: (a) the guard is DROPPED (the filter itself scopes the units); (b) a METRIC query (single aggregate) is REJECTED with `SpecValidationError(f"CLASS4 = 'Volume' is unit-mixed — a single aggregate is not allowed; use a breakdown grouped by CLASS3")`; (c) a BREAKDOWN query requires `group_by == "CLASS3"`, else `SpecValidationError(f"volume-mode breakdowns must group by CLASS3 (each CLASS3 is one unit); got {group_by!r}")`. A mixed IN filter (e.g. `("Volume", "Trade GP")`) is NOT volume mode — the guard still applies (it removes the Volume member; dollars stay pure).
 - Layout: single-line clauses joined by `\n` (`SELECT ...\nFROM ...\nWHERE ...`) — deterministic, snapshot-friendly.
 
 - [ ] **Step 1: Write failing snapshot tests** — table-driven; each case asserts the EXACT sql string and params list. Cover at minimum (12 cases):
@@ -321,7 +326,7 @@ class DataClient(Protocol):
     def run_breakdown_query(self, spec: BreakdownQuerySpec) -> BreakdownResult: ...
 ```
 
-- [ ] Steps: failing snapshot additions for any snowflake shape not already pinned (GL breakdown by CLASS3 under CLASS4='Volume' filter — the unit-mixed per-CLASS3 rule — and a GL dimension-values query) → RED → implement → GREEN → full suite → **Commit** — `feat(data): dataclient protocol and completed snowflake dialect`
+- [ ] Steps: failing snapshot additions for any snowflake shape not already pinned — the **volume-mode** cases per the amended rendering rules: (1) GL breakdown by CLASS3 under `{"CLASS4": ("Volume",)}` with the guard DROPPED (snowflake AND postgres); (2) volume-mode metric query rejected (pinned message); (3) volume-mode breakdown with `group_by="COMPANY"` rejected (pinned message); (4) mixed-IN filter `("Volume", "Trade GP")` keeps the guard; (5) GL dimension-values query (snowflake). Requires the Task-1 loader additions (`dual_purpose_pivot_column`/`value` parsed from `unit_pivot`, with contract-test lines pinning both) — in scope for this task. → RED → implement → GREEN → full suite → **Commit** — `feat(data): dataclient protocol, volume-mode semantics, and completed snowflake dialect`
 
 ---
 
@@ -337,11 +342,19 @@ The drift test is OFFLINE — it imports the migration module and asserts its co
 
 ```python
 def test_migration_columns_match_ontology():
-    from migrations.versions import _0002_synthetic_schema as mig  # module exposes SALES_COLUMNS/GL_COLUMNS dicts
+    # module exposes SALES_COLUMNS/GL_COLUMNS dicts (name -> postgres type)
     ont = load()
-    assert set(mig.SALES_COLUMNS) == set(ont.entity("MARINE_SALES_PLANNING_V").columns)
-    assert set(mig.GL_COLUMNS) == set(ont.entity("W_MARINE_GL_SOURCE_AI").columns)
+    # FULL-DICT comparison — names AND types. The test re-derives expected
+    # postgres types from the ontology with its own copy of the type map
+    # (VARCHAR->text, FLOAT/DOUBLE/NUMBER->double precision, DATE->date),
+    # plus the single documented exception: GL PERIOD_DATE (ontology VARCHAR)
+    # is stored as `date` in the synthetic schema.
+    assert mig.SALES_COLUMNS == expected_pg_columns(ont.entity("MARINE_SALES_PLANNING_V"))
+    assert mig.GL_COLUMNS == expected_pg_columns(
+        ont.entity("W_MARINE_GL_SOURCE_AI"), overrides={"PERIOD_DATE": "date"})
 ```
+
+(A renamed column, an added/removed column, OR a re-typed column each fail this test — the ontology's own `bootstrap_conflicts` note pending type reconciliations for `AMOUNT_USD`/`PERIOD_DATE`, so type drift is a live possibility, not hypothetical.)
 
 (Name the revision file so it is importable — `0002_synthetic_schema.py` with a leading-underscore import alias via `importlib` if needed; the implementer picks the clean mechanism and keeps the test's intent.) Also extend the existing sqlite migrations test expectation if it asserts head revision. Note: schema creation must be dialect-aware — sqlite (used by `test_migrations.py`) has no schemas; guard with `if bind.dialect.name == "postgresql"` and make the migration a no-op on sqlite, documented in its docstring.
 
