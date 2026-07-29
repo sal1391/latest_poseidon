@@ -356,6 +356,24 @@ def test_invoke_live_mode_bedrock_dispatches_to_registered_provider(monkeypatch)
     ]
 
 
+def test_invoke_passes_provider_a_copy_of_the_caller_tools_list(monkeypatch):
+    """Task 1 review carry, hardened here (Task 3's sanctioned one-line
+    addition, `tools = list(tools)`): protects tools=[]'s shared mutable
+    default from a provider that mutates the list it receives -- pinned by
+    asserting the provider got a different list object, not just that the
+    caller's own list happens to be unchanged (which a same-object pass-
+    through would also satisfy for a non-mutating double like StubProvider)."""
+    settings = _settings(monkeypatch, LLM_PROFILE="bedrock", LLM_MODE="stub")
+    stub_provider = StubProvider([_SCRIPTED])
+    client = RoleClient(settings, providers={"stub": stub_provider})
+    tools = [{"name": "t"}]
+
+    client.invoke("router", system="s", messages=[], tools=tools)
+
+    assert stub_provider.calls[0]["tools"] == tools
+    assert stub_provider.calls[0]["tools"] is not tools
+
+
 # ---------------------------------------------------------------------------
 # StubProvider -- scripted replay, request recording, exhaustion
 # ---------------------------------------------------------------------------

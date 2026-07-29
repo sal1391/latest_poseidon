@@ -181,6 +181,12 @@ class RoleClient:
         provider, except ``cortex``, which raises rather than silently
         doing nothing (decision D33: not implemented until Phase 14).
         """
+        # Defensive copy (Task 1 review carry, sanctioned for Task 3): a
+        # misbehaving provider that mutated the list it was handed would
+        # otherwise corrupt the mutable default `[]` above for every later
+        # call that also omits `tools` -- copying here protects that shared
+        # default regardless of what any given provider does with its copy.
+        tools = list(tools)
         config = self.resolve(role)
         if self._settings.llm_mode == "stub":
             provider_key = STUB_PROVIDER_KEY
