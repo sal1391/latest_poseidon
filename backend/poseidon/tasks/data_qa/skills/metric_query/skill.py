@@ -43,7 +43,16 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
             if args.compare_period is not None:
                 compare_args = args.model_copy(update={"period": args.compare_period})
                 compare_spec = build_spec(compare_args)
-                assert isinstance(compare_spec, MetricQuerySpec)  # group_by is unset here too
+                if not isinstance(compare_spec, MetricQuerySpec):
+                    # compare_args.group_by is copied unchanged from args,
+                    # which is unset here too (spec is not a
+                    # BreakdownQuerySpec) - a python -O-proof guard against
+                    # that invariant ever silently breaking, not a case that
+                    # can happen today.
+                    raise TypeError(
+                        f"build_spec(compare_args) returned {type(compare_spec).__name__}, "
+                        "not a MetricQuerySpec"
+                    )
                 compare_result = ctx.data.run_metric_query(compare_spec)
                 compare_period = compare_spec.period
             parts, proof = format_parts(

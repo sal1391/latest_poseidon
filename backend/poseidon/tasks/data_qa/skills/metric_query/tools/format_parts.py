@@ -42,17 +42,30 @@ rendering as "1234.0" in a table row; ``None`` (SQL ``NULL`` - "no rows", not
 
 Friendly names and units
 -------------------------
-A metric's display name and unit come from its own FIRST ``depends_on``
-column's ``friendly``/``unit`` where that column exists on the entity
-(``VOLUME`` -> ``FIXED_TONS`` -> "Volume"/"tons", ``GP`` -> ``GROSS_PROFIT``
--> "Gross Profit"/"USD"), falling back to the bare metric name (no unit)
-otherwise - the same fallback a metric with no ``depends_on`` at all would
-get. ``MARGIN`` and ``WIN_RATE`` are ratios: their first ``depends_on``
-column names one INPUT to the ratio, not the ratio itself (``MARGIN``
-depends on ``GROSS_PROFIT`` first, and "Gross Profit" would misname a
-USD/ton figure), so both are hardcoded to fall back to their own metric name
-- a deliberate, documented exception to the general rule, applied the same
-way every time so the choice stays deterministic.
+For a ``kind == "sum"`` metric, the display name and unit come from its own
+FIRST ``depends_on`` column's ``friendly``/``unit`` where that column exists
+on the entity (``VOLUME`` -> ``FIXED_TONS`` -> "Volume"/"tons", ``GP`` ->
+``GROSS_PROFIT`` -> "Gross Profit"/"USD") - "sum" is the one ``kind`` where
+the summed column really IS the metric, so borrowing its name is correct
+rather than incidental. Every other metric - ``ratio``, ``derived``, any
+future ``kind`` this module has never been taught about, or a "sum" metric
+with no usable ``depends_on`` column - falls back to its OWN name,
+title-cased (``NUM_INQUIRIES`` -> "Num Inquiries"), with no unit: an unknown
+future metric must never silently wear a column's name that does not
+actually describe it. This is the CORRECTNESS rule - see :func:`_round`'s
+sibling, :func:`_friendly_and_unit`.
+
+``_DISPLAY_OVERRIDES`` is a small, presentation-only exception list checked
+BEFORE the rule above, for metrics whose title-cased own name would still be
+wrong or ambiguous. ``NUM_LOST`` is the reason this map exists: it is
+``kind: derived``, and its first ``depends_on`` column is ``"#_INQUIRIES"``
+- the SAME column ``NUM_INQUIRIES`` depends on first - so without an
+override, a table requesting both metrics would print two different numbers
+under the identical header "# Inquiries" (a real collision, caught in
+review, not a hypothetical one). ``MARGIN``/``WIN_RATE`` are listed for the
+same reason - to pin their display text explicitly rather than let it rest
+on coincidentally matching the generic title-cased fallback, even though
+today it does.
 """
 
 from collections.abc import Mapping
@@ -63,10 +76,22 @@ from poseidon.core.data.specs import BreakdownQuerySpec, MetricQuerySpec, Period
 from poseidon.core.ontology.loader import get_ontology
 from poseidon.core.skills.result import metric_grid_part, table_part, text_part
 
-# Ratios: see the module docstring's "Friendly names and units" section for
-# why these two fall back to their own metric name instead of their first
-# depends_on column, both here and in _friendly_and_unit.
+# 2dp metrics: hardcoded because the rounding rule is about MAGNITUDE (a
+# ratio's natural range is sub-100, where whole-number rounding would flatten
+# distinct values together), which has nothing to do with `kind` or
+# `depends_on` - unlike the friendly-name rule below, there is no more
+# general signal in the ontology to derive this from.
 _RATIO_METRICS = frozenset({"MARGIN", "WIN_RATE"})
+
+# A metric's own name, title-cased, is a perfectly good display label for
+# anything the `kind == "sum"` rule in _friendly_and_unit does not cover.
+# This map exists only to override that generic fallback for a handful of
+# metrics where it would be wrong or ambiguous - see the module docstring's
+# "Friendly names and units" section for why each entry is here. It is
+# PRESENTATION-ONLY: the correctness rule that keeps an unlisted future
+# ratio/derived metric from ever borrowing a misleading column name is the
+# `kind == "sum"` gate in _friendly_and_unit, not this map.
+_DISPLAY_OVERRIDES = {"MARGIN": "Margin", "WIN_RATE": "Win Rate", "NUM_LOST": "# Lost"}
 
 NO_DATA_TEXT = "No data for this selection."
 
@@ -83,14 +108,16 @@ def _round(metric: str, value: float | None) -> float | int | None:
 
 def _friendly_and_unit(entity_name: str, metric: str) -> tuple[str, str | None]:
     """The metric's display name and unit - see the module docstring."""
-    if metric in _RATIO_METRICS:
-        return metric, None
+    if metric in _DISPLAY_OVERRIDES:
+        return _DISPLAY_OVERRIDES[metric], None
     entity = get_ontology().entity(entity_name)
-    depends_on = entity.metrics[metric].depends_on
-    if depends_on and depends_on[0] in entity.columns:
-        column = entity.columns[depends_on[0]]
-        return column.friendly, column.unit
-    return metric, None
+    metric_spec = entity.metrics[metric]
+    if metric_spec.kind == "sum" and metric_spec.depends_on:
+        first = metric_spec.depends_on[0]
+        if first in entity.columns:
+            column = entity.columns[first]
+            return column.friendly, column.unit
+    return metric.replace("_", " ").title(), None
 
 
 def _dimension_friendly(entity_name: str, column: str) -> str:
@@ -199,7 +226,11 @@ def format_parts(
         return [text_part(NO_DATA_TEXT)], [*proof, "Rows: 0"]
 
     if compare_result is not None:
-        assert compare_period is not None  # skill.run always pairs the two
+        if compare_period is None:
+            # skill.run always passes the two together; a caller that breaks
+            # that pairing gets a loud, python -O-proof failure, not a
+            # stripped-away assert followed by a confusing crash below.
+            raise ValueError("compare_period must be given whenever compare_result is given")
         return _metric_grid_parts(spec, result, compare_period, compare_result, proof)
 
     return _metric_table_parts(spec, result, proof)

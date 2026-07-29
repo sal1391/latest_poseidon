@@ -121,6 +121,8 @@ def test_singapore_top5_gp_breakdown_through_the_registry():
     rows = sales_in(APRIL_START, APRIL_END, LOC_NM="Singapore")
     expected = gp_by_customer(rows)[:5]
     assert len(expected) == 5, "April 2026 Singapore must have >=5 distinct customers"
+    gps = [gp for _, gp in expected]
+    assert len(set(gps)) == len(gps), "ties would make the SQL ordering ambiguous"
     top_name, top_gp = expected[0]
 
     res = REGISTRY.dispatch(
@@ -140,7 +142,7 @@ def test_singapore_top5_gp_breakdown_through_the_registry():
     assert len(res.parts) == 1
     table = res.parts[0]
     assert table["kind"] == "table"
-    assert table["payload"]["columns"] == ["Customer", "Gross Profit", "Volume", "MARGIN"]
+    assert table["payload"]["columns"] == ["Customer", "Gross Profit", "Volume", "Margin"]
     assert len(table["payload"]["rows"]) == 5
 
     first_row = table["payload"]["rows"][0]

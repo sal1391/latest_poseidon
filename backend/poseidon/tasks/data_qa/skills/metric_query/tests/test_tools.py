@@ -11,8 +11,10 @@ seeded data, through the registry.
 import datetime as dt
 
 from poseidon.core.config import Settings
-from poseidon.core.data.client import BreakdownResult, BreakdownRow, MetricResult
+from poseidon.core.data.client import BreakdownResult, BreakdownRow, MetricResult, PeriodRange
 from poseidon.core.data.specs import BreakdownQuerySpec, MetricQuerySpec, PeriodWindow
+from poseidon.core.skills.context import SkillContext
+from poseidon.core.skills.registry import SkillRegistry
 from poseidon.tasks._shared.fragments import DimFilter, PeriodArg
 from poseidon.tasks.data_qa.skills.metric_query.schema import Args
 from poseidon.tasks.data_qa.skills.metric_query.tools.build_spec import build_spec
@@ -120,6 +122,63 @@ def test_build_spec_over_a_swapped_compare_period_maps_it_as_the_window():
 
 
 # ---------------------------------------------------------------------------
+# Args validation: breakdown + compare_period is rejected, through dispatch
+# ---------------------------------------------------------------------------
+
+
+class _UnreachableDataClient:
+    """A ``DataClient`` stand-in whose every method fails loudly.
+
+    ``Args`` validation must reject the group_by/compare_period combination
+    before ``dispatch`` ever calls the skill, so none of these should run -
+    if one does, that is a bug in the validator (or in this test), not a
+    reason to require a real data client.
+    """
+
+    _MESSAGE = "compare_period + group_by must 422 at argument validation, before the data layer"
+
+    def list_dimension_values(self, *args: object, **kwargs: object) -> list[str]:
+        raise AssertionError(self._MESSAGE)
+
+    def available_periods(self, *args: object, **kwargs: object) -> PeriodRange:
+        raise AssertionError(self._MESSAGE)
+
+    def run_metric_query(self, *args: object, **kwargs: object) -> MetricResult:
+        raise AssertionError(self._MESSAGE)
+
+    def run_breakdown_query(self, *args: object, **kwargs: object) -> BreakdownResult:
+        raise AssertionError(self._MESSAGE)
+
+
+def test_dispatch_rejects_breakdown_combined_with_compare_period():
+    """``format_parts`` has no "breakdown + comparison" shape (see its module
+    docstring), so ``Args`` itself rejects the combination - a structured 422
+    the router can read and correct itself from, rather than a breakdown that
+    silently answers a different question than the one asked."""
+    reg = SkillRegistry.discover()
+    ctx = SkillContext(data=_UnreachableDataClient(), artifacts=None, settings=SETTINGS)
+
+    res = reg.dispatch(
+        "data_qa.metric_query",
+        {
+            "entity": SALES,
+            "metrics": ["GP"],
+            "period": {"start": "2026-04-01", "end": "2026-05-01"},
+            "compare_period": {"start": "2025-04-01", "end": "2025-05-01"},
+            "group_by": "CUST_NM",
+        },
+        ctx,
+    )
+
+    assert res.ok is False
+    assert res.error["status"] == 422
+    assert (
+        "compare_period is not supported with group_by — run the breakdown "
+        "once per period instead"
+    ) in res.error["detail"]
+
+
+# ---------------------------------------------------------------------------
 # format_parts - breakdown
 # ---------------------------------------------------------------------------
 
@@ -160,7 +219,7 @@ def test_format_parts_breakdown_table_and_proof():
         {
             "kind": "table",
             "payload": {
-                "columns": ["Customer", "Gross Profit", "Volume", "MARGIN"],
+                "columns": ["Customer", "Gross Profit", "Volume", "Margin"],
                 "rows": [
                     ["Northstar Lines", 125351, 2504, 50.04],
                     ["Blue Anchor Marine", 98200, 1981, 49.57],
@@ -346,18 +405,44 @@ def test_format_parts_compare_one_side_empty_is_still_a_real_answer():
 
 
 # ---------------------------------------------------------------------------
-# ratio metrics (MARGIN/WIN_RATE) fall back to their own name
+# friendly-name display overrides (MARGIN/WIN_RATE/NUM_LOST)
 # ---------------------------------------------------------------------------
 
 
-def test_format_parts_margin_and_win_rate_friendly_falls_back_to_metric_name():
+def test_format_parts_margin_and_win_rate_use_the_display_override():
     """MARGIN's first depends_on column (GROSS_PROFIT) describes an INPUT to
     the ratio, not the ratio itself - using its friendly ("Gross Profit")
-    would misname a USD/ton figure, so ratio metrics fall back to their own
-    metric name instead. Values still round to 2dp."""
+    would misname a USD/ton figure. Both are `kind: ratio`, so the general
+    rule (kind == "sum" only) would already skip the column lookup and
+    title-case their own name instead - _DISPLAY_OVERRIDES pins that same
+    text explicitly rather than leaving it to coincide with the generic
+    fallback. Values still round to 2dp."""
     spec = MetricQuerySpec(entity=SALES, metrics=("MARGIN", "WIN_RATE"), period=APRIL, filters={})
     result = MetricResult(entity=SALES, period=APRIL, values={"MARGIN": 50.037, "WIN_RATE": 0.612})
 
     parts, _ = format_parts(spec, result, SETTINGS)
 
-    assert parts[0]["payload"]["rows"] == [["MARGIN", 50.04], ["WIN_RATE", 0.61]]
+    assert parts[0]["payload"]["rows"] == [["Margin", 50.04], ["Win Rate", 0.61]]
+
+
+def test_format_parts_num_lost_and_num_inquiries_have_distinct_friendlies():
+    """Regression: NUM_LOST (`kind: derived`) and NUM_INQUIRIES (`kind: sum`)
+    both name "#_INQUIRIES" as their FIRST depends_on column. Before
+    _DISPLAY_OVERRIDES existed, the plain "first depends_on column" rule gave
+    both metrics the identical friendly "# Inquiries" - a real collision that
+    would print two different numbers under one header in the same table.
+    NUM_LOST is display-overridden to "# Lost"; NUM_INQUIRIES is unaffected
+    (kind == "sum", so it still legitimately borrows the column's friendly)."""
+    spec = MetricQuerySpec(
+        entity=SALES, metrics=("NUM_INQUIRIES", "NUM_LOST"), period=APRIL, filters={}
+    )
+    result = MetricResult(
+        entity=SALES, period=APRIL, values={"NUM_INQUIRIES": 120.0, "NUM_LOST": 45.0}
+    )
+
+    parts, _ = format_parts(spec, result, SETTINGS)
+
+    rows = parts[0]["payload"]["rows"]
+    assert rows == [["# Inquiries", 120], ["# Lost", 45]]
+    labels = [row[0] for row in rows]
+    assert len(set(labels)) == len(labels), "the two metrics must not share a label"
