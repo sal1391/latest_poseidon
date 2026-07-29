@@ -270,7 +270,7 @@ def test_format_parts_breakdown_zero_rows_is_no_data():
         "Period: 2026-04-01..2026-05-01",
         "Filters: LOC_NM IN (Singapore)",
         "Group by: CUST_NM (top 5)",
-        "Rows: 0",
+        "Result: empty",
     ]
 
 
@@ -315,7 +315,7 @@ def test_format_parts_metric_all_none_is_no_data():
         "Backend: synthetic",
         "Period: 2026-04-01..2026-05-01",
         "Filters: none",
-        "Rows: 0",
+        "Result: empty",
     ]
 
 
@@ -382,7 +382,7 @@ def test_format_parts_compare_both_sides_empty_is_no_data():
     )
 
     assert parts == [{"kind": "text", "payload": {"markdown": "No data for this selection."}}]
-    assert proof[-1] == "Rows: 0"
+    assert proof[-1] == "Result: empty"
 
 
 def test_format_parts_compare_one_side_empty_is_still_a_real_answer():

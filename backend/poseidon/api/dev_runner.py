@@ -40,7 +40,6 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 
-from poseidon.core.artifacts import ArtifactStore
 from poseidon.core.data.synthetic_client import SyntheticDataClient
 from poseidon.core.skills.context import ConversationSlots, SkillContext
 from poseidon.core.skills.result import SkillResult, problem
@@ -53,11 +52,13 @@ def _build_ctx(request: Request) -> SkillContext | SkillResult:
     structured 501 :class:`SkillResult` when the configured data backend has
     no adapter yet.
 
-    ``SyntheticDataClient``/``ArtifactStore`` are both cheap to build (a DSN
-    string and a lazily-connecting boto3 client, respectively — neither opens
-    a network connection until a query or upload actually runs), so building
-    them fresh per request costs nothing and needs no pooling or caching at
-    this phase.
+    ``SyntheticDataClient`` is cheap to build (a DSN string; it opens no
+    network connection until a query actually runs), so it is built fresh per
+    request and needs no pooling or caching at this phase. The
+    :class:`~poseidon.core.artifacts.ArtifactStore` is NOT built here: it is
+    the process-wide one ``create_app`` built and called ``ensure_bucket()``
+    on at start-up, so every request shares one boto3 client and the bucket
+    check happens once per process rather than never.
     """
     settings = request.app.state.settings
     if settings.data_backend != "synthetic":
@@ -73,7 +74,7 @@ def _build_ctx(request: Request) -> SkillContext | SkillResult:
         )
     return SkillContext(
         data=SyntheticDataClient(settings.database_url),
-        artifacts=ArtifactStore(settings),
+        artifacts=request.app.state.artifact_store,
         settings=settings,
         state=ConversationSlots(),
     )

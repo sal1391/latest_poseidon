@@ -26,11 +26,13 @@ No data ever gets a hallucinated narrative (doc 02 section 6a): a
 ``BreakdownQuerySpec`` with zero rows, a ``MetricQuerySpec`` whose every
 value is ``None``, or a comparison whose BOTH periods are entirely ``None``
 all render as a single ``text`` part ("No data for this selection.") with a
-proof block ending in ``"Rows: 0"`` - never the ``"Metrics: N values"`` line
-a real answer ends with, and never a table of blanks that could be mistaken
-for real zeros. A comparison where only ONE side is empty is NOT "no data":
-it renders as a normal metric_grid with ``None`` on the empty side, because
-the other side is a real answer that must not be hidden.
+proof block ending in ``"Result: empty"`` - the literal docs 02 section 6a
+and 06 section 4 both name for this case, never the ``"Metrics: N values"``
+line a real answer ends with, never the ``"Rows: N"`` line a non-empty
+breakdown ends with, and never a table of blanks that could be mistaken for
+real zeros. A comparison where only ONE side is empty is NOT "no data": it
+renders as a normal metric_grid with ``None`` on the empty side, because the
+other side is a real answer that must not be hidden.
 
 Rounding
 --------
@@ -50,10 +52,16 @@ the summed column really IS the metric, so borrowing its name is correct
 rather than incidental. Every other metric - ``ratio``, ``derived``, any
 future ``kind`` this module has never been taught about, or a "sum" metric
 with no usable ``depends_on`` column - falls back to its OWN name,
-title-cased (``NUM_INQUIRIES`` -> "Num Inquiries"), with no unit: an unknown
-future metric must never silently wear a column's name that does not
-actually describe it. This is the CORRECTNESS rule - see :func:`_round`'s
-sibling, :func:`_friendly_and_unit`.
+title-cased, with no unit: an unknown future metric must never silently wear
+a column's name that does not actually describe it. This is the CORRECTNESS
+rule - see :func:`_round`'s sibling, :func:`_friendly_and_unit`.
+
+The example has to be HYPOTHETICAL - a metric certified tomorrow, say
+``SOME_FUTURE_RATIO`` -> "Some Future Ratio" - because no metric in today's
+ontology actually reaches this branch: every certified metric is either
+``kind == "sum"`` with a usable column (so the rule above names it) or
+listed in ``_DISPLAY_OVERRIDES`` below. Naming a real metric here would
+describe a path that metric does not take.
 
 ``_DISPLAY_OVERRIDES`` is a small, presentation-only exception list checked
 BEFORE the rule above, for metrics whose title-cased own name would still be
@@ -94,6 +102,13 @@ _RATIO_METRICS = frozenset({"MARGIN", "WIN_RATE"})
 _DISPLAY_OVERRIDES = {"MARGIN": "Margin", "WIN_RATE": "Win Rate", "NUM_LOST": "# Lost"}
 
 NO_DATA_TEXT = "No data for this selection."
+
+# The certified empty-result proof literal (docs 02 section 6a, 06 section 4).
+# Deliberately NOT "Rows: 0": a count of zero reads as one possible outcome of
+# a successful query, while "Result: empty" is the docs' own name for the case
+# the whole no-narrative rule hangs off. Non-empty results still end in
+# "Rows: N" (breakdowns) or "Metrics: N values" (metric shapes).
+EMPTY_RESULT_PROOF = "Result: empty"
 
 
 def _round(metric: str, value: float | None) -> float | int | None:
@@ -160,7 +175,7 @@ def _breakdown_parts(
     spec: BreakdownQuerySpec, result: BreakdownResult, proof: list[str]
 ) -> tuple[list[dict], list[str]]:
     if not result.rows:
-        return [text_part(NO_DATA_TEXT)], [*proof, "Rows: 0"]
+        return [text_part(NO_DATA_TEXT)], [*proof, EMPTY_RESULT_PROOF]
 
     columns = [_dimension_friendly(spec.entity, spec.group_by)]
     columns += [_friendly_and_unit(spec.entity, m)[0] for m in spec.metrics]
@@ -223,7 +238,7 @@ def format_parts(
         return _breakdown_parts(spec, result, proof)
 
     if _is_empty(result) and (compare_result is None or _is_empty(compare_result)):
-        return [text_part(NO_DATA_TEXT)], [*proof, "Rows: 0"]
+        return [text_part(NO_DATA_TEXT)], [*proof, EMPTY_RESULT_PROOF]
 
     if compare_result is not None:
         if compare_period is None:

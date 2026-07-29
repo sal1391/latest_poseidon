@@ -319,7 +319,7 @@ def test_fetch_metrics_builds_the_certified_specs_offline():
         "Customer: Northstar Lines",
         "Prior year: 2025-01-01..2026-01-01",
         "YTD: 2026-01-01..2026-07-01",
-        "Metrics: 6",
+        "Metrics: 6 requested",
     ]
 
 
@@ -414,7 +414,7 @@ def test_fetch_metrics_matches_python_ground_truth_for_both_windows():
         "Customer: Northstar Lines",
         "Prior year: 2025-01-01..2026-01-01",
         "YTD: 2026-01-01..2026-07-01",
-        "Metrics: 6",
+        "Metrics: 6 requested",
     ]
 
 

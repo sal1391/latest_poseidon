@@ -55,6 +55,18 @@ def fetch_metrics(
     future skill) decides how to render them, this tool only fetches and
     proves.
 
+    The proof block is deliberately terse — four lines, always in this
+    order — because this tool only ever receives a ``DataClient``, never a
+    ``Settings`` or an ontology handle: "Customer", both windows, and the
+    metric count are everything it knows for certain on its own. The richer
+    style (entity FQN, backend, friendly metric names) lives in
+    ``data_qa.metric_query.tools.format_parts``, which has both of those
+    handles; a tool that guessed at those lines would be proving something it
+    cannot actually see. ``Metrics: N requested`` says "N asked for", which is
+    what a spec-building tool can honestly claim — distinct from
+    ``format_parts``'s ``Metrics: N values``, which counts values actually
+    rendered.
+
     YTD is half-open ``[Jan 1 of anchor's year, anchor)``. A January 1
     anchor would make that window empty — ``start == end`` — which
     :class:`~poseidon.core.data.specs.PeriodWindow` itself rejects at
@@ -90,6 +102,6 @@ def fetch_metrics(
         f"Customer: {customer}",
         f"Prior year: {prior_window.start}..{prior_window.end}",
         f"YTD: {ytd_window.start}..{ytd_window.end}",
-        f"Metrics: {len(SIX_METRICS)}",
+        f"Metrics: {len(SIX_METRICS)} requested",
     ]
     return prior, ytd, proof

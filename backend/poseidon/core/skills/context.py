@@ -39,7 +39,7 @@ class ConversationSlots:
     Slot carry semantics belong to the parsing pipeline, not here: omitted
     slot carries the previous value, an explicit empty clears it, and a new
     value replaces (never merges). This dataclass is the frozen snapshot that
-    result of that pipeline hands to a skill.
+    the parsing pipeline hands to a skill.
 
     ``period_a``/``period_b`` are first-of-period dates — the resolved
     ``{period_a, period_b}`` pair of the period parser, not a rendered

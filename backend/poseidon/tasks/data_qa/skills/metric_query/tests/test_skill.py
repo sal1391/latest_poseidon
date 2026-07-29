@@ -185,7 +185,7 @@ def test_empty_window_metric_query_returns_no_data_text():
         "Backend: synthetic",
         "Period: 2019-01-01..2019-02-01",
         "Filters: none",
-        "Rows: 0",
+        "Result: empty",
     ]
 
 

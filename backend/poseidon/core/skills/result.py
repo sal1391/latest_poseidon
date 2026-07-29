@@ -67,6 +67,11 @@ class SkillResult:
     Frozen so a caller cannot swap ``ok`` out from under the parts that
     justify it. ``error`` carries a :func:`problem` dict whenever ``ok`` is
     False.
+
+    Doc 02 §3's fuller shape also carries ``usage: TokenUsage``; it arrives
+    with the first LLM-calling phase (5), since nothing in this codebase
+    spends a token yet and a field that is always zero teaches a reader the
+    wrong thing about what has been measured.
     """
 
     ok: bool

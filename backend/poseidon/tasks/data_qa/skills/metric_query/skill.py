@@ -29,10 +29,12 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
     only failure mode: a 422 carrying the builder's own certified message,
     verbatim, because that text was written to be read by the person who
     asked the question (see ``tools/build_spec.py``: ``build_spec`` itself
-    never raises).
+    never raises today — it is inside the ``try`` anyway, so that the two
+    ``build_spec`` calls sit under the same guard and a future certified
+    check moved INTO the mapping cannot become an uncaught 500).
     """
-    spec = build_spec(args)
     try:
+        spec = build_spec(args)
         if isinstance(spec, BreakdownQuerySpec):
             result = ctx.data.run_breakdown_query(spec)
             parts, proof = format_parts(spec, result, ctx.settings)

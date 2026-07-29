@@ -30,7 +30,13 @@ import pytest
 
 from poseidon.core.config import Settings
 from poseidon.core.data.synthetic_client import normalize_dsn
+from poseidon.core.skills.registry import SkillRegistry
 from poseidon.scripts.generate_synthetic import generate
+
+# The throwaway-package machinery lives with the registry contract tests that
+# introduced it; importing the fixture (and its file-layout helper) re-registers
+# it here rather than growing a second copy that could drift from the original.
+from tests.test_skill_registry import _files, tasks_package  # noqa: F401
 
 SEED = 1391
 
@@ -147,6 +153,59 @@ async def test_non_synthetic_data_backend_returns_200_with_a_structured_501():
     body = r.json()
     assert body["ok"] is False
     assert body["error"]["status"] == 501
+
+
+# ---------------------------------------------------------------------------
+# artifact serialization: the one field of the wire shape no registered skill
+# exercises yet (nothing in Phase 3 produces a file), pinned with a throwaway
+# artifact-producing skill so the frontend contract is proven before Phase 8
+# ---------------------------------------------------------------------------
+
+_ARTIFACT_SKILL = """
+    from poseidon.core.skills.context import ArtifactRef
+    from poseidon.core.skills.result import SkillResult
+
+
+    def run(ctx, args):
+        return SkillResult(
+            ok=True,
+            artifacts=[ArtifactRef(name="x.pdf", url="http://e/x", mime="application/pdf")],
+        )
+"""
+
+
+@pytest.mark.anyio
+async def test_artifact_refs_serialize_to_the_frontend_wire_shape(
+    tasks_package,  # noqa: F811 - pytest injects the fixture imported above
+):
+    """``ArtifactRef`` is a frozen dataclass — not JSON-serializable on its
+    own — so ``dev_runner._serialize`` flattens each one to the
+    ``{"name", "url", "mime"}`` dict doc 01 §4's artifact part expects. No
+    skill registered today produces an artifact, so that flattening was
+    unexercised: this test registers a throwaway one that returns a fixed
+    ``ArtifactRef`` and pins the exact list the endpoint puts on the wire.
+
+    Hermetic: local-mode app on a placeholder DSN, and the skill ignores
+    ``ctx`` entirely, so nothing here needs Postgres or MinIO.
+    """
+    pkg = tasks_package(
+        "artifact_tasks", _files("demo_task", "makes_artifact", skill_py=_ARTIFACT_SKILL)
+    )
+    app = _app()
+    # create_app discovers the real tree; swapping the registry is what lets a
+    # throwaway skill reach the endpoint without adding one to poseidon.tasks.
+    app.state.skill_registry = SkillRegistry.discover(pkg)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.post(
+            DEV_RUN_PATH_TEMPLATE.format(skill_id="demo_task.makes_artifact"), json={"q": "hi"}
+        )
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True, body["error"]
+    assert body["artifacts"] == [{"name": "x.pdf", "url": "http://e/x", "mime": "application/pdf"}]
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,11 @@ Dispatch is the other half of the contract: it validates the router's
 arguments against the skill's ``Args`` model and returns a structured
 :class:`~poseidon.core.skills.result.SkillResult` for every outcome. It never
 raises — the router loop's job is to read an error, not to survive one.
+
+One doc-02 discovery check is deliberately absent: validating that a skill's
+referenced prompts exist is deferred to Phase 5, the phase that introduces
+``prompts/`` directories and the first prompt reference to check — today
+there is nothing for it to validate.
 """
 
 import importlib
@@ -254,9 +259,19 @@ def _is_enabled(manifest_path: Path, task_name: str) -> bool:
     is truthy, and silently enabling a task nobody meant to enable is exactly
     the failure this fails fast on). ``title``/``description`` are metadata
     for later phases and are not required to exist.
+
+    A manifest that is not valid YAML at all is a definition error like every
+    other malformed shape, not a raw :class:`yaml.YAMLError` escaping
+    discovery: fail-fast promises one legible line naming the offending file,
+    and a parser traceback naming a stream position names the wrong thing.
     """
-    with open(manifest_path, encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle)
+    try:
+        with open(manifest_path, encoding="utf-8") as handle:
+            raw = yaml.safe_load(handle)
+    except yaml.YAMLError as exc:
+        raise SkillDefinitionError(
+            f"task manifest {manifest_path} is not valid YAML: {exc}"
+        ) from exc
     manifest = {} if raw is None else raw
     if not isinstance(manifest, dict):
         raise SkillDefinitionError(

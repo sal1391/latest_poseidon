@@ -22,10 +22,21 @@ class Args(BaseModel):
     ] = "MARINE_SALES_PLANNING_V"
     metrics: list[str] = Field(min_length=1, description="Certified metric names, e.g. GP, VOLUME")
     period: PeriodArg
-    compare_period: PeriodArg | None = None  # side-by-side comparison window
+    compare_period: PeriodArg | None = Field(
+        default=None,
+        description=(
+            "Second window for side-by-side comparison. Cannot be combined with group_by."
+        ),
+    )
     filters: list[DimFilter] = Field(default_factory=list)
-    group_by: str | None = None  # dimension column -> breakdown
-    top_n: int = Field(default=5, ge=1, le=50)
+    group_by: str | None = Field(
+        default=None,
+        description=(
+            "Certified dimension column to break down by (e.g. CUST_NM, LOC_NM). "
+            "Cannot be combined with compare_period."
+        ),
+    )
+    top_n: int = Field(default=5, ge=1, le=50, description="Row limit for breakdowns, 1-50.")
 
     @model_validator(mode="after")
     def _reject_breakdown_with_compare(self) -> "Args":

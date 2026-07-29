@@ -193,6 +193,28 @@ def test_schema_dispatch_parity():
         assert s["input_schema"]["type"] == "object"
 
 
+def test_metric_query_router_facing_fields_carry_descriptions():
+    """The three fields a router gets wrong without help — which dimension a
+    breakdown is over, that a comparison is a SECOND window, and how large a
+    breakdown may be — must describe themselves in the generated schema, not
+    only in a Python comment the model never sees. ``group_by`` and
+    ``compare_period`` additionally state their mutual exclusion, because the
+    ``Args`` validator rejects the combination as a 422 and the cheapest place
+    to prevent that round trip is the tool definition itself."""
+    reg = SkillRegistry.discover()
+    schema = next(s for s in reg.tool_schemas if s["name"] == "data_qa.metric_query")
+    properties = schema["input_schema"]["properties"]
+
+    assert properties["group_by"]["description"] == (
+        "Certified dimension column to break down by (e.g. CUST_NM, LOC_NM). "
+        "Cannot be combined with compare_period."
+    )
+    assert properties["compare_period"]["description"] == (
+        "Second window for side-by-side comparison. Cannot be combined with group_by."
+    )
+    assert properties["top_n"]["description"] == "Row limit for breakdowns, 1-50."
+
+
 def test_dispatch_validates_args_structurally():
     reg = SkillRegistry.discover()
     res = reg.dispatch("data_qa.metric_query", {"nonsense": True}, _ctx())
@@ -361,6 +383,32 @@ def test_duplicate_skill_id_fails_discovery(tasks_package: Callable[..., str]):
 
     assert "demo_task.twice" in str(err.value)
     assert "duplicate" in str(err.value).lower()
+
+
+def test_malformed_task_manifest_fails_discovery_as_a_definition_error(
+    tasks_package: Callable[..., str],
+):
+    """A ``task.yml`` that is not valid YAML must surface as the framework's
+    own :class:`SkillDefinitionError` naming the file — not as a raw
+    ``yaml.ScannerError``/``ParserError`` escaping discovery, which would
+    report a stream position instead of the offending manifest and break the
+    "one legible line at start-up" promise every other malformed shape keeps.
+    """
+    files = _files("demo_task", "hello")
+    # An unterminated double-quoted scalar: the scanner reads to EOF looking
+    # for the closing quote and raises before a mapping is ever built.
+    files["demo_task/task.yml"] = """
+        id: demo_task
+        title: "unterminated
+        enabled: true
+    """
+    pkg = tasks_package("badyaml_tasks", files)
+
+    with pytest.raises(SkillDefinitionError) as err:
+        SkillRegistry.discover(pkg)
+
+    assert "task.yml" in str(err.value)
+    assert "not valid YAML" in str(err.value)
 
 
 def test_disabled_task_is_never_imported(tasks_package: Callable[..., str]):
