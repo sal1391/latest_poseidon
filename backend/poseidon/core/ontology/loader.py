@@ -102,5 +102,9 @@ def load(path: Path | None = None) -> Ontology:
 
 @lru_cache
 def get_ontology() -> Ontology:
-    """Process-wide cached load of the default ontology."""
+    """Process-wide cached load of the default ontology.
+
+    Returns a cached shared singleton — treat the entire object graph as
+    read-only; use load() for a private copy.
+    """
     return load()

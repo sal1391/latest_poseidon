@@ -42,3 +42,15 @@ def test_dimension_order_preserved():
     ont = load()
     dims = ont.entity("MARINE_SALES_PLANNING_V").dimensions()
     assert dims[0] == "CUST_NM" and "LOC_NM" in dims and len(dims) == 16
+
+
+def test_get_ontology_is_cached_and_frozen():
+    import pydantic
+    import pytest
+
+    from poseidon.core.ontology.loader import get_ontology
+    a, b = get_ontology(), get_ontology()
+    assert a is b
+    msp = a.entity("MARINE_SALES_PLANNING_V")
+    with pytest.raises(pydantic.ValidationError):
+        msp.grain = "mutated"

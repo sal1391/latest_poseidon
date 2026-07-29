@@ -7,6 +7,14 @@ stamped with an explicit ``status`` (see ``ontology/SOURCE.md`` and
 keys (`extra="ignore"`) so descriptive/provenance fields the loader doesn't
 care about (``description_source``, ``verified``, ``app``, ``first_seen``,
 ...) don't break parsing.
+
+Every model is also ``frozen=True``: `poseidon.core.ontology.loader.get_ontology`
+hands out one cached, process-wide singleton, so top-level attribute
+reassignment (e.g. ``column.friendly = "..."``) raises `pydantic.ValidationError`
+instead of silently corrupting it for every caller. Freezing does not deep-freeze
+the interior `list`/`dict` fields (e.g. ``Entity.business_rules.append(...)``
+would still mutate the shared object) — see the caller contract documented on
+`get_ontology`.
 """
 
 from typing import Literal
@@ -15,7 +23,7 @@ from pydantic import BaseModel, ConfigDict
 
 
 class Column(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     name: str  # e.g. "#_FIXTURES" (unquoted form; YAML key)
     type: str
@@ -28,7 +36,7 @@ class Column(BaseModel):
 
 
 class Metric(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     name: str  # e.g. "MARGIN"
     sql: str  # certified expression, verbatim
@@ -38,7 +46,7 @@ class Metric(BaseModel):
 
 
 class NegativeConstraint(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     wrong: str
     right: str
@@ -46,7 +54,7 @@ class NegativeConstraint(BaseModel):
 
 
 class Entity(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     name: str
     fqn: str
@@ -70,7 +78,7 @@ class Entity(BaseModel):
 
 
 class Ontology(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     version: int
     entities: dict[str, Entity]
