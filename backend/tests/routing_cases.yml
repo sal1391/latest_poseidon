@@ -1,0 +1,97 @@
+# Router-decision cases -- docs/architecture/03-llm-routing.md section 6.
+#
+# The five `id`/`setup`/`user`/`expect` blocks below are doc 03 section 6's
+# own cases, transcribed verbatim: they are the specification of what the
+# router is supposed to DECIDE, and they are not edited to match what the
+# code can currently run. What each case can be executed AGAINST today is
+# the separate `execution:` block, which is this repository's own metadata:
+#
+#   live_only: true   the case cannot be run offline today, with `reason`
+#                     naming the phase that will change that. Every case is
+#                     still run by the live executor (`pytest -m
+#                     router_live`), which needs no code change when
+#                     credentials arrive -- only environment.
+#   stub_script:      a recorded LLMResponse sequence the offline executor
+#                     replays through the REAL skill registry. Present only
+#                     where the expected skill is registered and enabled.
+#
+# Both executors live in backend/tests/test_llm_loop.py. The doc writes its
+# expectations in the vocabulary of the QUESTION ("metric", "port"), not of
+# a skill's Args model ("metrics", a LOC_NM dimension filter); the executors
+# bridge that in one documented table rather than by rewriting the cases.
+
+- id: existing_brief_by_name
+  setup: { mode: existing, state: {} }
+  user: "Run the brief for Maersk"
+  expect: { skill: customer_insight.existing_customer_brief, args_subset: { customer: "MAERSK*" } }
+  execution:
+    live_only: true
+    reason: >-
+      customer_insight.existing_customer_brief is not registered: its task.yml
+      carries enabled: false until Phase 8 builds the skill, so nothing offline
+      can dispatch it.
+
+- id: ambiguous_customer_clarifies
+  user: "brief for pacific"
+  expect: { clarify: true }
+  execution:
+    live_only: true
+    reason: >-
+      The clarify path is a decision NOT to call a skill, followed by
+      did-you-mean chips. Only a live router can decide it, and the chips are
+      Phase 6's conversation surface; a stub script would merely replay a
+      scripted refusal.
+
+- id: default_data_qa_breakdown
+  setup: { mode: default, state: {} }
+  user: "top GP customers for Port of Singapore in April 2026"
+  expect:
+    skill: data_qa.metric_query
+    args_subset: { metric: GP, group_by: CUST_NM, port: "SINGAPORE*" }
+  execution:
+    # Runnable offline: data_qa.metric_query is registered and enabled today,
+    # so this script exercises the whole path -- loop, dispatch, argument
+    # validation, query, parts, digest, records -- with only the model faked.
+    stub_script:
+      - stop_reason: tool_use
+        input_tokens: 1180
+        output_tokens: 96
+        tool_use:
+          id: tool-1
+          skill: data_qa.metric_query
+          arguments:
+            entity: MARINE_SALES_PLANNING_V
+            metrics: [GP]
+            period: { start: "2026-04-01", end: "2026-05-01" }
+            filters:
+              - { column: LOC_NM, values: [Singapore] }
+            group_by: CUST_NM
+            top_n: 5
+      - stop_reason: end_turn
+        input_tokens: 1460
+        output_tokens: 74
+        text: "Here are the top GP customers at Singapore for April 2026."
+
+- id: pivot_to_research_with_carry
+  setup: { mode: default, state: { active_customer: "CUSTOMER_X" } }
+  user: "any relevant news on them I should be aware of?"
+  expect: { skill: research.web_research, args_subset: { customer: "CUSTOMER_X" } }
+  execution:
+    live_only: true
+    reason: >-
+      research.web_research does not exist yet: Phase 7 builds the research
+      task, so there is no registered skill for a stub script to dispatch.
+
+- id: post_brief_pivot_to_internal
+  setup: { mode: prospect, state: { mentioned_ports: ["ROTTERDAM"] } }
+  user: "which existing customers do we serve at that port?"
+  expect: { skill: data_qa.metric_query, args_subset: { port: "ROTTERDAM" } }
+  execution:
+    live_only: true
+    reason: >-
+      The expected skill IS registered, but this case's content is the router
+      resolving "that port" out of carried conversation state across a pivot.
+      A stub script cannot demonstrate that -- it would only re-prove
+      default_data_qa_breakdown's mechanism with a different literal. Phase 6
+      owns threading conversation state through run_turn, and this case is its
+      live regression.

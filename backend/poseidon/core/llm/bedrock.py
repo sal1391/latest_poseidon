@@ -217,16 +217,40 @@ def _build_messages(messages: list[dict]) -> list[dict]:
 
 def _build_message(message: dict) -> dict:
     """``content`` may already be a list of Converse content blocks (passed
-    through as a NEW list -- never the caller's own list object, e.g. a
-    future toolResult message from Task 4's agent loop -- though the block
-    DICTS inside it are shared, shallow-copy only: this list-level copy is
-    what the mutation-discipline tests pin, since nothing in this module ever
-    writes into a block dict after reading it) or plain text (the shape
-    ``RoleClient``'s own tests pass), wrapped as the one-block
-    ``[{"text": content}]`` Converse requires."""
+    through as a NEW list -- never the caller's own list object, e.g. the
+    toolResult message Task 4's agent loop appends -- though the block DICTS
+    inside it are shared, shallow-copy only EXCEPT for a ``toolUse`` block,
+    which is rebuilt rather than shared: see :func:`_build_content_block`)
+    or plain text (the shape ``RoleClient``'s own tests pass), wrapped as
+    the one-block ``[{"text": content}]`` Converse requires."""
     content = message["content"]
-    content_blocks = [{"text": content}] if isinstance(content, str) else list(content)
-    return {"role": message["role"], "content": content_blocks}
+    if isinstance(content, str):
+        return {"role": message["role"], "content": [{"text": content}]}
+    return {"role": message["role"], "content": [_build_content_block(b) for b in content]}
+
+
+def _build_content_block(block: dict) -> dict:
+    """The fourth tool-name translation site (see the module docstring's
+    translation paragraph for the other three).
+
+    Once the agent loop runs a second iteration it sends the model's OWN
+    previous ``toolUse`` block back as assistant history, and
+    ``ToolUseBlock.name`` is the same ``ToolName`` shape as
+    ``toolSpec.name`` (service-2.json) -- a dotted skill id is rejected
+    there exactly as it would be in a tool definition. The loop above this
+    seam writes dotted ids ONLY; translating them is this module's job, and
+    doing it here rather than at the loop keeps that true for every provider
+    that will ever consume the same message list.
+
+    A rebuilt dict, never an in-place edit: the caller's history list is the
+    same object across every iteration of a turn, so writing the wire name
+    back into it would make the NEXT iteration translate an already-
+    translated name.
+    """
+    tool_use = block.get("toolUse")
+    if tool_use is None:  # text/image/toolResult/... carry no ToolName
+        return block
+    return {**block, "toolUse": {**tool_use, "name": _to_bedrock_tool_name(tool_use["name"])}}
 
 
 def _build_inference_config(params: dict) -> dict:

@@ -188,13 +188,26 @@ class RoleClient:
         # default regardless of what any given provider does with its copy.
         tools = list(tools)
         config = self.resolve(role)
-        if self._settings.llm_mode == "stub":
+        mode = self._settings.llm_mode
+        if mode == "stub":
             provider_key = STUB_PROVIDER_KEY
         else:
             if config.provider == "cortex":
                 raise RuntimeError(_CORTEX_NOT_AVAILABLE)
             provider_key = config.provider
-        provider = self._providers[provider_key]
+        try:
+            provider = self._providers[provider_key]
+        except KeyError:
+            # A bare KeyError here would name only the missing key, leaving
+            # an operator to work out from which mode asked for it and what
+            # WAS registered -- and in stub mode the key ("stub") does not
+            # appear in models.yml at all, so the bare message names nothing
+            # anyone can grep for. All three facts, or the message is not
+            # actionable.
+            raise RuntimeError(
+                f"no provider registered for key {provider_key!r} (llm_mode={mode!r}) "
+                f"{_EM_DASH} registered: {sorted(self._providers)}"
+            ) from None
         return provider.invoke(
             system=system,
             messages=messages,

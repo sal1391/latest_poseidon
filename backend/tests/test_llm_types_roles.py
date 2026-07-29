@@ -356,6 +356,41 @@ def test_invoke_live_mode_bedrock_dispatches_to_registered_provider(monkeypatch)
     ]
 
 
+def test_invoke_unregistered_live_provider_raises_pinned_runtime_error(monkeypatch):
+    """Task 1 review carry, hardened in Task 4 (the agent loop is the first
+    real caller): a mode/role combination whose provider key was never
+    registered used to escape as a bare ``KeyError('bedrock')`` -- a message
+    that names the missing key and nothing else. The pinned RuntimeError
+    names all three things an operator needs to fix it: which key was
+    wanted, which mode asked for it, and what was actually registered."""
+    settings = _settings(monkeypatch, LLM_PROFILE="bedrock", LLM_MODE="live")
+    client = RoleClient(settings, providers={})
+
+    with pytest.raises(RuntimeError) as err:
+        client.invoke("router", system="s", messages=[])
+
+    assert str(err.value) == (
+        f"no provider registered for key 'bedrock' (llm_mode='live') {_EM_DASH} registered: []"
+    )
+
+
+def test_invoke_unregistered_stub_provider_raises_pinned_runtime_error(monkeypatch):
+    """The same guard from the other side of the seam: in stub mode the key
+    is always ``"stub"`` no matter what the role is configured for, so a
+    registry holding only a live provider is just as misconfigured -- and
+    the message says so by listing what IS registered."""
+    settings = _settings(monkeypatch, LLM_PROFILE="bedrock", LLM_MODE="stub")
+    client = RoleClient(settings, providers={"bedrock": StubProvider([_SCRIPTED])})
+
+    with pytest.raises(RuntimeError) as err:
+        client.invoke("router", system="s", messages=[])
+
+    assert str(err.value) == (
+        f"no provider registered for key 'stub' (llm_mode='stub') {_EM_DASH} "
+        "registered: ['bedrock']"
+    )
+
+
 def test_invoke_passes_provider_a_copy_of_the_caller_tools_list(monkeypatch):
     """Task 1 review carry, hardened here (Task 3's sanctioned one-line
     addition, `tools = list(tools)`): protects tools=[]'s shared mutable

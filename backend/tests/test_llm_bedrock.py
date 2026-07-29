@@ -553,6 +553,97 @@ def test_tool_name_translation_round_trips_for_real_skill_ids():
     assert bedrock._from_bedrock_tool_name(wire) == "data_qa.metric_query"
 
 
+def test_invoke_translates_tool_use_names_in_the_message_history():
+    """The fourth translation site (Task 4): once an agent loop runs more
+    than one iteration, the request carries the model's OWN previous
+    toolUse block back as assistant history -- and ToolUseBlock.name is the
+    same ``ToolName`` shape as toolSpec.name (verified in service-2.json),
+    so a dotted skill id there is rejected exactly like a dotted tool
+    definition would be. The loop above this seam only ever writes dotted
+    ids (see test_llm_loop.py); translating them is this provider's job."""
+    fake = _FakeClient(converse_response=_END_TURN_RESPONSE)
+    provider = BedrockProvider(client=fake)
+
+    provider.invoke(
+        system="s",
+        messages=[
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "toolUse": {
+                            "toolUseId": "tool-1",
+                            "name": "data_qa.metric_query",
+                            "input": {"metrics": ["GP"]},
+                        }
+                    }
+                ],
+            },
+        ],
+        tools=[],
+        model="m",
+        params={},
+    )
+
+    assert fake.converse_calls[0]["messages"][1]["content"] == [
+        {
+            "toolUse": {
+                "toolUseId": "tool-1",
+                "name": "data_qa__metric_query",
+                "input": {"metrics": ["GP"]},
+            }
+        }
+    ]
+
+
+def test_invoke_passes_tool_result_blocks_through_untouched():
+    """A ToolResultBlock carries no ``name`` at all (service-2.json: only
+    toolUseId/content/status), so there is nothing to translate and nothing
+    to rewrite -- the digest text and the problem JSON an agent loop puts
+    there reach Bedrock byte for byte."""
+    fake = _FakeClient(converse_response=_END_TURN_RESPONSE)
+    provider = BedrockProvider(client=fake)
+    result_block = {
+        "toolResult": {
+            "toolUseId": "tool-1",
+            "content": [{"json": {"title": "invalid arguments", "status": 422}}],
+            "status": "error",
+        }
+    }
+
+    provider.invoke(
+        system="s",
+        messages=[{"role": "user", "content": [result_block]}],
+        tools=[],
+        model="m",
+        params={},
+    )
+
+    assert fake.converse_calls[0]["messages"][0]["content"] == [result_block]
+
+
+def test_invoke_never_mutates_a_tool_use_block_it_translates():
+    """The caller's own history list is reused across every iteration of an
+    agent loop -- translating in place would leave WIRE names in the loop's
+    messages, so the second iteration would send an already-mangled
+    (double-translated) name."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": [
+                {"toolUse": {"toolUseId": "t", "name": "data_qa.metric_query", "input": {}}}
+            ],
+        }
+    ]
+    snapshot = copy.deepcopy(messages)
+    provider = _client(converse_response=_END_TURN_RESPONSE)
+
+    provider.invoke(system="s", messages=messages, tools=[], model="m", params={})
+
+    assert messages == snapshot
+
+
 def test_parse_tool_input_with_no_fragments_returns_empty_dict():
     """A streamed tool call with no arguments (contentBlockStart straight to
     contentBlockStop, no delta in between) has an empty fragment list --
