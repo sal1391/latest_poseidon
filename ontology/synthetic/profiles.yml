@@ -1,0 +1,141 @@
+# =============================================================================
+# profiles.yml — generation profile for backend/poseidon/scripts/generate_synthetic.py
+# =============================================================================
+# Feeds exactly one random.Random(seed) instance threaded through the
+# generator. Every pool/band/weight below is read in YAML declaration order
+# (PyYAML mappings and Python dicts are both insertion-ordered) so a fixed
+# seed always reproduces the same dataset. See
+# docs/architecture/04-data-ontology.md §4 and
+# .superpowers/sdd/2026-07-28-phase-2-ontology-synthetic-data/task-5-brief.md
+# for the generator contract this feeds. This file is DATA, not code — it
+# has no certification lifecycle of its own; it just has to keep producing
+# rows whose keys match the certified ontology (enforced by
+# backend/tests/test_synthetic_generator.py::test_rows_conform_to_ontology).
+# =============================================================================
+
+seed_default: 1391
+
+window:
+  # Rolling window: prior full calendar year + current year-to-date, relative
+  # to anchor -> [anchor.year - 1 - 01 - 01, anchor). Regenerating the
+  # dataset bumps this consciously; the generator NEVER reads wall-clock time
+  # (determinism) — see generate_synthetic.py module docstring.
+  anchor: 2026-07-01
+
+# =============================================================================
+# MARINE_SALES_PLANNING_V — 24,000 rows, one per marine fuel transaction (POI).
+# =============================================================================
+MARINE_SALES_PLANNING_V:
+  rows: 24000
+  customers:
+    pool_size: 40
+    # First three are FORCED to include Singapore in their port-affinity set
+    # (see generate_synthetic.py::_build_customer_profile) for demo
+    # continuity — not left to chance.
+    named: [Northstar Lines, Blue Anchor Marine, Crestline Freight]
+    # The generator composes the remaining 37 as "<prefix> <suffix>" in
+    # nested prefix-major / suffix-minor order, deduped against `named` and
+    # against itself, truncated at pool_size. 20 x 10 = 200 combinations
+    # available for 37 slots, so dedup never starves the pool.
+    prefixes: [Pacific, Meridian, Atlas, Harbor, Crescent, Aegean, Baltic, Nordic, Solent, Cormorant,
+               Ligurian, Bosphorus, Andes, Coral, Monsoon, Trade Wind, Beacon, Compass, Anchorline, Halvard]
+    suffixes: [Shipping, Marine, Bunkering, Navigation, Lines, Maritime, Carriers, Tankers, Freight, Shipmanagement]
+  ports:                    # real port names; LOC_NM pool
+    [Singapore, Rotterdam, Fujairah, Houston, Santos, Hamburg, Piraeus, Busan, Hong Kong,
+     Gibraltar, Malta, Istanbul, Durban, Lagos, Colombo, Jebel Ali, Antwerp, New Orleans,
+     Los Angeles, Panama City, Balboa, Algeciras, Zhoushan, Kaohsiung, Port Louis, Suez,
+     Las Palmas, Vancouver, Callao, Tanjung Pelepas]
+  ports_per_customer: [3, 8]        # uniform int range: each customer's affinity set
+  tons_lognormal: {mu: 6.2, sigma: 0.6}       # exp(mu) ~= 500t median, long tail
+  margin_usd_per_ton: {low: 4.0, high: 14.0}  # per customer/port band, uniform draw
+  win_rate_beta: {alpha: 5, beta: 4}          # per-customer Bernoulli p for "#_FIXTURES"
+  suppliers: [Vitol, Peninsula, Bunker Holding, Minerva, TFG Marine, Monjasa, Integr8, Dan-Bunkering]
+  deal_class: {TRADED: 0.7, INVENTORY: 0.3}
+  ship_types: {Tanker: 0.4, Bulker: 0.35, Container: 0.25}
+  # Broker/team/office columns: small fixed pools, each sampled ONCE per
+  # customer (sticky) in _build_customer_profile — never redrawn per-row.
+  # Pool sizes follow the brief's own example (6 brokers / 4 offices /
+  # 3 regions). team_offices backs all three "office" columns
+  # (PRIMARY_SUPPLY_TEAM_OFFICE, PRIMARY_BRKR_OFFICE, CUSTOMER_TEAM_NAME);
+  # regions backs all three "region" columns (..._REGION / CBO_REGION) —
+  # each column still gets its OWN independent draw from the shared pool.
+  broker_pools:
+    supply_brokers: [S. Okafor, R. Lindqvist, M. Tanaka, A. Farouk, C. Delgado, P. Nakamura]
+    primary_brokers: [J. Whitfield, K. Alonso, D. Marchetti, T. Solberg, N. Osei, H. Vance]
+    customer_brokers: [E. Castellano, W. Bjork, L. Abioye, F. Marceau, S. Rourke, Y. Petrov]
+    team_offices: [Houston, Singapore, Rotterdam, Hong Kong]
+    regions: [Americas, EMEA, APAC]
+    supply_team_names: [Gulf Coast Desk, ARA Desk, Far East Desk, Med & Black Sea Desk]
+
+# =============================================================================
+# W_MARINE_GL_SOURCE_AI — rows_per_period x len(all_months_in_window) rows.
+# =============================================================================
+W_MARINE_GL_SOURCE_AI:
+  rows_per_period: 900
+  periods: all_months_in_window
+  volume_share: 0.10        # fraction of rows with CLASS4 = Volume (exercises the guard)
+  # ~24 curated full paths: CLASS6_Calc..CLASS1, null-padded. Majority P&L
+  # (revenue / cost / OpEx branches below), >=2 Balance Sheet, >=3 Volume.
+  # Volume CLASS3 values are written "Tonnage - <suffix>"; the generator
+  # derives ACCOUNT as "Tonnage-<suffix>" from that CLASS3 text (see
+  # _tonnage_account). Cost-vs-revenue sign is decided by the generator's
+  # _is_cost_path() keyword scan (Cost/Expense/OpEx/Tax anywhere in the
+  # path) — every cost/OpEx/tax branch below carries one of those words on
+  # purpose; every revenue/volume/balance-sheet branch deliberately avoids
+  # them.
+  hierarchy_paths:
+    # --- Profit and Loss / Operating Income / revenue (7) -------------------
+    - [Profit and Loss, Profit and Loss, Operating Income, Gross Profit, Trade GP, Cargo GP, null]
+    - [Profit and Loss, Profit and Loss, Operating Income, Gross Profit, Trade GP, Bunker GP, null]
+    - [Profit and Loss, Profit and Loss, Operating Income, Gross Profit, Trade GP, Commission GP, null]
+    - [Profit and Loss, Profit and Loss, Operating Income, Gross Profit, Charter GP, Voyage GP, null]
+    - [Profit and Loss, Profit and Loss, Operating Income, Revenue, Trade Revenue, Cargo Revenue, null]
+    - [Profit and Loss, Profit and Loss, Operating Income, Revenue, Trade Revenue, Bunker Revenue, null]
+    - [Profit and Loss, Profit and Loss, Operating Income, Revenue, Charter Revenue, Voyage Revenue, null]
+    # --- Profit and Loss / Operating Income / cost & OpEx (8) ----------------
+    - [Profit and Loss, Profit and Loss, Operating Income, Cost of Goods Sold, Trade Cost, Cargo Cost, null]
+    - [Profit and Loss, Profit and Loss, Operating Income, Cost of Goods Sold, Trade Cost, Bunker Cost, null]
+    - [Profit and Loss, Profit and Loss, Operating Income, Cost of Goods Sold, Charter Cost, Voyage Cost, null]
+    - [Profit and Loss, Profit and Loss, Operating Income, Operating Expenses, Vessel OpEx, Crew Cost, null]
+    - [Profit and Loss, Profit and Loss, Operating Income, Operating Expenses, Vessel OpEx, Fuel Cost, null]
+    - [Profit and Loss, Profit and Loss, Operating Income, Operating Expenses, Corporate Overhead, SG&A Expense, null]
+    - [Profit and Loss, Profit and Loss, Operating Income, Operating Expenses, Corporate Overhead, IT Expense, null]
+    - [Profit and Loss, Profit and Loss, Operating Income, Operating Expenses, Corporate Overhead, Professional Fees Expense, null]
+    # --- Profit and Loss / non-operating + tax (3) ---------------------------
+    - [Profit and Loss, Profit and Loss, Non-Operating Income, Other Expense, Interest Expense, null, null]
+    - [Profit and Loss, Profit and Loss, Non-Operating Income, Other Income, Interest Income, null, null]
+    - [Profit and Loss, Profit and Loss, Taxes, Tax Expense, Income Tax Expense, null, null]
+    # --- Volume (4) -----------------------------------------------------------
+    - [Profit and Loss, Profit and Loss, Operating Income, Volume, Tonnage - Cargo, null, null]
+    - [Profit and Loss, Profit and Loss, Operating Income, Volume, Tonnage - Bunker Fuel, null, null]
+    - [Profit and Loss, Profit and Loss, Operating Income, Volume, Tonnage - Gasoil, null, null]
+    - [Profit and Loss, Profit and Loss, Operating Income, Volume, Tonnage - LSFO, null, null]
+    # --- Balance Sheet (2) -----------------------------------------------------
+    - [Balance Sheet, Balance Sheet, Assets, Current Assets, Accounts Receivable, null, null]
+    - [Balance Sheet, Balance Sheet, Liabilities, Current Liabilities, Accounts Payable, null, null]
+  amount_bands: {revenue: [50000, 900000], cost: [-800000, -40000], volume_tons: [500, 40000]}
+  # COMPANY/OFFICE/DEPARTMENT/BROKER/FUTURE pools + "mostly Default" rates,
+  # honoring the certified stats PHILOSOPHY in ontology.yml (OFFICE ~80%
+  # Default, DEPARTMENT mostly Default, BROKER "meaningful only for
+  # trade-side rows" / "~58.8% Default" corpus-wide, FUTURE ~97.7% Default;
+  # COMPANY is never "Default"). office_default/department_default/
+  # future_default are applied uniformly per row and land on their target
+  # fraction directly. broker_default is different: BROKER is hard-forced
+  # to "Default" on every non-trade-flavored path (see _is_trade_path —
+  # Balance Sheet/OpEx/tax/volume rows never get a real broker, per the
+  # ontology's own "do not suggest BROKER as a breakdown for Balance Sheet
+  # / OpEx / tax" business rule), and this curated ~24-path set is
+  # majority non-trade-flavored by design. That alone puts the corpus-wide
+  # Default floor above 58.8%, so broker_default here is calibrated LOW
+  # (mostly non-Default WITHIN trade-flavored rows, not corpus-wide) to
+  # land the blended rate in the same "mostly but not overwhelmingly
+  # Default" territory as the certified figure, without claiming to
+  # reproduce 58.8% exactly — a documented, deliberate deviation, in the
+  # spirit of ontology.yml's own bootstrap_conflicts notes.
+  companies: [Poseidon Marine Fuels Ltd, Poseidon Bunkering Americas Inc, Poseidon Bunkering Asia Pte Ltd,
+              Poseidon Marine Europe GmbH, Poseidon Trading DMCC]
+  offices: [Houston, Singapore, Rotterdam, Hong Kong]
+  departments: [Trading, Operations, Finance, Chartering]
+  brokers: [S. Tan, M. Reyes, J. Okafor, L. Novak, A. Haddad, R. Silva]
+  future_values: [Reserved-A, Reserved-B]
+  default_weights: {office_default: 0.80, department_default: 0.85, broker_default: 0.15, future_default: 0.977}
