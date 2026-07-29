@@ -55,13 +55,26 @@ def fetch_metrics(
     future skill) decides how to render them, this tool only fetches and
     proves.
 
-    The proof block is deliberately terse — four lines, always in this
-    order — because this tool only ever receives a ``DataClient``, never a
-    ``Settings`` or an ontology handle (contrast
-    ``data_qa.metric_query.tools.format_parts``'s richer proof, which has
-    both): "Customer", both windows, and the metric count are everything
-    this tool itself knows for certain.
+    YTD is half-open ``[Jan 1 of anchor's year, anchor)``. A January 1
+    anchor would make that window empty — ``start == end`` — which
+    :class:`~poseidon.core.data.specs.PeriodWindow` itself rejects at
+    construction (``start >= end``). Rather than let that surface as an
+    unexplained ``ValueError`` raised deep inside window construction, a
+    January 1 anchor is rejected explicitly, up front, with a message that
+    names the actual constraint: the earliest anchor with a non-empty YTD
+    range is January 2. The Phase-8 caller owns the UX for that case (e.g.
+    steering the user to a later date) — this tool only refuses to silently
+    pretend a YTD window exists when it cannot.
+
+    Raises:
+        ValueError: if ``anchor`` is January 1st (see above).
     """
+    if anchor.month == 1 and anchor.day == 1:
+        raise ValueError(
+            f"anchor {anchor.isoformat()} has no year-to-date range — the "
+            "earliest supported anchor is January 2"
+        )
+
     filters = {"CUST_NM": (customer,)}
     prior_window = _prior_year_window(anchor)
     ytd_window = _ytd_window(anchor)
@@ -77,6 +90,6 @@ def fetch_metrics(
         f"Customer: {customer}",
         f"Prior year: {prior_window.start}..{prior_window.end}",
         f"YTD: {ytd_window.start}..{ytd_window.end}",
-        "Metrics: 6",
+        f"Metrics: {len(SIX_METRICS)}",
     ]
     return prior, ytd, proof

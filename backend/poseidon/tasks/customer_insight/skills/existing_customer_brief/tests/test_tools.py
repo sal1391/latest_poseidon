@@ -258,6 +258,26 @@ def test_fetch_metrics_windows_are_half_open_and_anchor_derived():
     assert ytd_spec.period == PeriodWindow(dt.date(2024, 1, 1), dt.date(2024, 3, 15))
 
 
+def test_fetch_metrics_rejects_a_january_1_anchor():
+    """A January 1 anchor would make the YTD window ``[Jan 1, Jan 1)`` —
+    empty by construction. ``PeriodWindow`` itself would already refuse that
+    (``start >= end``), but ``fetch_metrics`` must reject it explicitly, up
+    front, with a message naming the actual constraint — not let a caller
+    hit an unexplained ``ValueError`` raised deep inside window
+    construction. Pinning the exact message so this stays a deliberate,
+    documented contract rather than an accident of ``PeriodWindow``'s own
+    wording."""
+    client = _RecordingDataClient()
+
+    with pytest.raises(ValueError) as exc_info:
+        fetch_metrics(client, CUSTOMER, dt.date(2026, 1, 1))
+
+    assert str(exc_info.value) == (
+        "anchor 2026-01-01 has no year-to-date range — the earliest supported anchor is January 2"
+    )
+    assert client.metric_specs == [], "the guard must fire before either spec is built or run"
+
+
 def test_fetch_top_ports_builds_the_certified_breakdown_spec_offline():
     client = _RecordingDataClient()
 
