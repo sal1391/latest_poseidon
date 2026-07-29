@@ -66,6 +66,12 @@ Optional extras:
 *(This section reflects the state at the "as of" stamp below.)*
 
 - **Phase 2: COMPLETE and verified** (final commit `763c4ee`) — fix-wave re-review passed with zero open findings. Branch frozen awaiting your gate + merge.
-- Phase 3 (skill framework + deterministic tools): branch `phase-3-8-overnight` created from Phase 2's head; plan written and execution started — see latest stamp below.
+- **Phase 3: COMPLETE and verified** (final commit `831323f`) — whole-branch Opus review + 8-item fix wave + re-review, zero open findings. Suites: host 118 offline + 23 pg; in-container 144. Your Phase-3 gate when ready (stack is up): the runbook's dev-runner curl returns the live Singapore top-5 through the real skill machinery, and the MinIO console (localhost:9001) shows rendered PDF briefs. What exists now:
+  - The **skill registry** — every future skill plugs into it; fail-fast discovery, structured never-crash dispatch, router-ready JSON schemas.
+  - **`data_qa.metric_query`** — the first real skill. Ask it the Singapore question over HTTP and it returns the real top-5 table with a proof block. Live-proven: `curl -X POST localhost:8000/api/dev/skills/data_qa.metric_query/run ...` (exact command in `infra/runbooks/local.md`).
+  - **Customer-insight tools** (prior-year vs YTD six-metric pull, top ports) — built and ground-truth-tested, gated off until Phase 8 wires the brief flows.
+  - **PDF pipeline** — markdown → WeasyPrint → MinIO with presigned links; renders in-container (the dev image gained the needed native libs); test PDFs are visible in your MinIO console (localhost:9001).
+  - Suites at the stamp: host 115 offline + 23 pg; in-container 141; lint clean everywhere.
+- **A process incident worth your attention (resolved, and the system worked):** a reviewer accused an implementer of fabricating evidence about FastAPI internals. The implementer refused to sign a retraction and re-proved its observation; I ran the tiebreaker myself — **the implementer was right** (FastAPI 0.140's internals genuinely changed), the reviewer's "empirical" refutation was the unverified claim, and my own misstep was ordering the retraction before running the ten-second check. The ledger records the full sequence, and the standing rule now is: integrity-level allegations get controller-verified before anyone acts. Honest machines arguing honestly — and the audit trail never took a false statement.
 
-**As of: pre-dawn — Phase 2 done; Phase 3 pipeline starting.**
+**As of: morning — Phases 2 AND 3 both complete and frozen for your review; Phase 4 (deterministic parsing pipeline) plan written and executing on the same branch. Merge order recommendation: pass Phase 2 → merge it → then review the `phase-3-8-overnight` branch (Phase 3 + whatever Phase 4 reached) as one unit.**
