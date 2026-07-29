@@ -158,6 +158,7 @@ class RunLogWriter:
         parsed: dict,
         kind: str = "chat_turn",
         trace_id: str | None = None,
+        turn_run_id: str | None = None,
     ) -> TurnHandle | None:
         """Insert the parent row (``status='running'``), or -- when
         ``client_turn_key`` names a turn that already exists for this
@@ -167,10 +168,20 @@ class RunLogWriter:
         one transaction, so the fallback lookup can only ever see a
         conflicting row that is already fully committed.
 
+        ``turn_run_id``, when given, is used VERBATIM as the new row's id
+        instead of a freshly minted ``uuid4()`` (Phase 6 Task 4's amendment,
+        closing the turn-id seam doc 06 section 1's own comment requires:
+        the chat orchestrator passes its SSE sink's ``turn_id`` here so
+        ``turn_run.id`` IS the id every frame of the turn already carries on
+        the wire -- Phase 11's reconciliation endpoint looks a turn up by
+        that same id). ``None`` -- every call site before Task 4, and every
+        test in this module except the one pinning this parameter -- keeps
+        minting one internally, unchanged.
+
         Returns ``None`` on any failure -- see the module docstring.
         """
         try:
-            new_id = str(uuid.uuid4())
+            new_id = turn_run_id if turn_run_id is not None else str(uuid.uuid4())
             params = {
                 "id": new_id,
                 "kind": kind,

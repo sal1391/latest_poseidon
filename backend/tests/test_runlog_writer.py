@@ -217,6 +217,34 @@ def test_start_turn_kind_memory_update_is_passed_through_verbatim():
     assert params["kind"] == "memory_update"
 
 
+def test_start_turn_uses_provided_turn_run_id_verbatim_instead_of_minting_one():
+    """Phase 6 Task 4's amendment (closing the turn-id seam doc 06 section 1
+    comments on): a caller -- the chat orchestrator, passing its SSE sink's
+    own turn_id -- may supply the row's id explicitly. The RETURNING clause
+    echoes back whatever id was actually inserted, exactly as a real
+    Postgres INSERT ... RETURNING would for a row created with an explicit
+    id, so scripting the fake's canned row to equal the SAME provided id is
+    what makes this test prove the id was used, not merely accepted."""
+    provided_id = "caller-supplied-turn-id"
+    engine = _RecordingEngine(results=[(provided_id,)])
+    writer = RunLogWriter(engine)
+
+    handle = writer.start_turn(
+        user_sub="u",
+        conversation_id=None,
+        client_turn_key=None,
+        turn_index=None,
+        question=None,
+        mode="default",
+        parsed={},
+        turn_run_id=provided_id,
+    )
+
+    assert handle == TurnHandle(turn_run_id=provided_id, created=True)
+    _, params = engine.calls[0]
+    assert params["id"] == provided_id
+
+
 def test_start_turn_conflict_falls_back_to_selecting_the_existing_row():
     """The INSERT's ``RETURNING`` comes back empty (a row with this
     ``(user_sub, client_turn_key)`` already exists), so the writer issues a

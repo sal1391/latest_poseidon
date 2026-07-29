@@ -1,7 +1,7 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { setupServer } from "msw/node";
-import { http, HttpResponse, delay } from "msw";
+import { http, HttpResponse } from "msw";
 import { vi, beforeAll, beforeEach, afterAll, afterEach, test, expect } from "vitest";
 import { handlers } from "../../mocks/handlers";
 import { resetChatStore, useChatStore } from "../../state/chatStore";
@@ -61,13 +61,21 @@ test("thumbs down opens the comment prompt and submits", async () => {
 test("composer is disabled while a send waits on the bootstrap window", async () => {
   // Bootstrap still in flight and the turn never settles, so `streamingByConv`
   // cannot be what disables the input — only ChatScreen's own `sending` flag can.
-  server.use(
-    http.get("/api/conversations", async () => {
-      await delay(300);
-      return HttpResponse.json({ conversations: [] });
-    }),
-  );
-  vi.mocked(streamTurn).mockImplementationOnce(() => new Promise<void>(() => {}));
+  // The GET never resolves at all -- a timed `delay()` used to stand in here,
+  // but this test asserts and returns long before that timer fires, leaving
+  // the delayed response an orphaned continuation that fired seconds later,
+  // mid-suite, inside a LATER test's own render: it replayed bootstrap
+  // against whatever conversation was active at that moment, restamping the
+  // shared store's `conversations`/`activeId`/`messages`. A promise that
+  // never settles leaves nothing running past this test's own lifetime.
+  //
+  // No `streamTurn` mock override here (fix round 1: one used to sit here,
+  // pointlessly -- this test's own send() blocks at `await bootstrap()`
+  // and never reaches `streamTurn` at all, so the queued one-time override
+  // was never consumed by this test; it sat in vitest's mock queue and was
+  // silently consumed by whichever LATER test called `streamTurn` next
+  // instead, handing that unrelated test a promise that never resolves).
+  server.use(http.get("/api/conversations", () => new Promise<never>(() => {})));
 
   render(<ChatScreen />);
   const input = await screen.findByPlaceholderText(/message poseidon/i);
@@ -107,6 +115,33 @@ test("skills picker inserts an example prompt", async () => {
   await userEvent.click(screen.getByText(/Metric query/));
   expect(screen.getByPlaceholderText(/message poseidon/i)).toHaveValue(
     "Top GP customers for Port of Singapore in April 2026");
+});
+
+test("clicking a chip sends its label as a user message, not just a composer insert", async () => {
+  render(<ChatScreen />);
+  // The opener's own flow chips (mocks/handlers.ts's mockOpener) -- waiting
+  // for them is what guarantees bootstrap has landed and activeId is set.
+  await screen.findByText(/Ask about your data/);
+
+  await userEvent.click(screen.getByRole("button", { name: "Existing customer" }));
+
+  expect(streamTurn).toHaveBeenCalledWith("c1", "Existing customer", expect.any(Function));
+  // The composer itself was never populated -- this went straight through
+  // the send path, unlike SkillsPicker's insert-only affordance above.
+  expect(screen.getByPlaceholderText(/message poseidon/i)).toHaveValue("");
+  await waitFor(() =>
+    expect(screen.getByText(/Three customers drove April./)).toBeInTheDocument());
+});
+
+test("a chip is disabled while its conversation's send is in flight", async () => {
+  vi.mocked(streamTurn).mockImplementationOnce(() => new Promise<void>(() => {}));
+  render(<ChatScreen />);
+  await screen.findByText(/Ask about your data/);
+
+  await userEvent.click(screen.getByRole("button", { name: "Existing customer" }));
+
+  expect(screen.getByRole("button", { name: "Existing customer" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "New customer prospect" })).toBeDisabled();
 });
 
 test("backend-unreachable bootstrap surfaces a retry banner instead of a silent no-op", async () => {

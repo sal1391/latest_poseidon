@@ -26,6 +26,17 @@ def test_defaults_are_local_and_stub(monkeypatch):
     assert s.llm_mode == "stub"
     assert s.data_backend == "synthetic"
     assert s.memory_max_chars == 8000
+    assert s.chat_mode == "mock"
+
+
+def test_chat_mode_live_is_accepted(monkeypatch):
+    s = make_settings(monkeypatch, CHAT_MODE="live")
+    assert s.chat_mode == "live"
+
+
+def test_chat_mode_malformed_crashes(monkeypatch):
+    with pytest.raises(ValidationError):
+        make_settings(monkeypatch, CHAT_MODE="turbo")
 
 
 def test_missing_database_url_crashes(monkeypatch):
@@ -46,7 +57,10 @@ def test_auth0_mode_requires_auth0_fields(monkeypatch):
 
 def test_auth0_mode_valid_when_fields_present(monkeypatch):
     s = make_settings(
-        monkeypatch, IDENTITY_MODE="auth0", AUTH0_DOMAIN="dev.us.auth0.com",
-        AUTH0_AUDIENCE="https://poseidon/api", AUTH0_CLIENT_ID="abc123",
+        monkeypatch,
+        IDENTITY_MODE="auth0",
+        AUTH0_DOMAIN="dev.us.auth0.com",
+        AUTH0_AUDIENCE="https://poseidon/api",
+        AUTH0_CLIENT_ID="abc123",
     )
     assert s.identity_mode == "auth0"

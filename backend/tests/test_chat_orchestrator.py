@@ -146,8 +146,21 @@ class RecordingWriter:
     """Stands in for :class:`~poseidon.core.runlog.RunLogWriter`. Records the
     exact kwargs of every call (never validates them itself -- each test
     asserts the shape it cares about), and hands back a real
-    :class:`TurnHandle` with a deterministic, incrementing id so a
-    multi-turn test can tell which handle belongs to which turn."""
+    :class:`TurnHandle`.
+
+    Mirrors the real writer's own idempotent-insert contract (Phase 6 Task 4's
+    amendment) rather than always minting a fresh id: ``turn_run_id``, when
+    the caller supplies one (the orchestrator always does, post-amendment --
+    its own SSE sink's ``turn_id``), is used verbatim, exactly like
+    ``RunLogWriter.start_turn`` now does; and a SECOND call with the same
+    ``(user_sub, client_turn_key)`` returns the FIRST call's handle with
+    ``created=False`` instead of a new one -- the same "client retry lands on
+    the turn that already exists" shape ``runlog.py``'s own ``ON CONFLICT ...
+    DO NOTHING`` fallback implements against real Postgres. ``client_turn_key
+    =None`` never conflicts (matches Postgres unique-constraint semantics for
+    NULL, and ``runlog.py``'s own test coverage of it), so only calls that
+    supply the SAME non-None key ever short-circuit each other.
+    """
 
     def __init__(self) -> None:
         self.start_turn_calls: list[dict] = []
@@ -155,12 +168,22 @@ class RecordingWriter:
         self.append_tool_calls: list[dict] = []
         self.finalize_calls: list[dict] = []
         self._next_id = 1
+        self._existing_by_key: dict[tuple[str, str], str] = {}
 
     def start_turn(self, **kwargs) -> TurnHandle:
         self.start_turn_calls.append(kwargs)
-        handle = TurnHandle(turn_run_id=f"run-{self._next_id}", created=True)
+        user_sub = kwargs["user_sub"]
+        client_turn_key = kwargs.get("client_turn_key")
+        if client_turn_key is not None:
+            key = (user_sub, client_turn_key)
+            existing = self._existing_by_key.get(key)
+            if existing is not None:
+                return TurnHandle(turn_run_id=existing, created=False)
+        turn_run_id = kwargs.get("turn_run_id") or f"run-{self._next_id}"
         self._next_id += 1
-        return handle
+        if client_turn_key is not None:
+            self._existing_by_key[(user_sub, client_turn_key)] = turn_run_id
+        return TurnHandle(turn_run_id=turn_run_id, created=True)
 
     def append_llm_call(self, **kwargs) -> None:
         self.append_llm_calls.append(kwargs)
@@ -597,7 +620,9 @@ def test_flagship_singapore_top_gp_frame_sequence_and_writer_rows(monkeypatch):
     )
 
     # --- TurnOutcome ---
-    assert outcome == TurnOutcome(status="ok", message_id="msg-1", turn_run_id="run-1")
+    # turn_run_id IS the sink's own turn_id (Phase 6 Task 4's turn-id
+    # unification amendment) -- never a writer-minted id of its own.
+    assert outcome == TurnOutcome(status="ok", message_id="msg-1", turn_run_id="turn-1")
 
     # --- frame sequence, event by event, event_seq 1..N, envelope on every
     #     data JSON (doc 01 section 5 verbatim) ---
@@ -670,6 +695,9 @@ def test_flagship_singapore_top_gp_frame_sequence_and_writer_rows(monkeypatch):
     assert start["question"] == "Top GP customers for Port of Singapore in April 2026"
     assert start["mode"] == "default"
     assert start["kind"] == "chat_turn"
+    # Turn-id unification (Phase 6 Task 4 amendment): the orchestrator threads
+    # the sink's OWN turn_id into start_turn so turn_run.id IS the SSE turn_id.
+    assert start["turn_run_id"] == "turn-1"
     # The parsed dict must be genuinely JSON-safe (dates as ISO strings) --
     # not merely dataclasses.asdict output, which still holds raw `date`
     # objects json.dumps cannot serialize (see the orchestrator's own
@@ -685,7 +713,7 @@ def test_flagship_singapore_top_gp_frame_sequence_and_writer_rows(monkeypatch):
     assert len(writer.append_llm_calls) == 2
     first_llm, second_llm = writer.append_llm_calls
     for row in (first_llm, second_llm):
-        assert row["turn_run_id"] == "run-1"
+        assert row["turn_run_id"] == "turn-1"
         assert row["user_sub"] == DEV_USER_SUB
         assert row["provider"] == "bedrock"
         assert row["role"] == "router"
@@ -699,7 +727,7 @@ def test_flagship_singapore_top_gp_frame_sequence_and_writer_rows(monkeypatch):
 
     assert len(writer.append_tool_calls) == 1
     tool_row = writer.append_tool_calls[0]
-    assert tool_row["turn_run_id"] == "run-1"
+    assert tool_row["turn_run_id"] == "turn-1"
     assert tool_row["seq"] == 1
     assert tool_row["tool"] == METRIC_QUERY
     assert tool_row["server"] is None
@@ -717,7 +745,7 @@ def test_flagship_singapore_top_gp_frame_sequence_and_writer_rows(monkeypatch):
 
     assert len(writer.finalize_calls) == 1
     finalize = writer.finalize_calls[0]
-    assert finalize["turn_run_id"] == "run-1"
+    assert finalize["turn_run_id"] == "turn-1"
     assert finalize["status"] == "ok"
     assert finalize["message_id"] == "msg-1"
     assert (
@@ -1077,7 +1105,9 @@ def test_error_turn_emits_error_event_and_finalizes_error_state_untouched(monkey
     )
 
     assert outcome.status == "error"
-    assert outcome.turn_run_id == "run-1"
+    # turn_run_id IS the sink's own turn_id ("t"), not a writer-minted one --
+    # the turn-id unification amendment applies on every terminal path.
+    assert outcome.turn_run_id == "t"
 
     decoded = [_parse_frame(f) for f in frames]
     names = [name for _seq, name, _data in decoded]
@@ -1107,6 +1137,94 @@ def test_error_turn_emits_error_event_and_finalizes_error_state_untouched(monkey
 
     # Slots unchanged: state.put is never called on the error path.
     assert state.get("conv-err") == ConversationSlots()
+
+
+# ===========================================================================
+# execute_turn -- Phase 6 Task 4 amendments: turn-id unification (turn_run.id
+# IS the sink's SSE turn_id) and the client_turn_key retry short-circuit
+# (a duplicate start_turn call ends the turn with ONE pinned error frame,
+# no dispatch, no finalize -- the ORIGINAL turn owns the row)
+# ===========================================================================
+
+
+def test_retry_with_same_client_turn_key_short_circuits_with_duplicate_turn_error(monkeypatch):
+    settings = _settings(monkeypatch, LLM_MODE="stub", LLM_PROFILE="bedrock")
+    data = FakeDataClient()
+    state = ConversationStateStore()
+    writer = RecordingWriter()
+    role_client = _dev_role_client(settings)
+    prompt_registry = PromptRegistry(DEFAULT_PROMPTS_DIR)
+
+    first_frames, first_send = _capturing_send()
+    first_sink = SseEnvelopeSink(
+        turn_id="turn-A", message_id="msg-A", send=first_send, registry=REGISTRY
+    )
+    first_outcome = execute_turn(
+        conversation_id="conv-retry",
+        text="Top GP customers for Port of Singapore in April 2026",
+        client_turn_key="ctk-retry",
+        settings=settings,
+        registry=REGISTRY,
+        data=data,
+        state=state,
+        writer=writer,
+        role_client=role_client,
+        prompt_registry=prompt_registry,
+        sink=first_sink,
+        reference_date=REFERENCE_DATE,
+    )
+
+    # The FIRST send: an ordinary, successful turn. turn_run_id IS the first
+    # sink's own turn_id -- the turn-id unification half of this amendment.
+    assert first_outcome == TurnOutcome(status="ok", message_id="msg-A", turn_run_id="turn-A")
+
+    # A retry: a NEW HTTP request (a new sink, its own fresh turn_id/message_id
+    # -- mirroring mock_chat.py's own per-request minting) but the SAME
+    # client_turn_key, so the writer reports created=False.
+    retry_frames, retry_send = _capturing_send()
+    retry_sink = SseEnvelopeSink(
+        turn_id="turn-B", message_id="msg-B", send=retry_send, registry=REGISTRY
+    )
+    retry_outcome = execute_turn(
+        conversation_id="conv-retry",
+        text="Top GP customers for Port of Singapore in April 2026",
+        client_turn_key="ctk-retry",
+        settings=settings,
+        registry=REGISTRY,
+        data=data,
+        state=state,
+        writer=writer,
+        role_client=role_client,
+        prompt_registry=prompt_registry,
+        sink=retry_sink,
+        reference_date=REFERENCE_DATE,
+    )
+
+    # turn_run_id on the outcome is the ORIGINAL row's id (what start_turn
+    # reported, created=False) -- the row the retry does NOT own -- while
+    # every SSE frame of THIS response still carries ITS OWN sink's turn_id
+    # ("turn-B"), read back below via _parse_frame.
+    assert retry_outcome == TurnOutcome(status="error", message_id="msg-B", turn_run_id="turn-A")
+
+    decoded = [_parse_frame(f) for f in retry_frames]
+    names = [name for _seq, name, _data in decoded]
+    assert names == ["accepted", "error"]
+    for _seq, _name, data in decoded:
+        assert data["turn_id"] == "turn-B"
+        assert data["message_id"] == "msg-B"
+
+    error_data = decoded[1][2]
+    assert error_data["code"] == "duplicate_turn"
+    assert error_data["message"] == (
+        "this turn was already processed " + _EM_DASH + " refresh to load the conversation"
+    )
+
+    # No re-dispatch and no finalize on the retry: only the FIRST turn's
+    # dispatch/finalize rows exist, even though start_turn was called twice.
+    assert len(writer.start_turn_calls) == 2
+    assert len(writer.append_tool_calls) == 1
+    assert len(writer.finalize_calls) == 1
+    assert writer.finalize_calls[0]["turn_run_id"] == "turn-A"
 
 
 # ===========================================================================

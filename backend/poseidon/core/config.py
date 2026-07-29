@@ -18,7 +18,8 @@ class Settings(BaseSettings):
     # Containers bind-mount the repo, so a host `backend/.env` would otherwise
     # shadow the environment the orchestrator passes in — compose sets it empty.
     model_config = SettingsConfigDict(
-        env_file=os.getenv("POSEIDON_ENV_FILE", ".env"), extra="ignore")
+        env_file=os.getenv("POSEIDON_ENV_FILE", ".env"), extra="ignore"
+    )
 
     deploy_mode: Literal["local", "spcs", "ec2"] = "local"
     database_url: str
@@ -51,6 +52,11 @@ class Settings(BaseSettings):
     perplexity_api_key: str | None = None
     memory_max_chars: int = 8000
     memory_keep_versions: int = 20
+    # Phase 6 Task 4: which chat HTTP surface poseidon.api.app.create_app mounts.
+    # "mock" is the default so every existing env/test keeps today's scripted
+    # demo (mock_chat.py) with zero config changes; an operator opts into the
+    # real execute_turn pipeline (live_chat.py) by setting CHAT_MODE=live.
+    chat_mode: Literal["mock", "live"] = "mock"
 
     @field_validator("database_url", "s3_bucket")
     @classmethod
@@ -63,7 +69,8 @@ class Settings(BaseSettings):
     def auth0_fields_required_in_auth0_mode(self) -> "Settings":
         if self.identity_mode == "auth0":
             missing = [
-                name for name in ("auth0_domain", "auth0_audience", "auth0_client_id")
+                name
+                for name in ("auth0_domain", "auth0_audience", "auth0_client_id")
                 if not getattr(self, name)
             ]
             if missing:

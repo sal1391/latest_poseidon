@@ -371,6 +371,49 @@ body {
   font-size: 0.8125rem;
 }
 
+/* Tabular result part (a breakdown, a top-N, a metric/value pair list) --
+   plain theme-tokened borders, no zebra striping or hover state (nothing
+   in this part is interactive). Numeric cells pick up the `.data` utility
+   above (tabular-nums) so a column of amounts lines up on its decimal point. */
+.table-part {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 0.875rem;
+}
+
+.table-part th,
+.table-part td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  text-align: start;
+}
+
+.table-part th {
+  color: var(--ink-muted);
+  font-weight: 500;
+}
+
+/* Collapsible "How this was computed" proof block -- same idiom as .fallback-part. */
+.proof-part {
+  padding: 0.5rem 0.75rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-s);
+  color: var(--ink-muted);
+  font-size: 0.8125rem;
+}
+
+.proof-part summary {
+  cursor: pointer;
+}
+
+.proof-part ul {
+  margin: 0.5rem 0 0;
+  padding-inline-start: 1.25rem;
+  color: var(--ink);
+}
+
 /* Collapsible raw-payload viewer for message-part kinds the registry doesn't recognize. */
 .fallback-part {
   padding: 0.5rem 0.75rem;

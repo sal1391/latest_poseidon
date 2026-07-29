@@ -40,4 +40,11 @@ export const handlers = [
     HttpResponse.json({ messages: [mockOpener] })),
 
   http.post("/api/messages/:mid/feedback", () => new HttpResponse(null, { status: 204 })),
+
+  // GET /api/skills is live-chat-only (poseidon.api.live_chat's own module
+  // docstring); mock mode genuinely has no such route, so the mock handler
+  // set answers 404 here too -- what makes SkillsPicker's fallback-to-
+  // static-list path deterministic and fast under these mock-backed tests,
+  // rather than an unhandled request falling through to a real network call.
+  http.get("/api/skills", () => new HttpResponse(null, { status: 404 })),
 ];

@@ -1,12 +1,20 @@
-export type PartKind = "text" | "chips" | "tool_event" | "error";
+export type PartKind = "text" | "chips" | "tool_event" | "error" | "table" | "proof";
 export interface TextPayload { markdown: string }
 export interface ChipOption { id: string; label: string }
 export interface ChipsPayload { options: ChipOption[]; disabled?: boolean }
 export interface ToolEventPayload {
-  tool_seq: number; tool: string; server: string;
+  tool_seq: number; tool: string;
+  // string for an MCP-style external tool server; null for an in-process
+  // skill dispatch (the live sink's own SseEnvelopeSink._send_tool_frame
+  // sends null for every dispatch today — see that module's docstring).
+  // Zero consumers of this field read `server` today (verified), so this
+  // widening is additive and non-breaking.
+  server: string | null;
   status: "start" | "done" | "error"; label: string;
 }
 export interface ErrorPayload { code: string; message: string; hint?: string }
+export interface TablePayload { columns: string[]; rows: (string | number)[][] }
+export interface ProofPayload { lines: string[] }
 export interface MessagePart { kind: string; payload: unknown }
 export interface Message {
   id: string;

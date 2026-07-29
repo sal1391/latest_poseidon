@@ -5,9 +5,6 @@ import { Feedback } from "../../ui/primitives/Feedback";
 import { Sidebar } from "../conversations/Sidebar";
 import { Composer } from "./Composer";
 
-/** Flow-chip entry stub: seeds the composer. Real dispatch arrives in Phase 8. */
-const chipTemplate = (label: string) => `Run the ${label} flow for `;
-
 export default function ChatScreen() {
   const activeId = useChatStore((s) => s.activeId);
   const messagesByConv = useChatStore((s) => s.messages);
@@ -112,7 +109,8 @@ export default function ChatScreen() {
                 <PartRenderer
                   key={`${message.id}:${index}`}
                   part={part}
-                  onChipSelect={(_id, label) => insert(chipTemplate(label))}
+                  onChipSelect={(_id, label) => send(label)}
+                  disabled={blocked || streaming}
                 />
               ))}
               {message.role === "assistant" ? (

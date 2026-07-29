@@ -47,20 +47,43 @@ Three terminal states, three writer/state disciplines
   implemented as "do not touch the store at all", not as writing back
   whatever the pre-turn value was.
 
+A fourth, EARLIER short-circuit (Phase 6 Task 4 amendment): retry
+------------------------------------------------------------------------
+Before any of the three terminal states above is even reached: when
+``writer.start_turn`` reports ``created=False`` -- ``(user_sub,
+client_turn_key)`` already named a row some EARLIER request created -- this
+function emits ONE pinned ``error`` frame (``code="duplicate_turn"``) and
+returns immediately. No ``run_turn`` call, no dispatch, no
+``writer.append_*``, no ``writer.finalize`` (the ORIGINAL turn owns the row;
+writing to it again from here would race that request), and no
+``state.put``. ``next_turn_index`` was already consumed before this check
+runs (a known, accepted residual: a dense-numbering gap on retry, harmless --
+``turn_index`` is advisory ordering, never a primary key). Phase 11 upgrades
+this short-circuit to true replay, per doc 01 section 5.
+
 Ids: who mints what
 -----------------------
-``turn_run_id`` is minted by :meth:`~poseidon.core.runlog.RunLogWriter.
-start_turn` itself (``uuid.uuid4()``, T1's own documented v1 substitution
-for UUIDv7). ``message_id`` is minted by WHOEVER constructs the
-:class:`~poseidon.core.chat.events.SseEnvelopeSink` this function is
-handed -- Task 4's HTTP layer in production (mirroring ``mock_chat.py``'s
-own ``message_id = str(uuid.uuid4())``, generated before the stream starts),
-a test's own fixed string offline. This function never mints an id of its
-own: it reads ``sink.message_id`` back for every use it has of that value
-(``TurnOutcome.message_id``, every writer call's ``message_id``). This
-follows directly from the pinned ``execute_turn`` signature itself, which
-takes an already-constructed ``sink`` and no separate ``message_id``
-parameter -- there would be no other consistent source for the SAME id the
+``turn_run_id`` IS :attr:`~poseidon.core.chat.events.SseEnvelopeSink.
+turn_id` (Phase 6 Task 4 amendment, closing the seam doc 06 section 1's own
+comment names): this function passes ``sink.turn_id`` to :meth:`~poseidon.
+core.runlog.RunLogWriter.start_turn` as its new ``turn_run_id`` keyword, so
+the row ``start_turn`` creates has that id verbatim, rather than a second,
+independently-minted uuid4 of its own -- Phase 11's reconciliation endpoint
+looks a turn up by the SAME id every frame of it already carries on the
+wire. (Before this amendment, ``start_turn`` minted its own id independently
+of ``sink.turn_id``, and Task 4's HTTP layer never had a reason to make the
+two agree -- this is the amendment that makes them the same value BY
+construction, not by convention.) ``message_id`` is minted by WHOEVER
+constructs the :class:`~poseidon.core.chat.events.SseEnvelopeSink` this
+function is handed -- Task 4's HTTP layer in production (mirroring
+``mock_chat.py``'s own ``message_id = str(uuid.uuid4())``, generated before
+the stream starts), a test's own fixed string offline. This function never
+mints an id of its own: it reads ``sink.turn_id``/``sink.message_id`` back
+for every use it has of either value (``TurnOutcome.message_id``/
+``turn_run_id``, every writer call's ``message_id``). This follows directly
+from the pinned ``execute_turn`` signature itself, which takes an
+already-constructed ``sink`` and no separate ``message_id``/``turn_id``
+parameter -- there would be no other consistent source for the SAME ids the
 SSE envelope already carries.
 
 Why the system prompt is rendered TWICE (once here, once inside run_turn)
@@ -125,6 +148,7 @@ from poseidon.core.parsing.types import ParsedTurn
 from poseidon.core.runlog import RunLogWriter
 from poseidon.core.skills.context import ConversationSlots, SkillContext
 from poseidon.core.skills.registry import SkillRegistry
+from poseidon.core.skills.result import problem
 
 # The plan's own fixed identity constant (Global Constraints: "the fixed dev
 # user sub `dev|local` everywhere a user_sub is required") -- Phase 9
@@ -139,6 +163,23 @@ _PASS_THROUGH_CAP = 10
 
 _CUSTOMER_AMBIGUOUS = "customer_ambiguous"
 _ROUTER_SYSTEM_PROMPT_NAME = "router/system"
+
+# U+2014 EM DASH, built via chr() rather than typed literally so this file
+# stays pure ASCII on disk (test_chat_orchestrator_module_files_are_ascii_
+# on_disk) -- the same convention roles.py's/dev_router.py's own _EM_DASH use.
+_EM_DASH = chr(0x2014)
+
+# The retry short-circuit (Phase 6 Task 4 amendment, post-T3-review): when
+# `writer.start_turn` reports `created=False`, a client retried a turn whose
+# (user_sub, client_turn_key) already names an existing row -- the ORIGINAL
+# request owns it. Pinned code/message; Phase 11 upgrades this to true replay
+# (doc 01 section 5) once the reconciliation endpoint can look the original
+# turn back up by id (exactly why turn_run_id IS the sink's own turn_id --
+# see the module docstring's "Ids: who mints what").
+_DUPLICATE_TURN_TITLE = "duplicate_turn"
+_DUPLICATE_TURN_DETAIL = (
+    "this turn was already processed " + _EM_DASH + " refresh to load the conversation"
+)
 
 # Phase 6 does not populate either section yet (Self-Review Notes: "no auth
 # (P9)... no memory distillation (P13)") -- both empty strings, contributing
@@ -200,10 +241,25 @@ def execute_turn(
             parsed=_parsed_to_loggable_dict(parsed),
             kind="chat_turn",
             trace_id=None,
+            # Turn-id unification (Task 4 amendment): turn_run.id IS the SSE
+            # turn_id every frame of this response already carries -- see the
+            # module docstring's "Ids: who mints what".
+            turn_run_id=sink.turn_id,
         )
     turn_run_id = handle.turn_run_id if handle is not None else None
 
     sink.accepted(turn_index)
+
+    if handle is not None and not handle.created:
+        # The retry short-circuit (Task 4 amendment): see the module
+        # docstring's "A fourth, EARLIER short-circuit". turn_run_id here is
+        # the ORIGINAL row's id (the one start_turn found, not sink.turn_id),
+        # since this request never created a row of its own.
+        sink.emit(
+            "turn_error", {"problem": problem(409, _DUPLICATE_TURN_TITLE, _DUPLICATE_TURN_DETAIL)}
+        )
+        return TurnOutcome(status="error", message_id=sink.message_id, turn_run_id=turn_run_id)
+
     started = monotonic()
 
     ambiguous_issue = next(
