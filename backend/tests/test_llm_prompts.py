@@ -141,15 +141,29 @@ def test_router_system_prompt_file_exists():
 # ---------------------------------------------------------------------------
 
 
-def _render_real_router_prompt() -> str:
+def _render_real_router_prompt(
+    *, metric_definitions=None, negative_constraints=None, skill_lines=None
+) -> str:
+    """Render the real ``router/system.md`` with real block content by
+    default; any of the three blocks can be overridden (e.g. to "") to
+    isolate one placeholder's actual contribution to the rendered text from
+    the others -- see the false-pass this isolation exists to catch,
+    documented on ``test_router_prompt_metric_names_present_independent_of_
+    skill_lines`` below."""
     entity = get_ontology().entity(SALES_ENTITY)
     skills = SkillRegistry.discover()
     registry = PromptRegistry(DEFAULT_PROMPTS_DIR)
+    if metric_definitions is None:
+        metric_definitions = metric_definitions_block(entity)
+    if negative_constraints is None:
+        negative_constraints = negative_constraints_block(entity)
+    if skill_lines is None:
+        skill_lines = skill_lines_block(skills)
     return registry.render(
         "router/system",
-        metric_definitions=metric_definitions_block(entity),
-        negative_constraints=negative_constraints_block(entity),
-        skill_lines=skill_lines_block(skills),
+        metric_definitions=metric_definitions,
+        negative_constraints=negative_constraints,
+        skill_lines=skill_lines,
     )
 
 
@@ -169,9 +183,61 @@ def test_router_prompt_names_every_skill_the_registry_discovers():
 def test_router_prompt_contains_every_certified_metric_name():
     """Dynamic against the ontology's own metric inventory for the sales
     entity, never a hardcoded metric list -- a certified ontology upgrade
-    changes what this test checks without anyone touching this file."""
+    changes what this test checks without anyone touching this file.
+
+    This is a coarse, full-assembly SANITY check only -- it renders every
+    block real, including ``skill_lines``, whose ``data_qa.metric_query``
+    description happens to spell out all 7 certified metric names today. A
+    broken or deleted ``{{ metric_definitions }}`` placeholder in
+    ``router/system.md`` would still leave this test green (proven as a
+    false-pass during fix round 1's review). The load-bearing versions of
+    this contract are ``test_router_prompt_metric_names_present_independent_
+    of_other_blocks`` immediately below (isolates the real template's
+    placeholder wiring from every other block) and
+    ``test_metric_definitions_block_contains_every_certified_metric_name``
+    further down (isolates the block-builder function from the template
+    entirely); this test stays only as a "the whole pipeline still renders
+    sensibly" smoke check."""
     entity = get_ontology().entity(SALES_ENTITY)
     rendered = _render_real_router_prompt()
+
+    assert entity.metrics  # sanity: the certified entity must have metrics
+    for metric_name in entity.metrics:
+        assert metric_name in rendered
+
+
+def test_router_prompt_metric_names_present_independent_of_other_blocks():
+    """Fix round 1, Important F1: ``data_qa.metric_query``'s own
+    ``SKILL_META['description']`` happens to enumerate all 7 certified
+    metric names (see ``schema.py``: "Query certified metrics (GP, VOLUME,
+    MARGIN, ...)"), and that description reaches the rendered prompt
+    through ``{{ skill_lines }}`` -- a completely different placeholder
+    than ``{{ metric_definitions }}``. That overlap is a coincidence of
+    today's single-skill roster, not a structural guarantee: a future skill
+    whose description does not happen to name every metric would stop
+    covering for a broken ``metric_definitions`` placeholder, and a skill
+    whose description mentions unrelated metric-shaped words could mask a
+    real break even now.
+
+    While isolating that reported overlap, a SECOND, narrower one turned up
+    unprompted: ``negative_constraints_block`` also mentions "GP" (as a
+    substring of the hallucinated identifier "GP_AMOUNT") and "VOLUME" (the
+    certified metric name is ALSO one of the 21 hallucinated wrong-column
+    values for the sales entity -- ``{wrong: VOLUME, right: FIXED_TONS}``),
+    so those two metric names alone would still slip through even with only
+    ``skill_lines`` blanked. Blanking BOTH ``skill_lines`` and
+    ``negative_constraints`` closes every currently-known accidental
+    channel at once (confirmed empirically: with all three placeholders
+    blank, none of the 7 metric names appears anywhere in the static
+    charter/routing-rules prose either), so metric names can ONLY reach the
+    rendered output through ``{{ metric_definitions }}`` -- the placeholder
+    actually under test. If ``router/system.md`` ever drops or typos that
+    placeholder, this test fails (independently confirmed during fix round
+    1 -- see the fix-round-1 report section for the reproduced evidence,
+    including the OLD test's false-pass and this shape's correct failure
+    when ``metric_definitions`` is ALSO blanked)."""
+    entity = get_ontology().entity(SALES_ENTITY)
+    rendered = _render_real_router_prompt(skill_lines="", negative_constraints="")
 
     assert entity.metrics  # sanity: the certified entity must have metrics
     for metric_name in entity.metrics:
@@ -223,6 +289,24 @@ def test_metric_definitions_block_one_line_per_metric_name_and_sql():
     lines = block.splitlines()
     assert len(lines) == len(entity.metrics)
     assert "MARGIN: SUM(GROSS_PROFIT) / NULLIF(SUM(FIXED_TONS), 0)" in lines
+
+
+def test_metric_definitions_block_contains_every_certified_metric_name():
+    """Fix round 1, Important F1's second, stronger form of the same
+    contract: dynamic against the ontology's own metric inventory, asserted
+    directly on ``metric_definitions_block``'s own return value with no
+    Jinja template involved at all. Unlike
+    ``test_router_prompt_metric_names_present_independent_of_skill_lines``
+    (which proves the real ``router/system.md`` placeholder is wired
+    correctly), this test is immune to ANY future template change --
+    including a future placeholder overlap nobody has thought of yet --
+    because it never renders a template in the first place."""
+    entity = get_ontology().entity(SALES_ENTITY)
+    block = metric_definitions_block(entity)
+
+    assert entity.metrics  # sanity: the certified entity must have metrics
+    for metric_name in entity.metrics:
+        assert metric_name in block
 
 
 def test_negative_constraints_block_one_line_per_constraint():
@@ -299,6 +383,16 @@ def test_assemble_system_all_sections_empty_except_base():
     result = assemble_system(base="BASE TEXT", user_instruction="", memory_doc="", state_block="")
 
     assert result == "=== BASE SYSTEM PROMPT ===\nBASE TEXT"
+
+
+def test_assemble_system_empty_base_with_nonempty_state():
+    """Fix round 1, minor fold-in: the mirror image of the case above --
+    base can be empty too (never tested before), and when it is, the
+    result is the state section alone, with no leading blank line or
+    header residue left behind by the omitted base section."""
+    result = assemble_system(base="", user_instruction="", memory_doc="", state_block="STATE TEXT")
+
+    assert result == "=== CONVERSATION STATE ===\nSTATE TEXT"
 
 
 def test_assemble_system_whitespace_only_counts_as_empty():
