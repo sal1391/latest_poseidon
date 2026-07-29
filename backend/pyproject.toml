@@ -25,6 +25,7 @@ include = ["poseidon*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["pg: requires a reachable Postgres (DATABASE_URL)"]
 
 [tool.ruff]
 line-length = 100

@@ -26,6 +26,7 @@ services:
     build: { context: ../backend, dockerfile: ../infra/backend.Dockerfile.dev }
     command: >
       sh -c "python -m alembic upgrade head &&
+             python -m poseidon.scripts.seed_synthetic &&
              python -m uvicorn poseidon.api.app:create_app --factory --host 0.0.0.0 --port 8000 --reload"
     environment:
       # Empty = read no dotenv, so a host `backend/.env` (bind-mounted at /app)
@@ -40,7 +41,17 @@ services:
       LLM_PROFILE: bedrock
       LLM_MODE: stub
       TOOL_TRANSPORT_PERPLEXITY: direct
-    volumes: ["../backend:/app"]
+    volumes:
+      - "../backend:/app"
+      # `poseidon.core.ontology.loader` and `poseidon.scripts.generate_synthetic`
+      # resolve the vendored ontology relative to the REPO ROOT, anchored to
+      # their own file location (`parents[4]` / `parents[3]`). With ../backend
+      # mounted at /app, the repo root is `/` inside this container, so the
+      # ontology has to appear at /ontology for those defaults to resolve —
+      # without this mount, the seed loader dies on a missing profiles.yml.
+      # Read-only: the ontology is a certified, vendored artifact and nothing
+      # in the container may write to it.
+      - "../ontology:/ontology:ro"
     ports: ["8000:8000"]
     depends_on:
       db: { condition: service_healthy }
