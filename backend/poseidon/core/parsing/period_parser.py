@@ -16,14 +16,16 @@ Only the FIRST period phrase on each side of a comparison is used; a second
 phrase on the same side is ignored.
 
 * **Month-year** -- ``april 2026``, ``apr 2026`` (a trailing ``.`` on the
-  abbreviation is allowed), ``2026-04``.
+  abbreviation is allowed), ``2026-04``. Day-level periods are out of scope
+  in v1, so a full ISO date (``2026-04-15``) resolves to its MONTH.
 * **Bare month** -- ``in april``: the most recent occurrence that has already
   STARTED, i.e. the reference year when the month's first day is at or before
   the reference month's first day, otherwise the previous year. At a
   2026-07-15 reference, ``in july`` is July 2026 and ``in december`` is
   December 2025. Note the consequence: the returned window may extend past
   the reference date (July 2026 runs to August 1), because a period is
-  returned whole, never truncated to "so far".
+  returned whole, never truncated to "so far". One month word is gated --
+  see AMBIGUOUS BARE MONTHS below.
 * **Year** -- a bare ``2025`` (only 1900-2099 are read as years, so ``1500
   tonnes`` is a quantity); ``last year``/``prior year``/``previous year`` for
   the prior FULL calendar year; ``this year``/``ytd``/``year to date``/
@@ -71,10 +73,21 @@ it, because nothing about the current turn is wrong. Widening the slot to
 carry a granularity (or the window itself) is the fix, and it belongs to
 whichever phase revisits ``ConversationSlots``, not here.
 
-Known grammar limitation: ``may`` is both a month and an ordinary English
-verb, so ``how may i help`` reads as May. The brief's grammar makes bare
-month names period phrases, and a special case for one of them would be
-grammar this module invented; it is left as a documented false positive.
+AMBIGUOUS BARE MONTHS
+---------------------
+``may`` is a month AND the modal verb that opens most polite requests, so a
+BARE ``may`` is accepted only when the word immediately before it is one of
+``in``/``for``/``during``/``of``/``since``/``through``. Otherwise the token
+is not a period phrase at all: the text reads on exactly as if the word were
+absent, so ``may i see top customers`` carries the previous turn's period or
+returns none instead of silently scoping the answer to May. The cost is
+deliberate -- ``show me may`` no longer parses, and a non-parse the user can
+recover from beats a silently wrong answer. ``AMBIGUOUS_BARE_MONTHS`` is the
+extension point; ``may 2026`` and every other month are untouched.
+
+Known residual: a customer whose name is a month (``May Shipping``) still
+collides when a preposition precedes it. Masking customer spans before the
+period parse is the pipeline's concern, not this module's.
 """
 
 import calendar
@@ -128,6 +141,23 @@ _MONTHS = {
 # Longest name first so ``december`` is tried before ``dec``; ties broken
 # alphabetically to keep the compiled pattern byte-stable across runs.
 _MONTH_ALT = "|".join(sorted(_MONTHS, key=lambda name: (-len(name), name)))
+
+# Month words that need a preposition in front of them before a BARE
+# occurrence counts as a date. Only ``may`` for v1: it is the modal auxiliary
+# that opens polite requests constantly ("may i see ..."), while the other
+# homographs ("march", "august") only collide in contrived sales questions --
+# and gating those would break the perfectly plausible "show me march". This
+# is the extension point if real traffic turns up another offender.
+AMBIGUOUS_BARE_MONTHS = frozenset({"may"})
+
+# The words that make a gated month word read as a date rather than as
+# itself. Kept to prepositions that can only introduce a period.
+_BARE_MONTH_PREPOSITIONS = frozenset({"in", "for", "during", "of", "since", "through"})
+
+# ``re`` has no variable-length lookbehind, so the gate is a post-match check
+# on the match offset: the last word token before the match, with whatever
+# whitespace and punctuation sits between them skipped.
+_PRECEDING_WORD_RE = re.compile(r"(\w+)\W*$")
 
 # 1900-2099 only: four digits alone are far more often a quantity than a year.
 _YEAR = r"(?:19|20)\d{2}"
@@ -273,12 +303,45 @@ def _shift_back_one_year(resolved: _Resolved) -> _Resolved:
 # ---------------------------------------------------------------------------
 
 
-def _parse_side(side: str, reference: date) -> _SideParse:
-    """Resolve the first period phrase in ``side`` against ``reference``."""
-    match = _PHRASE_RE.search(side)
-    if match is None:
-        return _NO_PHRASE
+def _preceding_word(side: str, start: int) -> str:
+    """The word token immediately before ``start``, or ``""`` when the match
+    opens ``side``. Whitespace and punctuation in between are skipped, so
+    ``for may`` and ``for, may`` read alike.
 
+    ``side`` is one side of a comparison, so a right-hand match sees no
+    preceding word rather than the connective that split the text. The two
+    readings cannot disagree: no connective ends in a gate preposition.
+    """
+    match = _PRECEDING_WORD_RE.search(side[:start])
+    return match.group(1) if match is not None else ""
+
+
+def _bare_month_is_gated_out(side: str, match: re.Match[str]) -> bool:
+    """Whether an ambiguous bare month (``may``) lacks the preposition that
+    makes it a date. Every other month, and every month-year spelling,
+    matches unconditionally."""
+    if match.group("bm_m") not in AMBIGUOUS_BARE_MONTHS:
+        return False
+    return _preceding_word(side, match.start()) not in _BARE_MONTH_PREPOSITIONS
+
+
+def _parse_side(side: str, reference: date) -> _SideParse:
+    """Resolve the first period phrase in ``side`` against ``reference``.
+
+    A gated-out bare month does not end the scan: the text reads on exactly
+    as if the word were not a month at all, so a real phrase further along
+    the same side is still found, and a side left with nothing takes the
+    ordinary no-phrase path (carry, else none).
+    """
+    for match in _PHRASE_RE.finditer(side):
+        if match.group("baremonth") is not None and _bare_month_is_gated_out(side, match):
+            continue
+        return _resolve(match, reference)
+    return _NO_PHRASE
+
+
+def _resolve(match: re.Match[str], reference: date) -> _SideParse:
+    """Turn one accepted phrase match into a window plus its shape."""
     if match.group("iso") is not None:
         window = _month_window(int(match.group("iso_y")), int(match.group("iso_m")))
         return _phrase(window, _KIND_MONTH)

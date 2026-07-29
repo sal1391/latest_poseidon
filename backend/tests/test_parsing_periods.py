@@ -15,6 +15,9 @@ What the table pins, bullet by bullet:
 * the bare-month recency rule in BOTH directions -- ``in july`` at the
   reference month resolves forward-inclusive (2026), ``in december`` rolls
   back a year (2025);
+* the ambiguous bare-month gate: ``may`` reads as a month only behind a
+  preposition, so ``may i see top customers ...`` and ``show me may`` name no
+  period at all while ``in may``, ``gp for may`` and ``may 2026`` do;
 * year words (bare ``2025``, ``last``/``prior``/``previous year``,
   ``this year``/``ytd``/``year to date``) and the January-1 year-to-date
   edge, whose message is byte-pinned;
@@ -26,14 +29,16 @@ What the table pins, bullet by bullet:
   carried" rule;
 * availability hit and miss, including the case that can only pass if the
   INCLUSIVE ``PeriodRange.end`` is converted to a half-open bound (+1 day),
-  with both miss messages byte-pinned.
+  with both miss messages byte-pinned, and the dual miss where period_a's
+  issue outranks period_b's.
 
 Non-ASCII characters in expected strings are written as explicit ``\\uXXXX``
 escapes (see ``_EM_DASH``) rather than typed literals, per the Task 1
 handoff note: an em dash, an en dash and a hyphen are visually
 indistinguishable in most editors, so a byte-pinned message that used a
 typed character could silently pin the wrong codepoint. Everything else in
-this file is plain ASCII.
+this file is plain ASCII, and ``test_both_files_are_ascii_on_disk`` enforces
+that for this file and the parser both.
 """
 
 import ast
@@ -169,6 +174,18 @@ CASES = [
         WIDE,
         PeriodParse(_month(2025, 12), None, "text", "none", None),
     ),
+    Case(
+        # Month abbreviations never fire inside a longer word -- "mar" sits in
+        # "marine" and the pattern's \b boundaries reject it -- so the only
+        # phrase here is the explicit month-year. Real domain text
+        # ("acme marine", "MARINE_SALES_PLANNING_V") depends on this.
+        "a_month_abbreviation_inside_a_longer_word_does_not_match",
+        "gp for acme marine in april 2026",
+        NO_SLOTS,
+        REF,
+        WIDE,
+        PeriodParse(_month(2026, 4), None, "text", "none", None),
+    ),
     # -- Grammar: bare month, both directions of the recency rule ----------
     Case(
         # December 2026 has not started yet at a July reference, so the most
@@ -206,6 +223,58 @@ CASES = [
         REF,
         WIDE,
         PeriodParse(_month(2025, 8), None, "text", "none", None),
+    ),
+    # -- Grammar: the ambiguous bare-month gate ("may") ---------------------
+    Case(
+        # The regression row for the reviewer's constructed failure: "may"
+        # opening a polite request is a modal verb, not a month. Ungated, this
+        # resolves to May 2026 with a_source="text" and no issue -- a silently
+        # wrong scope with nothing downstream to warn on.
+        "ambiguous_may_opening_a_request_is_not_a_period",
+        "may i see top customers for singapore",
+        NO_SLOTS,
+        REF,
+        WIDE,
+        PeriodParse(None, None, "none", "none", None),
+    ),
+    Case(
+        # The gate's deliberate cost, pinned so nobody "fixes" it by accident:
+        # no preposition, no month. A recoverable non-parse beats a silently
+        # wrong answer.
+        "ambiguous_may_without_a_preposition_does_not_parse",
+        "show me may",
+        NO_SLOTS,
+        REF,
+        WIDE,
+        PeriodParse(None, None, "none", "none", None),
+    ),
+    Case(
+        # With the preposition the gate opens and the ordinary most-recent
+        # rule applies: May 2026 has started at a July reference.
+        "ambiguous_may_after_in_is_a_period",
+        "in may",
+        NO_SLOTS,
+        REF,
+        WIDE,
+        PeriodParse(_month(2026, 5), None, "text", "none", None),
+    ),
+    Case(
+        "ambiguous_may_after_for_is_a_period",
+        "gp for may",
+        NO_SLOTS,
+        REF,
+        WIDE,
+        PeriodParse(_month(2026, 5), None, "text", "none", None),
+    ),
+    Case(
+        # The gate sits on the bare-month branch alone: an explicit year still
+        # reads as a month-year whatever precedes it.
+        "ambiguous_may_with_an_explicit_year_is_unaffected",
+        "may 2026",
+        NO_SLOTS,
+        REF,
+        WIDE,
+        PeriodParse(_month(2026, 5), None, "text", "none", None),
     ),
     # -- Grammar: year words -----------------------------------------------
     Case(
@@ -340,6 +409,17 @@ CASES = [
         REF,
         WIDE,
         PeriodParse(_month(2026, 4), _month(2026, 3), "text", "text", None),
+    ),
+    Case(
+        # The dot-terminated spelling: the word boundary has to be taken on
+        # the "s" and the dot consumed after it, since a boundary cannot fall
+        # between a dot and a space.
+        "comparison_with_vs_and_a_trailing_dot",
+        "q1 2026 vs. q2 2026",
+        NO_SLOTS,
+        REF,
+        WIDE,
+        PeriodParse(_quarter(2026, 1), _quarter(2026, 2), "text", "text", None),
     ),
     Case(
         "comparison_with_versus",
@@ -599,6 +679,27 @@ CASES = [
         ),
     ),
     Case(
+        # BOTH windows miss, but PeriodParse holds one issue: period_a's wins,
+        # so the message names April and not March.
+        "availability_miss_on_both_periods_reports_period_a",
+        "april 2019 vs march 2019",
+        NO_SLOTS,
+        REF,
+        NARROW,
+        PeriodParse(
+            _month(2019, 4),
+            _month(2019, 3),
+            "text",
+            "text",
+            ParseIssue(
+                "period_unavailable",
+                "no data for 2019-04-01..2019-05-01 "
+                + _EM_DASH
+                + " available 2023-01-01..2026-07-31",
+            ),
+        ),
+    ),
+    Case(
         # PeriodRange(None, None) means the entity holds no rows at all.
         "availability_with_an_empty_period_range",
         "april 2026",
@@ -810,6 +911,16 @@ def test_no_reference_date_can_build_an_invalid_window(phrase: str):
         for window in (result.period_a, result.period_b):
             if window is not None:
                 assert window.start < window.end
+
+
+def test_both_files_are_ascii_on_disk():
+    """The byte-pinned messages only stay pinned if no look-alike codepoint
+    can slip into either file, which is why the em dash is written as an
+    explicit escape (see the module docstring). Decoding both files as ASCII
+    is what makes that convention enforced rather than merely described."""
+    for path in (Path(period_parser.__file__), Path(__file__)):
+        offending = sorted({byte for byte in path.read_bytes() if byte > 0x7F})
+        assert not offending, f"{path.name} holds non-ASCII bytes: {offending}"
 
 
 def test_module_documents_the_carried_granularity_limitation():
