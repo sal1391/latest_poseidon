@@ -32,21 +32,26 @@ Tiers, first hit wins
    are closed toward the HIGHER tier: exactly 0.80 auto-applies, exactly
    0.60 lands in the candidate band rather than being unknown.
 
-The fuzzy candidate tuple is the top 3 by score across ALL of ``values``,
-not filtered to only the entries that individually clear
-``CANDIDATE_THRESHOLD`` -- so a values list with only one plausible entry
-can still surface 2 much weaker runners-up alongside it. The brief specifies
-the tuple as "top 3, best-first" with no secondary per-candidate cutoff;
-this is the literal reading of that, and it keeps the classification rule a
-function of the single best score alone. Revisit if real clarification
-chips turn out noisy in practice.
+The fuzzy candidate tuple is the top ``_MAX_CANDIDATES`` (3) values by score
+that EACH individually clear ``CANDIDATE_THRESHOLD`` -- the same 0.60 floor
+that gates whether the call lands in the candidate band at all is applied a
+SECOND time, per candidate, before the cap. This follows from this module's
+own opening principle: "no fuzzy guess promoted to fact without a
+confidence tier attached" governs suggestion status, not just auto-apply --
+a "did you mean ...?" chip is itself a claim that a value is plausible, so a
+values list with only one strong match surfaces ONLY that match. A values
+list with 2-3 entries that all clear the floor still shows all of them,
+best-first, capped at 3.
 
 Ties -- identical scores, or more than one value exact/token-matching the
 same phrase -- break alphabetically on the certified VALUE string (Python's
 default codepoint ordering, not a locale collation): every tier sorts its
 matches by ``(-score, value)`` (score 1.0 for tiers 1-2) before taking the
 first entry, so ranking is a total order and two calls with the same inputs
-can never disagree about which value is "best."
+can never disagree about which value is "best." Tier 3's floor filter and
+``_MAX_CANDIDATES`` cap both apply AFTER this sort, so they only ever trim
+the tail of an already-deterministic ranking -- neither can change the
+relative order of whichever values survive.
 
 rapidfuzz and case: ``fuzz.token_set_ratio`` is CASE-SENSITIVE by default
 (verified against the installed rapidfuzz>=3.9 -- there is no hidden
@@ -106,7 +111,7 @@ class Resolution:
     """
 
     entity: ResolvedEntity | None
-    candidates: tuple[str, ...]  # populated only in the fuzzy candidate band, best-first, max 3
+    candidates: tuple[str, ...]  # fuzzy band only: each >= CANDIDATE_THRESHOLD, best-first, max 3
     issue: ParseIssue | None  # "customer_ambiguous" (with candidates) | "customer_unknown"
 
 
@@ -194,7 +199,11 @@ def resolve(phrase: str, values: Sequence[str], kind: str = "customer") -> Resol
     if exact_matches:
         return _resolved(exact_matches[0], phrase, 1.0, _TIER_EXACT)
 
-    phrase_tokens = _token_set(phrase)
+    # Reuses phrase_cf rather than calling _token_set(phrase) -- that would
+    # casefold the phrase a second time for no reason, since _token_set's
+    # own casefold step is only needed for values (which have no
+    # precomputed casefolded form lying around at this point).
+    phrase_tokens = frozenset(_WORD_RE.findall(phrase_cf))
     token_matches = sorted(value for value in values if _token_set(value) == phrase_tokens)
     if token_matches:
         return _resolved(token_matches[0], phrase, 1.0, _TIER_TOKEN)
@@ -214,7 +223,13 @@ def resolve(phrase: str, values: Sequence[str], kind: str = "customer") -> Resol
         return _resolved(best_value, phrase, best_score, _TIER_FUZZY)
 
     if best_score >= CANDIDATE_THRESHOLD:
-        top = tuple(value for _, value in scored[:_MAX_CANDIDATES])
+        # Filter to the floor BEFORE the cap: a "did you mean...?" chip is
+        # itself a claim that a value is plausible, so a weak runner-up
+        # under CANDIDATE_THRESHOLD must not ride along just to pad the
+        # list out to 3 (see the module docstring). scored is already
+        # ordered best-first, so filtering preserves that order.
+        above_floor = [value for score, value in scored if score >= CANDIDATE_THRESHOLD]
+        top = tuple(above_floor[:_MAX_CANDIDATES])
         issue = ParseIssue(_ISSUE_AMBIGUOUS, f"did you mean one of: {', '.join(top)}?", top)
         return Resolution(entity=None, candidates=top, issue=issue)
 

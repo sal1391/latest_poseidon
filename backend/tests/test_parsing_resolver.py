@@ -10,11 +10,11 @@ What the table pins, tier by tier:
 * a fuzzy match strong enough to auto-apply (a one-letter typo);
 * the fuzzy candidate band with REAL (non-monkeypatched) rapidfuzz scores,
   proving the tier actually calls rapidfuzz correctly end to end, and
-  pinning this module's reading of "top 3, best-first": the tuple is the
-  top 3 by score across ALL of ``values``, not filtered to just the ones
-  that individually clear ``CANDIDATE_THRESHOLD`` (see the module
-  docstring's "Ties" section for the reasoning) -- so two much weaker
-  runners-up ride along with the one plausible match in this case;
+  pinning this module's floor-filter rule: a candidate must individually
+  clear ``CANDIDATE_THRESHOLD`` before the max-3 cap even applies (see the
+  module docstring) -- so the one plausible match here ("Acme Corporation"
+  at 0.72) surfaces ALONE, and two much weaker real-rapidfuzz scores (0.333,
+  0.308) are filtered out rather than padding the chip list out to 3;
 * the "no match at all" (unknown) outcome, including the empty-phrase edge;
 * ``kind="port"`` changing the unknown message's wording while the issue
   CODE stays ``customer_unknown`` (the module's documented vocabulary has
@@ -176,23 +176,27 @@ CASES = [
     ),
     Case(
         # Real rapidfuzz scores (not monkeypatched): "Acme Corporation"
-        # scores 0.72 (in the candidate band) while "Northstar Lines"
-        # (0.333) and "Meridian Shipping" (0.308) are nowhere close to
-        # plausible -- yet both ride along as the 2nd/3rd candidates
-        # because this module's top-3 is unfiltered by
-        # CANDIDATE_THRESHOLD per value. "Zenith Freight" (0.174) is the
-        # 4th-best and is the one entry the max-3 cap actually excludes.
-        "candidate_band_natural_scores_top_three_unfiltered",
+        # scores 0.72 (the only plausible match) while "Northstar Lines"
+        # (0.333), "Meridian Shipping" (0.308), and "Zenith Freight"
+        # (0.174) are nowhere close to plausible. All three are filtered
+        # out by the CANDIDATE_THRESHOLD floor before the max-3 cap even
+        # applies, so the chip list has exactly one entry -- proving the
+        # floor filter runs against real rapidfuzz scores, not just
+        # monkeypatched ones. The awkward-looking "did you mean one of:
+        # Acme Corporation?" (singular, yet still "one of") is the byte-
+        # pinned brief format applied literally -- no singular/plural
+        # message variant was invented for this case.
+        "candidate_band_natural_scores_below_the_floor_are_excluded",
         "acme corp",
         ("Acme Corporation", "Meridian Shipping", "Northstar Lines", "Zenith Freight"),
         "customer",
         Resolution(
             None,
-            ("Acme Corporation", "Northstar Lines", "Meridian Shipping"),
+            ("Acme Corporation",),
             ParseIssue(
                 "customer_ambiguous",
-                "did you mean one of: Acme Corporation, Northstar Lines, Meridian Shipping?",
-                ("Acme Corporation", "Northstar Lines", "Meridian Shipping"),
+                "did you mean one of: Acme Corporation?",
+                ("Acme Corporation",),
             ),
         ),
     ),
@@ -290,11 +294,22 @@ def test_case_ids_are_unique():
 
 @pytest.mark.parametrize("case", CASES, ids=[c.id for c in CASES])
 def test_resolve_is_deterministic(case: Case):
-    """Same inputs, same output -- no randomness, no hidden state, no
-    dependence on ``values``' iteration order beyond what the documented
-    alphabetical tie-break already accounts for."""
+    """Same inputs, same output -- no randomness, no hidden state. The
+    second call passes a REVERSED copy of ``values`` rather than repeating
+    the same call byte-for-byte, which would not catch an order-dependence
+    bug at all. Every tier ranks candidates by sorting on ``(-score,
+    value)`` (or, for tiers 1-2, the equivalent all-1.0-score sort), and
+    ``sorted()`` produces the same result regardless of the input
+    iterable's order -- so this holds for every case in the table,
+    including ``exact_tier_ties_break_alphabetically_on_the_certified_value``,
+    whose whole point is a tie decided by the certified value string, never
+    by which of ``values``' two entries came first. This assumes
+    ``values`` has no casefold-DUPLICATE entries (two equal strings), which
+    certified dimensions do not have; a literal duplicate is a stronger
+    claim than "no order dependence" and is out of scope for this test.
+    """
     first = resolve(case.phrase, case.values, case.kind)
-    second = resolve(case.phrase, case.values, case.kind)
+    second = resolve(case.phrase, tuple(reversed(case.values)), case.kind)
     assert first == second
 
 
@@ -309,9 +324,7 @@ def test_ambiguous_message_never_mentions_kind():
     )
     assert result.issue is not None
     assert result.issue.code == "customer_ambiguous"
-    assert result.issue.message == (
-        "did you mean one of: Acme Corporation, Northstar Lines, Meridian Shipping?"
-    )
+    assert result.issue.message == "did you mean one of: Acme Corporation?"
     assert "port" not in result.issue.message
 
 
@@ -383,7 +396,18 @@ def test_candidate_band_caps_at_three_best_first_with_alphabetical_tie_break(mon
     """The brief's required proof: max 3, best-first, ties alphabetical --
     with 5 values and full control over every score, so the ordering can
     only come from the real sort/truncation logic in ``resolve``, not from
-    which natural strings happened to be picked."""
+    which natural strings happened to be picked.
+
+    Also the fix-round requirement to keep at least one case where 2-3
+    chips ALL individually clear CANDIDATE_THRESHOLD, so the cap+ordering
+    logic stays exercised once the floor filter is in front of it: Beta,
+    Zeta, and Alpha (0.70/0.70/0.65) all clear the floor and the filter
+    passes them through untouched -- only the max-3 cap decides the cut
+    among them. Delta Corp (0.61) clears the floor too but is 4th-best, so
+    the CAP alone excludes it; Omega Corp (0.10) is what the FLOOR
+    excludes. Same fixture, two different, independently-visible
+    exclusion reasons.
+    """
     scores_by_value_cf = {
         "zeta corp": 0.70,
         "beta corp": 0.70,  # ties Zeta Corp -- tie-break decides the order

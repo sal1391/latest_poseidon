@@ -145,7 +145,7 @@ def parse_periods(text: str, slots: ConversationSlots, reference_date: date,
 @dataclass(frozen=True)
 class Resolution:
     entity: ResolvedEntity | None
-    candidates: tuple[str, ...]       # populated for the 0.60–0.80 band (max 3, best-first)
+    candidates: tuple[str, ...]       # populated for the 0.60–0.80 band (each candidate individually >= 0.60; max 3, best-first)
     issue: ParseIssue | None          # customer_ambiguous (with candidates) | customer_unknown
 
 AUTO_APPLY_THRESHOLD = 0.80
@@ -154,7 +154,7 @@ CANDIDATE_THRESHOLD = 0.60
 def resolve(phrase: str, values: Sequence[str], kind: str = "customer") -> Resolution: ...
 ```
 
-Tiers in order, first hit wins: (1) exact casefold equality → confidence 1.0 tier "exact"; (2) token-set equality (casefolded word sets equal, order/punctuation-insensitive) → 1.0 "token"; (3) `rapidfuzz.fuzz.token_set_ratio(phrase, value)/100` best-scored → ≥0.80 auto ("fuzzy"), 0.60–0.80 → candidates + `ParseIssue("customer_ambiguous", f"did you mean one of: {', '.join(top3)}?", candidates)`, <0.60 → `ParseIssue("customer_unknown", f"no {kind} matching {phrase!r}")`. Ties broken alphabetically (determinism). Issue codes stay `customer_*` for both kinds; `kind` only alters message wording — document.
+Tiers in order, first hit wins: (1) exact casefold equality → confidence 1.0 tier "exact"; (2) token-set equality (casefolded word sets equal, order/punctuation-insensitive) → 1.0 "token"; (3) `rapidfuzz.fuzz.token_set_ratio(phrase, value)/100` best-scored → ≥0.80 auto ("fuzzy"), 0.60–0.80 → candidates (each filtered to score >= 0.60 individually, then capped at 3, best-first) + `ParseIssue("customer_ambiguous", f"did you mean one of: {', '.join(top3)}?", candidates)`, <0.60 → `ParseIssue("customer_unknown", f"no {kind} matching {phrase!r}")`. Ties broken alphabetically (determinism). Issue codes stay `customer_*` for both kinds; `kind` only alters message wording — document.
 
 - [ ] Tests FIRST: exact/casefold; token-set ("lines northstar" → Northstar Lines); fuzzy auto ("Northstar Linez"); candidate band with a crafted values list proving max-3 + ordering + tie-break; unknown; empty phrase → unknown; determinism (same inputs twice → equal Resolutions). RED → implement → GREEN → ruff. **Commit** — `feat(parsing): three-tier customer and port resolver`
 
