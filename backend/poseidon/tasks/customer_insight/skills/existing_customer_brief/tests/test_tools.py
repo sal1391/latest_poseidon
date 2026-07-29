@@ -1,10 +1,10 @@
-"""Offline contract tests + live ground-truth tests for the two
-``customer_insight`` deterministic tools, ``fetch_metrics`` and
-``fetch_top_ports``.
+"""Offline contract tests + live ground-truth tests for the
+``customer_insight`` deterministic tools: ``fetch_metrics``,
+``fetch_top_ports``, and ``build_brief_pdf``.
 
 The task these tools belong to ships ``enabled: false`` until Phase 8 (see
 ``customer_insight/__init__.py`` and ``task.yml``), so there is no skill here
-yet to dispatch through — these tests call the tools directly. Three things
+yet to dispatch through — these tests call the tools directly. Four things
 are pinned:
 
 1. The certified specs each tool builds — entity, metrics, filters, and
@@ -22,35 +22,62 @@ are pinned:
    importable modules (imported at the top of this very file) — proving
    ``enabled: false`` in ``task.yml`` is doing its job, not merely that the
    skill doesn't exist yet.
+4. ``build_brief_pdf``'s pure ``slug`` helper (offline, no marker needed —
+   plain string logic) and its full markdown -> HTML -> PDF -> MinIO pipeline
+   end to end (``@pytest.mark.pdf`` + ``@pytest.mark.minio``, skipped unless
+   both a reachable MinIO and a WeasyPrint that can actually import are
+   present — see ``_HAS_WEASYPRINT`` below).
 
-Categories 1 and 3 run in the plain offline suite (no marker, no
-``DATABASE_URL`` needed). Category 2 alone is ``@pytest.mark.pg``. Because
-this module mixes offline and pg-marked tests — unlike ``test_skill.py``/
-``test_synthetic_client_pg.py``, which are pg-only top to bottom — the pg
-availability probe below cannot call
+Categories 1, 3, and the offline half of 4 run in the plain offline suite (no
+marker, no ``DATABASE_URL``/``S3_ENDPOINT_URL`` needed). Category 2 is
+``@pytest.mark.pg``; the live half of 4 is ``@pytest.mark.pdf`` +
+``@pytest.mark.minio``. Because this module mixes offline and marked tests —
+unlike ``test_skill.py``/``test_synthetic_client_pg.py``, which are pg-only
+top to bottom — the availability probes below cannot call
 ``pytest.skip(..., allow_module_level=True)``: that would skip the whole
-module, offline tests included. Instead ``_pg_skip_reason()`` computes the
-reason once at import time and ``_require_pg()`` raises it as a per-test
-skip, called only from inside each ``@pytest.mark.pg`` test.
+module, offline tests included. Instead each probe (``_pg_skip_reason()``,
+``_minio_skip_reason()``) computes its reason once at import time, and the
+matching ``_require_*()`` raises it as a per-test skip, called only from
+inside the tests that need it.
 """
 
 import datetime as dt
 import os
+import re
 
+import httpx
 import psycopg
 import pytest
 
+from poseidon.core.artifacts import ArtifactStore
+from poseidon.core.config import Settings
 from poseidon.core.data.client import BreakdownResult, MetricResult
 from poseidon.core.data.specs import BreakdownQuerySpec, MetricQuerySpec, PeriodWindow
 from poseidon.core.data.synthetic_client import SyntheticDataClient, normalize_dsn
 from poseidon.core.skills.registry import SkillRegistry
 from poseidon.scripts.generate_synthetic import generate
+from poseidon.tasks.customer_insight.skills.existing_customer_brief.tools.build_brief_pdf import (
+    build_brief_pdf,
+    slug,
+)
 from poseidon.tasks.customer_insight.skills.existing_customer_brief.tools.fetch_metrics import (
     fetch_metrics,
 )
 from poseidon.tasks.customer_insight.skills.existing_customer_brief.tools.fetch_top_ports import (
     fetch_top_ports,
 )
+
+# WeasyPrint links Pango/Cairo/GDK-Pixbuf at import time and raises OSError
+# (not ImportError) when they are missing, exactly as it does on this file's
+# own host today (see infra/backend.Dockerfile.dev) — so the probe below
+# catches Exception broadly, the same "any failure means not available"
+# philosophy _pg_skip_reason() and _minio_skip_reason() use.
+try:
+    import weasyprint  # noqa: F401 - existence probe only, never used directly
+except Exception:  # noqa: BLE001 - missing native libs raise OSError, not ImportError
+    _HAS_WEASYPRINT = False
+else:
+    _HAS_WEASYPRINT = True
 
 SALES = "MARINE_SALES_PLANNING_V"
 SEED = 1391
@@ -119,6 +146,58 @@ CLIENT = (
 def _require_pg() -> None:
     if _PG_SKIP_REASON is not None:
         pytest.skip(_PG_SKIP_REASON)
+
+
+_MINIO_UP_HINT = "start it with `docker compose -f infra/docker-compose.yml up -d minio`"
+_MINIO_CONNECT_TIMEOUT_SECONDS = 2
+
+
+def _minio_skip_reason() -> str | None:
+    """``None`` when a reachable MinIO is available for the
+    ``@pytest.mark.minio`` test below; otherwise the reason it must skip.
+    Same shape as ``_pg_skip_reason`` above, one level down the stack — see
+    that function's docstring for why this returns a reason instead of
+    skipping the whole module."""
+    endpoint = os.environ.get("S3_ENDPOINT_URL", "")
+    if not endpoint:
+        return (
+            "S3_ENDPOINT_URL is not set - minio integration tests need MinIO: "
+            f"{_MINIO_UP_HINT}"
+        )
+    try:
+        response = httpx.get(
+            f"{endpoint.rstrip('/')}/minio/health/live", timeout=_MINIO_CONNECT_TIMEOUT_SECONDS
+        )
+        response.raise_for_status()
+    except Exception as exc:  # noqa: BLE001 - any connect/health failure means "not available"
+        return (
+            f"MinIO at {endpoint} is not usable within {_MINIO_CONNECT_TIMEOUT_SECONDS}s "
+            f"({type(exc).__name__}: {str(exc).strip()}) - {_MINIO_UP_HINT}"
+        )
+    return None
+
+
+_MINIO_SKIP_REASON = _minio_skip_reason()
+
+
+def _require_minio() -> None:
+    if _MINIO_SKIP_REASON is not None:
+        pytest.skip(_MINIO_SKIP_REASON)
+
+
+def _artifact_store() -> ArtifactStore:
+    """An :class:`ArtifactStore` built from the same environment variables
+    ``backend/tests/test_artifact_store.py`` reads, constructed only after
+    ``_require_minio()`` has already confirmed MinIO is reachable."""
+    settings = Settings(
+        _env_file=None,
+        database_url="postgresql+psycopg://unused:unused@localhost:5432/unused",
+        s3_endpoint_url=os.environ.get("S3_ENDPOINT_URL", ""),
+        s3_bucket=os.environ.get("S3_BUCKET", "poseidon-artifacts"),
+        s3_access_key=os.environ.get("S3_ACCESS_KEY"),
+        s3_secret_key=os.environ.get("S3_SECRET_KEY"),
+    )
+    return ArtifactStore(settings)
 
 
 # ---------------------------------------------------------------------------
@@ -360,3 +439,71 @@ def test_fetch_top_ports_matches_python_ground_truth_keys_values_and_order():
         "Window: 2026-01-01..2026-07-01",
         f"Top ports: {len(expected)} of requested 5",
     ]
+
+
+# ---------------------------------------------------------------------------
+# build_brief_pdf: pure offline shape (slug is plain string logic, no
+# WeasyPrint/MinIO involved), then the live pdf+minio end-to-end pipeline
+# ---------------------------------------------------------------------------
+
+
+def test_slug_lowercases_and_hyphenates_punctuation():
+    assert slug("Northstar Lines: Q3 Brief!") == "northstar-lines-q3-brief"
+
+
+def test_slug_collapses_runs_and_strips_leading_and_trailing_separators():
+    assert slug("  --Multiple   Spaces & Dashes--  ") == "multiple-spaces-dashes"
+
+
+def test_slug_keeps_digits_as_part_of_a_word():
+    assert slug("Q3 2026 Update") == "q3-2026-update"
+
+
+@pytest.mark.pdf
+@pytest.mark.minio
+@pytest.mark.skipif(
+    not _HAS_WEASYPRINT, reason="weasyprint needs Pango/Cairo - run in the container"
+)
+def test_build_brief_pdf_renders_and_uploads_to_minio():
+    """End-to-end: a markdown heading + table becomes a real PDF, uploaded to
+    MinIO, fetchable at the presigned URL ``build_brief_pdf`` hands back.
+
+    Proof lines are pinned exactly where they are deterministic (the
+    artifact key, computed from ``slug(title)``) and by pattern where they
+    are not (page count, byte size — see ``build_brief_pdf``'s module
+    docstring on why PDF bytes are never hashed).
+    """
+    _require_minio()
+    store = _artifact_store()
+    store.ensure_bucket()
+
+    title = "Northstar Lines Q3 Brief"
+    markdown_body = (
+        "# Overview\n"
+        "\n"
+        "Northstar Lines grew gross profit year over year.\n"
+        "\n"
+        "| Port | GP |\n"
+        "| --- | --- |\n"
+        "| Singapore | 120000 |\n"
+        "| Rotterdam | 95000 |\n"
+    )
+
+    ref, proof = build_brief_pdf(
+        store, title, markdown_body, key_prefix="existing-customer-brief-test"
+    )
+
+    expected_key = "existing-customer-brief-test/northstar-lines-q3-brief.pdf"
+    assert ref.name == expected_key
+    assert ref.mime == "application/pdf"
+    assert ref.url.startswith("http")
+
+    response = httpx.get(ref.url, timeout=_MINIO_CONNECT_TIMEOUT_SECONDS)
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF")
+
+    assert proof[0] == f"Artifact: {expected_key}"
+    pages_match = re.fullmatch(r"Pages: (\d+)", proof[1])
+    assert pages_match is not None, proof[1]
+    assert int(pages_match.group(1)) >= 1
+    assert proof[2] == f"Bytes: {len(response.content)}"

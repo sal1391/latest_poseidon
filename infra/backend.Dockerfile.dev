@@ -1,5 +1,14 @@
 FROM python:3.12-slim
 WORKDIR /app
+# WeasyPrint (build_brief_pdf, Phase 3 Task 4) links Pango/Cairo/GDK-Pixbuf at
+# import time — pip alone cannot install these native libraries, and without
+# them `import weasyprint` raises OSError (not ImportError; see the `pdf`
+# marker's skip guard in existing_customer_brief/tests/test_tools.py).
+# fonts-dejavu-core gives WeasyPrint a real font so text actually renders
+# instead of falling back to tofu boxes.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpango-1.0-0 libpangoft2-1.0-0 libcairo2 libgdk-pixbuf-2.0-0 fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml ./
 COPY poseidon ./poseidon
 RUN pip install --no-cache-dir -e ".[dev]"

@@ -92,12 +92,18 @@ year-to-date, and the top-5 customers by gross profit at the Port of Singapore
 for April 2026. If that output looks right, the whole chain — ontology, query
 builder, seeded schema, client — is working.
 
-### Integration tests
+### Test markers: `pg`, `minio`, `pdf`
 
-`backend/tests/test_synthetic_client_pg.py` is marked `pg` and is the only test
-module that touches a database. It recomputes every expectation in pure Python
-from the same generator the seeder used, then compares against what the
-certified SQL returns:
+Three pytest markers (registered in `backend/pyproject.toml`) gate tests that
+need something beyond the plain Python environment. Each one skips with an
+actionable reason — never an error — when its dependency is not available, so
+the plain `python -m pytest` suite always stays green offline.
+
+**`pg`** — needs a reachable, migrated, seeded Postgres (`DATABASE_URL`).
+`backend/tests/test_synthetic_client_pg.py`, plus the `pg`-marked tests mixed
+into some `poseidon/tasks/**/tests/test_*.py` modules, recompute every
+expectation in pure Python from the same generator the seeder used, then
+compare against what the certified SQL returns:
 
 ```bash
 cd backend
@@ -105,10 +111,64 @@ DATABASE_URL=postgresql+psycopg://poseidon:poseidon@localhost:5432/poseidon \
   python -m pytest -m pg -v
 ```
 
-Those tests read the database, they never seed it — migrate and seed first. With
-no reachable database (or no `DATABASE_URL` at all) the module skips with an
-actionable reason after a 2-second connect timeout, so the plain `python -m
-pytest` suite stays green offline.
+These tests read the database, they never seed it — migrate and seed first.
+Without a reachable database (or no `DATABASE_URL` at all) they skip after a
+2-second connect timeout.
+
+**`minio`** — needs a reachable MinIO (`S3_ENDPOINT_URL`, plus
+`S3_ACCESS_KEY`/`S3_SECRET_KEY` for the local container's static credentials —
+see `backend/.env.example`). `backend/tests/test_artifact_store.py` exercises
+`ArtifactStore` — bucket creation and a real presigned-URL round trip — against
+whatever bucket `S3_BUCKET` names (default `poseidon-artifacts`):
+
+```bash
+cd backend
+S3_ENDPOINT_URL=http://localhost:9000 S3_ACCESS_KEY=poseidon S3_SECRET_KEY=poseidon123 \
+  python -m pytest -m minio -v
+```
+
+Unlike `pg`/`pdf`, MinIO has no native-library requirement — `boto3` is pure
+Python — so `minio`-marked tests can run on a bare host once MinIO is up and
+the three variables above are exported. They skip after a 2-second health
+probe (`/minio/health/live`) when MinIO is not reachable.
+
+**`pdf`** — needs WeasyPrint's native libraries (Pango, Cairo, GDK-Pixbuf),
+which `pip install weasyprint` does **not** provide; without them `import
+weasyprint` raises `OSError` (not `ImportError`) even though the pip install
+itself succeeded. Because that failure only shows up at import time, the
+`pdf` marker's tests probe `weasyprint` explicitly at module load
+(`_HAS_WEASYPRINT`, a `try`/`except` around the import) rather than relying on
+collection to fail cleanly. `infra/backend.Dockerfile.dev` installs the
+native libraries before `pip install`, so the container is the one place
+`pdf`-marked tests actually run:
+
+```bash
+docker compose -f infra/docker-compose.yml up -d --build backend
+docker compose -f infra/docker-compose.yml exec backend python -m pytest -m "pdf or minio" -v
+```
+
+Running `pdf` together with `minio` in one command is deliberate:
+`existing_customer_brief`'s `build_brief_pdf` tool is marked both — it renders
+a PDF with WeasyPrint *and* uploads it to MinIO in the same test — and the
+running `backend` container already has `DATABASE_URL`, `S3_ENDPOINT_URL`,
+`S3_ACCESS_KEY`, and `S3_SECRET_KEY` set (`docker-compose.yml`), so no extra
+environment setup is needed there.
+
+## Artifacts (MinIO)
+
+Generated files (today: PDF briefs from `build_brief_pdf`) are objects in the
+`minio` service's `S3_BUCKET` (default `poseidon-artifacts`), never files on
+the backend's own filesystem. The bucket does **not** pre-exist — nothing
+creates it as part of compose bring-up — `ArtifactStore.ensure_bucket()`
+creates it lazily and idempotently the first time any code path needs it (a
+`minio`-marked test today; eventually a real skill run).
+
+Browse what has been uploaded at the MinIO console, `http://localhost:9001`
+(same credentials as `docker-compose.yml`'s `MINIO_ROOT_USER`/
+`MINIO_ROOT_PASSWORD`: `poseidon` / `poseidon123`). Every artifact a skill
+hands back to the frontend is a presigned GET URL (one-hour expiry) pointing
+at an object there — the backend uploads once and then gets out of the way;
+the browser fetches the file directly from MinIO.
 
 ## Native fallback
 

@@ -15,10 +15,10 @@ exists. Today a skill gets exactly four things:
               (doc 02 §5, phase 4) fills in, carried across turns.
 
 ``artifacts`` is annotated as a string under a ``TYPE_CHECKING`` guard on
-purpose: ``poseidon.core.artifacts`` does not exist until Task 4 of this
-phase, and this module has to import cleanly today. Dataclasses never
-evaluate their annotations, so the forward reference costs nothing at
-runtime.
+purpose, and permanently so: :mod:`poseidon.core.artifacts` (Task 4) imports
+``ArtifactRef`` from this very module, so a real runtime import here would be
+circular. Dataclasses never evaluate their annotations, so the forward
+reference costs nothing at runtime.
 """
 
 from dataclasses import dataclass
@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 from poseidon.core.config import Settings
 from poseidon.core.data.client import DataClient
 
-if TYPE_CHECKING:  # the store lands in Task 4; only type checkers read this
+if TYPE_CHECKING:  # avoids the circular import — see the docstring above
     from poseidon.core.artifacts import ArtifactStore
 
 

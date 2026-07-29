@@ -14,6 +14,9 @@ dependencies = [
   "alembic>=1.13",
   "psycopg[binary]>=3.2",
   "pyyaml>=6",
+  "boto3>=1.34",
+  "weasyprint>=62",
+  "markdown>=3.6",
 ]
 
 [project.optional-dependencies]
@@ -25,7 +28,11 @@ include = ["poseidon*"]
 [tool.pytest.ini_options]
 testpaths = ["tests", "poseidon/tasks"]
 addopts = "-q"
-markers = ["pg: requires a reachable Postgres (DATABASE_URL)"]
+markers = [
+  "pg: requires a reachable Postgres (DATABASE_URL)",
+  "minio: requires reachable MinIO (S3_ENDPOINT_URL)",
+  "pdf: requires weasyprint native libs (run in container)",
+]
 
 [tool.ruff]
 line-length = 100
