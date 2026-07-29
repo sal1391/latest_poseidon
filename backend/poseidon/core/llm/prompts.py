@@ -34,8 +34,34 @@ throwaway entity or registry.
 document, then a structured conversation-state block combining items 4 and
 5 (carried slots + the current turn's ``ParsedTurn``) into the one
 ``state_block`` string ``assemble_system`` places last.
+
+``prompt_version``/``prompt_hash`` (Phase 6 Task 1, additive) feed doc 06
+section 1's ``llm_calls.prompt_version``/``prompt_hash`` columns -- per-call
+provenance: which prompt FILE version rendered, and a hash of the exact TEXT
+a provider actually saw. ``prompt_version`` reads a template's version
+marker from the raw ``.md`` file, never through :meth:`PromptRegistry.render`
+-- the marker has to be read BEFORE rendering strips it, and reading the raw
+file also means a version lookup costs no Jinja compilation and cannot raise
+``StrictUndefined``'s missing-context error. The marker is a Jinja COMMENT,
+``{# version: v1 #}``, not an HTML comment (``<!-- version: v1 -->``) -- the
+one syntax Jinja actually strips at render time. An HTML comment would
+render straight through into the text a provider sees, on every single
+call, forever; a Jinja comment is gone before ``render()`` returns anything.
+Both shipped templates (``router/system.md``, ``utility/title.md``) write it
+with the trailing whitespace-trim marker, ``{# version: v1 -#}``: Jinja2's
+default ``trim_blocks=False`` (this module's ``Environment`` sets neither
+``trim_blocks`` nor ``lstrip_blocks``) removes the comment text but NOT the
+newline immediately after it, so a bare ``{# ... #}`` first line would leave
+a stray leading blank line in every render -- verified empirically while
+building this feature, since it is exactly the kind of whitespace detail
+that is wrong more often than it is obvious. The ``-#}`` form trims that
+newline too, so the rendered template is byte-identical to a version with no
+marker line at all. ``prompt_version`` itself accepts either form (with or
+without the trim dash) since it reads text, not render output.
 """
 
+import hashlib
+import re
 from pathlib import Path
 
 import jinja2
@@ -98,6 +124,55 @@ class PromptRegistry:
                 f"prompt '{name}' not found under {self._prompts_dir}"
             ) from None
         return template.render(**context)
+
+
+# ``{# version: v1 -#}`` (or, tolerated on read, the untrimmed
+# ``{# version: v1 #}``) -- see the module docstring for the full mechanism
+# and why a Jinja comment, not an HTML one. Anchored to the WHOLE first line
+# (after stripping only the line ending) so a version marker has to be
+# exactly that line and nothing else -- a template author writing ordinary
+# prose or a heading that happens to mention "version:" must not be
+# misread as one.
+_VERSION_COMMENT_RE = re.compile(r"^\{#-?\s*version:\s*(\S+)\s*-?#\}\s*$")
+
+# What a template with no recognizable version marker reports -- doc 06's
+# "version of the prompt file used" column has to hold SOMETHING for every
+# call, and "v0" says "unversioned" without inventing a version that was
+# never declared.
+_UNVERSIONED = "v0"
+
+
+def prompt_version(prompts_dir: Path, name: str) -> str:
+    """The version marker on ``<name>.md``'s first line, or ``"v0"`` when
+    that line is not one (no marker at all, or a malformed one) -- see the
+    module docstring for the exact syntax and why this reads the raw file
+    rather than rendering it.
+
+    A ``name`` with no matching file raises ``FileNotFoundError`` (via the
+    plain ``open()`` below) rather than also defaulting to ``"v0"``: unlike
+    a missing MARKER -- a low-stakes miss on an existing, presumably-correct
+    prompt file -- a missing FILE means ``prompts_dir`` or ``name`` is wrong,
+    the same class of deployment fault :meth:`PromptRegistry.render` fails
+    loudly on via :class:`PromptNotFoundError`. Silently reporting "v0" for
+    that would hide a broken prompts directory behind a plausible-looking
+    version string.
+    """
+    with open(prompts_dir / f"{name}.md", encoding="utf-8") as handle:
+        first_line = handle.readline()
+    match = _VERSION_COMMENT_RE.match(first_line.rstrip("\r\n"))
+    return match.group(1) if match else _UNVERSIONED
+
+
+def prompt_hash(rendered: str) -> str:
+    """The sha256 hexdigest of ``rendered`` -- doc 06's ``llm_calls.
+    prompt_hash``, "hash of the rendered prompt actually sent". Hashing the
+    RENDERED text, not the template source, is the point: two turns on the
+    same template version can still carry different context (a different
+    memory document, different carried slots), and the hash is what lets a
+    reviewer confirm two calls saw byte-identical input rather than merely
+    the same template file.
+    """
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
 
 
 def metric_definitions_block(entity: Entity) -> str:

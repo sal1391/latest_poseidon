@@ -16,6 +16,7 @@ punctuation (the ``models.yml`` precedent), so its guardrail prose uses a
 typed em dash directly.
 """
 
+import hashlib
 from datetime import date
 from pathlib import Path
 
@@ -31,6 +32,8 @@ from poseidon.core.llm.prompts import (
     assemble_system,
     metric_definitions_block,
     negative_constraints_block,
+    prompt_hash,
+    prompt_version,
     render_state_block,
     skill_lines_block,
 )
@@ -541,6 +544,119 @@ def test_render_state_block_parsed_none_and_empty_parsed_are_equivalent():
     assert render_state_block(ConversationSlots(), empty_parsed) == render_state_block(
         ConversationSlots(), None
     )
+
+
+# ---------------------------------------------------------------------------
+# prompt_version / prompt_hash (Phase 6 Task 1, additive) -- the
+# observability layer's per-call provenance: which prompt FILE version
+# rendered, and a hash of the exact TEXT sent, doc 06 section 1's
+# llm_calls.prompt_version / prompt_hash.
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_version_parses_the_jinja_comment_first_line(tmp_path):
+    _write_template(tmp_path, "hello/world.md", "{# version: v3 -#}\nHello {{ name }}!")
+
+    assert prompt_version(tmp_path, "hello/world") == "v3"
+
+
+def test_prompt_version_tolerates_extra_whitespace_inside_the_comment(tmp_path):
+    _write_template(tmp_path, "hello/world.md", "{#   version:   v2   -#}\nHello!")
+
+    assert prompt_version(tmp_path, "hello/world") == "v2"
+
+
+def test_prompt_version_accepts_the_comment_with_no_trim_marker_too(tmp_path):
+    """``prompt_version`` reads the raw file, never a Jinja render, so it can
+    recognize a plain ``{# version: X #}`` comment (no trailing ``-``) even
+    though the two shipped templates use the trimmed form (see the module
+    docstring for why the trim marker matters for RENDERED output)."""
+    _write_template(tmp_path, "hello/world.md", "{# version: v9 #}\nHello!")
+
+    assert prompt_version(tmp_path, "hello/world") == "v9"
+
+
+def test_prompt_version_absent_first_line_defaults_to_v0(tmp_path):
+    """A template with ordinary content on its first line -- no version
+    comment at all -- is "absent", not an error: ``prompt_version`` feeds an
+    observability column, not a load-bearing render path, so an unmarked
+    prompt is recorded as the honest "unknown version" rather than failing
+    the turn it is attached to."""
+    _write_template(tmp_path, "hello/world.md", "Hello {{ name }}!")
+
+    assert prompt_version(tmp_path, "hello/world") == "v0"
+
+
+def test_prompt_version_empty_file_defaults_to_v0(tmp_path):
+    _write_template(tmp_path, "hello/world.md", "")
+
+    assert prompt_version(tmp_path, "hello/world") == "v0"
+
+
+def test_prompt_version_first_line_looking_like_a_comment_but_malformed_defaults_to_v0(tmp_path):
+    _write_template(tmp_path, "hello/world.md", "{# not a version line #}\nHello!")
+
+    assert prompt_version(tmp_path, "hello/world") == "v0"
+
+
+def test_prompt_hash_is_the_sha256_hexdigest_of_the_rendered_text():
+    rendered = "=== BASE SYSTEM PROMPT ===\nsome rendered text"
+
+    assert prompt_hash(rendered) == hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+
+
+def test_prompt_hash_differs_for_different_rendered_text():
+    assert prompt_hash("text a") != prompt_hash("text b")
+
+
+def test_prompt_version_router_system_prompt_is_v1():
+    assert prompt_version(DEFAULT_PROMPTS_DIR, "router/system") == "v1"
+
+
+def test_prompt_version_utility_title_prompt_is_v1():
+    assert prompt_version(DEFAULT_PROMPTS_DIR, "utility/title") == "v1"
+
+
+def test_router_system_prompt_render_has_no_leading_blank_line_from_version_comment():
+    """The ``{# version: v1 -#}`` first line added to ``router/system.md``
+    must vanish from RENDERED output with no trace -- including no stray
+    leading blank line, which a plain ``{# ... #}`` (no trim marker) WOULD
+    leave behind under Jinja2's default ``trim_blocks=False`` (verified
+    empirically while building this task: a bare comment line only removes
+    the comment text itself, not the newline that follows it). Rendered with
+    controlled placeholder block content so this is independent of the real
+    ontology/registry, matching ``_render_real_router_prompt``'s sibling
+    tests above."""
+    registry = PromptRegistry(DEFAULT_PROMPTS_DIR)
+
+    rendered = registry.render(
+        "router/system", metric_definitions="M", negative_constraints="N", skill_lines="S"
+    )
+
+    assert rendered.startswith("# Poseidon Router\n")
+    assert "{#" not in rendered
+    assert "version: v1" not in rendered
+
+
+def test_utility_title_prompt_render_is_byte_unchanged_by_the_version_comment():
+    """``utility/title.md`` -- unlike ``router/system.md`` -- is used as a
+    system prompt VERBATIM (``titles.py``'s ``title_for`` passes
+    ``registry.render(...)`` straight through with no ``assemble_system``/
+    ``.strip()`` pass to hide a stray leading blank line), so this pins the
+    FULL rendered text against the exact pre-Task-1 output, not just the
+    absence of the marker string."""
+    registry = PromptRegistry(DEFAULT_PROMPTS_DIR)
+
+    rendered = registry.render("utility/title", max_chars=60)
+
+    assert rendered == (
+        "Write a chat title of at most 60 characters for the user's message "
+        "below, naming its subject in plain words; reply with the title "
+        "text only, on one line, with no surrounding quotes, no trailing "
+        "punctuation and no explanation."
+    )
+    assert "{#" not in rendered
+    assert "version" not in rendered
 
 
 # ---------------------------------------------------------------------------
