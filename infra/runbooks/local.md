@@ -179,6 +179,62 @@ outside it cannot resolve `minio` at all; serving artifact links to a real
 browser will need either a publicly reachable MinIO endpoint or a proxy/
 rewrite step, not just today's `ArtifactStore.put_pdf`.
 
+## Dev skill runner
+
+`POST /api/dev/skills/{skill_id}/run` is a local-only HTTP surface for
+calling any registered skill directly — no chat pipeline, no LLM, no router
+(those arrive Phases 5/6). `create_app` mounts this route, and builds
+`app.state.skill_registry` via `SkillRegistry.discover()`, only when
+`DEPLOY_MODE=local`; the route does not exist at all in `spcs`/`ec2` (a
+request there gets a genuine HTTP 404, since nothing is mounted). On
+start-up the backend logs what discovery found, e.g. `skills registered:
+data_qa.metric_query` — a quick way to confirm the registry built cleanly
+without making a request at all.
+
+The request body is the skill's raw `Args` — the same JSON shape the future
+router will pass a skill — and the response is its `SkillResult`, serialized:
+
+```json
+{"ok": true, "parts": [...], "proof": [...], "artifacts": [...], "error": null}
+```
+
+**Every response is HTTP 200.** An unknown `skill_id`, invalid arguments, or
+a skill-internal bug are never HTTP-level errors — they come back as
+`ok: false` with an `error` object (`{"type", "title", "detail", "status"}`,
+RFC-7807 shape) carrying the real status (404/422/500 respectively). This
+mirrors the contract the real router loop will run on: a failure is content
+the loop reads, never an exception it has to survive.
+(`data_backend=snowflake` — not yet implemented, Phase 15 — answers the same
+way, with a structured 501.)
+
+Example: the certified top-5 GP customers at the Port of Singapore, April
+2026 (the same seeded data the `pg`-marked tests and `demo_query` check):
+
+```bash
+curl -s -X POST localhost:8000/api/dev/skills/data_qa.metric_query/run \
+  -H "Content-Type: application/json" \
+  -d '{"metrics":["GP"],"period":{"start":"2026-04-01","end":"2026-05-01"},"filters":[{"column":"LOC_NM","values":["Singapore"]}],"group_by":"CUST_NM"}'
+```
+
+```json
+{"ok":true,"parts":[{"kind":"table","payload":{"columns":["Customer","Gross Profit"],"rows":[["Meridian Marine",70119],["Meridian Maritime",47958],["Meridian Shipmanagement",38087],["Blue Anchor Marine",30411],["Northstar Lines",25325]]}}],"proof":["Entity: SANDBOX.MCA.MARINE_SALES_PLANNING_V","Backend: synthetic","Period: 2026-04-01..2026-05-01","Filters: LOC_NM IN (Singapore)","Group by: CUST_NM (top 5)","Rows: 5"],"artifacts":[],"error":null}
+```
+
+The same call with `"column":"PORT_NM"` — not a certified dimension of
+`MARINE_SALES_PLANNING_V` (`ontology.yml`'s `negative_constraints` names it
+as the wrong column; `LOC_NM` is right) — surfaces the query builder's own
+certified message verbatim, as a structured 422 instead of a table:
+
+```bash
+curl -s -X POST localhost:8000/api/dev/skills/data_qa.metric_query/run \
+  -H "Content-Type: application/json" \
+  -d '{"metrics":["GP"],"period":{"start":"2026-04-01","end":"2026-05-01"},"filters":[{"column":"PORT_NM","values":["Singapore"]}],"group_by":"CUST_NM"}'
+```
+
+```json
+{"ok":false,"parts":[],"proof":[],"artifacts":[],"error":{"type":"about:blank","title":"invalid query","detail":"'PORT_NM' is not a dimension of MARINE_SALES_PLANNING_V","status":422}}
+```
+
 ## Native fallback
 
 Use this path when Docker isn't available. It runs the backend and frontend
