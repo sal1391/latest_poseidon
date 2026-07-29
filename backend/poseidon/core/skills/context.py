@@ -44,6 +44,14 @@ class ConversationSlots:
     ``period_a``/``period_b`` are first-of-period dates — the resolved
     ``{period_a, period_b}`` pair of the period parser, not a rendered
     window.
+
+    ``region``/``topic``/``pass_through`` were added in Phase 4 Task 1
+    (additive growth only, per the P3 final-review rule: never reshape).
+    ``pass_through`` is the cross-turn exact-value pass-through of doc 02
+    §5 — ``(label, exact_value)`` pairs a skill most recently returned, so
+    the router can inject certified values into its next call instead of
+    re-deriving them from prose history. Like every other slot it replaces
+    wholesale on a new turn; it never merges or accumulates across turns.
     """
 
     customer: str | None = None
@@ -51,6 +59,9 @@ class ConversationSlots:
     period_a: date | None = None
     period_b: date | None = None
     mode: str = "default"
+    region: str | None = None
+    topic: str | None = None
+    pass_through: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
