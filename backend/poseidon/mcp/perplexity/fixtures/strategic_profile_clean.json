@@ -1,0 +1,20 @@
+{
+  "id": "ppl-fixture-strategic-profile-001",
+  "model": "sonar-pro",
+  "object": "chat.completion",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "{\"items\": [{\"label\": \"Business model\", \"detail\": \"Revenue comes primarily from long-term charter contracts with a small spot-market component, targeting industrial shippers of dry bulk commodities.\", \"relevance\": \"Long-term charters imply predictable, plannable fuel demand well suited to term bunker contracts.\"}, {\"label\": \"Financial trajectory\", \"detail\": \"Reported low-single-digit revenue growth last year with guidance for continued expansion, citing new charter agreements signed for the upcoming year.\", \"relevance\": \"Stable growth and new charters suggest budget headroom for a fuel-services relationship, not a cost-cutting posture.\"}, {\"label\": \"Market presence\", \"detail\": \"Primary operating regions are Southeast Asia and Northern Europe, with a stated ambition to add a West Africa service in the next two years.\", \"relevance\": \"A planned West Africa lane is an early signal to discuss bunkering coverage in that region ahead of the expansion.\"}], \"summary\": \"A charter-focused dry-bulk operator with steady growth and new contracts on the books, expanding from its Southeast Asia and Northern Europe base toward West Africa -- a stable, expansion-minded account profile.\"}"
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 54,
+    "completion_tokens": 188,
+    "total_tokens": 242
+  }
+}

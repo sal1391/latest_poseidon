@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MarketPositionResult",
+  "type": "object",
+  "description": "Structured market-position research answer for the marine fuels and shipping-services lens (Poseidon Phase 8, doc 02 section 4.3 -- the existing-customer brief's research subskill, second call). Minimal v1 -- versioned by filename, matching web_research.json's own convention: a future revision ships as market_position_v2.json rather than mutating this file.",
+  "required": ["items"],
+  "properties": {
+    "items": {
+      "type": "array",
+      "description": "Individual market-position findings, ordered by relevance as returned by the model.",
+      "items": {
+        "type": "object",
+        "required": ["label", "detail", "relevance"],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Short name of the market-position topic (e.g. industry classification, competitive landscape, market-share trend)."
+          },
+          "detail": {
+            "type": "string",
+            "description": "The specific finding or analysis for this topic."
+          },
+          "relevance": {
+            "type": "string",
+            "description": "Why this topic matters to a marine fuels and shipping-services sales conversation."
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "string",
+      "description": "A short overall synthesis of the market-position items, in the marine fuels and shipping-services lens."
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "id": "ppl-fixture-sustainability-001",
+  "model": "sonar-deep-research",
+  "object": "chat.completion",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "{\"items\": [{\"label\": \"Alternative marine fuel pilot\", \"detail\": \"Piloting a B30 biofuel blend on two bulk carriers calling at Rotterdam and Singapore, targeting a 20 percent reduction in well-to-wake carbon intensity for those voyages.\", \"relevance\": \"Signals near-term appetite for blended marine biofuel supply contracts.\"}, {\"label\": \"Corporate net-zero pledge\", \"detail\": \"Publicly committed to net-zero shipping emissions by 2040, with an interim target of a 30 percent intensity cut by 2030 versus a 2019 baseline.\", \"relevance\": \"The interim 2030 target creates urgency for bunker fuel transition planning this decade.\"}, {\"label\": \"EU ETS compliance program\", \"detail\": \"Established an internal carbon desk to manage EU Emissions Trading System allowance purchases for voyages calling at European Union ports.\", \"relevance\": \"Active EU ETS exposure makes verified emissions reporting and offset products a live purchasing need.\"}], \"summary\": \"The fleet is actively piloting biofuel blends and has committed to a 2040 net-zero target with a 2030 interim milestone, and it already manages EU ETS compliance in-house, all of which point to near-term demand for lower-carbon bunker fuel and emissions reporting support.\"}"
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 58,
+    "completion_tokens": 210,
+    "total_tokens": 268
+  }
+}

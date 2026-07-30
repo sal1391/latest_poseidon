@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SustainabilityResult",
+  "type": "object",
+  "description": "Structured sustainability and ESG research answer for the marine fuels and shipping-services lens (Poseidon Phase 8, doc 02 section 4.3 -- the existing-customer brief's research subskill, first call). Minimal v1 -- versioned by filename, matching web_research.json's own convention: a future revision ships as sustainability_v2.json rather than mutating this file.",
+  "required": ["items"],
+  "properties": {
+    "items": {
+      "type": "array",
+      "description": "Individual sustainability/ESG findings, ordered by relevance as returned by the model.",
+      "items": {
+        "type": "object",
+        "required": ["label", "detail", "relevance"],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Short name of the sustainability/ESG theme or commitment (e.g. a carbon-reduction pledge, an alternative marine fuel pilot)."
+          },
+          "detail": {
+            "type": "string",
+            "description": "The specific finding, commitment, or evidence behind this theme."
+          },
+          "relevance": {
+            "type": "string",
+            "description": "Why this theme matters to a marine fuels and shipping-services sales conversation."
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "string",
+      "description": "A short overall synthesis of the sustainability/ESG items, in the marine fuels and shipping-services lens."
+    }
+  }
+}

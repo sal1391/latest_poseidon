@@ -1,0 +1,20 @@
+{
+  "id": "ppl-fixture-operational-profile-001",
+  "model": "sonar-pro",
+  "object": "chat.completion",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "{\"items\": [{\"category\": \"vessel_type\", \"label\": \"Supramax bulk carrier\", \"detail\": \"Six Supramax-class bulk carriers, typically used for regional grain and coal shipments across Southeast Asia.\", \"relevance\": \"Supramax-class vessels are common bunker customers at mid-sized Southeast Asian ports.\"}, {\"category\": \"vessel_type\", \"label\": \"Handysize bulk carrier\", \"detail\": \"Four Handysize-class bulk carriers used for shorter coastal and intra-regional voyages.\", \"relevance\": \"Handysize vessels bunker more frequently on shorter routes, increasing touchpoint frequency.\"}, {\"category\": \"preferred_port\", \"label\": \"Port of Singapore\", \"detail\": \"Home-base port for crew change, provisioning, and roughly monthly bunkering calls.\", \"relevance\": \"A monthly home-base call is a strong candidate for a standing bunker fuel supply agreement.\"}, {\"category\": \"preferred_port\", \"label\": \"Port of Rotterdam\", \"detail\": \"Secondary hub used for European coastal voyages and periodic drydock scheduling.\", \"relevance\": \"European hub activity opens a second regional fuel and services relationship.\"}, {\"category\": \"note\", \"label\": \"Fleet expansion plan\", \"detail\": \"Company statements reference two additional Handysize newbuilds entering service within the next 18 months.\", \"relevance\": \"Fleet growth signals rising future fuel volume, worth flagging in the sales narrative.\"}], \"summary\": \"A ten-vessel Supramax and Handysize bulk fleet anchored at Singapore with a secondary Rotterdam hub, with two more Handysize newbuilds due within 18 months -- a growing regional operator well suited to a standing bunker fuel relationship.\"}"
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 63,
+    "completion_tokens": 241,
+    "total_tokens": 304
+  }
+}

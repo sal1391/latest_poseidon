@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "OperationalProfileResult",
+  "type": "object",
+  "description": "Structured operational-profile research answer for a prospect's fleet and port footprint, in the marine fuels and shipping-services lens (Poseidon Phase 8, doc 02 section 4.3 -- the new-prospect brief's research subskill, first call). Minimal v1, ITEMS-SHAPED BY DESIGN (Task 2's own resolved judgment call -- see fixture_tool.py's module docstring and the Task 2 report): vessel types, preferred ports, and operational notes are each represented as one item, distinguished by the item's own category field, rather than as three separate top-level arrays -- this keeps the schema's TOP-LEVEL shape identical to sustainability.json/market_position.json/strategic_profile.json/web_research.json (items[] + summary), so the shared poseidon.mcp.perplexity.adapter.validate_and_normalize pipeline needs no schema-specific branch to normalize this schema's responses. Versioned by filename, matching web_research.json's own convention.",
+  "required": ["items"],
+  "properties": {
+    "items": {
+      "type": "array",
+      "description": "Individual vessel-type, preferred-port, or operational-note findings, ordered by relevance as returned by the model. See this schema's own top-level description for why these three concepts share one array instead of three.",
+      "items": {
+        "type": "object",
+        "required": ["category", "label", "detail", "relevance"],
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": ["vessel_type", "preferred_port", "note"],
+            "description": "Which operational-profile bucket this item belongs to: a vessel type operated, a preferred/home-base port, or a free-form operational note."
+          },
+          "label": {
+            "type": "string",
+            "description": "Short name -- the vessel class (category=vessel_type), the port name (category=preferred_port), or a short heading (category=note)."
+          },
+          "detail": {
+            "type": "string",
+            "description": "Descriptive detail -- typical use for a vessel type, usage context for a port, or the note body."
+          },
+          "relevance": {
+            "type": "string",
+            "description": "Why this item matters to a marine fuels and shipping-services sales conversation."
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "string",
+      "description": "A short overall synthesis of the fleet and port footprint, in the marine fuels and shipping-services lens."
+    }
+  }
+}

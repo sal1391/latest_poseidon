@@ -1,0 +1,20 @@
+{
+  "id": "ppl-fixture-market-position-001",
+  "model": "sonar",
+  "object": "chat.completion",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "{\"items\": [{\"label\": \"Industry classification\", \"detail\": \"Operates as a dry-bulk and container carrier serving transpacific and intra-Asia trade lanes, with a secondary short-sea feeder network in Northern Europe.\", \"relevance\": \"Multi-segment operations widen the set of bunkering ports and fuel grades relevant to a sales conversation.\"}, {\"label\": \"Competitive landscape\", \"detail\": \"Positioned as a mid-tier regional challenger behind two larger transpacific carriers, differentiating on faster port turnaround and flexible charter terms.\", \"relevance\": \"A challenger posture often trades on cost and reliability, both levers a fuel and services partner can support.\"}, {\"label\": \"Market share trend\", \"detail\": \"Grew intra-Asia container volume share by roughly 2 percentage points over the past two years, while transpacific share held steady.\", \"relevance\": \"Growing intra-Asia volume suggests expanding port-call frequency across Southeast Asian bunkering hubs.\"}], \"summary\": \"A mid-tier regional challenger gaining share in intra-Asia container trade while holding steady on transpacific routes, competing on turnaround speed and charter flexibility rather than scale.\"}"
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 51,
+    "completion_tokens": 176,
+    "total_tokens": 227
+  }
+}
