@@ -32,25 +32,27 @@ unconditionally: no transport is resolved and no import is attempted, which
 is how tests inject a scripted tool and how local dev runs without a
 Perplexity key (a fixture-backed tool installed by ``api/app.py``, Task 4).
 
-Task 1 shipped this registry and the typed interface. Task 2 has since
-shipped the "direct" transport for real (``poseidon/mcp/perplexity/
-adapter.py``); ``poseidon/mcp/perplexity/mcp_client.py`` (Task 3, "mcp")
-does not exist on disk yet. ``_build_research`` imports each transport
-LAZILY regardless -- inside the branch that needs it, not at module load
-time -- for two reasons that hold whether or not the target module exists:
-importing a module that does not exist would break every caller of this
-file before it ships (still true for "mcp" today), and a deferred import
-is the same offline-safety property this module already promises, one
-layer further down (the cost of even LOOKING for an HTTP-client-carrying
-module is paid on first use, not by every process that merely imports the
-registry) -- this SECOND reason is the one that keeps mattering even after
-a transport ships for real, which is why the import stays inside the
-branch rather than moving to module load time now that "direct" has
+Task 1 shipped this registry and the typed interface. Task 2 shipped the
+"direct" transport for real (``poseidon/mcp/perplexity/adapter.py``); Task
+3 has since shipped the "mcp" transport for real too
+(``poseidon/mcp/perplexity/mcp_client.py``) -- though "real" there means a
+client whose request-shaping and response-normalization are fully live;
+the JSON-RPC wire it sends through is not (see ``_build_research``'s "mcp"
+branch below and ``mcp_client.py``'s own module docstring for that
+boundary, stated honestly rather than papered over). ``_build_research``
+imports each transport LAZILY regardless -- inside the branch that needs
+it, not at module load time -- for a reason that keeps mattering now that
+both target modules exist just as it did before either did: a deferred
+import is the same offline-safety property this module already promises,
+one layer further down (the cost of even LOOKING for an HTTP-client-
+carrying module is paid on first use, not by every process that merely
+imports the registry), which is why the import stays inside the branch
+rather than moving to module load time now that both transports have
 something real to import. ``test_mcp_registry.py``'s
 ``test_registry_construction_imports_nothing_until_research_is_accessed``
 guards this with an import-counting ``sys.meta_path`` finder rather than
-relying on either module's absence, precisely so the proof survives both
-this transition and Task 3's eventual one.
+relying on either module's absence, precisely so the proof survived both
+transitions (Task 2's and Task 3's) without needing to change.
 
 This package lives at ``poseidon.mcp`` -- inside the ``poseidon`` package,
 not beside it -- specifically so its top-level name is ``poseidon``, never
@@ -95,6 +97,31 @@ class ResearchTool(Protocol):
     def search(
         self, *, query: str, schema_name: str, recency_days: int | None = None
     ) -> ResearchResult: ...
+
+
+def _mcp_wire_not_configured(method: str, params: dict) -> dict:
+    """Placeholder ``wire`` the "mcp" branch of :meth:`ToolServerRegistry
+    ._build_research` constructs its :class:`~poseidon.mcp.perplexity
+    .mcp_client.PerplexityMcpClient` with, until a real stdio/websocket
+    JSON-RPC wire exists -- deploy-phase work per ``mcp_client.py``'s own
+    module docstring; no real MCP server exists for this codebase to
+    speak to yet.
+
+    Raises unconditionally the moment anything actually calls it.
+    ``PerplexityMcpClient.search`` catches whatever its wire raises and
+    degrades with reason "mcp wire error" rather than propagating (see
+    that module's "DEGRADE RULES" docstring paragraph), so this never
+    surfaces as a raw traceback to a skill mid-turn -- it surfaces as the
+    same honest, structured "unavailable" answer any other wire failure
+    would. A caller that actually needs "mcp" to answer for real today
+    must inject a working ``ResearchTool`` via
+    ``overrides={"research": ...}`` instead of relying on resolution.
+    """
+    raise RuntimeError(
+        f"mcp transport has no real JSON-RPC wire configured yet {_EM_DASH} "
+        "inject a working ResearchTool via overrides={'research': ...} "
+        "until a real wire ships"
+    )
 
 
 class ToolServerRegistry:
@@ -143,13 +170,31 @@ class ToolServerRegistry:
         today -- a future task that wants one adds the ``Settings`` field
         and threads it through here, not a reason to pass anything today.
 
-        The "mcp" branch's keyword argument REMAINS provisional: Task 3
-        (``PerplexityMcpClient``) has not shipped, so
-        ``poseidon.mcp.perplexity.mcp_client`` does not exist yet and that
-        call still cannot execute -- the ``from ... import`` line raises
-        first for that branch only. What this method pins for "mcp" today
-        is still just which DOTTED PATH it resolves to, not what its
-        constructor accepts.
+        The "mcp" branch's keyword argument is ALSO no longer provisional,
+        but for a different reason than "direct"'s: Task 3 shipped
+        ``PerplexityMcpClient(wire, schema_dir=None)`` in
+        ``poseidon/mcp/perplexity/mcp_client.py``, and the kwarg pinned
+        here previously (``api_key=...``) did NOT match that real
+        signature at all -- ``PerplexityMcpClient`` has no ``api_key``
+        parameter; a real wire is what would carry credentials, not the
+        client itself. Fixed here (sanctioned, disclosed in Task 3's
+        report) to ``wire=_mcp_wire_not_configured`` -- a placeholder that
+        raises unconditionally the moment anything actually calls it,
+        since no real stdio/websocket JSON-RPC wire exists anywhere in
+        this codebase yet (deploy-phase work; see ``mcp_client.py``'s own
+        module docstring). Construction itself still SUCCEEDS (matching
+        every other transport's lazy-but-working resolution) because
+        :meth:`~poseidon.mcp.perplexity.mcp_client.PerplexityMcpClient
+        .search` catches whatever its wire raises and degrades with
+        reason "mcp wire error" rather than propagating -- so selecting
+        "mcp" without an override today is safe (never crashes a skill's
+        turn) but never answers for real either, until a real wire is
+        threaded through here in place of the placeholder. ``schema_dir``
+        is left at its constructor default (delegating to the adapter's
+        own ``load_schema``) since ``Settings`` has no per-transport
+        schema-directory override today -- the same reasoning "direct"'s
+        ``model``/``timeout_s``/``client`` defaults already rest on,
+        above.
         """
         transport = self._settings.tool_transport_perplexity
         if transport == "direct":
@@ -159,7 +204,7 @@ class ToolServerRegistry:
         if transport == "mcp":
             from poseidon.mcp.perplexity.mcp_client import PerplexityMcpClient
 
-            return PerplexityMcpClient(api_key=self._settings.perplexity_api_key)
+            return PerplexityMcpClient(wire=_mcp_wire_not_configured)
         raise RuntimeError(
             f"unknown research transport {transport!r} {_EM_DASH} expected 'direct' or 'mcp'"
         )
