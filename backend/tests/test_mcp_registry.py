@@ -8,15 +8,22 @@ Non-ASCII characters in expected strings are never typed literally: see
 hyphen are visually indistinguishable in most editors, so a byte-pinned
 message that used a typed character could silently pin the wrong codepoint.
 ``test_mcp_module_files_are_ascii_on_disk`` enforces that for this file and
-the ``mcp`` package modules it exercises.
+the ``poseidon.mcp`` package modules it exercises.
 
 The direct/mcp transport-resolution tests register scripted stand-ins
 directly in ``sys.modules`` rather than importing real adapter/client code:
-``mcp/perplexity/adapter.py`` (Task 2) and ``mcp/perplexity/mcp_client.py``
-(Task 3) do not exist yet. This proves ``_build_research`` targets the
-correct transport-specific module today without depending on either task;
-Task 2/3 replace the two resolution tests with real-construction tests once
-those modules ship for real.
+``poseidon/mcp/perplexity/adapter.py`` (Task 2) and
+``poseidon/mcp/perplexity/mcp_client.py`` (Task 3) do not exist yet. This
+proves ``_build_research`` targets the correct transport-specific module
+today without depending on either task; Task 2/3 replace the two
+resolution tests with real-construction tests once those modules ship for
+real.
+
+``poseidon.mcp`` lives inside the ``poseidon`` package by amendment (Task 1
+originally shipped a bare top-level ``mcp``, matching doc 02 section 7's
+tree verbatim; the controller relocated it to close off a naming collision
+with the real PyPI ``mcp`` SDK -- see ``task-1-report.md``'s amendment
+round). Every reference below uses the current, post-relocation path.
 """
 
 import sys
@@ -27,10 +34,10 @@ from pathlib import Path
 
 import pytest
 
-import mcp
-from mcp.registry import ResearchResult, ToolServerRegistry
+import poseidon.mcp.registry as mcp_registry
 from poseidon.core.config import Settings
 from poseidon.core.skills.context import ConversationSlots, SkillContext
+from poseidon.mcp.registry import ResearchResult, ToolServerRegistry
 
 # U+2014 EM DASH, built via chr() rather than typed literally so this file
 # stays pure ASCII on disk (poseidon.core.llm.roles uses the same trick) --
@@ -79,9 +86,9 @@ def test_construction_never_imports_a_transport_module(transport):
     """Offline boots build a ToolServerRegistry for every SkillContext
     unconditionally (see the module docstring's laziness rule): __init__
     must not construct -- or even import -- a transport client. Proof: this
-    must not raise, even though neither mcp.perplexity.adapter (Task 2) nor
-    mcp.perplexity.mcp_client (Task 3) exists on disk yet -- an eager
-    resolution would hit that missing module immediately.
+    must not raise, even though neither poseidon.mcp.perplexity.adapter
+    (Task 2) nor poseidon.mcp.perplexity.mcp_client (Task 3) exists on disk
+    yet -- an eager resolution would hit that missing module immediately.
     """
     ToolServerRegistry(_settings(tool_transport_perplexity=transport))
 
@@ -144,10 +151,10 @@ def test_override_wins_even_over_an_unknown_transport():
 
 def test_direct_transport_resolves_mcp_perplexity_adapter(monkeypatch):
     """_build_research's "direct" branch must target
-    mcp.perplexity.adapter.PerplexityDirectAdapter specifically. Task 2 has
-    not shipped that module yet, so a scripted stand-in is registered
-    directly in sys.modules -- the same lookup table Python's own import
-    system consults -- rather than as a real file on disk.
+    poseidon.mcp.perplexity.adapter.PerplexityDirectAdapter specifically.
+    Task 2 has not shipped that module yet, so a scripted stand-in is
+    registered directly in sys.modules -- the same lookup table Python's
+    own import system consults -- rather than as a real file on disk.
     """
     sentinel = object()
     calls = []
@@ -156,10 +163,12 @@ def test_direct_transport_resolves_mcp_perplexity_adapter(monkeypatch):
         calls.append(kwargs)
         return sentinel
 
-    fake_module = types.ModuleType("mcp.perplexity.adapter")
+    fake_module = types.ModuleType("poseidon.mcp.perplexity.adapter")
     fake_module.PerplexityDirectAdapter = fake_adapter
-    monkeypatch.setitem(sys.modules, "mcp.perplexity", types.ModuleType("mcp.perplexity"))
-    monkeypatch.setitem(sys.modules, "mcp.perplexity.adapter", fake_module)
+    monkeypatch.setitem(
+        sys.modules, "poseidon.mcp.perplexity", types.ModuleType("poseidon.mcp.perplexity")
+    )
+    monkeypatch.setitem(sys.modules, "poseidon.mcp.perplexity.adapter", fake_module)
 
     registry = ToolServerRegistry(_settings(tool_transport_perplexity="direct"))
 
@@ -170,8 +179,8 @@ def test_direct_transport_resolves_mcp_perplexity_adapter(monkeypatch):
 
 def test_mcp_transport_resolves_mcp_perplexity_mcp_client(monkeypatch):
     """Same proof as above for the "mcp" branch, which must target
-    mcp.perplexity.mcp_client.PerplexityMcpClient specifically -- a
-    different dotted path than the "direct" branch, so a copy-paste swap
+    poseidon.mcp.perplexity.mcp_client.PerplexityMcpClient specifically --
+    a different dotted path than the "direct" branch, so a copy-paste swap
     between the two branches would be caught by running both tests."""
     sentinel = object()
     calls = []
@@ -180,10 +189,12 @@ def test_mcp_transport_resolves_mcp_perplexity_mcp_client(monkeypatch):
         calls.append(kwargs)
         return sentinel
 
-    fake_module = types.ModuleType("mcp.perplexity.mcp_client")
+    fake_module = types.ModuleType("poseidon.mcp.perplexity.mcp_client")
     fake_module.PerplexityMcpClient = fake_client
-    monkeypatch.setitem(sys.modules, "mcp.perplexity", types.ModuleType("mcp.perplexity"))
-    monkeypatch.setitem(sys.modules, "mcp.perplexity.mcp_client", fake_module)
+    monkeypatch.setitem(
+        sys.modules, "poseidon.mcp.perplexity", types.ModuleType("poseidon.mcp.perplexity")
+    )
+    monkeypatch.setitem(sys.modules, "poseidon.mcp.perplexity.mcp_client", fake_module)
 
     registry = ToolServerRegistry(_settings(tool_transport_perplexity="mcp"))
 
@@ -194,18 +205,19 @@ def test_mcp_transport_resolves_mcp_perplexity_mcp_client(monkeypatch):
 def test_direct_transport_import_failure_names_the_missing_module_today():
     """Documents current reality without pinning it forever: today, with
     neither Task 2 nor Task 3 shipped, resolving ANY transport fails at the
-    same "mcp.perplexity" package -- neither adapter.py nor mcp_client.py
-    exists, so the failure happens one level up, before Python ever looks
-    for either file specifically (see the two sys.modules-scripted tests
-    above for the per-transport proof). This test is expected to stop
-    applying once Task 2 gives "direct" something real to construct.
+    same "poseidon.mcp.perplexity" package -- neither adapter.py nor
+    mcp_client.py exists, so the failure happens one level up, before
+    Python ever looks for either file specifically (see the two
+    sys.modules-scripted tests above for the per-transport proof). This
+    test is expected to stop applying once Task 2 gives "direct" something
+    real to construct.
     """
     registry = ToolServerRegistry(_settings(tool_transport_perplexity="direct"))
 
     with pytest.raises(ModuleNotFoundError) as err:
         _ = registry.research  # property access is the side effect under test
 
-    assert err.value.name == "mcp.perplexity"
+    assert err.value.name == "poseidon.mcp.perplexity"
 
 
 # ---------------------------------------------------------------------------
@@ -272,10 +284,10 @@ def test_mcp_module_files_are_ascii_on_disk():
     """Byte-pinned messages (the unknown-transport RuntimeError) stay
     pinned only if no look-alike codepoint can slip into any of these files
     -- see the module docstring."""
-    package_dir = Path(mcp.__file__).parent
+    package_dir = Path(mcp_registry.__file__).parent
     paths = (
         package_dir / "__init__.py",
-        Path(mcp.registry.__file__),
+        Path(mcp_registry.__file__),
         Path(__file__),
     )
     for path in paths:

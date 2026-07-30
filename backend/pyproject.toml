@@ -26,7 +26,7 @@ dependencies = [
 dev = ["pytest>=8", "ruff>=0.6", "anyio>=4"]
 
 [tool.setuptools.packages.find]
-include = ["poseidon*", "mcp*"]
+include = ["poseidon*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "poseidon/tasks"]

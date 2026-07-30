@@ -16,15 +16,18 @@ Today a skill gets exactly five things:
 ``state``     the conversation slots the deterministic parsing pipeline
               (doc 02 §5, phase 4) fills in, carried across turns.
 ``tools``     external tool servers (doc 02 §7) behind
-              :class:`~mcp.registry.ToolServerRegistry` — typed ``object``,
-              never the registry's own protocol, so this module needs no
-              ``mcp`` import at all (not even under ``TYPE_CHECKING``): the
-              dependency runs one way, ``mcp`` on ``core``, never back. A
-              skill reaching for one casts through the typed interface at
-              its own call site. Defaulted to ``None`` so every existing
+              :class:`~poseidon.mcp.registry.ToolServerRegistry` — typed
+              ``object``, never the registry's own protocol, so this module
+              needs no ``poseidon.mcp`` import at all (not even under
+              ``TYPE_CHECKING``): the dependency runs one way,
+              ``poseidon.mcp`` on ``poseidon.core``, never back. A skill
+              reaching for one casts through the typed interface at its own
+              call site. Defaulted to ``None`` so every existing
               ``SkillContext(...)`` call site (P3/P4/P6) keeps working
               unchanged; real until Phase 7 Task 4 wires a registry through
-              ``api/app.py``.
+              ``api/app.py``. (``poseidon.mcp`` lives inside the
+              ``poseidon`` package itself, by amendment — see
+              ``poseidon/mcp/__init__.py``'s docstring.)
 
 ``artifacts`` is annotated as a string under a ``TYPE_CHECKING`` guard on
 purpose, and permanently so: :mod:`poseidon.core.artifacts` (Task 4) imports
@@ -32,8 +35,8 @@ purpose, and permanently so: :mod:`poseidon.core.artifacts` (Task 4) imports
 circular. Dataclasses never evaluate their annotations, so the forward
 reference costs nothing at runtime. ``tools`` takes the plainer route of
 typing itself ``object`` instead, because unlike ``ArtifactRef`` there is no
-real cycle to dodge here — ``mcp.registry`` does not import this module —
-only a dependency DIRECTION worth keeping one-way on purpose.
+real cycle to dodge here — ``poseidon.mcp.registry`` does not import this
+module — only a dependency DIRECTION worth keeping one-way on purpose.
 """
 
 from dataclasses import dataclass

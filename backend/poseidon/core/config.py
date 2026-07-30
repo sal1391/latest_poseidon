@@ -49,11 +49,11 @@ class Settings(BaseSettings):
     # spin forever.
     agent_max_iterations: int = 10
     # Phase 7 Task 1 (doc 02 section 7, decision D23): read by
-    # ToolServerRegistry (mcp/registry.py) to resolve the research tool's
-    # transport -- "direct" (the in-house REST adapter, default) or "mcp"
-    # (the MCP-transport client). Both fields predate this task (scaffolded
-    # in the initial commit); the transports themselves ship in Task 2
-    # (direct) and Task 3 (mcp).
+    # ToolServerRegistry (poseidon/mcp/registry.py) to resolve the research
+    # tool's transport -- "direct" (the in-house REST adapter, default) or
+    # "mcp" (the MCP-transport client). Both fields predate this task
+    # (scaffolded in the initial commit); the transports themselves ship in
+    # Task 2 (direct) and Task 3 (mcp).
     tool_transport_perplexity: Literal["direct", "mcp"] = "direct"
     perplexity_api_key: str | None = None
     memory_max_chars: int = 8000

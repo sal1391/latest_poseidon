@@ -29,15 +29,19 @@ is how tests inject a scripted tool and how local dev runs without a
 Perplexity key (a fixture-backed tool installed by ``api/app.py``, Task 4).
 
 Task 1 ships this registry and the typed interface only. The transports
-themselves (``mcp/perplexity/adapter.py`` Task 2,
-``mcp/perplexity/mcp_client.py`` Task 3) do not exist on disk yet, so
-``_build_research`` imports them LAZILY -- inside the branch that needs
+themselves (``poseidon/mcp/perplexity/adapter.py`` Task 2,
+``poseidon/mcp/perplexity/mcp_client.py`` Task 3) do not exist on disk yet,
+so ``_build_research`` imports them LAZILY -- inside the branch that needs
 them, not at module load time -- for two reasons: importing a module that
 does not exist would break every caller of this file before Task 2/3 ship,
 and a deferred import is the same offline-safety property this module
 already promises, one layer further down (the cost of even LOOKING for an
 HTTP-client-carrying module is paid on first use, not by every process that
 merely imports the registry).
+
+This package lives at ``poseidon.mcp`` -- inside the ``poseidon`` package,
+not beside it -- specifically so its top-level name is ``poseidon``, never
+bare ``mcp``; see ``__init__.py``'s docstring for the naming history.
 """
 
 from collections.abc import Mapping
@@ -110,8 +114,8 @@ class ToolServerRegistry:
     def _build_research(self) -> ResearchTool:
         """Import and construct the transport named by
         ``tool_transport_perplexity`` -- the only place this module ever
-        imports ``mcp.perplexity`` (see the module docstring for why that
-        import is deferred to here instead of module load time).
+        imports ``poseidon.mcp.perplexity`` (see the module docstring for
+        why that import is deferred to here instead of module load time).
 
         The constructor keyword arguments below are provisional: Task 2
         (``PerplexityDirectAdapter``) and Task 3 (``PerplexityMcpClient``)
@@ -123,11 +127,11 @@ class ToolServerRegistry:
         """
         transport = self._settings.tool_transport_perplexity
         if transport == "direct":
-            from mcp.perplexity.adapter import PerplexityDirectAdapter
+            from poseidon.mcp.perplexity.adapter import PerplexityDirectAdapter
 
             return PerplexityDirectAdapter(api_key=self._settings.perplexity_api_key)
         if transport == "mcp":
-            from mcp.perplexity.mcp_client import PerplexityMcpClient
+            from poseidon.mcp.perplexity.mcp_client import PerplexityMcpClient
 
             return PerplexityMcpClient(api_key=self._settings.perplexity_api_key)
         raise RuntimeError(
