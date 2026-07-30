@@ -20,12 +20,14 @@ ascii_on_disk`` scans this file and ``fixture_tool.py``, mirroring every
 earlier Phase-7 test file's own convention for the module(s) it introduces.
 """
 
+import dataclasses
 import json
 from pathlib import Path
 
 import pytest
 
 from poseidon.mcp.perplexity import fixture_tool
+from poseidon.mcp.perplexity.adapter import PerplexityDirectAdapter
 from poseidon.mcp.perplexity.fixture_tool import FixtureResearchTool
 from poseidon.mcp.registry import ResearchResult
 
@@ -255,6 +257,124 @@ def test_search_never_raises_for_any_of_the_pinned_failure_modes(tmp_path):
 def test_default_fixtures_dir_is_the_real_shipped_fixtures_directory():
     assert (_FIXTURES_DIR / "clean.json").is_file()
     assert FixtureResearchTool()._fixtures_dir == _FIXTURES_DIR
+
+
+# ---------------------------------------------------------------------------
+# FIXTURE-VS-DIRECT EQUIVALENCE (final-review wave item 5) -- the entire
+# offline demo (dev-router pivot, the E2E's turn 5, every screenshot taken
+# without a Perplexity key) runs on FixtureResearchTool standing in for
+# PerplexityDirectAdapter, on the strength of both classes reusing the
+# identical load_schema/parse_with_recovery/validate_and_normalize pipeline
+# (see this module's own "REUSE, NOT DUPLICATION" docstring section). That
+# substitution held, empirically, but was never PINNED by a test of its
+# own before this wave -- only assumed. Mirrors
+# test_perplexity_mcp_client.py's own transport-flip contract test (same
+# asdict-based _transport_invariant_fields shape, same reasoning for
+# excluding transport/raw_digest by name), applied to this second pairing
+# of transports; re-declared locally rather than imported cross-test-file,
+# the same convention that file's own module docstring establishes for its
+# nearly-identical local fakes.
+# ---------------------------------------------------------------------------
+
+
+class _FakeResponse:
+    def __init__(self, status_code: int, payload: dict) -> None:
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class _FakeHttpClient:
+    """Minimal stand-in for ``httpx.Client``, used only to exercise
+    ``PerplexityDirectAdapter`` as the "direct" side of this equivalence
+    test."""
+
+    def __init__(self, response=None) -> None:
+        self._response = response
+
+    def post(self, url, **kwargs):
+        return self._response
+
+
+def _fixture(name: str) -> dict:
+    return json.loads((_FIXTURES_DIR / f"{name}.json").read_text(encoding="utf-8"))
+
+
+def _fixture_tool_result(fixture_name: str) -> ResearchResult:
+    tool = FixtureResearchTool(fixture_name=fixture_name)
+    return tool.search(query="marine biofuel Singapore", schema_name="web_research")
+
+
+def _direct_adapter_result(fixture_name: str) -> ResearchResult:
+    fake = _FakeHttpClient(response=_FakeResponse(200, _fixture(fixture_name)))
+    instance = PerplexityDirectAdapter(api_key="test-key", client=fake)
+    return instance.search(query="marine biofuel Singapore", schema_name="web_research")
+
+
+def _transport_invariant_fields(result: ResearchResult) -> dict:
+    """Every field a caller of ``ToolServerRegistry.research`` must be able
+    to treat as transport-agnostic -- excludes ``transport`` and
+    ``raw_digest`` BY NAME via ``dataclasses.asdict``, rather than a
+    hand-picked tuple of the other fields, the identical future-proofing
+    shape test_perplexity_mcp_client.py's own equivalent helper uses (Task 3
+    fix round 1, Important I1): a hand-picked allow-list of "the fields that
+    must match" only equals "every field except transport and raw_digest" by
+    coincidence, for as long as ResearchResult happens to have exactly
+    today's fields -- excluding by name instead means a future field is
+    covered automatically, with no edit needed here when one is added.
+    ``raw_digest`` is excluded deliberately, not by oversight: it embeds the
+    transport's name as TEXT by design, so it is mechanically, not
+    incidentally, transport-specific -- asserted on separately, exactly, in
+    the test below instead of folded in here.
+    """
+    data = dataclasses.asdict(result)
+    del data["transport"]
+    del data["raw_digest"]
+    return data
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        "clean",
+        "truncated_mid_string",
+        "truncated_mid_array",
+        "truncated_mid_object",
+        "unrecoverable",
+    ],
+    ids=[
+        "clean",
+        "truncated-mid-string",
+        "truncated-mid-array",
+        "truncated-mid-object",
+        "degraded",
+    ],
+)
+def test_fixture_tool_and_direct_adapter_agree_except_transport(fixture_name):
+    """PINS what the entire offline demo runs on: ``FixtureResearchTool`` (a
+    file read) and ``PerplexityDirectAdapter`` (an HTTP POST, faked here) --
+    fed the EXACT SAME recorded fixture content -- must produce
+    ``ResearchResult`` objects equal in every field except ``transport``
+    (and ``raw_digest``, which embeds the transport's name as text by
+    design; see ``_transport_invariant_fields``). The five fixtures
+    parametrized here are every PAYLOAD-CARRYING shape the two transports
+    share: the clean success case, all three truncation-recovery landmarks,
+    and the one unrecoverable-parse degrade. ``http_500.json`` is excluded
+    deliberately: it is an HTTP-status-code failure mode
+    ``FixtureResearchTool`` has no equivalent concept of at all -- a fixture
+    read either finds parseable content or it does not; there is no status
+    code to fake a non-2xx response with.
+    """
+    fixture_result = _fixture_tool_result(fixture_name)
+    direct_result = _direct_adapter_result(fixture_name)
+
+    assert fixture_result.transport == "fixture"
+    assert direct_result.transport == "direct"
+    assert _transport_invariant_fields(fixture_result) == _transport_invariant_fields(direct_result)
+    assert fixture_result.raw_digest == f"{len(fixture_result.items)} results via fixture"
+    assert direct_result.raw_digest == f"{len(direct_result.items)} results via direct"
 
 
 # ---------------------------------------------------------------------------

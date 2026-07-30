@@ -1097,11 +1097,19 @@ def test_all_four_files_are_ascii_on_disk():
         assert not offending, f"{path.name} holds non-ASCII bytes: {offending}"
 
 
-def test_lexicon_documents_the_future_skill_ids():
-    """``research.web_research`` (and, by the same reasoning, the two
-    customer_insight brief skills) is not registered anywhere yet -- the
-    module docstring must say so, per the task's own requirement that
-    referencing a future skill id be documented in lexicon.py."""
+def test_lexicon_documents_research_and_the_remaining_future_skill_ids():
+    """Final-review wave item 6: this test's PREVIOUS name and docstring
+    (``test_lexicon_documents_the_future_skill_ids``) claimed
+    ``research.web_research`` "is not registered anywhere yet" -- true when
+    this test was written, false since Phase 7 Task 4 landed
+    ``poseidon/tasks/research/skills/web_research/`` and lexicon.py's own
+    module docstring was updated in place to document exactly that
+    transition (its "Future skill ids (updated, Phase 7 Task 4)" section).
+    The two ``customer_insight`` brief skills remain genuinely future
+    (``customer_insight/task.yml`` is ``enabled: false``) -- the module
+    docstring must still name all three ids, per the task's own requirement
+    that referencing a not-yet-registered id be documented in lexicon.py.
+    """
     doc = lexicon.__doc__ or ""
     assert "research.web_research" in doc
     assert "not yet" in doc.casefold() or "future" in doc.casefold()

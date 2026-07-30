@@ -320,6 +320,46 @@ def test_format_parts_success_with_zero_items_still_renders_the_summary_and_an_e
     assert proof == ["Query: q", "Transport: fixture", "Results: 0"]
 
 
+def test_format_parts_success_with_no_summary_omits_the_leading_text_part():
+    """Final-review wave item 2 (I2): the web_research.json schema's
+    "summary" key is OPTIONAL (schema ``required`` is only ``["items"]``;
+    see test_perplexity_adapter.py's own
+    test_validate_and_normalize_defaults_summary_to_empty_string_when_absent)
+    -- a validated, non-degraded ResearchResult with an empty summary is a
+    real, schema-legal shape the shipped fixture never exercises
+    (fixtures/clean.json always carries a real summary), which is exactly
+    why nothing caught this live-only path before: emitting a text part
+    unconditionally from result.summary rendered an empty markdown bubble
+    ahead of the sources table for this shape. The text part is now emitted
+    only when there is a summary to show; the table always renders
+    regardless (an empty summary is not a degrade)."""
+    result = _clean_result(summary="")
+
+    parts, proof = format_parts("q", result)
+
+    assert parts == [
+        {
+            "kind": "table",
+            "payload": {
+                "columns": ["Title", "Source", "Relevance"],
+                "rows": [
+                    [
+                        "Maersk expands biofuel bunkering in Singapore",
+                        "https://example.com/maersk-biofuel-singapore",
+                        "Directly relevant to marine biofuel adoption trends.",
+                    ],
+                    [
+                        "IMO 2030 targets reshape bunker fuel demand",
+                        "https://example.com/imo-2030-bunker-demand",
+                        "Regulatory context for shipping-services fuel transition planning.",
+                    ],
+                ],
+            },
+        }
+    ]
+    assert proof == ["Query: q", "Transport: fixture", "Results: 2"]
+
+
 # ---------------------------------------------------------------------------
 # format_parts / skill.run -- degraded and absent-tools paths: honest parts,
 # byte-pinned.
@@ -327,7 +367,9 @@ def test_format_parts_success_with_zero_items_still_renders_the_summary_and_an_e
 
 
 def test_degraded_parts_are_byte_pinned():
-    parts, proof = degraded_parts("perplexity request timed out")
+    # Final-review wave item 3: degraded_parts() now takes the transport
+    # name too, and the proof block gains a second line naming it.
+    parts, proof = degraded_parts("perplexity request timed out", "direct")
 
     assert parts == [
         {
@@ -341,22 +383,30 @@ def test_degraded_parts_are_byte_pinned():
             },
         }
     ]
-    assert proof == ["Research: degraded (perplexity request timed out)"]
+    assert proof == [
+        "Research: degraded (perplexity request timed out)",
+        "Transport: direct",
+    ]
 
 
 def test_format_parts_routes_a_degraded_result_through_degraded_parts():
+    # transport="mcp" matches raw_digest's own "via mcp" text here (final-
+    # review wave item 3 makes .transport visible in the rendered proof for
+    # the first time, so this fixture's transport now has to actually agree
+    # with what raw_digest already claimed, not just look plausible).
     result = _clean_result(
         items=(),
         degraded=True,
         degrade_reason="mcp wire error",
         summary="",
         raw_digest="0 results via mcp",
+        transport="mcp",
     )
 
     parts, proof = format_parts("q", result)
 
-    assert parts == degraded_parts("mcp wire error")[0]
-    assert proof == degraded_parts("mcp wire error")[1]
+    assert parts == degraded_parts("mcp wire error", "mcp")[0]
+    assert proof == degraded_parts("mcp wire error", "mcp")[1]
 
 
 def test_skill_run_success_dispatches_the_search_and_renders_the_result():
@@ -414,7 +464,14 @@ def test_skill_run_degraded_result_renders_the_honest_unavailable_message():
             },
         }
     ]
-    assert result.proof == ["Research: degraded (perplexity http 500)"]
+    # Final-review wave item 3: the degraded proof block now also names the
+    # transport -- "fixture" here, matching the un-overridden transport
+    # _clean_result() defaults to (and what raw_digest's own "via fixture"
+    # text already claimed).
+    assert result.proof == [
+        "Research: degraded (perplexity http 500)",
+        "Transport: fixture",
+    ]
 
 
 def test_skill_run_with_absent_tools_renders_the_honest_unavailable_message():
@@ -433,8 +490,17 @@ def test_skill_run_with_absent_tools_renders_the_honest_unavailable_message():
     assert result.parts[0]["payload"]["markdown"].startswith(
         "External research is unavailable right now " + _EM_DASH + " "
     )
-    assert len(result.proof) == 1
+    # Final-review wave item 3: no ToolServerRegistry at all means no
+    # transport ever attempted this call -- "none" is skill.py's own
+    # deliberate choice for this specific caller (see its own comment at
+    # the call site), not a stand-in for any real transport value. The
+    # reason text itself stays loosely pinned (startswith, not exact-match)
+    # -- unchanged from before this wave -- since it is this skill's own
+    # undisclosed-verbatim judgment call (task-4-report.md Judgment Call 4),
+    # not a byte-pinned brief requirement.
+    assert len(result.proof) == 2
     assert result.proof[0].startswith("Research: degraded (")
+    assert result.proof[1] == "Transport: none"
 
 
 def test_skill_run_never_calls_search_when_tools_are_absent():

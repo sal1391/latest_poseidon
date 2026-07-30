@@ -510,6 +510,67 @@ def test_invoke_client_error_with_no_code_reports_unknown():
 
 
 # ---------------------------------------------------------------------------
+# invoke() -- a malformed-but-2xx Converse response never raises (final-
+# review wave item 1). BedrockProvider._normalize_response had the IDENTICAL
+# unguarded-extraction blind spot the adapter's own Critical C1 fixed
+# (test_perplexity_adapter.py's test_search_degrades_on_a_malformed_but_2xx_
+# envelope is the precedent this parametrization mirrors):
+# response["stopReason"] and response["output"]["message"]["content"] were
+# read with no defensive guard at all, so ANY 2xx response not shaped
+# exactly like a well-formed ConverseResponse crashed invoke()/
+# invoke_stream() with an uncaught KeyError/TypeError instead of degrading.
+# The last two cases are the two shapes the original T2-review ledger entry
+# did not name explicitly (final review I1's "2 unledgered chains"): a
+# partial toolUse block missing toolUseId, and a text block whose "text" is
+# None (joins into TypeError, not a missing-key case at all).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        pytest.param({}, id="missing-stop-reason"),
+        pytest.param({"stopReason": "end_turn"}, id="missing-output-key"),
+        pytest.param({"stopReason": "end_turn", "output": {}}, id="missing-message-key"),
+        pytest.param(
+            {"stopReason": "end_turn", "output": {"message": {}}}, id="missing-content-key"
+        ),
+        pytest.param(
+            {"stopReason": "end_turn", "output": {"message": "not-a-dict"}},
+            id="message-not-a-dict",
+        ),
+        pytest.param(
+            {
+                "stopReason": "tool_use",
+                "output": {
+                    "message": {
+                        "content": [{"toolUse": {"name": "data_qa__metric_query", "input": {}}}]
+                    }
+                },
+            },
+            id="tool-use-block-missing-tool-use-id",
+        ),
+        pytest.param(
+            {"stopReason": "end_turn", "output": {"message": {"content": [{"text": None}]}}},
+            id="text-block-with-none-text",
+        ),
+    ],
+)
+def test_invoke_degrades_on_a_malformed_but_2xx_converse_response(response):
+    provider = _client(converse_response=response)
+
+    result = provider.invoke(system="s", messages=[], tools=[], model="m", params={})
+
+    assert result == LLMResponse(
+        text="bedrock error: MalformedResponse",
+        tool_calls=(),
+        stop_reason="error",
+        input_tokens=0,
+        output_tokens=0,
+    )
+
+
+# ---------------------------------------------------------------------------
 # mutation discipline -- tools/messages arguments are never mutated
 # ---------------------------------------------------------------------------
 

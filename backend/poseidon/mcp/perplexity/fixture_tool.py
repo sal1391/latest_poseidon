@@ -37,13 +37,25 @@ prove these paths), so every failure this class can produce -- the file is
 missing, the envelope does not have the expected shape, the content does not
 parse, the parsed content fails schema validation -- degrades exactly like a
 real transport would rather than raising mid-turn. The two reasons that
-overlap with the direct adapter's own private constants
-(``_REASON_PARSE_FAILED``, ``_REASON_INVALID_SCHEMA``) are byte-identical on
-purpose, the same "shared degrade path" reasoning ``mcp_client.py``'s module
-docstring gives for its own two overlapping reasons: a caller reading a
-degrade reason should not have to know or care which transport (real or
-fixture-backed) is behind ``ctx.tools.research`` to recognize "the response
-did not parse" or "the response was missing required fields".
+overlap with the direct adapter's own reason constants
+(:data:`~poseidon.mcp.perplexity.adapter.REASON_PARSE_FAILED`,
+:data:`~poseidon.mcp.perplexity.adapter.REASON_INVALID_SCHEMA`) are the
+SAME public symbols, imported directly rather than redeclared here
+(final-review wave item 4 -- this module used to keep its own byte-
+identical private copies, a third independent copy of the same two
+strings ``mcp_client.py`` also used to keep; all three are now one shared
+pair): a caller reading a degrade reason should not have to know or care
+which transport (real or fixture-backed) is behind ``ctx.tools.research``
+to recognize "the response did not parse" or "the response was missing
+required fields", and importing the same name is what makes that true by
+construction instead of by three modules happening to agree.
+
+This guarantee is scoped to a LOADED schema (final-review wave item 7):
+an unknown ``schema_name`` raises ``FileNotFoundError`` straight out of
+``load_schema`` (called near the end of :meth:`FixtureResearchTool.search`,
+after the fixture file itself has already been read and parsed
+successfully) -- uncaught, by design; see adapter.py's own module
+docstring for why that is a deployment bug, not a fifth degrade rule.
 """
 
 import json
@@ -51,6 +63,8 @@ from pathlib import Path
 from typing import Any
 
 from poseidon.mcp.perplexity.adapter import (
+    REASON_INVALID_SCHEMA,
+    REASON_PARSE_FAILED,
     load_schema,
     parse_with_recovery,
     validate_and_normalize,
@@ -61,14 +75,13 @@ _TRANSPORT = "fixture"
 _DEFAULT_FIXTURE_NAME = "clean"
 _FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
-# Byte-pinned degrade reasons (house rule). The first is fixture-specific;
-# the last two are deliberately byte-identical to adapter.py's own private
-# constants of the same meaning -- see the module docstring's "Never raises"
-# paragraph for why that is "the shared degrade path," not a coincidence.
+# Byte-pinned degrade reasons (house rule) that are genuinely fixture-
+# specific -- these stay private/local. The two SHARED reasons (final-
+# review wave item 4) are no longer declared here at all -- REASON_PARSE_
+# FAILED/REASON_INVALID_SCHEMA are imported directly from adapter.py
+# above; see the module docstring's "Never raises" paragraph.
 _REASON_FILE_NOT_FOUND = "fixture file not found"
 _REASON_MALFORMED_ENVELOPE = "malformed fixture envelope"
-_REASON_PARSE_FAILED = "could not parse perplexity response"
-_REASON_INVALID_SCHEMA = "perplexity response missing required fields"
 
 
 def _degrade(reason: str) -> ResearchResult:
@@ -140,12 +153,12 @@ class FixtureResearchTool:
 
         parsed = parse_with_recovery(content)
         if parsed is None:
-            return _degrade(_REASON_PARSE_FAILED)
+            return _degrade(REASON_PARSE_FAILED)
 
         schema = load_schema(schema_name)
         normalized = validate_and_normalize(parsed, schema)
         if normalized is None:
-            return _degrade(_REASON_INVALID_SCHEMA)
+            return _degrade(REASON_INVALID_SCHEMA)
         items, summary = normalized
 
         return ResearchResult(

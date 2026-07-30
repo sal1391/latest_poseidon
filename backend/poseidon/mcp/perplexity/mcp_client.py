@@ -79,28 +79,38 @@ spirit; byte-pinned reasons):
   ``{"content": [{"type": "text", "text": <str>}]}`` shape -> degrade
   ``"malformed mcp envelope"``;
 - ``parse_with_recovery`` cannot produce valid JSON even after
-  ``repair_truncated_json``'s one recovery attempt -> degrade ``"could
-  not parse perplexity response"`` (byte-identical to ``adapter.py``'s
-  own private ``_REASON_PARSE_FAILED`` string -- "the shared degrade
+  ``repair_truncated_json``'s one recovery attempt -> degrade
+  :data:`~poseidon.mcp.perplexity.adapter.REASON_PARSE_FAILED`
+  (``"could not parse perplexity response"`` -- "the shared degrade
   path" per the brief: both transports reach this exact failure through
   the exact same reused function on the exact same string, so both must
   report it with the exact same words);
 - ``validate_and_normalize`` rejects the parsed JSON (missing the
-  schema's required top-level keys) -> degrade ``"perplexity response
-  missing required fields"`` (byte-identical to ``adapter.py``'s own
-  private ``_REASON_INVALID_SCHEMA``, same "shared degrade path"
-  reasoning).
+  schema's required top-level keys) -> degrade
+  :data:`~poseidon.mcp.perplexity.adapter.REASON_INVALID_SCHEMA`
+  (``"perplexity response missing required fields"``, same "shared
+  degrade path" reasoning).
 
-Both "shared" reasons above are kept as this module's OWN local constants
-rather than imported from ``adapter.py`` (only the four named functions
-are this package's sanctioned cross-module reuse surface; the reason
-strings are ``adapter.py``-private, leading-underscore, module-local
-constants). Kept in sync by the transport-flip contract test's full-
-equality assertion (a divergence would fail that test immediately, not
-just this module's own suite) and by
-``test_shared_degrade_reasons_match_the_adapters_own_private_constants``,
-which is a stronger, machine-checked guarantee against silent drift than
-object identity alone would have been.
+This guarantee is scoped to a LOADED schema (final-review wave item 7):
+an unknown ``schema_name`` raises ``FileNotFoundError`` straight out of
+:meth:`PerplexityMcpClient._load_schema`, uncaught -- see adapter.py's own
+module docstring for why that is a deployment bug this module deliberately
+does not catch, not a fifth degrade rule.
+
+Both "shared" reasons above are PUBLIC symbols imported directly from
+``adapter.py`` (final-review wave item 4), not this module's own local
+copies of the same text: this module used to keep byte-identical PRIVATE
+constants of its own, kept in sync only by the transport-flip contract
+test's full-equality assertion and by a dedicated cross-module equality
+test -- both real, but both tests for a property the language can simply
+make true instead. Importing the same names collapses "two constants that
+happen to always be edited together" into "one constant," which is what
+"shared" always meant here. (Only these two, plus
+``load_schema``/``parse_with_recovery``/``validate_and_normalize``, are
+this package's sanctioned cross-module reuse surface -- ``_REASON_WIRE_
+ERROR``/``_REASON_MALFORMED_ENVELOPE`` below stay private: they are
+genuinely MCP-specific, with no analog on the direct transport to share
+them with.)
 """
 
 import json
@@ -109,6 +119,8 @@ from pathlib import Path
 from typing import Any
 
 from poseidon.mcp.perplexity.adapter import (
+    REASON_INVALID_SCHEMA,
+    REASON_PARSE_FAILED,
     load_schema,
     parse_with_recovery,
     validate_and_normalize,
@@ -118,15 +130,14 @@ from poseidon.mcp.registry import ResearchResult
 _TRANSPORT = "mcp"
 _TOOL_NAME = "perplexity_search"
 
-# Byte-pinned degrade reasons (house rule). The first two are genuinely
-# MCP-specific -- no analog exists on the direct transport. The last two
-# are deliberately byte-identical to adapter.py's own private constants of
-# the same name/meaning -- see the module docstring's "DEGRADE RULES"
-# paragraph for why that is "the shared degrade path," not a coincidence.
+# Byte-pinned degrade reasons (house rule) that are genuinely MCP-specific
+# -- no analog exists on the direct transport, so these stay private/local.
+# The two SHARED reasons (final-review wave item 4) are no longer declared
+# here at all -- REASON_PARSE_FAILED/REASON_INVALID_SCHEMA are imported
+# directly from adapter.py above; see the module docstring's "DEGRADE
+# RULES" paragraph.
 _REASON_WIRE_ERROR = "mcp wire error"
 _REASON_MALFORMED_ENVELOPE = "malformed mcp envelope"
-_REASON_PARSE_FAILED = "could not parse perplexity response"
-_REASON_INVALID_SCHEMA = "perplexity response missing required fields"
 
 
 def _unwrap_text_block(envelope: Any) -> str | None:
@@ -230,11 +241,11 @@ class PerplexityMcpClient:
 
         parsed = parse_with_recovery(text)
         if parsed is None:
-            return _degrade(_REASON_PARSE_FAILED)
+            return _degrade(REASON_PARSE_FAILED)
 
         normalized = validate_and_normalize(parsed, schema)
         if normalized is None:
-            return _degrade(_REASON_INVALID_SCHEMA)
+            return _degrade(REASON_INVALID_SCHEMA)
         items, summary = normalized
 
         return ResearchResult(

@@ -13,11 +13,11 @@
 - **Offline by default:** no test outside `-m research_live` opens a network connection. The direct adapter is tested against recorded/hand-authored Perplexity response payloads (including truncated-JSON cases); the MCP client against a scripted fake wire. `research_live` = one smoke, skip-guard on `PERPLEXITY_API_KEY`, pinned reason "no Perplexity API key".
 - **D23:** `TOOL_TRANSPORT_PERPLEXITY: Literal["direct","mcp"] = "direct"` in Settings (defaulted). The transport-flip contract test proves both transports produce the IDENTICAL typed result shape from equivalent recorded inputs (doc 08's validation criterion).
 - **D30 egress (contract-tested):** the skill builds its outbound query from a whitelist — `customer`, `port`, `region`, `topic`, plus the user's own question text — and NOTHING else. No number, no metric name + value pair, no table row content may reach the outbound payload. The contract test feeds slots + a fake prior metric result through the skill and asserts the outbound query (captured by a recording transport) contains none of the planted sentinel values.
-- **Tool events + rows regardless of transport (doc 02 §7):** every research invocation emits `tool_event` start/done/error with a human label ("Searching the web — marine industry lens…") through the EXISTING loop/tool_done machinery (the skill runs inside `registry.dispatch` like any skill; its INTERNAL Perplexity call additionally surfaces as a labeled step — v1: the skill's proof lines carry transport + query + result count; a dedicated nested tool_event for the HTTP call itself is P11 observability polish, documented).
+- **Tool events + rows regardless of transport (doc 02 §7):** every research invocation emits `tool_event` start/done/error with a human label through the EXISTING loop/tool_done machinery (the skill runs inside `registry.dispatch` like any skill; its INTERNAL Perplexity call additionally surfaces as a labeled step — v1: the skill's proof lines carry transport + query + result count; a dedicated nested tool_event for the HTTP call itself is P11 observability polish, documented). **Final-review wave amendment (item 8):** the label shown here at plan time ("Searching the web — marine industry lens…") was illustrative, not pinned, and is NOT what shipped — the human label every skill's `tool_event` carries is `events.skill_label`'s own pure derivation off the dotted skill id (segment after the last dot, underscores as spaces, first letter capitalized), so `research.web_research` renders as **"Web research"**, the same mechanical treatment `data_qa.metric_query` gets ("Metric query"), not a skill-specific custom phrase. A `SKILL_META`-carried label override (so a skill could opt into a richer phrase like the one originally sketched here) is a possible later enhancement — it would touch P6's `core/chat/events.py`, out of this wave's scope.
 - **Degrade-to-None discipline (wfs_core pattern):** adapter failures (timeout, HTTP error, unparseable-after-recovery) return None/empty-typed results with a reason — the SKILL then produces an honest "research unavailable" text part + proof line; the turn NEVER errors because an external vendor hiccuped. Pinned both layers.
 - **Truncated-JSON recovery:** the adapter repairs the classic truncation (close open strings/brackets/braces in order) before parsing; unrecoverable → degrade. Pin with at least 3 truncation shapes (mid-string, mid-array, mid-object) + 1 unrecoverable.
 - **Skill framework law (P3):** `tasks/research/task.yml` (enabled: true) + `skills/web_research/{schema,skill}.py + tools/ + tests/` — same folder law, SKILL_META, pydantic Args, parts as dicts, proof lines, exception-safe dispatch untouched.
-- **Parked decisions stay parked.** P6 later-phase routings stay routed (artifact forward P8 etc.). Do not modify P2-P6 modules EXCEPT the sanctioned additive items: `SkillContext.tools` field (defaulted None), `core/config.py` Settings additions, dev_router case-(c) research upgrade + its tests, `tests/routing_cases.yml` pivot case un-gated to stub execution.
+- **Parked decisions stay parked.** P6 later-phase routings stay routed (artifact forward P8 etc.). Do not modify P2-P6 modules EXCEPT the sanctioned additive items: `SkillContext.tools` field (defaulted None), `core/config.py` Settings additions, dev_router case-(c) research upgrade + its tests, `tests/routing_cases.yml` pivot case un-gated to stub execution. **Final-review wave amendment (item 8c):** the shipped reality (Task 4, `task-4-report.md`) additionally, and equally sanctioned, touched three more P2-P6 modules, each additive/threading or docs-only, not a behavior change to existing call paths: `core/chat/orchestrator.py` (`execute_turn` gains a `tools=` keyword, threaded from `api/live_chat.py`'s own new `app_state.tool_registry` plumbing, itself sanctioned as part of the same live-wiring the File Map already named for `api/app.py`), and `core/parsing/lexicon.py` (one collateral stale-docstring correction once `research.web_research` stopped being a future id -- no behavior change). Named explicitly here so this list matches what actually shipped.
 - ASCII .py; frozen dataclasses; byte-pinned messages; deterministic; docstrings explain WHY; ruff clean; conventional commits on `phase-3-8-overnight`; trailer `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>` every commit.
 - Baselines at plan time: backend 1003 offline / 41 pg / frontend 31; zero failures the bar. The live compose stack is up (CHAT_MODE=live).
 
@@ -30,6 +30,8 @@ backend/poseidon/mcp/perplexity/__init__.py
 backend/poseidon/mcp/perplexity/adapter.py         # PerplexityDirectAdapter (httpx, json_schema response_format,
                                           #   truncated-JSON recovery, degrade-to-None, timeouts)
 backend/poseidon/mcp/perplexity/mcp_client.py      # PerplexityMcpClient (same typed surface, scripted-wire tested)
+backend/poseidon/mcp/perplexity/fixture_tool.py    # FixtureResearchTool (M6 addition, not in this plan-time list --
+                                          #   see the amendment note below the block)
 backend/poseidon/mcp/perplexity/schemas/web_research.json   # structured-output schema (shared by both transports)
 backend/poseidon/mcp/perplexity/fixtures/*.json    # recorded/hand-authored response payloads (incl. truncated)
 backend/poseidon/tasks/research/task.yml  # enabled: true
@@ -40,13 +42,29 @@ backend/poseidon/tasks/research/skills/web_research/tests/test_skill.py
 backend/poseidon/core/skills/context.py   # + tools: object | None = None (additive, sanctioned)
 backend/poseidon/core/config.py           # + tool_transport_perplexity, perplexity_api_key (both defaulted)
 backend/poseidon/core/chat/dev_router.py  # case (c) research upgrade (sanctioned)
+backend/poseidon/core/chat/orchestrator.py  # M6 addition: execute_turn(..., tools=...) threading
+backend/poseidon/core/parsing/lexicon.py    # M6 addition: stale "future skill id" docstring correction, collateral
 backend/poseidon/api/app.py               # live wiring: ToolServerRegistry + fixture transport in dev
+backend/poseidon/api/live_chat.py         # M6 addition: threads app_state.tool_registry through to SkillContext
 backend/tests/test_mcp_registry.py
 backend/tests/test_perplexity_adapter.py  # recorded payloads + truncation + degrade + research_live smoke
 backend/tests/test_perplexity_mcp_client.py + transport-flip contract test
+backend/tests/test_perplexity_fixture_tool.py   # M6 addition: FixtureResearchTool's own suite
 backend/tests/routing_cases.yml           # pivot_to_research_with_carry un-gated (stub script added)
 backend/pyproject.toml                    # + httpx runtime pin + research_live marker
 ```
+
+**Final-review wave amendment (item 8c):** the block above is amended, in place, to name five files the
+plan-time File Map omitted but Task 4 shipped for real, all disclosed at the time in `task-4-report.md`:
+`mcp/perplexity/fixture_tool.py` + its own `tests/test_perplexity_fixture_tool.py` (the fixture-backed
+`ResearchTool` `api/app.py`'s stub-mode wiring and `test_llm_loop.py`'s offline stub executor both need —
+Judgment Call 2, necessarily implied by `registry.py`'s own Task-1 forward reference and never a
+literal-brief file name to begin with), `core/chat/orchestrator.py` (`execute_turn` gains a `tools=`
+keyword to thread the registry through), `api/live_chat.py` (threads `app_state.tool_registry` into the
+`SkillContext` it builds), and `core/parsing/lexicon.py` (one collateral docstring correction once
+`research.web_research` stopped being a future id — not a behavior change). Each is additive/threading
+or docs-only, consistent in kind with the Global Constraints sanctioned list below, which gains the same
+three P2-P6 modules explicitly.
 
 ---
 
@@ -128,7 +146,7 @@ Skill contract:
 
 ## Phase Gate (human validation)
 
-1. localhost:5173 (stack up): after the Singapore turn, type "any relevant news on Northstar Lines I should be aware of?" → verbose step ("Searching the web — marine industry lens…"), a sources table + summary render (fixture content tonight — real Perplexity the moment your key lands in .env as PERPLEXITY_API_KEY).
+1. localhost:5173 (stack up): after the Singapore turn, type "any relevant news on Northstar Lines I should be aware of?" → verbose step labeled **"Web research"** (final-review wave item 8: corrected from this line's original illustrative "Searching the web — marine industry lens…" — the shipped label is `events.skill_label`'s mechanical derivation off the skill id, same as every other skill; see the Global Constraints amendment above), a sources table + summary render (fixture content tonight — real Perplexity the moment your key lands in .env as PERPLEXITY_API_KEY).
 2. `pytest tests/test_perplexity_adapter.py -v` → truncation-recovery and degrade branches visible by name; `pytest -m research_live` → skips "no Perplexity API key".
 3. The egress proof: `pytest backend/poseidon/tasks/research -k egress -v` → the D30 contract test green.
 

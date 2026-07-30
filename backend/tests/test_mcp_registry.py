@@ -107,13 +107,14 @@ def test_construction_never_imports_a_transport_module(transport):
     """Offline boots build a ToolServerRegistry for every SkillContext
     unconditionally (see the module docstring's laziness rule): __init__
     must not construct -- or even import -- a transport client. Proof: this
-    must not raise -- true for "mcp" because poseidon.mcp.perplexity.
-    mcp_client (Task 3) does not exist on disk yet (an eager resolution
-    would hit that missing module immediately), and true for "direct"
-    regardless of Task 2 having since shipped a real, importable
-    poseidon.mcp.perplexity.adapter, since construction must stay lazy
-    either way. This test alone can no longer DISTINGUISH "correctly lazy"
-    from "eagerly imports" for "direct" now that the module exists -- see
+    must not raise -- true for both "direct" and "mcp" today (final-review
+    wave item 6: corrected from this docstring's earlier claim that
+    poseidon.mcp.perplexity.mcp_client "does not exist on disk yet" --
+    Task 3 has since shipped it for real, same as Task 2 shipped
+    poseidon.mcp.perplexity.adapter), since construction must stay lazy
+    regardless of whether the target transport module exists. This test
+    alone can no longer DISTINGUISH "correctly lazy" from "eagerly imports"
+    for EITHER transport now that both modules exist -- see
     test_registry_construction_imports_nothing_until_research_is_accessed
     below for the module-existence-independent version of that proof
     (Task 1 review, Important 1).

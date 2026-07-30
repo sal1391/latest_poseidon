@@ -308,37 +308,96 @@ def _build_tool_config(tools: list[dict]) -> dict:
 
 
 def _normalize_response(response: dict) -> LLMResponse:
-    stop_reason = response["stopReason"]
-    usage = response.get("usage") or {}
-    input_tokens = usage.get("inputTokens", 0)
-    output_tokens = usage.get("outputTokens", 0)
-    content = response["output"]["message"]["content"]
+    """ConverseResponse -> LLMResponse. See the module docstring's
+    "response normalization" section header for the shape this reads.
 
-    if stop_reason == _TOOL_USE_STOP_REASON:
-        tool_calls = tuple(
-            ToolCall(
-                id=block["toolUse"]["toolUseId"],
-                name=_from_bedrock_tool_name(block["toolUse"]["name"]),
-                arguments=block["toolUse"]["input"],
+    Final-review wave (item 1): a 2xx Converse response is not guaranteed to
+    be shaped exactly like a well-formed ``ConverseResponse`` -- the adapter
+    module's own Critical C1 fix (``poseidon/mcp/perplexity/adapter.py``)
+    guards the identical class of failure on its own response-extraction
+    chain, and this function had the SAME blind spot: every extraction below
+    (``response["stopReason"]``, ``response["output"]["message"]["content"]``,
+    each ``block["toolUse"][...]`` access in the tool_use branch, and even a
+    text block whose ``"text"`` value is ``None`` rather than a string --
+    ``"".join`` raises ``TypeError`` on that one, not merely a missing-key
+    case) previously propagated a raw ``KeyError``/``IndexError``/
+    ``TypeError`` straight out of :meth:`BedrockProvider.invoke`, breaking
+    that method's own documented "never raises" contract. One ``try``
+    around the whole body, catching exactly the three exception types the
+    adapter's C1 fix catches (the same deliberate, narrow scope -- a
+    stranger failure mode is not this guard's to catch either), routes every
+    such shape through :func:`_malformed_response_error` instead: the same
+    ``LLMResponse(stop_reason="error", ...)`` shape :func:`_error_response`
+    already produces for a transport-level ``ClientError``, so a caller
+    never needs to know or care whether a Bedrock failure was a rejected
+    request or a malformed-but-2xx body -- both look like the same
+    structured "error" turn.
+
+    :func:`_consume_stream` (below) has the identical unguarded-extraction
+    shape on its own event-handling path and is deliberately NOT given the
+    same guard here: it is off the live path today (``loop.py``'s agent
+    loop -- the only production caller of either normalization function --
+    calls :meth:`BedrockProvider.invoke` exclusively, never
+    :meth:`invoke_stream`; see ``loop.py:289``), so guarding it would be
+    speculative hardening of dead code rather than a fix for a reachable
+    bug. Noted here, not fixed, per the final-review wave's own scoping.
+    """
+    try:
+        stop_reason = response["stopReason"]
+        usage = response.get("usage") or {}
+        input_tokens = usage.get("inputTokens", 0)
+        output_tokens = usage.get("outputTokens", 0)
+        content = response["output"]["message"]["content"]
+
+        if stop_reason == _TOOL_USE_STOP_REASON:
+            tool_calls = tuple(
+                ToolCall(
+                    id=block["toolUse"]["toolUseId"],
+                    name=_from_bedrock_tool_name(block["toolUse"]["name"]),
+                    arguments=block["toolUse"]["input"],
+                )
+                for block in content
+                if "toolUse" in block
             )
-            for block in content
-            if "toolUse" in block
-        )
+            return LLMResponse(
+                text="",
+                tool_calls=tool_calls,
+                stop_reason="tool_use",
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
+
+        text = "".join(block["text"] for block in content if "text" in block)
         return LLMResponse(
-            text="",
-            tool_calls=tool_calls,
-            stop_reason="tool_use",
+            text=text,
+            tool_calls=(),
+            stop_reason="end_turn",
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         )
+    except (KeyError, IndexError, TypeError):
+        return _malformed_response_error()
 
-    text = "".join(block["text"] for block in content if "text" in block)
+
+# The pinned "code" half of the malformed-response error text -- plays the
+# same role _error_response's real exc.response["Error"]["Code"] plays, but
+# there is no ClientError here (no request was even rejected; the 2xx body
+# itself does not parse the way this module expects), so this is a fixed
+# string rather than anything read off an exception.
+_MALFORMED_RESPONSE_CODE = "MalformedResponse"
+
+
+def _malformed_response_error() -> LLMResponse:
+    """Mirrors :func:`_error_response`'s exact shape (see its own
+    docstring) for the sibling failure mode that function does not cover --
+    see :func:`_normalize_response`'s guard docstring for the full
+    rationale."""
     return LLMResponse(
-        text=text,
+        text=f"bedrock error: {_MALFORMED_RESPONSE_CODE}",
         tool_calls=(),
-        stop_reason="end_turn",
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
+        stop_reason="error",
+        input_tokens=0,
+        output_tokens=0,
     )
 
 
@@ -359,6 +418,22 @@ def _consume_stream(stream, on_text: Callable[[str], None]) -> LLMResponse:
     stream can interleave more than one tool call's deltas -- see the
     interleaved-index regression test) and joined then ``json.loads``-ed
     only once the stream ends.
+
+    Final-review wave (item 1), documented not fixed: this function reads
+    event dicts (``event["contentBlockStart"]["start"]``,
+    ``entry["id"]``/``entry["name"]``/``entry["fragments"]`` on the
+    replayed tool-use accumulator, ``delta["text"]``, etc.) with the exact
+    same unguarded-extraction shape :func:`_normalize_response` had before
+    this wave's guard -- a malformed event mid-stream (a ``toolUse`` start
+    missing ``toolUseId``, say) still propagates a raw
+    ``KeyError``/``IndexError``/``TypeError`` out of
+    :meth:`BedrockProvider.invoke_stream` today. Left unguarded deliberately:
+    :func:`_normalize_response` is reachable from live traffic through
+    :meth:`BedrockProvider.invoke`, which ``loop.py``'s agent loop calls
+    exclusively (``loop.py:289``) -- ``invoke_stream`` has no production
+    caller in this codebase today, so hardening this function would guard
+    against a shape no real request path can currently trigger. Revisit
+    this note the moment a caller of ``invoke_stream`` ships.
     """
     text_parts: list[str] = []
     pending_tool_use: dict[int, dict] = {}

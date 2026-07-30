@@ -40,10 +40,27 @@ TypeError)`` around the envelope-extraction chain are caught because they
 are this module's four pinned cases; a stranger transport failure (DNS
 resolution, a connection reset) is NOT wrapped here and propagates,
 matching ``BedrockProvider``'s own precedent of catching named exceptions
-rather than bare ``Exception``. (For the record: ``BedrockProvider`` has
+rather than bare ``Exception``. (For the record: ``BedrockProvider`` had
 the identical blind spot C1 fixed here on its own response-extraction
-chain -- confirmed during this fix round's review, ledgered for a P5 fix
-elsewhere, not touched by this module.)
+chain -- confirmed during Task 2's fix round review, ledgered for the
+Phase 7 final-review wave, and FIXED there (bedrock.py's own
+``_normalize_response``, wave item 1) -- never touched by this module,
+which only ever produces the ``ResearchResult`` shape, not the
+``LLMResponse`` shape bedrock.py owns.)
+
+This guarantee is scoped to a LOADED schema (final-review wave item 7):
+every failure mode named above assumes :func:`load_schema` already
+succeeded. An unknown ``schema_name`` -- a caller's own typo, or a
+schema_name a router/skill passes that was never shipped as a
+``schemas/*.json`` file -- raises ``FileNotFoundError`` straight out of
+:func:`load_schema`, uncaught, from all three call sites in this package
+(this module's own :meth:`PerplexityDirectAdapter.search`,
+``mcp_client.py``'s :meth:`~poseidon.mcp.perplexity.mcp_client
+.PerplexityMcpClient._load_schema`, and ``fixture_tool.py``'s
+:meth:`~poseidon.mcp.perplexity.fixture_tool.FixtureResearchTool.search`).
+Deliberately: a schema_name that does not exist on disk is a deployment/
+wiring bug (code asking for a schema nobody shipped), not a runtime degrade
+a live caller should ever see or plan around -- no catch is added for it.
 
 Truncation recovery (:func:`repair_truncated_json`): Perplexity, like any
 LLM-backed API, can hit its own output-token ceiling mid-response, handing
@@ -72,7 +89,17 @@ parse/validate/recover path against its own transport's response envelope
 ("REUSE the adapter's parse/validate/recover helpers by importing them, no
 duplication") -- these functions are this package's shared internal API
 between the two transports, not merely this module's private
-implementation detail, so they are named as such.
+implementation detail, so they are named as such. :data:`REASON_PARSE_FAILED`
+and :data:`REASON_INVALID_SCHEMA` (final-review wave item 4) join them on
+the same public, no-underscore footing and for the identical reason: both
+``mcp_client.py`` and ``fixture_tool.py`` report these two failure modes
+with byte-identical text to this module's own -- a real, transport-
+independent "the response did not parse" / "the response was missing
+required fields" distinction a caller should be able to recognize
+regardless of which transport is behind ``ctx.tools.research`` -- so the
+two reason strings are shared symbols now, imported by both other
+transports below, rather than three independently-typed literals a
+cross-module equality test merely happened to keep in sync.
 """
 
 import json
@@ -103,9 +130,19 @@ _SCHEMAS_DIR = Path(__file__).resolve().parent / "schemas"
 # Byte-pinned degrade reasons (house rule): each is a fixed, deterministic
 # string a test asserts literally -- see the module docstring's "never
 # raises" paragraph for which failure produces which reason.
+#
+# REASON_PARSE_FAILED / REASON_INVALID_SCHEMA are PUBLIC (final-review wave
+# item 4, no leading underscore, unlike every other reason constant in this
+# package): mcp_client.py and fixture_tool.py both import these two rather
+# than keeping their own byte-identical private copies, closing a real
+# 3-way duplication a cross-module equality test could only detect, never
+# prevent. _REASON_TIMEOUT/_REASON_MALFORMED_ENVELOPE stay private -- this
+# module's own timeout/envelope failures have no analog on the other
+# transports (mcp_client.py and fixture_tool.py each have their OWN,
+# differently-worded envelope-shape reasons), so there is nothing to share.
 _REASON_TIMEOUT = "perplexity request timed out"
-_REASON_PARSE_FAILED = "could not parse perplexity response"
-_REASON_INVALID_SCHEMA = "perplexity response missing required fields"
+REASON_PARSE_FAILED = "could not parse perplexity response"
+REASON_INVALID_SCHEMA = "perplexity response missing required fields"
 _REASON_MALFORMED_ENVELOPE = "malformed response envelope"
 
 
@@ -337,11 +374,11 @@ class PerplexityDirectAdapter:
             return _degrade(_REASON_MALFORMED_ENVELOPE)
         parsed = parse_with_recovery(content)
         if parsed is None:
-            return _degrade(_REASON_PARSE_FAILED)
+            return _degrade(REASON_PARSE_FAILED)
 
         normalized = validate_and_normalize(parsed, schema)
         if normalized is None:
-            return _degrade(_REASON_INVALID_SCHEMA)
+            return _degrade(REASON_INVALID_SCHEMA)
         items, summary = normalized
 
         return ResearchResult(

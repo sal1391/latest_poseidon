@@ -235,7 +235,7 @@ leaves a database-side trace. Admins have no path to another user's `messages`, 
 | Processor | May receive | Must never receive |
 |-----------|-------------|--------------------|
 | LLM provider (Bedrock / Cortex) | conversation messages, user instruction + memory entries, tool schemas, and retrieved internal results (metric values, tables) — this is the processing scope the product requires | credentials, other users' data |
-| Web research (Perplexity, direct or MCP) | entity names only: customer, port, region, and a plain-language topic | any internal metric value, computed figure, period-over-period delta, customer ranking, or anything derived from the certified views |
+| Web research (Perplexity, direct or MCP) | entity names only: customer, port, region, and a plain-language topic, plus the user's own question text | any internal metric value, computed figure, period-over-period delta, customer ranking, or anything derived from the certified views |
 | Object store (S3 / MinIO) | generated artifacts and their metadata | raw conversation transcripts |
 | Auth0 | authentication traffic only | conversation content of any kind |
 
@@ -243,10 +243,11 @@ leaves a database-side trace. Admins have no path to another user's `messages`, 
 hard-deletes content while retaining a redacted audit row — the user's right to delete and the
 audit obligation are both absolute, and only redaction satisfies both.
 
-**Decision D30:** web-research queries carry entity names, never internal values — the research
-tool is the one call that leaves the corporate boundary with an attacker-visible payload, so
-nothing computed from the certified views may be embedded in it. The research adapter (doc 02 §7)
-builds its query from parsed entity slots, never from a metric result, and a contract test asserts
+**Decision D30:** web-research queries carry entity names — customer, port, region, topic — plus
+the user's own question text, never internal values — the research tool is the one call that
+leaves the corporate boundary with an attacker-visible payload, so nothing computed from the
+certified views may be embedded in it. The research adapter (doc 02 §7) builds its query from
+parsed entity slots and the question, never from a metric result, and a contract test asserts
 that no numeric result value appears in an outbound research query.
 
 ## 8. API surface (identity-relevant)

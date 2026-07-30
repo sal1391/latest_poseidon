@@ -4,9 +4,10 @@ and the two failure surfaces the framework promises.
 Two kinds of task package are exercised here.
 
 *The real one* — ``poseidon.tasks`` — proves the repo's own folder law is
-honored end to end: exactly one router-visible skill exists today
-(``data_qa.metric_query``), its JSON schema is generated from its ``Args``
-model, and dispatching it goes through argument validation first.
+honored end to end: two router-visible skills are registered today
+(``data_qa.metric_query``, joined by ``research.web_research`` at Phase 7
+Task 4), each one's JSON schema is generated from its own ``Args`` model,
+and dispatching either goes through argument validation first.
 
 *Throwaway ones* — built under ``tmp_path`` by the ``tasks_package`` fixture —
 prove the fail-fast rules. A permanently broken skill cannot live in the repo

@@ -392,17 +392,25 @@ def test_search_never_raises_for_any_of_the_four_pinned_failure_modes():
         assert result.degraded is True
 
 
-def test_shared_degrade_reasons_match_the_adapters_own_private_constants():
-    """The "shared degrade path" cases (Task 3 brief) must report the
-    EXACT same reason text as the direct adapter's own (private, not
-    imported) constants of the same meaning -- see mcp_client.py's module
-    docstring. Reaching into adapter._REASON_* here, from a test, is a
-    verification step, not a production reuse path -- production code
-    never imports them (only the four named public helper functions are
-    this package's sanctioned cross-module reuse surface).
+def test_shared_degrade_reasons_are_imported_not_redeclared():
+    """Final-review wave item 4: the "shared degrade path" cases (Task 3
+    brief) used to be enforced by an equality test comparing two
+    INDEPENDENTLY-DECLARED, byte-identical private constants -- a real but
+    permanently re-checkable guarantee, since nothing stopped a future edit
+    from changing one copy and not the other except this test catching it
+    after the fact. mcp_client.py no longer declares its own copies at all:
+    it imports adapter.py's public REASON_PARSE_FAILED/REASON_INVALID_SCHEMA
+    directly, so ``mcp_client.REASON_PARSE_FAILED`` and
+    ``adapter.REASON_PARSE_FAILED`` are not merely equal, they are the
+    SAME object -- drift is structurally impossible, not just tested for.
+    This asserts that stronger claim (``is``, not ``==``) as a belt: if a
+    future edit ever reintroduced a local redeclaration in mcp_client.py
+    AFTER the import line (shadowing it with a same-valued but distinct
+    string object), this is the test that would catch it -- a plain ``==``
+    would not.
     """
-    assert mcp_client._REASON_PARSE_FAILED == adapter._REASON_PARSE_FAILED
-    assert mcp_client._REASON_INVALID_SCHEMA == adapter._REASON_INVALID_SCHEMA
+    assert mcp_client.REASON_PARSE_FAILED is adapter.REASON_PARSE_FAILED
+    assert mcp_client.REASON_INVALID_SCHEMA is adapter.REASON_INVALID_SCHEMA
 
 
 # ---------------------------------------------------------------------------

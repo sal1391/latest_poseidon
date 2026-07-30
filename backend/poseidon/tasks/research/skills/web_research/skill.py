@@ -68,7 +68,11 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
     .dispatch``'s own 422 path).
     """
     if ctx.tools is None:
-        parts, proof = degraded_parts(_NO_TOOLS_REASON)
+        # No ToolServerRegistry at all -- unlike a real dispatch's own
+        # degrade, there is no transport that even attempted to answer, so
+        # "none" (final-review wave item 3) is the honest transport name for
+        # this specific caller, not a stand-in for any real transport value.
+        parts, proof = degraded_parts(_NO_TOOLS_REASON, "none")
         return SkillResult(ok=True, parts=parts, proof=proof)
 
     research_tool = cast(_ToolServer, ctx.tools).research

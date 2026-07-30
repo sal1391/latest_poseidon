@@ -227,6 +227,6 @@ backend/poseidon/mcp/   # NOTE (P7 build): shipped inside the poseidon package (
 - Every tool invocation emits a `tool_event` (start/done/error with a human-readable label,
   doc 01 §4) and a `tool_calls` row (doc 06 §1) regardless of transport.
 - **Egress constraint (decision D30, doc 05 §7):** the research adapter composes its query from
-  parsed entity slots — customer, port, region, topic — and never from a metric result. No internal
-  value computed from the certified views may appear in an outbound research call; a contract test
-  asserts it.
+  parsed entity slots — customer, port, region, topic — plus the user's own question text, and
+  never from a metric result. No internal value computed from the certified views may appear in an
+  outbound research call; a contract test asserts it.
