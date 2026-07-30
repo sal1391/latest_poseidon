@@ -403,9 +403,12 @@ chip's own `send_text` sends it verbatim (`api/live_chat.py`'s
    `SkillContext` on any path, so this honest skip line is what a real run
    always shows here, never a PDF card.
 3. Ask a pivot: `top GP customers for Port of Singapore in April 2026`.
-   Routes normally (a real router call, 2 `llm_calls` rows) — byte-identical
-   to the 4-turn gate script's own turn 1 above, unaffected by
-   `mode="existing_customer"` still being carried.
+   Routes normally (a real router call, 2 `llm_calls` rows) — but NOTE: the
+   brief's customer (Northstar Lines) is now CARRIED in conversation state,
+   so this pivot answers for Northstar Lines at Singapore, not the all-customer
+   top-5 (the certified-answer line names Northstar Lines). That is the
+   post-brief carry doing its job — the same carry rule every ordinary turn
+   follows. Ask "clear the customer" first if you want the all-customer view.
 
 **Script B — new prospect.**
 
