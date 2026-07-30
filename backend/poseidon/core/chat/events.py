@@ -97,22 +97,89 @@ this sink retains them, keyed by ``tool_seq``, on the public
 keeps beyond simply forwarding frames, and the only way the orchestrator can
 reach data that otherwise only ever flowed to the wire.
 
-Artifacts: coded, currently unreachable
+Artifacts: reachable since Phase 8 Task 1
 -------------------------------------------
-The phase-6 plan adjudicates ``ArtifactRef -> part{kind:"artifact",
+The phase-6 plan adjudicated ``ArtifactRef -> part{kind:"artifact",
 payload:{name,url,mime}}`` as part of the same proof/artifact reconciliation
-above. loop.py's own ``_dispatch_one``, however, never forwards
-``SkillResult.artifacts`` into the ``tool_done`` payload at all (verified
-directly against that function's source: it emits ``parts``/``proof``, not
-``artifacts``) -- a real, disclosed gap in P5's shipped code that is NOT
-this task's to fix (``loop.py`` is not in this task's sanctioned edit list).
-This sink still implements the conversion defensively, reading
-``payload.get("artifacts", ())`` -- harmless today (no currently-dispatchable
-skill populates it; ``data_qa.metric_query`` always returns
-``artifacts=[]``, and the one artifact-producing skill,
-``customer_insight.existing_customer_brief``, is ``enabled: false``) and
-ready the moment a future task closes the loop.py gap, proven by a synthetic
-test that constructs the payload shape loop.py cannot produce yet.
+above, and this sink implemented the conversion right away, reading
+``payload.get("artifacts", ())`` defensively -- but loop.py's own
+``_dispatch_one`` never forwarded ``SkillResult.artifacts`` into the
+``tool_done`` payload at all (verified directly against that function's
+source at the time: it emitted ``parts``/``proof``, not ``artifacts``), so
+this conversion sat coded and synthetically tested but PRODUCTION-
+UNREACHABLE -- a real, disclosed gap in P5's shipped code, ledgered through
+P6 and P7 as not each of those tasks' to fix.
+
+Phase 8 Task 1 closes it: ``_dispatch_one`` now adds ``"artifacts":
+result.artifacts`` to the ``tool_done`` payload it emits (see loop.py's own
+comment at that call site), so the conversion below runs for real the first
+time any dispatched skill's :class:`~poseidon.core.skills.result.
+SkillResult` carries a non-empty ``artifacts`` list --
+``customer_insight.existing_customer_brief`` (Phase 8 Task 4) will be the
+first. The synthetic test that constructed the payload shape loop.py could
+not yet produce (``test_chat_orchestrator.py::
+test_tool_done_defensively_converts_artifact_refs_when_present``) now has a
+real-path sibling that drives the SAME conversion through an actual
+dispatch -- see ``test_emit_seam_loop_events.py``. ``payload.get("artifacts",
+())`` stays a ``.get`` with a default, not a bare index, on purpose even
+though every real caller now supplies the key: a payload some OTHER, older
+test in this suite still builds by hand (most of them predate this task and
+have no reason to grow an ``"artifacts"`` key they never asserted on) must
+keep working unchanged.
+
+Incremental part streaming (Phase 8 Task 1)
+-------------------------------------------
+A subskill inside one dispatch can run for a while (Phase 8's briefs run
+several phases -- fetch metrics, fetch ports, contextualize, research,
+strategize, render a PDF -- behind a SINGLE tool call), and doc 02's
+progressive-display promise is that the user sees each phase's part as soon
+as that phase finishes, not all at once when the whole dispatch ends. The
+seam for that is :meth:`SseEnvelopeSink.part_emitter`: given the dispatch's
+own ``tool_seq``, it returns a callable a skill invokes directly (through
+``SkillContext.emit_part``, wired to this by
+``core/chat/orchestrator.py``) once per completed phase. That callable
+pushes a ``part`` frame IMMEDIATELY -- mid-dispatch, before ``tool_done`` has
+even fired -- and counts how many parts it streamed for that ``tool_seq``.
+
+``_handle_tool_done`` still receives the dispatch's COMPLETE ``parts`` list
+(a skill's own :class:`~poseidon.core.skills.result.SkillResult` carries
+every part it produced, streamed early or not -- doc 06's run-log digest and
+``events.py``'s own ``tool_result_parts`` cache both need the full list
+regardless of how it was delivered to the wire). Re-emitting all of them
+after already having pushed the early ones live would double every
+progressively-streamed part on the wire, so ``_handle_tool_done`` looks up
+how many parts ``part_emitter`` already streamed for THIS ``tool_seq`` and
+slices them off: ``parts[n_streamed:]`` is emitted, never the full list --
+the "late-only" parts a skill did NOT stream early. A ``tool_seq`` no one
+ever called ``part_emitter`` for reads back a count of zero (the lookup
+defaults to it), so ``parts[0:]`` is the full list -- BYTE-IDENTICAL to this
+sink's pre-Phase-8 behavior of unconditionally looping over every part.
+Today's callers (every skill before Phase 8 Task 4) never call
+``ctx.emit_part`` at all, so this is not a hypothetical fallback, it is the
+literal, exercised path every existing dispatch still takes.
+
+Order stays pinned exactly as it was: the ``tool`` frame (translated
+start/done status) first, then parts (now only the late-only ones), then
+proof, then artifacts -- an emitter's early pushes land BETWEEN the
+``tool_start`` frame and the eventual ``tool`` done frame, never after it,
+which is what lets a frame-order assertion tell "streamed early" and
+"emitted late" apart.
+
+The per-``tool_seq`` count is reset, to zero, every time
+:meth:`part_emitter` is called for that ``tool_seq`` -- calling it again for
+an id already in progress starts that id's count over rather than adding to
+it. Nothing in this codebase calls ``part_emitter`` twice for the same
+``tool_seq`` today (``core/chat/orchestrator.py`` calls it once, building the
+turn's ``SkillContext`` before any dispatch happens -- see that module for
+the current, disclosed scope of WHICH ``tool_seq`` it binds), so this reset
+is defensive rather than load-bearing, and documented so a future caller that
+DOES rebind the same id mid-turn gets the obviously-correct behavior (a fresh
+count) rather than a count that quietly kept accumulating across two
+unrelated dispatches. The count is also POPPED, not merely read, inside
+``_handle_tool_done`` -- once a ``tool_seq``'s ``tool_done`` has been
+handled, that id is finished, and popping (rather than leaving a stale zero
+behind) keeps this dict's size bounded by in-flight dispatches, never by the
+turn's total dispatch count.
 
 Synchronous by construction
 -------------------------------
@@ -193,6 +260,12 @@ class SseEnvelopeSink:
         # tool_seq -> that dispatch's raw parts list -- see the module
         # docstring's "Parts retained for pass-through".
         self.tool_result_parts: dict[int, list[dict]] = {}
+        # tool_seq -> how many of that dispatch's parts `part_emitter`
+        # already pushed live -- see the module docstring's "Incremental
+        # part streaming". Private: nothing outside this class needs to read
+        # it, unlike `tool_result_parts`, which the orchestrator reads back
+        # after the turn.
+        self._streamed_counts: dict[int, int] = {}
 
     @property
     def turn_id(self) -> str:
@@ -233,17 +306,52 @@ class SseEnvelopeSink:
         self.tool_result_parts[tool_seq] = payload["parts"]
         wire_status = _TOOL_STATUS_ON_WIRE[payload["status"]]
         self._send_tool_frame(tool_seq, payload["skill_id"], status=wire_status)
-        for part in payload["parts"]:
+        # Only the parts `part_emitter` did NOT already stream live for this
+        # dispatch -- see the module docstring's "Incremental part
+        # streaming". `.pop(..., 0)` both reads and retires the count: a
+        # tool_seq nobody streamed early (every dispatch before Phase 8 Task
+        # 4, and every tool_seq no caller ever wired an emitter for) defaults
+        # to zero, so `parts[0:]` is the full list -- byte-identical to this
+        # method's pre-Phase-8 unconditional loop over every part.
+        n_streamed = self._streamed_counts.pop(tool_seq, 0)
+        for part in payload["parts"][n_streamed:]:
             self.push_part(part["kind"], part["payload"])
         if payload["proof"]:
             self.push_part("proof", {"lines": list(payload["proof"])})
-        # Defensive, currently-unreachable conversion -- see the module
-        # docstring's "Artifacts: coded, currently unreachable".
+        # Reachable since Phase 8 Task 1 -- see the module docstring's
+        # "Artifacts: reachable since Phase 8 Task 1". `.get` with a default
+        # rather than a bare index: older tests in this suite build
+        # `tool_done` payloads by hand with no `"artifacts"` key at all and
+        # must keep working unchanged.
         for artifact in payload.get("artifacts", ()):
             self.push_part(
                 "artifact",
                 {"name": artifact.name, "url": artifact.url, "mime": artifact.mime},
             )
+
+    def part_emitter(self, tool_seq: int) -> Callable[[dict], None]:
+        """A callable ``ctx.emit_part`` can be wired to for ONE dispatch:
+        invoking it pushes ``part`` immediately (as a live ``part`` frame,
+        through :meth:`push_part`) and counts it against ``tool_seq``, so
+        ``_handle_tool_done`` knows how many of that dispatch's eventual
+        parts were already streamed and must not re-emit them -- see the
+        module docstring's "Incremental part streaming" for the full
+        protocol and why double emission is impossible by construction
+        (a count-based skip, not a de-duplication check on part CONTENT).
+
+        Resets ``tool_seq``'s count to zero on every call, including a
+        second call for an id already in progress -- see the module
+        docstring's "per-``tool_seq`` count is reset" paragraph for why that
+        is documented, defensive behavior rather than a load-bearing one
+        today.
+        """
+        self._streamed_counts[tool_seq] = 0
+
+        def _emit(part: dict) -> None:
+            self.push_part(part["kind"], part["payload"])
+            self._streamed_counts[tool_seq] += 1
+
+        return _emit
 
     def _send_tool_frame(self, tool_seq: int, skill_id: str, *, status: str) -> None:
         self._frame(

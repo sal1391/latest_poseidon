@@ -433,11 +433,20 @@ def _dispatch_one(
             "status": status,
             "duration_ms": duration_ms,
             "digest": digest,
-            # Parts and proof go to the UI (Phase 6 streams them); the model
-            # only ever sees `digest`. That split IS the context-hygiene
-            # rule -- see the module docstring.
+            # Parts, proof and artifacts go to the UI (Phase 6/8 stream
+            # them); the model only ever sees `digest`. That split IS the
+            # context-hygiene rule -- see the module docstring.
             "parts": result.parts,
             "proof": result.proof,
+            # Phase 8 Task 1: closes the P5 gap events.py's own docstring
+            # ledgered since Phase 6 ("Artifacts: coded, currently
+            # unreachable") -- `_dispatch_one` forwarded `parts`/`proof` but
+            # never `result.artifacts`, so the sink's already-coded artifact
+            # conversion had nothing real to convert. This one-liner is that
+            # forward; see SkillResult.artifacts (core/skills/result.py) for
+            # the list[ArtifactRef] shape and events.py's `_handle_tool_done`
+            # for the conversion this makes reachable.
+            "artifacts": result.artifacts,
             "problem": result.error,
         },
     )

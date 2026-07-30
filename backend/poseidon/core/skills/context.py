@@ -4,9 +4,10 @@
 context (``llm``, ``tools``, ``user``, ``profile``, ``run``); each of those
 fields arrives with the phase that owns it rather than as a ``None``-typed
 placeholder, because a placeholder invites code that pretends the capability
-exists. ``tools`` arrived in Phase 7 Task 1 (named below); ``llm``,
-``user``, ``profile`` and ``run`` remain pending their own owning phases.
-Today a skill gets exactly five things:
+exists. ``tools`` arrived in Phase 7 Task 1; ``llm`` and ``emit_part`` arrive
+in Phase 8 Task 1 (all three named below); ``user``, ``profile`` and ``run``
+remain pending their own owning phases. Today a skill gets exactly seven
+things:
 
 ``data``      the adapter seam of doc 04 — a :class:`DataClient`, never a
               connection, a cursor or SQL.
@@ -28,15 +29,48 @@ Today a skill gets exactly five things:
               ``api/app.py``. (``poseidon.mcp`` lives inside the
               ``poseidon`` package itself, by amendment — see
               ``poseidon/mcp/__init__.py``'s docstring.)
+``llm``       the role-based LLM seam a subskill calls for live-mode
+              synthesis -- :class:`~poseidon.core.llm.roles.RoleClient`,
+              typed ``object`` for the same reason ``tools`` is: keeping the
+              dependency direction one-way. ``poseidon.core.llm.loop``
+              already imports THIS module (a dispatch needs
+              ``SkillContext``'s type); a real ``RoleClient`` import here
+              would run the edge back the other way, entangling the two
+              packages even though no single pair of modules cycles today --
+              exactly the "no real cycle, only a direction worth keeping
+              one-way" case ``tools`` itself documents below. A skill calls
+              ``ctx.llm.invoke(role=..., system=..., messages=...)`` and
+              casts through the typed interface at its own call site, same
+              as ``tools``. Defaulted to ``None`` so every pre-Phase-8 call
+              site keeps working unchanged; wired for real by
+              ``core/chat/orchestrator.py`` starting Phase 8 Task 1.
+``emit_part`` the progressive-display seam: an optional callable,
+              ``(part: dict) -> None``, that a subskill invokes once per
+              completed phase to stream a part to the user immediately,
+              rather than making the whole dispatch wait for its own
+              ``tool_done``. Typed ``object`` rather than
+              ``Callable[[dict], None]`` for uniformity with every other
+              seam this class carries, not because ``Callable`` would cycle
+              -- a skill only ever calls it positionally, never inspects it
+              as anything but callable. ``None`` is not merely the default,
+              it is a state real callers produce on purpose: any call site
+              that wires no live sink (every hand-built ``SkillContext`` in
+              this codebase's own unit tests, ``api/dev_runner.py``'s
+              dev-only skill runner) leaves it unset, so a skill that streams
+              progressively must guard ``if ctx.emit_part is not None``
+              before calling it rather than assume every dispatch has one.
+              See ``core/chat/events.py``'s ``SseEnvelopeSink.part_emitter``
+              for what a real caller wires it to, and
+              ``core/chat/orchestrator.py`` for where that wiring happens.
 
 ``artifacts`` is annotated as a string under a ``TYPE_CHECKING`` guard on
 purpose, and permanently so: :mod:`poseidon.core.artifacts` (Task 4) imports
 ``ArtifactRef`` from this very module, so a real runtime import here would be
 circular. Dataclasses never evaluate their annotations, so the forward
-reference costs nothing at runtime. ``tools`` takes the plainer route of
-typing itself ``object`` instead, because unlike ``ArtifactRef`` there is no
-real cycle to dodge here — ``poseidon.mcp.registry`` does not import this
-module — only a dependency DIRECTION worth keeping one-way on purpose.
+reference costs nothing at runtime. ``tools``, ``llm`` and ``emit_part`` take
+the plainer route of typing themselves ``object`` instead, because unlike
+``ArtifactRef`` there is no real cycle to dodge for any of the three -- only a
+dependency DIRECTION worth keeping one-way on purpose.
 """
 
 from dataclasses import dataclass
@@ -102,3 +136,5 @@ class SkillContext:
     settings: Settings
     state: ConversationSlots = ConversationSlots()
     tools: object | None = None
+    llm: object | None = None
+    emit_part: object | None = None

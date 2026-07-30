@@ -6,6 +6,8 @@ import { ToolEventPart } from "./ToolEventPart";
 import { ErrorPart } from "./ErrorPart";
 import { TablePart } from "./TablePart";
 import { ProofPart } from "./ProofPart";
+import { MetricGridPart } from "./MetricGridPart";
+import { ArtifactPart } from "./ArtifactPart";
 import { FallbackPart } from "./FallbackPart";
 
 export interface PartProps {
@@ -23,11 +25,14 @@ const registry: Record<string, ComponentType<PartProps>> = {
   chips: ChipsPart,
   tool_event: ToolEventPart,
   error: ErrorPart,
-  // metric_grid/artifact stay on FallbackPart until Phase 8 (first producer)
-  // -- table/proof below are the only two kinds the flagship live turn
-  // (Phase 6) actually emits beyond what was already registered.
   table: TablePart,
   proof: ProofPart,
+  // metric_grid/artifact: Phase 8 Task 1 -- the brief flows' own first
+  // producers (metric_grid already real since P3's format_parts.py;
+  // artifact reachable for the first time now that loop.py forwards
+  // SkillResult.artifacts -- see core/llm/loop.py and core/chat/events.py).
+  metric_grid: MetricGridPart,
+  artifact: ArtifactPart,
 };
 
 export function PartRenderer(props: PartProps) {

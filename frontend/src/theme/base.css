@@ -395,6 +395,89 @@ body {
   font-weight: 500;
 }
 
+/* metric_grid part: one bordered card per metric, the two compared periods'
+   values side by side. Numeric figures pick up the `.data` utility above
+   (tabular-nums), same as .table-part's own numeric cells. */
+.metric-grid-part {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 0.75rem;
+}
+
+.metric-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  background: var(--surface-raised);
+}
+
+.metric-card-label {
+  color: var(--ink-muted);
+  font-family: var(--font-body);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.metric-card-values {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.metric-card-value-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.metric-card-value {
+  color: var(--ink);
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+
+.metric-card-period {
+  color: var(--ink-muted);
+  font-family: var(--font-body);
+  font-size: 0.6875rem;
+}
+
+/* artifact part: a small download card -- the file name links straight to
+   the presigned URL, the mime type sits in a quiet badge beside it. */
+.artifact-part {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.625rem 0.875rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  background: var(--surface-raised);
+}
+
+.artifact-link {
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 0.875rem;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.artifact-link:hover {
+  text-decoration: underline;
+}
+
+.artifact-mime {
+  padding: 0.125rem 0.5rem;
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  color: var(--ink-muted);
+  font-family: var(--font-data);
+  font-size: 0.6875rem;
+}
+
 /* Collapsible "How this was computed" proof block -- same idiom as .fallback-part. */
 .proof-part {
   padding: 0.5rem 0.75rem;

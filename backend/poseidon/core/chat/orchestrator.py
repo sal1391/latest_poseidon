@@ -242,6 +242,17 @@ def execute_turn(
     ``ToolServerRegistry`` ``api/app.py`` builds once per app; a skill that
     never reads ``ctx.tools`` (``data_qa.metric_query`` today) is
     unaffected either way.
+
+    ``SkillContext.llm``/``SkillContext.emit_part`` (Phase 8 Task 1, both
+    additive -- default ``None``, so every call site before this task keeps
+    working unchanged) are wired below, at the one place this function
+    builds a ``SkillContext``: ``llm`` to this call's own ``role_client``
+    (the identical object ``run_turn`` uses for routing -- the only
+    truthful choice), ``emit_part`` to ``sink.part_emitter(1)`` (see that
+    call site's own comment for the disclosed tool_seq-1 scoping this
+    implies). Neither is examined here any more than ``tools`` is -- a
+    skill that never reads ``ctx.llm``/``ctx.emit_part`` is unaffected
+    either way.
     """
     prior_slots = state.get(conversation_id)
     parsed = parse_turn(text, prior_slots, reference_date, data)
@@ -296,7 +307,35 @@ def execute_turn(
         )
 
     context = SkillContext(
-        data=data, artifacts=None, settings=settings, state=parsed.slots, tools=tools
+        data=data,
+        artifacts=None,
+        settings=settings,
+        state=parsed.slots,
+        tools=tools,
+        # Phase 8 Task 1: `llm` is simply THIS turn's own role_client -- a
+        # subskill calling `ctx.llm.invoke(role=..., ...)` reaches the exact
+        # same RoleClient `run_turn` below uses for routing, never a second,
+        # independently-configured one.
+        llm=role_client,
+        # `emit_part` is wired to tool_seq 1 -- the FIRST dispatch of this
+        # turn. `context` is built once, here, before `run_turn` even starts
+        # (so before ANY tool call exists, tool_seq 1 is the only one that
+        # can be known yet), and stays fixed for every dispatch of the turn
+        # (`run_turn`/`_dispatch_one` are outside this task's sanctioned
+        # edits -- see loop.py's own docstring -- so this function gets
+        # exactly one chance to wire it, not one per dispatch). This is
+        # correct for every emit_part consumer this plan actually ships: a
+        # brief skill (Phase 8 Task 4) is always the ONLY tool call of its
+        # turn, whether reached through D19's deterministic entry (Task 5)
+        # or a normal routed dispatch, so tool_seq is always 1 for it. A
+        # hypothetical future turn with a SECOND dispatch that also streams
+        # progressively would find tool_seq 2's `part_emitter` never called
+        # -- safe, not silently wrong: `events.py`'s own "no one streamed
+        # early" default (a zero count) makes that dispatch's parts arrive
+        # exactly as they always have, at `tool_done`, never lost or
+        # duplicated. Disclosed as a known scoping limit for a future task to
+        # revisit if a multi-dispatch, multi-emit_part turn is ever planned.
+        emit_part=sink.part_emitter(1),
     )
     router_version, router_hash = _router_prompt_provenance(
         settings=settings,
