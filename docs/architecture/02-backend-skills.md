@@ -207,7 +207,9 @@ External tools get a first-class integration pattern so new servers can be added
 without touching skills:
 
 ```
-backend/mcp/
+backend/poseidon/mcp/   # NOTE (P7 build): shipped inside the poseidon package (import poseidon.mcp.*),
+                        #   not top-level backend/mcp/ — a top-level `mcp` package would shadow the
+                        #   PyPI `mcp` SDK if a later phase installs it. Same layout otherwise.
   registry.py          # ToolServerRegistry: config-driven discovery, health, timeouts
   perplexity/          # first integration
     adapter.py         # direct REST adapter (wfs_core PerplexityClient pattern: json_schema

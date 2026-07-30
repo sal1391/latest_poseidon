@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** The external-research layer (doc 08 P7): `backend/mcp/` registry + Perplexity direct adapter (json_schema response_format, truncated-JSON recovery, degrade-to-None) + MCP-transport client behind `TOOL_TRANSPORT_PERPLEXITY` (D23, direct default), the `research.web_research` skill with the marine-industry lens, verbose tool events, and pivot routing ("any relevant news on customer X?" after a data answer). **No Perplexity key exists tonight: everything green runs on recorded fixtures; live calls sit behind a `research_live` marker that skips cleanly** (the key is item 2 on Carlos's needs-keys list).
+**Goal:** The external-research layer (doc 08 P7): `backend/poseidon/mcp/` registry + Perplexity direct adapter (json_schema response_format, truncated-JSON recovery, degrade-to-None) + MCP-transport client behind `TOOL_TRANSPORT_PERPLEXITY` (D23, direct default), the `research.web_research` skill with the marine-industry lens, verbose tool events, and pivot routing ("any relevant news on customer X?" after a data answer). **No Perplexity key exists tonight: everything green runs on recorded fixtures; live calls sit behind a `research_live` marker that skips cleanly** (the key is item 2 on Carlos's needs-keys list).
 
-**Architecture:** Doc 02 §7 verbatim where it specifies. Skills never import a vendor SDK — they call a typed interface `ctx.tools.research.search(...)` that a `ToolServerRegistry` resolves to a transport (direct REST adapter default; MCP client as the standing pattern). `SkillContext` gains a `tools` member (additive, doc 02 §4's own context list names it). The egress constraint D30 is law: outbound research queries compose ONLY from parsed entity slots (customer, port, region, topic) — never from metric results — and a contract test asserts it. The dev router's case (c) upgrades to dispatch `research.web_research` when hints lead with it and a subject slot exists, so the offline demo answers research pivots with fixture content.
+**Architecture:** Doc 02 §7 verbatim where it specifies. AMENDED (post-T1): the package lives at `backend/poseidon/mcp/` (import path `poseidon.mcp.*`), NOT doc 02's literal top-level `backend/mcp/` — a top-level package named `mcp` would shadow the real PyPI `mcp` SDK the moment any later phase installs it (P14/SPCS plausibly will), an in-venv name collision that would surface at the worst possible time; moving inside the poseidon package kills the collision permanently, keeps the "mcp" naming intent, and ships with the package (no extra packaging entry). Doc 02 §7 carries a one-line note. Skills never import a vendor SDK — they call a typed interface `ctx.tools.research.search(...)` that a `ToolServerRegistry` resolves to a transport (direct REST adapter default; MCP client as the standing pattern). `SkillContext` gains a `tools` member (additive, doc 02 §4's own context list names it). The egress constraint D30 is law: outbound research queries compose ONLY from parsed entity slots (customer, port, region, topic) — never from metric results — and a contract test asserts it. The dev router's case (c) upgrades to dispatch `research.web_research` when hints lead with it and a subject slot exists, so the offline demo answers research pivots with fixture content.
 
 **Tech Stack:** Existing backend. New runtime dep: `httpx>=0.27` (already a test dep — promote to `[project]`). New pytest marker: `research_live`.
 
@@ -24,14 +24,14 @@
 ## File Map
 
 ```
-backend/mcp/__init__.py
-backend/mcp/registry.py                   # ToolServerRegistry + typed ResearchTool protocol + ToolInvocation result
-backend/mcp/perplexity/__init__.py
-backend/mcp/perplexity/adapter.py         # PerplexityDirectAdapter (httpx, json_schema response_format,
+backend/poseidon/mcp/__init__.py
+backend/poseidon/mcp/registry.py                   # ToolServerRegistry + typed ResearchTool protocol + ToolInvocation result
+backend/poseidon/mcp/perplexity/__init__.py
+backend/poseidon/mcp/perplexity/adapter.py         # PerplexityDirectAdapter (httpx, json_schema response_format,
                                           #   truncated-JSON recovery, degrade-to-None, timeouts)
-backend/mcp/perplexity/mcp_client.py      # PerplexityMcpClient (same typed surface, scripted-wire tested)
-backend/mcp/perplexity/schemas/web_research.json   # structured-output schema (shared by both transports)
-backend/mcp/perplexity/fixtures/*.json    # recorded/hand-authored response payloads (incl. truncated)
+backend/poseidon/mcp/perplexity/mcp_client.py      # PerplexityMcpClient (same typed surface, scripted-wire tested)
+backend/poseidon/mcp/perplexity/schemas/web_research.json   # structured-output schema (shared by both transports)
+backend/poseidon/mcp/perplexity/fixtures/*.json    # recorded/hand-authored response payloads (incl. truncated)
 backend/poseidon/tasks/research/task.yml  # enabled: true
 backend/poseidon/tasks/research/skills/web_research/{schema.py,skill.py}
 backend/poseidon/tasks/research/skills/web_research/tools/build_query.py   # D30 whitelist composer
@@ -52,12 +52,12 @@ backend/pyproject.toml                    # + httpx runtime pin + research_live 
 
 ### Task 1: ToolServerRegistry + typed interface + SkillContext.tools + Settings
 
-**Files:** `backend/mcp/{__init__,registry}.py`; `core/skills/context.py` (additive); `core/config.py` (additive); pyproject (marker + httpx promote); test `test_mcp_registry.py`.
+**Files:** `backend/poseidon/mcp/{__init__,registry}.py`; `core/skills/context.py` (additive); `core/config.py` (additive); pyproject (marker + httpx promote); test `test_mcp_registry.py`.
 
 **Interfaces (exact):**
 
 ```python
-# backend/mcp/registry.py
+# backend/poseidon/mcp/registry.py
 @dataclass(frozen=True)
 class ResearchResult:
     items: tuple[dict, ...]          # schema-validated result objects (title/url/snippet/…)
@@ -83,7 +83,7 @@ Rules pinned: unknown transport value → RuntimeError f"unknown research transp
 
 ### Task 2: Perplexity direct adapter — recovery, degrade, fixtures, live smoke
 
-**Files:** `backend/mcp/perplexity/{__init__,adapter}.py`; `schemas/web_research.json`; `fixtures/*.json`; test `test_perplexity_adapter.py`.
+**Files:** `backend/poseidon/mcp/perplexity/{__init__,adapter}.py`; `schemas/web_research.json`; `fixtures/*.json`; test `test_perplexity_adapter.py`.
 
 Adapter contract (wfs_core PerplexityClient pattern, pinned branch by branch):
 - `PerplexityDirectAdapter(api_key, model="sonar", timeout_s=30.0, client=None)` — httpx client injectable; real one lazy.
@@ -100,7 +100,7 @@ Adapter contract (wfs_core PerplexityClient pattern, pinned branch by branch):
 
 ### Task 3: MCP-transport client + transport-flip contract test
 
-**Files:** `backend/mcp/perplexity/mcp_client.py`; test `test_perplexity_mcp_client.py`.
+**Files:** `backend/poseidon/mcp/perplexity/mcp_client.py`; test `test_perplexity_mcp_client.py`.
 
 `PerplexityMcpClient(wire, schema_dir)` — `wire` is a callable/protocol `send(method: str, params: dict) -> dict` (the JSON-RPC seam; a real stdio/websocket wire is deploy-phase work — the CLIENT owns request shaping + response normalization, tested against a scripted fake wire; document this boundary honestly in the module docstring). Calls `tools/call` with `{"name": "perplexity_search", "arguments": {...}}` per the MCP tool-call shape; normalizes the MCP content envelope (text content → JSON parse → same schema validation path as the direct adapter — REUSE the adapter's parse/validate/recover helpers by importing them, no duplication) into the SAME ResearchResult. Degrade rules identical.
 THE TRANSPORT-FLIP CONTRACT TEST (D23's proof): equivalent recorded inputs through both transports → `ResearchResult` objects that are EQUAL except the `transport` field (parametrized over the clean fixture + one truncated + one degraded case).
