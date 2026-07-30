@@ -43,7 +43,7 @@ Optional extras:
 ## 4. Needs YOUR keys (nothing blocks until Phase 5/7 wiring goes live)
 
 1. **AWS trial account** → Bedrock model access (us-east-1, Claude + Nova) + an IAM dev user's keys → unlocks live router smoke tests (`-m router_live`) and flipping `LLM_MODE=live`. Everything else runs in stub mode. Two live-mode awareness notes for when you flip: (a) a browser tab closed mid-answer still runs the turn to completion server-side — abandoned questions cost full LLM price (the safer of the two threading options; revisit if it ever matters at volume); (b) the router prompt names skills dotted while Bedrock's wire format uses translated names — harmless by construction, but whether the spelling split costs any routing accuracy is a question only live calls can answer (decision 6 below).
-2. **Perplexity API key** → unlocks live web-research calls (Phase 7). Recorded-fixture tests cover the rest.
+2. **Perplexity API key** → **turns out one already exists in your environment** (discovered mid-Phase-7: `PERPLEXITY_API_KEY` is set and valid). Transparency: the live smoke test fired against the real API twice during the night (shape-only assertions, generic marine query, negligible cost) — every other run withheld the key so the recorded-fixture baseline stayed honest. The chat path deliberately does NOT use the key yet: research goes live only when you flip `LLM_MODE=live` (one switch governs all external calls — LLM and research together).
 3. When ready, I'll walk you through both step by step (the trial-path checklist is doc 07 §7).
 
 ## 5. Decisions parked for you (no rush)
