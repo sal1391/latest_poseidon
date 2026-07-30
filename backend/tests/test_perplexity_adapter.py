@@ -147,6 +147,31 @@ def test_repair_truncated_json_cannot_invent_a_missing_value():
         json.loads(repaired)
 
 
+def test_repair_truncated_json_trims_a_dangling_trailing_backslash():
+    # Fix round 1, Minor M1 (reviewer-found adversarial case): truncation
+    # landing exactly ON a backslash left `escape` pending forever -- the
+    # naively-appended closing quote was consumed AS the escaped character
+    # instead of terminating the string, so the "repaired" text was still
+    # invalid JSON. The dangling backslash must be trimmed first.
+    repaired = repair_truncated_json('{"title": "abc\\')
+
+    assert repaired == '{"title": "abc"}'
+    assert json.loads(repaired) == {"title": "abc"}
+
+
+def test_repair_truncated_json_trims_an_incomplete_unicode_escape():
+    # Fix round 1, Minor M1 (reviewer-found adversarial case): truncation
+    # mid-way through a \uXXXX escape (here, only 2 of the required 4 hex
+    # digits present) left the incomplete escape sitting right before the
+    # appended closing quote, which the JSON parser then reads as part of
+    # a still-incomplete \uXXXX rather than a real terminator. The whole
+    # incomplete escape must be trimmed first.
+    repaired = repair_truncated_json('{"a": "x\\u00')
+
+    assert repaired == '{"a": "x"}'
+    assert json.loads(repaired) == {"a": "x"}
+
+
 # ---------------------------------------------------------------------------
 # parse_with_recovery / validate_and_normalize -- the pipeline
 # repair_truncated_json feeds into.
@@ -263,7 +288,7 @@ def test_search_posts_the_pinned_request_shape():
     ]
     assert body["response_format"] == {
         "type": "json_schema",
-        "json_schema": {"schema": load_schema("web_research")},
+        "json_schema": {"name": "web_research", "schema": load_schema("web_research")},
     }
     assert "search_recency_filter" not in body
 
@@ -457,6 +482,43 @@ def test_search_never_raises_for_any_of_the_three_pinned_failure_modes():
     for instance in cases:
         result = instance.search(query="q", schema_name="web_research")
         assert result.degraded is True
+
+
+# ---------------------------------------------------------------------------
+# malformed-but-2xx envelopes -- fix round 1, Critical C1. A 2xx response
+# whose body doesn't have the expected choices[0].message.content shape
+# must degrade, never crash search() with an uncaught KeyError/IndexError/
+# TypeError. The first four cases are the reviewer's own reproductions
+# (empty choices list -> IndexError; missing choices/message/content keys
+# -> KeyError); the fifth (message not a dict -> TypeError) is this round's
+# own addition, since the fix catches TypeError too and no reviewer-named
+# case exercised that branch specifically.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "envelope",
+    [
+        pytest.param({"choices": []}, id="empty-choices-list"),
+        pytest.param({}, id="missing-choices-key"),
+        pytest.param({"choices": [{}]}, id="missing-message-key"),
+        pytest.param({"choices": [{"message": {}}]}, id="missing-content-key"),
+        pytest.param({"choices": [{"message": "not-a-dict"}]}, id="message-not-a-dict"),
+    ],
+)
+def test_search_degrades_on_a_malformed_but_2xx_envelope(envelope):
+    fake = _FakeClient(response=_FakeResponse(200, envelope))
+    instance = PerplexityDirectAdapter(api_key="k", client=fake)
+
+    result = instance.search(query="q", schema_name="web_research")
+
+    assert result == ResearchResult(
+        items=(),
+        raw_digest="0 results via direct",
+        transport="direct",
+        degraded=True,
+        degrade_reason="malformed response envelope",
+    )
 
 
 # ---------------------------------------------------------------------------

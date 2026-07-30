@@ -24,20 +24,26 @@ passes it via ``client=`` and this class never calls ``httpx.Client()`` at
 all, exactly like ``BedrockProvider`` never calls ``boto3.client(...)``
 when handed one.
 
-Never raises (:meth:`PerplexityDirectAdapter.search`): the three failure
+Never raises (:meth:`PerplexityDirectAdapter.search`): the four failure
 modes this module is pinned against -- a request timeout, a non-2xx HTTP
-response, and a response body that is not valid JSON even after truncation
-recovery -- each produce a ``ResearchResult(degraded=True, ...)`` instead of
-propagating an exception, so a skill's tool call always gets a structured
-answer to render an honest "unavailable" message from, never a crash mid
-turn. This mirrors ``BedrockProvider.invoke``'s own scope: that method
-catches botocore's ``ClientError`` specifically, not every exception a
-network call could conceivably raise, and this adapter is scoped the same
-deliberate way -- ``httpx.TimeoutException`` and a bad status code are
-caught because they are this module's three pinned cases; a stranger
-transport failure (DNS resolution, a connection reset) is NOT wrapped here
-and propagates, matching ``BedrockProvider``'s own precedent of catching a
-named exception rather than bare ``Exception``.
+response, a 2xx response whose body doesn't have the expected ``choices[0]
+.message.content`` shape (fix round 1, Critical C1), and a response body
+that is not valid JSON even after truncation recovery -- each produce a
+``ResearchResult(degraded=True, ...)`` instead of propagating an exception,
+so a skill's tool call always gets a structured answer to render an honest
+"unavailable" message from, never a crash mid turn. This mirrors
+``BedrockProvider.invoke``'s own scope: that method catches botocore's
+``ClientError`` specifically, not every exception a network call could
+conceivably raise, and this adapter is scoped the same deliberate way --
+``httpx.TimeoutException``, a bad status code, and ``(KeyError, IndexError,
+TypeError)`` around the envelope-extraction chain are caught because they
+are this module's four pinned cases; a stranger transport failure (DNS
+resolution, a connection reset) is NOT wrapped here and propagates,
+matching ``BedrockProvider``'s own precedent of catching named exceptions
+rather than bare ``Exception``. (For the record: ``BedrockProvider`` has
+the identical blind spot C1 fixed here on its own response-extraction
+chain -- confirmed during this fix round's review, ledgered for a P5 fix
+elsewhere, not touched by this module.)
 
 Truncation recovery (:func:`repair_truncated_json`): Perplexity, like any
 LLM-backed API, can hit its own output-token ceiling mid-response, handing
@@ -100,6 +106,7 @@ _SCHEMAS_DIR = Path(__file__).resolve().parent / "schemas"
 _REASON_TIMEOUT = "perplexity request timed out"
 _REASON_PARSE_FAILED = "could not parse perplexity response"
 _REASON_INVALID_SCHEMA = "perplexity response missing required fields"
+_REASON_MALFORMED_ENVELOPE = "malformed response envelope"
 
 
 def repair_truncated_json(text: str) -> str:
@@ -119,13 +126,35 @@ def repair_truncated_json(text: str) -> str:
     this never checks bracket TYPE agreement before popping. That
     assumption fails only for genuinely corrupted (not merely truncated)
     input, which this function was never asked to repair.
+
+    Fix round 1 (Minor M1): closing an unterminated string with a bare
+    appended ``"`` is only correct if the text isn't ALSO cut off mid
+    escape sequence -- two adversarial cases the reviewer found land
+    exactly there: truncation landing on a bare trailing backslash (the
+    appended quote is then read as THAT backslash's escaped character,
+    not a terminator) and truncation mid-``\\uXXXX`` (fewer than 4 hex
+    digits present -- the appended quote is read as a stray hex digit,
+    or worse, is simply not enough to complete the escape). Both are
+    trimmed back to the last KNOWN-good position before the closing quote
+    is appended, rather than papered over with one more character.
     """
     stack: list[str] = []
     in_string = False
     escape = False
+    # Hex digits still expected to complete an in-progress \uXXXX escape;
+    # 0 whenever not currently inside one. Tracked separately from
+    # `escape` because a \u escape is 6 characters wide (backslash, "u",
+    # 4 hex digits), not the single extra character every other JSON
+    # string escape (\", \\, \n, ...) consumes.
+    unicode_remaining = 0
     for ch in text:
         if in_string:
+            if unicode_remaining > 0:
+                unicode_remaining -= 1
+                continue
             if escape:
+                if ch == "u":
+                    unicode_remaining = 4
                 escape = False
             elif ch == "\\":
                 escape = True
@@ -142,6 +171,18 @@ def repair_truncated_json(text: str) -> str:
 
     repaired = text
     if in_string:
+        if unicode_remaining > 0:
+            # Trim the whole incomplete escape: "\u" (2 chars) plus
+            # whatever hex digits already arrived (4 - unicode_remaining
+            # of them) -- there is no way to complete it with information
+            # this function does not have, so it is dropped entirely
+            # rather than padded with guessed digits.
+            repaired = repaired[: -(2 + (4 - unicode_remaining))]
+        elif escape:
+            # A dangling trailing backslash: drop it so the closing quote
+            # below terminates the string instead of being consumed as
+            # that backslash's escaped character.
+            repaired = repaired[:-1]
         repaired += '"'
     closers = {"{": "}", "[": "]"}
     while stack:
@@ -251,11 +292,15 @@ class PerplexityDirectAdapter:
         """One Perplexity chat-completions call: build the request, POST
         it, parse+recover+validate the response. Never raises -- see the
         module docstring's "Never raises" paragraph for exactly which
-        three failures degrade instead of propagating.
+        four failures degrade instead of propagating.
         """
         schema = load_schema(schema_name)
         payload = _build_payload(
-            query=query, model=self._model, schema=schema, recency_days=recency_days
+            query=query,
+            model=self._model,
+            schema_name=schema_name,
+            schema=schema,
+            recency_days=recency_days,
         )
         headers = {
             "Authorization": f"Bearer {self._api_key}",
@@ -270,7 +315,16 @@ class PerplexityDirectAdapter:
         if response.status_code < 200 or response.status_code >= 300:
             return _degrade(f"perplexity http {response.status_code}")
 
-        content = response.json()["choices"][0]["message"]["content"]
+        try:
+            content = response.json()["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            # Fix round 1 (Critical C1): a 2xx response whose body doesn't
+            # have the expected shape (empty choices list -> IndexError;
+            # a missing choices/message/content key -> KeyError; a
+            # non-dict "message" -> TypeError on the next index) must
+            # degrade like every other malformed-response case, never
+            # crash search() with an uncaught exception from this chain.
+            return _degrade(_REASON_MALFORMED_ENVELOPE)
         parsed = parse_with_recovery(content)
         if parsed is None:
             return _degrade(_REASON_PARSE_FAILED)
@@ -286,16 +340,30 @@ class PerplexityDirectAdapter:
         )
 
 
-def _build_payload(*, query: str, model: str, schema: dict, recency_days: int | None) -> dict:
+def _build_payload(
+    *, query: str, model: str, schema_name: str, schema: dict, recency_days: int | None
+) -> dict:
     """The outbound request body -- see the module docstring's opening
     paragraph and the Task 2 brief for the pinned shape: a system message
     carrying the marine-lens line, a user message that is exactly the
     query (no template wrapping -- the D30 egress whitelist composer,
     Task 4, is what builds ``query`` FROM parsed slots; this function
-    never sees slots, only the finished string), and
-    ``response_format``'s ``json_schema.schema`` set to the loaded schema
-    dict verbatim (no extra ``name`` key -- the brief pins exactly
-    ``{"schema": ...}``, nothing more, inside ``json_schema``).
+    never sees slots, only the finished string), and ``response_format``'s
+    ``json_schema.schema`` set to the loaded schema dict verbatim.
+
+    Fix round 1 (Important I1): ``json_schema.name`` is now set to
+    ``schema_name`` -- the brief's originally pinned shape omitted it
+    (``{"schema": ...}`` alone), but review found Perplexity/OpenAI-
+    compatible ``json_schema`` documentation split on whether ``name`` is
+    required, with some real-world reports of a 400 when it is absent.
+    Adding it is harmless if the field turns out to be optional and fixes
+    a permanent silent-degrade if it is not. ``schema_name`` (not a
+    hardcoded literal) is used deliberately: this function -- like
+    :func:`load_schema` -- stays correct for whatever schema is actually
+    being requested rather than assuming ``"web_research"`` specifically,
+    matching this module's existing schema-name-agnostic design. See
+    ``task-2-report.md``'s "Fix round 1" section for the live-call
+    evidence this was checked against.
     """
     payload: dict[str, Any] = {
         "model": model,
@@ -303,7 +371,10 @@ def _build_payload(*, query: str, model: str, schema: dict, recency_days: int | 
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": query},
         ],
-        "response_format": {"type": "json_schema", "json_schema": {"schema": schema}},
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": schema_name, "schema": schema},
+        },
     }
     recency_filter = RECENCY_FILTERS.get(recency_days) if recency_days is not None else None
     if recency_filter is not None:
@@ -316,7 +387,18 @@ def _degrade(reason: str) -> ResearchResult:
     ``raw_digest`` convention (``"0 results via direct"``, matching
     :mod:`poseidon.mcp.registry`'s own docstring example of
     ``"3 results via direct"`` for the success case) is written in
-    exactly one place."""
+    exactly one place.
+
+    Fix round 1 (Minor M2): ``"0 results via direct"`` is NOT a reliable
+    signal of degradation by itself -- a genuinely successful call that
+    happened to validate zero items (an empty ``items`` array the model
+    legitimately returned) would produce the exact same string via the
+    success path in :meth:`PerplexityDirectAdapter.search`. A caller (or
+    a proof-line renderer) MUST branch on ``.degraded``, never infer
+    failure by parsing or pattern-matching ``raw_digest`` text -- that
+    field is provenance for a human reading a transcript, not a machine-
+    readable status code.
+    """
     return ResearchResult(
         items=(),
         raw_digest=f"0 results via {_TRANSPORT}",
