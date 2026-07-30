@@ -34,7 +34,7 @@ flowchart LR
 
 ## Phase 0 — Scaffold and toolchain
 
-- Deliverables: monorepo layout (doc 00 §6, incl. `backend/mcp/`); FastAPI hello + `/health/*`;
+- Deliverables: monorepo layout (doc 00 §6, incl. `backend/poseidon/mcp/`); FastAPI hello + `/health/*`;
   Vite shell; docker-compose (Postgres+pgvector, MinIO); Alembic baseline; lint/format; pytest +
   vitest harnesses each with one real test; `.env.example`; pydantic-settings validation
   (crash-on-missing) covering the full contract of doc 07 §6.
@@ -117,7 +117,7 @@ flowchart LR
 
 ## Phase 7 — Web research skill + MCP layer
 
-- Deliverables: `backend/mcp/` registry + Perplexity direct adapter (schemas ported, truncated-
+- Deliverables: `backend/poseidon/mcp/` registry + Perplexity direct adapter (schemas ported, truncated-
   JSON recovery) and MCP-transport client behind `TOOL_TRANSPORT_PERPLEXITY`;
   `research.web_research` skill with the marine-industry lens; verbose `tool_event` labels;
   pivot routing (internal answer → "any relevant news on customer X?").

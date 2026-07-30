@@ -81,7 +81,7 @@ flowchart LR
     PIPE["Deterministic parse pipeline<br/>(dates, customer, skill hints)"]
     ROUTER["LLM router"]
     SKILLS["Task/skill slices<br/>(deterministic core)"]
-    MCP["MCP / tool adapters<br/>(backend/mcp)"]
+    MCP["MCP / tool adapters<br/>(backend/poseidon/mcp)"]
     DATA["Data access layer<br/>(ontology-driven)"]
     RUNLOG["Run log + feedback"]
   end
