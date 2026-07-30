@@ -4,10 +4,13 @@ and the two failure surfaces the framework promises.
 Two kinds of task package are exercised here.
 
 *The real one* — ``poseidon.tasks`` — proves the repo's own folder law is
-honored end to end: two router-visible skills are registered today
-(``data_qa.metric_query``, joined by ``research.web_research`` at Phase 7
-Task 4), each one's JSON schema is generated from its own ``Args`` model,
-and dispatching either goes through argument validation first.
+honored end to end: four router-visible skills are registered today
+(``data_qa.metric_query`` and ``research.web_research`` from Phase 7 Task 4,
+joined by ``customer_insight.existing_customer_brief`` and
+``customer_insight.new_prospect_brief`` at Phase 8 Task 4 -- see
+``test_discovery_finds_all_four_registered_skills`` below), each one's JSON
+schema is generated from its own ``Args`` model, and dispatching any of them
+goes through argument validation first.
 
 *Throwaway ones* — built under ``tmp_path`` by the ``tasks_package`` fixture —
 prove the fail-fast rules. A permanently broken skill cannot live in the repo
@@ -180,14 +183,25 @@ def tasks_package(tmp_path, monkeypatch) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def test_discovery_finds_metric_query_and_research_only():
-    """Phase 7 Task 4: ``research.web_research`` joins ``data_qa.metric_
-    query`` as the second enabled, registered skill -- customer_insight
-    stays disabled (its ``task.yml`` still carries ``enabled: false``), so
-    the real tree's discovered set is exactly these two, in sorted-by-id
-    order (``registry.py``'s own discovery-is-deterministic contract)."""
+def test_discovery_finds_all_four_registered_skills():
+    """Phase 8 Task 4: ``customer_insight/task.yml`` flips to
+    ``enabled: true`` and both ``existing_customer_brief`` and
+    ``new_prospect_brief`` now have a ``schema.py`` -- the real tree's
+    discovered set grows from two to four, in sorted-by-id order
+    (``registry.py``'s own discovery-is-deterministic contract):
+    ``customer_insight`` sorts before ``data_qa``, which sorts before
+    ``research``; within ``customer_insight``, ``existing_customer_brief``
+    sorts before ``new_prospect_brief``. Named ids, never a bare
+    ``len(...) == 4`` -- same discipline Phase 7 Task 4's own version of
+    this test used for the two-skill set (see git history for that
+    version's exact wording)."""
     reg = SkillRegistry.discover()
-    assert reg.skill_ids == ["data_qa.metric_query", "research.web_research"]
+    assert reg.skill_ids == [
+        "customer_insight.existing_customer_brief",
+        "customer_insight.new_prospect_brief",
+        "data_qa.metric_query",
+        "research.web_research",
+    ]
 
 
 def test_schema_dispatch_parity():

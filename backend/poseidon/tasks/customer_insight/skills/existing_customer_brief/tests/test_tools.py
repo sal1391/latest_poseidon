@@ -17,11 +17,15 @@ are pinned:
    ``data_qa.metric_query``'s ``test_skill.py`` — for customer "Northstar
    Lines" anchored on 2026-07-01 (``@pytest.mark.pg``, skipped without a
    reachable, seeded Postgres).
-3. That ``customer_insight`` is STILL invisible to
-   ``SkillRegistry.discover()`` even though its tools are now real,
-   importable modules (imported at the top of this very file) — proving
-   ``enabled: false`` in ``task.yml`` is doing its job, not merely that the
-   skill doesn't exist yet.
+3. That ``customer_insight`` IS NOW visible to ``SkillRegistry.discover()``
+   as of Phase 8 Task 4, which flips ``task.yml`` to ``enabled: true`` --
+   the invariant this test pinned before Task 4 ("no customer_insight id
+   anywhere in the discovered set") no longer holds, by design: that is the
+   change Task 4 makes. ``backend/tests/test_skill_registry.py``'s own
+   ``test_discovery_finds_all_four_registered_skills`` is the canonical,
+   exhaustive pin (named ids, sorted order); this copy still lives with the
+   tools it is actually about and checks only that both new skill ids are
+   now present.
 4. ``build_brief_pdf``'s pure ``slug`` helper (offline, no marker needed —
    plain string logic) and its full markdown -> HTML -> PDF -> MinIO pipeline
    end to end (``@pytest.mark.pdf`` + ``@pytest.mark.minio``, skipped unless
@@ -251,24 +255,21 @@ def gp_by_port(rows: list[dict]) -> list[tuple[str, float]]:
 # ---------------------------------------------------------------------------
 
 
-def test_discovery_still_skips_the_disabled_customer_insight_task():
-    """``customer_insight/task.yml`` ships ``enabled: false`` — discovery
-    must keep skipping the whole task, exactly as before this task's tools
-    existed. Task 1/2 pin the full registered set in
-    ``backend/tests/test_skill_registry.py``'s own ``test_discovery_finds_
-    metric_query_and_research_only`` (Phase 7 Task 4 renamed it when
-    ``research.web_research`` joined ``data_qa.metric_query`` as the second
-    enabled skill); this copy lives with the tools it is actually about and
-    checks only the ONE invariant this file cares about -- no
-    customer_insight id anywhere in the discovered set -- so a regression
-    here is caught next to the change that would cause it (e.g. an
-    accidental ``schema.py`` dropped into this skill directory, which would
-    make it router-visible while still unfinished), and this assertion
-    itself needs no edit the next time an unrelated task's skill count
-    changes.
+def test_discovery_now_finds_both_customer_insight_brief_skills():
+    """``customer_insight/task.yml`` ships ``enabled: true`` as of Phase 8
+    Task 4 -- discovery now finds both brief skills, the opposite of what
+    this test pinned before Task 4 (see the module docstring's item 3 for
+    the full history). ``backend/tests/test_skill_registry.py``'s own
+    ``test_discovery_finds_all_four_registered_skills`` is the canonical,
+    exhaustive, named-id/sorted-order pin; this copy lives with the tools
+    it is actually about and checks only that both new skill ids are now
+    present, so a regression here (e.g. a ``task.yml`` accidentally
+    reverted to ``enabled: false``) is caught next to the change that would
+    cause it.
     """
     reg = SkillRegistry.discover()
-    assert not any(skill_id.startswith("customer_insight.") for skill_id in reg.skill_ids)
+    assert "customer_insight.existing_customer_brief" in reg.skill_ids
+    assert "customer_insight.new_prospect_brief" in reg.skill_ids
 
 
 # ---------------------------------------------------------------------------

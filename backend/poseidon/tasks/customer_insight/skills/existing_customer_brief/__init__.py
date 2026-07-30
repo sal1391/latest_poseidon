@@ -1,11 +1,12 @@
-"""Home of the future ``customer_insight.existing_customer_brief`` skill
-(Phase 8; doc 02 §4).
+"""Home of the ``customer_insight.existing_customer_brief`` skill
+(Phase 8 Task 4; doc 02 §4).
 
-No ``schema.py``/``skill.py`` here yet — a ``skills/<name>/`` directory only
-becomes a router-visible skill once it has a ``schema.py``
-(``SkillRegistry._skill_dirs``), and the parent task is disabled besides. For
-now this directory holds only the skill's future tools, built and tested
-ahead of the skill that will wire them together.
+``schema.py``/``skill.py`` land here in Phase 8 Task 4, which is also when
+the parent task's ``task.yml`` flips to ``enabled: true`` -- before that,
+this directory held only the skill's tools (``fetch_metrics``,
+``fetch_top_ports``, ``build_brief_pdf``), built and tested ahead of the
+skill that now wires them together (see each tool module's own docstring
+for that history).
 
 **Proof-line ownership.** The tools here contribute DETAIL proof lines only
 (what each one did: which customer, which windows, how many metrics were

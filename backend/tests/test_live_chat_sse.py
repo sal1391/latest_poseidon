@@ -50,6 +50,12 @@ _METRIC_QUERY_DESCRIPTION = REGISTRY.get("data_qa.metric_query").description
 # second enabled skill -- see test_get_skills_returns_registry_backed_shape
 # below.
 _RESEARCH_DESCRIPTION = REGISTRY.get("research.web_research").description
+# Phase 8 Task 4: both customer_insight brief skills join as the registry's
+# third and fourth entries (customer_insight sorts before data_qa).
+_EXISTING_CUSTOMER_BRIEF_DESCRIPTION = REGISTRY.get(
+    "customer_insight.existing_customer_brief"
+).description
+_NEW_PROSPECT_BRIEF_DESCRIPTION = REGISTRY.get("customer_insight.new_prospect_brief").description
 
 
 @pytest.fixture
@@ -429,9 +435,11 @@ async def test_unhandled_exception_with_no_writer_still_ends_stream_cleanly(monk
 
 @pytest.mark.anyio
 async def test_get_skills_returns_registry_backed_shape():
-    """Phase 7 Task 4: research.web_research is now the registry's second
-    entry (``registry.skill_ids``' own sorted-by-id order -- "data_qa" <
-    "research" -- so metric_query still comes first)."""
+    """Phase 8 Task 4: both customer_insight brief skills join the registry
+    (``registry.skill_ids``' own sorted-by-id order -- "customer_insight" <
+    "data_qa" < "research", and within customer_insight,
+    "existing_customer_brief" < "new_prospect_brief" -- so the two brief
+    skills now come FIRST, ahead of metric_query/web_research)."""
     app = _live_app()
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
@@ -440,6 +448,16 @@ async def test_get_skills_returns_registry_backed_shape():
     assert r.status_code == 200
     body = r.json()
     assert body == [
+        {
+            "id": "customer_insight.existing_customer_brief",
+            "label": "Existing customer brief",
+            "description": _EXISTING_CUSTOMER_BRIEF_DESCRIPTION,
+        },
+        {
+            "id": "customer_insight.new_prospect_brief",
+            "label": "New prospect brief",
+            "description": _NEW_PROSPECT_BRIEF_DESCRIPTION,
+        },
         {
             "id": "data_qa.metric_query",
             "label": "Metric query",
