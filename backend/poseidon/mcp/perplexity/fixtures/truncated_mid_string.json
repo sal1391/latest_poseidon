@@ -1,0 +1,20 @@
+{
+  "id": "ppl-fixture-trunc-string-001",
+  "model": "sonar",
+  "object": "chat.completion",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "length",
+      "message": {
+        "role": "assistant",
+        "content": "{\"items\": [{\"title\": \"Maersk expands biofuel bunkering in Singapore\", \"url\": \"https://example.com/maersk-biofuel-singapore\", \"snippet\": \"Maersk announced an expansion"
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 42,
+    "completion_tokens": 128,
+    "total_tokens": 170
+  }
+}

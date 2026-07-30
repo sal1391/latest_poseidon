@@ -11,13 +11,28 @@ message that used a typed character could silently pin the wrong codepoint.
 the ``poseidon.mcp`` package modules it exercises.
 
 The direct/mcp transport-resolution tests register scripted stand-ins
-directly in ``sys.modules`` rather than importing real adapter/client code:
-``poseidon/mcp/perplexity/adapter.py`` (Task 2) and
-``poseidon/mcp/perplexity/mcp_client.py`` (Task 3) do not exist yet. This
-proves ``_build_research`` targets the correct transport-specific module
-today without depending on either task; Task 2/3 replace the two
-resolution tests with real-construction tests once those modules ship for
-real.
+directly in ``sys.modules`` rather than importing real adapter/client code.
+This proves ``_build_research`` targets the correct transport-specific
+module by dotted path, independent of whatever real implementation (if
+any) exists on disk -- which is exactly why they did NOT need replacing
+now that Task 2's ``poseidon/mcp/perplexity/adapter.py`` has shipped for
+real (a prior draft of this docstring predicted they would be; disclosed
+in Task 2's report as a deliberate choice not to touch them, since a
+sys.modules-injected fake proves the SAME thing regardless of module
+existence, unlike the test named below).
+``poseidon/mcp/perplexity/mcp_client.py`` (Task 3) still does not exist.
+
+Task 1's review (Important 1) flagged that ONE proof in this file was NOT
+independent of module existence:
+``test_direct_transport_import_failure_names_the_missing_module_today``
+asserted a real ``ModuleNotFoundError``,
+which stopped being true the moment Task 2 shipped a real, importable
+``poseidon.mcp.perplexity.adapter`` -- that test is retired (its own
+docstring said it would be) and replaced by
+``test_registry_construction_imports_nothing_until_research_is_accessed``
+below, which uses an import-counting ``sys.meta_path`` finder instead of
+relying on the transport module's absence, so it stays meaningful whether
+or not ``adapter.py``/``mcp_client.py`` exist.
 
 ``poseidon.mcp`` lives inside the ``poseidon`` package by amendment (Task 1
 originally shipped a bare top-level ``mcp``, matching doc 02 section 7's
@@ -86,9 +101,16 @@ def test_construction_never_imports_a_transport_module(transport):
     """Offline boots build a ToolServerRegistry for every SkillContext
     unconditionally (see the module docstring's laziness rule): __init__
     must not construct -- or even import -- a transport client. Proof: this
-    must not raise, even though neither poseidon.mcp.perplexity.adapter
-    (Task 2) nor poseidon.mcp.perplexity.mcp_client (Task 3) exists on disk
-    yet -- an eager resolution would hit that missing module immediately.
+    must not raise -- true for "mcp" because poseidon.mcp.perplexity.
+    mcp_client (Task 3) does not exist on disk yet (an eager resolution
+    would hit that missing module immediately), and true for "direct"
+    regardless of Task 2 having since shipped a real, importable
+    poseidon.mcp.perplexity.adapter, since construction must stay lazy
+    either way. This test alone can no longer DISTINGUISH "correctly lazy"
+    from "eagerly imports" for "direct" now that the module exists -- see
+    test_registry_construction_imports_nothing_until_research_is_accessed
+    below for the module-existence-independent version of that proof
+    (Task 1 review, Important 1).
     """
     ToolServerRegistry(_settings(tool_transport_perplexity=transport))
 
@@ -202,22 +224,67 @@ def test_mcp_transport_resolves_mcp_perplexity_mcp_client(monkeypatch):
     assert len(calls) == 1
 
 
-def test_direct_transport_import_failure_names_the_missing_module_today():
-    """Documents current reality without pinning it forever: today, with
-    neither Task 2 nor Task 3 shipped, resolving ANY transport fails at the
-    same "poseidon.mcp.perplexity" package -- neither adapter.py nor
-    mcp_client.py exists, so the failure happens one level up, before
-    Python ever looks for either file specifically (see the two
-    sys.modules-scripted tests above for the per-transport proof). This
-    test is expected to stop applying once Task 2 gives "direct" something
-    real to construct.
+class _ImportCountingFinder:
+    """A ``sys.meta_path`` finder that counts ``find_spec`` calls for
+    ``poseidon.mcp.perplexity`` (bare or any dotted child) without ever
+    handling them itself -- it always returns ``None``, deferring to
+    whichever real finder is already on ``sys.meta_path`` (``PathFinder``
+    et al.), so importing still succeeds exactly as it would without this
+    finder installed. Installed at index 0 for a single test's duration --
+    see the test below that uses it -- so it observes every import ATTEMPT
+    for the prefix before the normal machinery resolves it -- this is what
+    makes the laziness proof independent of whether
+    ``poseidon.mcp.perplexity.adapter`` actually exists on disk: it counts
+    attempts, not failures.
     """
-    registry = ToolServerRegistry(_settings(tool_transport_perplexity="direct"))
 
-    with pytest.raises(ModuleNotFoundError) as err:
+    def __init__(self) -> None:
+        self.count = 0
+
+    def find_spec(self, fullname, path, target=None):
+        if fullname == "poseidon.mcp.perplexity" or fullname.startswith("poseidon.mcp.perplexity."):
+            self.count += 1
+        return None
+
+
+def test_registry_construction_imports_nothing_until_research_is_accessed(monkeypatch):
+    """CARRIED from Task 1's review (Important 1): the retired
+    ``ModuleNotFoundError``-based proof (see the module docstring) held
+    only while ``poseidon.mcp.perplexity`` did not exist on disk. This
+    replaces it with a guard that holds regardless -- an import-counting
+    ``sys.meta_path`` finder proves ``ToolServerRegistry.__init__`` imports
+    NOTHING under ``poseidon.mcp.perplexity``, and that the first
+    ``.research`` property access is what triggers the first import.
+
+    ``sys.modules`` is force-cleared for the relevant entries first: pytest
+    collects (imports) every test module up front, so
+    ``test_perplexity_adapter.py``'s own top-level
+    ``from poseidon.mcp.perplexity import adapter`` has already populated
+    ``sys.modules`` by the time this test body runs, regardless of file
+    execution order -- without clearing it, Python would satisfy the
+    import from the module cache before ever consulting ``sys.meta_path``,
+    and this test would prove nothing. ``monkeypatch.delitem`` restores
+    whatever was there afterward, so no other test sees a different
+    module object because of this one.
+    """
+    for name in (
+        "poseidon.mcp.perplexity",
+        "poseidon.mcp.perplexity.adapter",
+        "poseidon.mcp.perplexity.mcp_client",
+    ):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+
+    finder = _ImportCountingFinder()
+    sys.meta_path.insert(0, finder)
+    try:
+        registry = ToolServerRegistry(_settings(tool_transport_perplexity="direct"))
+        assert finder.count == 0  # __init__ imports nothing
+
         _ = registry.research  # property access is the side effect under test
 
-    assert err.value.name == "poseidon.mcp.perplexity"
+        assert finder.count >= 1  # the access above triggered (at least) one import
+    finally:
+        sys.meta_path.remove(finder)
 
 
 # ---------------------------------------------------------------------------

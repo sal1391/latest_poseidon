@@ -18,9 +18,13 @@ should ever need Perplexity credentials or an HTTP client to exist. This
 mirrors :class:`poseidon.core.llm.roles.RoleClient`'s provider seam: real
 providers are supplied by the caller rather than constructed as a side
 effect of wiring up the object graph; here that idea runs one indirection
-further, since there is no live provider to inject yet at all (Tasks 2-3
-have not shipped) -- even the IMPORT of a transport's module is deferred to
-first use.
+further -- even now that Task 2 has shipped a real provider a caller COULD
+inject (``PerplexityDirectAdapter``, via ``overrides``), the IMPORT of a
+transport's module stays deferred to first use regardless. Laziness here
+was never contingent on whether a real implementation existed (it did not,
+for either transport, when this was first written); it is that a skill
+which never calls ``ctx.tools.research`` must never pay for the import
+either, which stays true forever, not just until Task 2/3 shipped.
 
 ``overrides`` is that same seam's other half. Passing
 ``overrides={"research": fake}`` makes ``.research`` return ``fake``
@@ -28,16 +32,25 @@ unconditionally: no transport is resolved and no import is attempted, which
 is how tests inject a scripted tool and how local dev runs without a
 Perplexity key (a fixture-backed tool installed by ``api/app.py``, Task 4).
 
-Task 1 ships this registry and the typed interface only. The transports
-themselves (``poseidon/mcp/perplexity/adapter.py`` Task 2,
-``poseidon/mcp/perplexity/mcp_client.py`` Task 3) do not exist on disk yet,
-so ``_build_research`` imports them LAZILY -- inside the branch that needs
-them, not at module load time -- for two reasons: importing a module that
-does not exist would break every caller of this file before Task 2/3 ship,
-and a deferred import is the same offline-safety property this module
-already promises, one layer further down (the cost of even LOOKING for an
-HTTP-client-carrying module is paid on first use, not by every process that
-merely imports the registry).
+Task 1 shipped this registry and the typed interface. Task 2 has since
+shipped the "direct" transport for real (``poseidon/mcp/perplexity/
+adapter.py``); ``poseidon/mcp/perplexity/mcp_client.py`` (Task 3, "mcp")
+does not exist on disk yet. ``_build_research`` imports each transport
+LAZILY regardless -- inside the branch that needs it, not at module load
+time -- for two reasons that hold whether or not the target module exists:
+importing a module that does not exist would break every caller of this
+file before it ships (still true for "mcp" today), and a deferred import
+is the same offline-safety property this module already promises, one
+layer further down (the cost of even LOOKING for an HTTP-client-carrying
+module is paid on first use, not by every process that merely imports the
+registry) -- this SECOND reason is the one that keeps mattering even after
+a transport ships for real, which is why the import stays inside the
+branch rather than moving to module load time now that "direct" has
+something real to import. ``test_mcp_registry.py``'s
+``test_registry_construction_imports_nothing_until_research_is_accessed``
+guards this with an import-counting ``sys.meta_path`` finder rather than
+relying on either module's absence, precisely so the proof survives both
+this transition and Task 3's eventual one.
 
 This package lives at ``poseidon.mcp`` -- inside the ``poseidon`` package,
 not beside it -- specifically so its top-level name is ``poseidon``, never
@@ -117,13 +130,26 @@ class ToolServerRegistry:
         imports ``poseidon.mcp.perplexity`` (see the module docstring for
         why that import is deferred to here instead of module load time).
 
-        The constructor keyword arguments below are provisional: Task 2
-        (``PerplexityDirectAdapter``) and Task 3 (``PerplexityMcpClient``)
-        own their real signatures, and neither module exists on disk yet,
-        so neither call below can execute today -- the ``from ... import``
-        line always raises first. What this method pins today is which
-        DOTTED PATH each transport resolves to, not what its constructor
-        accepts.
+        The "direct" branch's keyword argument is no longer provisional:
+        Task 2 shipped ``PerplexityDirectAdapter``'s real signature
+        (``api_key``, ``model="sonar"``, ``timeout_s=30.0``,
+        ``client=None``) in ``poseidon/mcp/perplexity/adapter.py``, and
+        ``api_key=...`` below already matched it exactly -- checked
+        against the brief's pinned signature during Task 2, no
+        disagreement found, so no call-site change was needed; only this
+        docstring's "provisional" framing was stale, corrected here.
+        ``model``/``timeout_s``/``client`` are left at their constructor
+        defaults since ``Settings`` has no per-transport override for them
+        today -- a future task that wants one adds the ``Settings`` field
+        and threads it through here, not a reason to pass anything today.
+
+        The "mcp" branch's keyword argument REMAINS provisional: Task 3
+        (``PerplexityMcpClient``) has not shipped, so
+        ``poseidon.mcp.perplexity.mcp_client`` does not exist yet and that
+        call still cannot execute -- the ``from ... import`` line raises
+        first for that branch only. What this method pins for "mcp" today
+        is still just which DOTTED PATH it resolves to, not what its
+        constructor accepts.
         """
         transport = self._settings.tool_transport_perplexity
         if transport == "direct":

@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "WebResearchResult",
+  "type": "object",
+  "description": "Structured web-research answer for the marine fuels and shipping-services lens (Poseidon Phase 7, doc 02 section 7). Minimal v1 -- versioned by filename: a future revision ships as web_research_v2.json rather than mutating this file, since schema_name (ResearchTool.search's argument) selects which file to load by name.",
+  "required": ["items"],
+  "properties": {
+    "items": {
+      "type": "array",
+      "description": "Individual research findings, ordered by relevance as returned by the model.",
+      "items": {
+        "type": "object",
+        "required": ["title", "url", "snippet", "relevance"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Headline or title of the source."
+          },
+          "url": {
+            "type": "string",
+            "description": "Source URL."
+          },
+          "snippet": {
+            "type": "string",
+            "description": "A short excerpt or paraphrase supporting the finding."
+          },
+          "relevance": {
+            "type": "string",
+            "description": "Why this source matters to the marine fuels and shipping-services query."
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "string",
+      "description": "A short overall synthesis of the items, in the marine fuels and shipping-services lens."
+    }
+  }
+}

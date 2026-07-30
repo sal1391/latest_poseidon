@@ -1,0 +1,20 @@
+{
+  "id": "ppl-fixture-clean-001",
+  "model": "sonar",
+  "object": "chat.completion",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "{\"items\": [{\"title\": \"Maersk expands biofuel bunkering in Singapore\", \"url\": \"https://example.com/maersk-biofuel-singapore\", \"snippet\": \"Maersk announced an expansion of its biofuel bunkering program at the Port of Singapore.\", \"relevance\": \"Directly relevant to marine biofuel adoption trends in the region.\"}, {\"title\": \"IMO 2030 targets reshape bunker fuel demand\", \"url\": \"https://example.com/imo-2030-bunker-demand\", \"snippet\": \"New IMO greenhouse gas targets for 2030 are expected to shift demand toward low-carbon marine fuels.\", \"relevance\": \"Provides regulatory context for shipping-services fuel transition planning.\"}], \"summary\": \"Recent coverage highlights growing biofuel bunkering capacity in Singapore and regulatory pressure from IMO 2030 targets pushing carriers toward lower-carbon marine fuels.\"}"
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 42,
+    "completion_tokens": 128,
+    "total_tokens": 170
+  }
+}
