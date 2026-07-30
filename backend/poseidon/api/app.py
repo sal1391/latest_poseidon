@@ -90,21 +90,27 @@ def _wire_live_chat(app: FastAPI) -> None:
     construct, safe to share" discipline ``deploy_mode == "local"``'s own
     ``artifact_store`` wiring uses: ``RoleClient``/``PromptRegistry`` touch
     only a packaged YAML file and a prompts directory, ``ConversationState
-    Store`` is explicitly meant to be ONE shared instance (its whole job is
-    being shared mutable state across requests -- see its own module
-    docstring), and ``SyntheticDataClient`` holds nothing but a DSN string
-    (its own module docstring), so one long-lived instance behaves
-    identically to a fresh one per request -- unlike ``dev_runner.py``'s
-    per-request construction, there is no connection or other per-call state
-    here to keep isolated between requests. ``RoleClient`` registers BOTH the
-    stub router (``DevDeterministicRouter``, what actually answers in
-    ``LLM_MODE=stub``) and the real Bedrock provider (what answers in
-    ``LLM_MODE=live`` with ``llm_profile=bedrock``) -- the two canonical
-    shapes ``roles.py``'s own docstring documents; registering both at once
-    is harmless (``RoleClient.invoke`` reads exactly one key per call).
+    Store``/``TranscriptStore`` (Task 5 amendment) are both explicitly meant
+    to be ONE shared instance each (their whole job is being shared mutable
+    state across requests -- see their own module docstrings), and
+    ``SyntheticDataClient`` holds nothing but a DSN string (its own module
+    docstring), so one long-lived instance behaves identically to a fresh
+    one per request -- unlike ``dev_runner.py``'s per-request construction,
+    there is no connection or other per-call state here to keep isolated
+    between requests. ``RoleClient`` registers BOTH the stub router
+    (``DevDeterministicRouter``, what actually answers in ``LLM_MODE=stub``)
+    and the real Bedrock provider (what answers in ``LLM_MODE=live`` with
+    ``llm_profile=bedrock``) -- the two canonical shapes ``roles.py``'s own
+    docstring documents; registering both at once is harmless
+    (``RoleClient.invoke`` reads exactly one key per call).
     """
     settings = app.state.settings
     app.state.conversation_state_store = ConversationStateStore()
+    # Phase 6 Task 5 amendment: the live bootstrap routes' own transcript
+    # store -- see live_chat.py's module docstring ("Task 5 amendment: the
+    # live bootstrap routes") for why this is a SEPARATE object from
+    # conversation_state_store above, not a field added to it.
+    app.state.transcript_store = live_chat.TranscriptStore()
     app.state.role_client = RoleClient(
         settings, providers={"stub": DevDeterministicRouter(), "bedrock": BedrockProvider()}
     )

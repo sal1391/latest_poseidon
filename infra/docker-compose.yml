@@ -43,6 +43,13 @@ services:
       LLM_PROFILE: bedrock
       LLM_MODE: stub
       TOOL_TRANSPORT_PERPLEXITY: direct
+      # Phase 6 Task 5 cutover: the real execute_turn pipeline (poseidon/api/
+      # live_chat.py) now serves the frontend instead of mock_chat.py's
+      # scripted demo -- flipped only after the doc-08 E2E suite passed
+      # against a locally-constructed live app (tests/test_chat_e2e_scripted.py,
+      # -m pg). Default stays "mock" everywhere this variable is absent
+      # (poseidon/core/config.py's own Settings field).
+      CHAT_MODE: live
     volumes:
       - "../backend:/app"
       # `poseidon.core.ontology.loader` and `poseidon.scripts.generate_synthetic`

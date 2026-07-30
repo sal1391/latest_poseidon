@@ -235,6 +235,110 @@ curl -s -X POST localhost:8000/api/dev/skills/data_qa.metric_query/run \
 {"ok":false,"parts":[],"proof":[],"artifacts":[],"error":{"type":"about:blank","title":"invalid query","detail":"'PORT_NM' is not a dimension of MARINE_SALES_PLANNING_V","status":422}}
 ```
 
+## Live chat (`CHAT_MODE`)
+
+`docker-compose.yml`'s `backend` service sets `CHAT_MODE: live` (Phase 6 Task
+5's cutover) — `poseidon.api.app.create_app` mounts `poseidon.api.live_chat`'s
+router instead of `mock_chat.py`'s scripted demo. `CHAT_MODE` defaults to
+`mock` (`poseidon/core/config.py`) for every environment that does not set
+it explicitly, so a bare `python -m uvicorn poseidon.api.app:create_app
+--factory` (no compose) still serves the mock unless you export
+`CHAT_MODE=live` yourself.
+
+In live mode the chat runs the real pipeline end to end: `parse_turn` (the
+deterministic pipeline) -> `DevDeterministicRouter` (the stub LLM provider —
+`LLM_MODE=stub` is compose's own default; no AWS credentials needed) ->
+`data_qa.metric_query` against the seeded `synthetic` schema -> the run-log
+writer (`turn_run`/`llm_calls`/`tool_calls`, migration 0003). The same six
+routes `poseidon/api/live_chat.py` exposes (`POST`/`GET /api/conversations`,
+`GET /api/conversations/{cid}/messages`, `POST /api/conversations/{cid}/
+messages`, `POST`/`GET /api/messages/{mid}/feedback`, `GET /api/skills`)
+back the frontend's own `bootstrap()` flow unchanged — `localhost:5173`
+create-a-conversation, send-a-message, reopen-the-transcript all work
+against live mode exactly as they did against mock.
+
+**Rebuilding the backend image.** `live_chat.py`'s dependencies
+(`rapidfuzz`, `jinja2` — the customer/port resolver and the prompt
+templates) are declared in `backend/pyproject.toml` but only actually
+`pip install`ed inside the image at build time; a long-running container
+built from an older image will not have them. Rebuild before (re)starting
+whenever the image predates those dependencies landing:
+
+```bash
+docker compose -f infra/docker-compose.yml build backend
+docker compose -f infra/docker-compose.yml up -d
+```
+
+The seeder's own "skips when the tables already hold rows" behavior (see
+"Synthetic data" above) means a rebuild + restart never reseeds — confirm
+the checksum is unchanged with the same generator command the seeder itself
+uses:
+
+```bash
+docker exec infra-backend-1 python -m poseidon.scripts.generate_synthetic
+# sales_rows=24000 gl_rows=16200 checksum=886dd91a... (must match every time)
+```
+
+### The 4-turn gate script
+
+The Phase 6 Phase Gate's own scripted conversation, driven either at
+`localhost:5173` or with `curl` against `localhost:8000` directly. Two of
+the four turns carry an explicit year rather than the doc-08 shorthand
+("and for May 2026?", not a bare "and for May?"; see
+`backend/tests/test_chat_e2e_scripted.py`'s own module docstring for why: a
+bare relative month resolves against the REAL current date in live mode,
+unlike an offline test that gets to pin one, so a bare phrase would
+silently ask a different question depending on which day you run this).
+
+1. `Top GP customers for Port of Singapore in April 2026` -> a `table` part
+   (top-5 customers by GP) + a collapsible `proof` block + a certified-answer
+   line; `turn_run.status = 'ok'`.
+2. `and for May 2026?` -> carries: same topic, period replaces to May 2026.
+   The port does NOT re-filter this turn (a bare follow-up has no "port
+   of"/"at" cue of its own — a documented, parked pipeline.py asymmetry, not
+   a bug) — the table becomes a single Gross Profit total across every port.
+3. `same for Port of Rotterdam` -> port replaces to Rotterdam, period still
+   carries from turn 2. (Note: `for Rotterdam` alone is read as a CUSTOMER
+   cue, not a port one — say "port of" or "at" to name a port.)
+4. `gp for Meridiann in April 2026` (capitalized "Meridiann" — the customer
+   resolver's cue-run detection requires it) -> lands in the fuzzy
+   candidate band against the seeded pool: a `chips` part naming the
+   Meridian family (`Meridian Tankers` / `Meridian Lines` / `Meridian
+   Shipping`) + a "did you mean...?" text part; `turn_run.status =
+   'clarify'`, no skill dispatch, no `llm_calls` rows. Clicking a chip sends
+   its label as a new plain message (doc 02 section 5's v1 click-to-send
+   contract) — since a bare customer name carries no cue word of its own,
+   the deterministic parser does not attach a customer filter to that
+   follow-up either (the same asymmetry as turn 3, again not a bug); the
+   turn still completes normally.
+
+### Inspecting the run-log rows the script wrote
+
+```sql
+SELECT status, input_tokens, output_tokens FROM turn_run ORDER BY created_at;
+```
+
+The four scripted turns show up with statuses `ok`, `ok`, `ok`, `clarify` (in
+whatever order you ran them — this is a SHARED table other tests and other
+runs of this same script also write into, so filter by `question` or a
+recent `created_at` window if the table already holds history). Every row's
+`input_tokens`/`output_tokens` reads `0`: `DevDeterministicRouter` is a
+stub, not a model, so the run log honestly records zero usage for a stub
+turn rather than a placeholder pretending to be real (`dev_router.py`'s own
+module docstring). A dispatching turn (1-3) has exactly 2 `llm_calls` rows
+(the tool-use call, then the end-turn call) and exactly 1 `tool_calls` row;
+the clarify turn (4) has zero of both — the clarify short-circuit in
+`orchestrator.py` fires before any provider call.
+
+```bash
+DATABASE_URL=postgresql+psycopg://poseidon:poseidon@localhost:5432/poseidon \
+  cd backend && python -m pytest tests/test_chat_e2e_scripted.py -m pg -v
+```
+
+runs this exact script (with the two disclosed text substitutions above)
+against a REAL `create_app(chat_mode="live")` app and re-derives every one
+of these assertions from the live database.
+
 ## Native fallback
 
 Use this path when Docker isn't available. It runs the backend and frontend

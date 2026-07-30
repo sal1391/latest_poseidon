@@ -71,14 +71,18 @@ def _mock_app():
     return create_app(_settings())
 
 
-def _live_app(*, data_client=None, writer=None):
+def _live_app(*, data_client=None, writer=None, **settings_overrides):
     """A ``chat_mode="live"`` app, with ``app.state.data_client``/
     ``app.state.run_log_writer`` swapped for test doubles when given -- the
     same post-construction substitution ``test_dev_runner.py`` already uses
-    for ``app.state.skill_registry``."""
+    for ``app.state.skill_registry``. ``**settings_overrides`` forwards
+    additional ``Settings`` fields (Phase 6 Task 5 amendment: e.g.
+    ``data_backend="snowflake"`` for the guard tests below) -- every
+    call site above this comment passes none, so their behavior is
+    unchanged."""
     from poseidon.api.app import create_app
 
-    app = create_app(_settings(chat_mode="live"))
+    app = create_app(_settings(chat_mode="live", **settings_overrides))
     if data_client is not None:
         app.state.data_client = data_client
     if writer is not None:
@@ -124,10 +128,19 @@ def test_live_mode_app_mounts_live_chat_not_mock():
     paths = app.openapi()["paths"]
     assert "/api/skills" in paths
     assert "/api/conversations/{cid}/messages" in paths
-    # mock_chat's OTHER routes (create/list conversations, feedback) have no
-    # live equivalent in this task's pinned scope -- see live_chat.py's own
-    # module docstring for the disclosed gap.
-    assert "/api/conversations" not in paths
+    # Task 5 amendment: live_chat.py now serves the SAME four bootstrap
+    # paths mock_chat.py does (create/list conversations, transcript,
+    # feedback) -- this used to assert the OPPOSITE, back when that gap was
+    # still open (see live_chat.py's own module docstring, "Task 5
+    # amendment: the live bootstrap routes"). The mutual exclusivity this
+    # test's NAME promises is enforced by app.py's own if/else mount switch
+    # (never both app.include_router calls run), not by the two modes
+    # serving disjoint path SETS anymore -- proven instead by GET
+    # /api/skills, which mock_chat.py never defines at all
+    # (test_default_settings_app_mounts_mock_not_live_chat's own assertion,
+    # the mirror-image direction).
+    assert "/api/conversations" in paths
+    assert "/api/messages/{mid}/feedback" in paths
 
 
 def test_live_mode_app_wires_the_expected_app_state():
@@ -395,3 +408,229 @@ async def test_get_skills_returns_registry_backed_shape():
             "description": _METRIC_QUERY_DESCRIPTION,
         }
     ]
+
+
+# ===========================================================================
+# Phase 6 Task 5 amendment (post-T4 disclosure): the live bootstrap routes --
+# mock_chat.py's own conversation create/list/transcript/feedback shapes,
+# backed by a minimal in-memory TranscriptStore alongside
+# ConversationStateStore. Closes Task 4's own disclosed gap (that task's
+# report, Judgment Call 1 / Concern 1): a chat_mode="live" app could not
+# serve the frontend's bootstrap() flow end to end.
+# ===========================================================================
+
+
+@pytest.mark.anyio
+async def test_post_conversations_returns_the_same_opener_shape_as_mock():
+    """Same wire shape mock_chat.py's own create_conversation returns --
+    the frontend's bootstrap() reads conversation.id/opener.parts and does
+    not care which mode produced them."""
+    app = _live_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.post("/api/conversations")
+
+    assert r.status_code == 201
+    body = r.json()
+    assert set(body["conversation"]) == {"id", "title"}
+    opener = body["opener"]
+    assert opener["role"] == "assistant"
+    kinds = [p["kind"] for p in opener["parts"]]
+    assert kinds == ["text", "chips"]
+    ids = [o["id"] for o in opener["parts"][1]["payload"]["options"]]
+    assert ids == ["existing_customer", "new_prospect"]
+
+
+@pytest.mark.anyio
+async def test_get_conversations_lists_newest_first():
+    app = _live_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        c1 = (await client.post("/api/conversations")).json()["conversation"]["id"]
+        c2 = (await client.post("/api/conversations")).json()["conversation"]["id"]
+        listing = (await client.get("/api/conversations")).json()["conversations"]
+
+    assert [c["id"] for c in listing[:2]] == [c2, c1]
+
+
+@pytest.mark.anyio
+async def test_get_messages_404_for_a_conversation_id_never_seen():
+    app = _live_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.get("/api/conversations/never-seen/messages")
+
+    assert r.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_get_messages_returns_the_opener_right_after_create():
+    app = _live_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
+        r = await client.get(f"/api/conversations/{cid}/messages")
+
+    assert r.status_code == 200
+    assert [m["role"] for m in r.json()["messages"]] == ["assistant"]
+
+
+@pytest.mark.anyio
+async def test_a_real_turn_is_recorded_into_the_transcript_user_then_assistant_parts():
+    """The flagship scripted turn, through the real bootstrap-send-reopen
+    round trip: create a conversation for real, send a real turn, reopen
+    the transcript and see exactly what was streamed -- assistant messages
+    are appended from the turn's emitted parts at done-time (the amendment's
+    own words), not re-derived some other way."""
+    writer = RecordingWriter()
+    app = _live_app(data_client=FakeDataClient(), writer=writer)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
+        await read_sse(
+            client, cid, "Top GP customers for Port of Singapore in April 2026", "ctk-transcript"
+        )
+        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["messages"]
+
+    # opener (from create), then the user's question, then the assistant's answer.
+    assert [m["role"] for m in msgs] == ["assistant", "user", "assistant"]
+    user_msg, assistant_msg = msgs[1], msgs[2]
+    assert user_msg["parts"] == [
+        {
+            "kind": "text",
+            "payload": {"markdown": "Top GP customers for Port of Singapore in April 2026"},
+        }
+    ]
+    kinds = [p["kind"] for p in assistant_msg["parts"]]
+    assert kinds == ["tool_event", "table", "proof", "text"]
+    tool_event = assistant_msg["parts"][0]["payload"]
+    assert tool_event["status"] == "done"
+    assert tool_event["tool"] == "data_qa.metric_query"
+    assert "turn_id" not in tool_event and "event_seq" not in tool_event
+    assert assistant_msg["parts"][1]["payload"]["columns"] == ["Customer", "Gross Profit"]
+    assert assistant_msg["parts"][3]["payload"]["markdown"].startswith(
+        "Certified answer for SINGAPORE"
+    )
+
+
+@pytest.mark.anyio
+async def test_streaming_route_auto_vivifies_transcript_for_an_unregistered_conversation_id():
+    """Backward compatibility, disclosed in the module docstring: the
+    streaming route itself stays opaque about cid (Task 4's own documented
+    choice -- every test above this section dispatches against an ad hoc id
+    like "conv-1" that was never created via POST /api/conversations), but
+    the transcript store still records whatever happened, so a SUBSEQUENT
+    GET on that same id now succeeds instead of 404ing."""
+    app = _live_app(data_client=FakeDataClient(), writer=RecordingWriter())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        await read_sse(client, "conv-never-created", "hello", None)
+        r = await client.get("/api/conversations/conv-never-created/messages")
+
+    assert r.status_code == 200
+    assert [m["role"] for m in r.json()["messages"]] == ["user", "assistant"]
+
+
+@pytest.mark.anyio
+async def test_feedback_roundtrip_and_unknown_message_404():
+    app = _live_app(data_client=FakeDataClient(), writer=RecordingWriter())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
+        await read_sse(client, cid, "hello", None)
+        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["messages"]
+        mid = msgs[-1]["id"]
+
+        r = await client.post(
+            f"/api/messages/{mid}/feedback", json={"verdict": "down", "comment": "wrong port"}
+        )
+        assert r.status_code == 204
+        r = await client.get(f"/api/messages/{mid}/feedback")
+        assert r.json() == {"verdict": "down", "comment": "wrong port"}
+
+        r = await client.post(f"/api/messages/{mid}/feedback", json={"verdict": "up"})
+        assert r.status_code == 204
+        r = await client.get(f"/api/messages/{mid}/feedback")
+        assert r.json() == {"verdict": "up", "comment": None}
+
+        r = await client.post("/api/messages/nope/feedback", json={"verdict": "up"})
+        assert r.status_code == 404
+        r = await client.get("/api/messages/nope/feedback")
+        assert r.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_feedback_invalid_verdict_returns_422():
+    app = _live_app(data_client=FakeDataClient(), writer=RecordingWriter())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
+        await read_sse(client, cid, "hello", None)
+        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["messages"]
+
+        r = await client.post(
+            f"/api/messages/{msgs[-1]['id']}/feedback", json={"verdict": "sideways"}
+        )
+
+    assert r.status_code == 422
+
+
+# ===========================================================================
+# Phase 6 Task 5 amendment: the data_backend == "snowflake" guard
+# dev_runner.py already has (_build_ctx's own structured 501), adapted to
+# this endpoint's SSE shape -- fail loudly with ONE error frame, never
+# silently query the synthetic schema instead.
+# ===========================================================================
+
+
+class _ExplodingDataClient:
+    """Any method call is a test failure -- proves the guard never reaches
+    the data client at all ("never silently query the wrong schema")."""
+
+    def __getattr__(self, name):
+        def _boom(*_args, **_kwargs):
+            raise AssertionError(
+                f"data client method {name!r} must never be called behind the snowflake guard"
+            )
+
+        return _boom
+
+
+@pytest.mark.anyio
+async def test_snowflake_data_backend_emits_one_structured_error_frame_and_never_touches_data():
+    app = _live_app(
+        data_client=_ExplodingDataClient(), writer=RecordingWriter(), data_backend="snowflake"
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        events = await read_sse(client, "conv-snow", "hello", None)
+
+    assert [name for name, _data in events] == ["error"]
+    error_data = events[0][1]
+    assert error_data["code"] == "backend not implemented"
+    assert "data_backend='snowflake'" in error_data["message"]
+    assert "Phase 15" in error_data["message"]
+
+
+@pytest.mark.anyio
+async def test_snowflake_guard_still_records_an_empty_assistant_message_in_the_transcript():
+    app = _live_app(
+        data_client=_ExplodingDataClient(), writer=RecordingWriter(), data_backend="snowflake"
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
+        await read_sse(client, cid, "hello", None)
+        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["messages"]
+
+    assert msgs[-1]["role"] == "assistant"
+    assert msgs[-1]["parts"] == []
+
+
+def test_mock_mode_app_still_has_none_of_the_live_bootstrap_routes():
+    """Regression guard: chat_mode="mock" is untouched by this amendment --
+    mock_chat.py's OWN routes serve /api/conversations already; this
+    amendment's code lives entirely behind chat_mode="live"."""
+    app = _mock_app()
+    paths = app.openapi()["paths"]
+    assert "/api/skills" not in paths
