@@ -251,17 +251,24 @@ def gp_by_port(rows: list[dict]) -> list[tuple[str, float]]:
 # ---------------------------------------------------------------------------
 
 
-def test_discovery_still_registers_only_metric_query():
+def test_discovery_still_skips_the_disabled_customer_insight_task():
     """``customer_insight/task.yml`` ships ``enabled: false`` — discovery
     must keep skipping the whole task, exactly as before this task's tools
-    existed. Task 1/2 pin the same invariant in
-    ``backend/tests/test_skill_registry.py``; this copy lives with the tools
-    it is actually about, so a regression here is caught next to the change
-    that would cause it (e.g. an accidental ``schema.py`` dropped into this
-    skill directory, which would make it router-visible while still
-    unfinished)."""
+    existed. Task 1/2 pin the full registered set in
+    ``backend/tests/test_skill_registry.py``'s own ``test_discovery_finds_
+    metric_query_and_research_only`` (Phase 7 Task 4 renamed it when
+    ``research.web_research`` joined ``data_qa.metric_query`` as the second
+    enabled skill); this copy lives with the tools it is actually about and
+    checks only the ONE invariant this file cares about -- no
+    customer_insight id anywhere in the discovered set -- so a regression
+    here is caught next to the change that would cause it (e.g. an
+    accidental ``schema.py`` dropped into this skill directory, which would
+    make it router-visible while still unfinished), and this assertion
+    itself needs no edit the next time an unrelated task's skill count
+    changes.
+    """
     reg = SkillRegistry.discover()
-    assert reg.skill_ids == ["data_qa.metric_query"]
+    assert not any(skill_id.startswith("customer_insight.") for skill_id in reg.skill_ids)
 
 
 # ---------------------------------------------------------------------------

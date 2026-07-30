@@ -201,20 +201,46 @@ def test_validate_and_normalize_rejects_a_non_dict_top_level_value():
 def test_validate_and_normalize_defaults_missing_item_fields_to_empty_string():
     schema = load_schema("web_research")
 
-    normalized = validate_and_normalize({"items": [{"title": "T"}]}, schema)
+    items, summary = validate_and_normalize({"items": [{"title": "T"}]}, schema)
 
-    assert normalized == ({"title": "T", "url": "", "snippet": "", "relevance": ""},)
+    assert items == ({"title": "T", "url": "", "snippet": "", "relevance": ""},)
+    assert summary == ""
 
 
 def test_validate_and_normalize_drops_non_dict_items_defensively():
     schema = load_schema("web_research")
 
-    normalized = validate_and_normalize(
+    items, summary = validate_and_normalize(
         {"items": [{"title": "T", "url": "u", "snippet": "s", "relevance": "r"}, "not-a-dict"]},
         schema,
     )
 
-    assert normalized == ({"title": "T", "url": "u", "snippet": "s", "relevance": "r"},)
+    assert items == ({"title": "T", "url": "u", "snippet": "s", "relevance": "r"},)
+    assert summary == ""
+
+
+def test_validate_and_normalize_extracts_the_summary_field_when_present():
+    # Task 4 (amendment 9a5ca1b): summary now threads through to
+    # ResearchResult -- this is the normalize-layer proof that the text
+    # actually gets pulled out of the parsed response, independent of
+    # either transport's own search() plumbing.
+    schema = load_schema("web_research")
+
+    items, summary = validate_and_normalize(
+        {"items": [], "summary": "Marine fuel prices held steady this week."}, schema
+    )
+
+    assert items == ()
+    assert summary == "Marine fuel prices held steady this week."
+
+
+def test_validate_and_normalize_defaults_summary_to_empty_string_when_absent():
+    schema = load_schema("web_research")
+
+    items, summary = validate_and_normalize({"items": [{"title": "T"}]}, schema)
+
+    assert items == ({"title": "T", "url": "", "snippet": "", "relevance": ""},)
+    assert summary == ""
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +402,14 @@ def test_search_returns_items_from_the_clean_fixture():
         transport="direct",
         degraded=False,
         degrade_reason=None,
+        # Task 4 (amendment 9a5ca1b): the clean fixture's own recorded
+        # content carries a "summary" key -- see fixtures/clean.json -- and
+        # it must now thread all the way through to the result.
+        summary=(
+            "Recent coverage highlights growing biofuel bunkering capacity in "
+            "Singapore and regulatory pressure from IMO 2030 targets pushing "
+            "carriers toward lower-carbon marine fuels."
+        ),
     )
 
 
@@ -397,6 +431,12 @@ def test_search_recovers_each_truncated_fixture(fixture_name):
     # nothing else, regardless of how deep the truncation cut into it.
     for item in result.items:
         assert set(item) == {"title", "url", "snippet", "relevance"}
+    # Every one of the three truncation landmarks lands strictly before the
+    # fixture's own "summary" key (see fixtures/*.json) -- repair_truncated_
+    # json closes brackets/strings, it never invents a key that was never
+    # written, so the recovered JSON has no "summary" at all and this
+    # defaults to "" the same way an ordinary absent-field would.
+    assert result.summary == ""
 
 
 def test_search_degrades_on_the_unrecoverable_fixture():

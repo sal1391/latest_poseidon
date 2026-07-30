@@ -79,6 +79,20 @@ class ResearchResult:
     "3 results via direct") and must NEVER carry the actual item payload:
     proof lines are deterministic provenance text a user reads in the
     transcript, not a place for vendor content to leak through.
+
+    ``summary`` (Task 4, additive, sanctioned -- plan amendment 9a5ca1b) is
+    the model's own short overall synthesis of ``items``, straight from the
+    schema's optional top-level ``summary`` key (see ``schemas/web_
+    research.json``): a real research answer's model-written prose, never
+    hand-composed here. Defaulted to ``""`` so this stays frozen-compatible
+    with every ``ResearchResult(...)`` construction Tasks 1-3 already wrote
+    (a degrade path never has a summary to report, and simply leaves this at
+    its default). Both transports thread it through their own shared
+    ``poseidon.mcp.perplexity.adapter.validate_and_normalize`` call --
+    proven identical between them by ``test_perplexity_mcp_client.py``'s own
+    transport-flip contract test, which now diffs every field BY NAME
+    (``dataclasses.asdict``) rather than a hand-picked subset, so a future
+    field added here is covered by that proof automatically.
     """
 
     items: tuple[dict, ...]
@@ -86,6 +100,7 @@ class ResearchResult:
     transport: str
     degraded: bool = False
     degrade_reason: str | None = None
+    summary: str = ""
 
 
 class ResearchTool(Protocol):

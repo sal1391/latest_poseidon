@@ -59,6 +59,8 @@ from poseidon.core.llm.types import LLMResponse, ToolCall
 from poseidon.core.runlog import TurnHandle
 from poseidon.core.skills.context import ArtifactRef, ConversationSlots
 from poseidon.core.skills.registry import SkillRegistry
+from poseidon.mcp.perplexity.fixture_tool import FixtureResearchTool
+from poseidon.mcp.registry import ToolServerRegistry
 
 # U+2014 EM DASH, written as an escape (not a typed literal) -- the
 # convention every earlier Phase 4/5/6 suite uses: an em dash, an en dash
@@ -1580,6 +1582,105 @@ def test_pass_through_repopulation_failure_is_caught_logged_and_does_not_break_t
     # conversation's slots stay whatever they were before this turn -- here,
     # the store's own default-for-an-unseen-id, ConversationSlots().
     assert state.get("conv-corrupt") == ConversationSlots()
+
+
+# ===========================================================================
+# execute_turn -- tools threading (Phase 7 Task 4)
+# ===========================================================================
+
+
+def test_execute_turn_threads_tools_into_the_skill_context(monkeypatch):
+    """``execute_turn``'s new ``tools`` keyword (defaulted to ``None`` --
+    every call above this one keeps working unchanged) must reach the
+    ``SkillContext`` a dispatch actually runs against. Proven end to end,
+    not merely "the parameter exists": a research-leading turn ("news"
+    hints research.web_research -- see dev_router.py's own lexicon-scored
+    gate) driven through the REAL dev router and REAL skill registry, with
+    a ``ToolServerRegistry`` override installing a ``FixtureResearchTool`` --
+    the rendered parts carry that fixture's own sources table, which could
+    only happen if ``ctx.tools`` was not ``None``.
+    """
+    settings = _settings(monkeypatch, LLM_MODE="stub", LLM_PROFILE="bedrock")
+    data = FakeDataClient()
+    state = ConversationStateStore()
+    writer = RecordingWriter()
+    role_client = _dev_role_client(settings)
+    prompt_registry = PromptRegistry(DEFAULT_PROMPTS_DIR)
+    frames, send = _capturing_send()
+    sink = SseEnvelopeSink(
+        turn_id="turn-research-1", message_id="msg-research-1", send=send, registry=REGISTRY
+    )
+    tools = ToolServerRegistry(settings, overrides={"research": FixtureResearchTool()})
+
+    outcome = execute_turn(
+        conversation_id="conv-research-1",
+        text="any relevant news on Northstar Lines I should be aware of?",
+        client_turn_key="ctk-research-1",
+        settings=settings,
+        registry=REGISTRY,
+        data=data,
+        state=state,
+        writer=writer,
+        role_client=role_client,
+        prompt_registry=prompt_registry,
+        sink=sink,
+        reference_date=REFERENCE_DATE,
+        tools=tools,
+    )
+
+    assert outcome.status == "ok"
+    decoded = [_parse_frame(f) for f in frames]
+    tool_frames = [d for _seq, name, d in decoded if name == "tool"]
+    assert any(frame["tool"] == "research.web_research" for frame in tool_frames)
+    table_parts = [d for _seq, name, d in decoded if name == "part" and d["kind"] == "table"]
+    assert table_parts
+    assert table_parts[0]["payload"]["columns"] == ["Title", "Source", "Relevance"]
+
+
+def test_execute_turn_without_tools_still_completes_with_the_honest_degrade(monkeypatch):
+    """The symmetric default case: omitting ``tools`` entirely (every
+    OTHER call site in this file does -- ``tools`` defaults to ``None``,
+    ``SkillContext``'s own default) must still complete the turn rather
+    than crash -- ``ctx.tools is None`` renders research's own honest
+    "unavailable" message (``skill.py``'s own module docstring) instead of
+    a table, so ``execute_turn``'s new keyword is additive in truth, not
+    just in signature."""
+    settings = _settings(monkeypatch, LLM_MODE="stub", LLM_PROFILE="bedrock")
+    data = FakeDataClient()
+    state = ConversationStateStore()
+    writer = RecordingWriter()
+    role_client = _dev_role_client(settings)
+    prompt_registry = PromptRegistry(DEFAULT_PROMPTS_DIR)
+    frames, send = _capturing_send()
+    sink = SseEnvelopeSink(
+        turn_id="turn-research-2", message_id="msg-research-2", send=send, registry=REGISTRY
+    )
+
+    outcome = execute_turn(
+        conversation_id="conv-research-2",
+        text="any relevant news on Northstar Lines I should be aware of?",
+        client_turn_key="ctk-research-2",
+        settings=settings,
+        registry=REGISTRY,
+        data=data,
+        state=state,
+        writer=writer,
+        role_client=role_client,
+        prompt_registry=prompt_registry,
+        sink=sink,
+        reference_date=REFERENCE_DATE,
+        # tools omitted entirely -- defaults to None.
+    )
+
+    assert outcome.status == "ok"
+    decoded = [_parse_frame(f) for f in frames]
+    text_parts = [d for _seq, name, d in decoded if name == "part" and d["kind"] == "text"]
+    assert any(
+        part["payload"]["markdown"].startswith(
+            "External research is unavailable right now " + _EM_DASH + " "
+        )
+        for part in text_parts
+    )
 
 
 # ===========================================================================

@@ -74,9 +74,13 @@ small, bounded frame count.
 **App-state wiring** (built once per app, in ``app.py``'s own
 ``_wire_live_chat``, and read back here per request): ``skill_registry``,
 ``conversation_state_store``, ``role_client``, ``prompt_registry``,
-``data_client`` and ``run_log_writer`` (``None`` when ``DATABASE_URL``
+``data_client``, ``run_log_writer`` (``None`` when ``DATABASE_URL``
 could not be turned into an engine -- see ``app.py``'s own
-``_build_run_log_writer``). ``data_client`` is built ONCE, unlike
+``_build_run_log_writer``), and, since Phase 7 Task 4, ``tool_registry``
+(a :class:`~poseidon.mcp.registry.ToolServerRegistry`, threaded to
+``execute_turn`` as its own ``tools`` keyword -- see ``app.py``'s own
+``_build_tool_registry`` for the ``LLM_MODE``-gated fixture-vs-real
+choice). ``data_client`` is built ONCE, unlike
 ``poseidon.api.dev_runner``'s own per-request ``SyntheticDataClient``
 construction: that module's docstring calls the class "cheap to build...
 opens no network connection until a query actually runs" precisely because
@@ -520,6 +524,11 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
                 prompt_registry=app_state.prompt_registry,
                 sink=sink,
                 reference_date=date.today(),
+                # Phase 7 Task 4: app.py's own _wire_live_chat builds this
+                # once per app -- a FixtureResearchTool override under
+                # LLM_MODE=stub, a real Perplexity transport resolved lazily
+                # per TOOL_TRANSPORT_PERPLEXITY under LLM_MODE=live.
+                tools=app_state.tool_registry,
             )
         except Exception as exc:  # noqa: BLE001 - a crash mid-turn must still end the stream cleanly
             # execute_turn's own contract only produces a `turn_error` frame

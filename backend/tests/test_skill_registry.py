@@ -179,9 +179,14 @@ def tasks_package(tmp_path, monkeypatch) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def test_discovery_finds_metric_query_only():
+def test_discovery_finds_metric_query_and_research_only():
+    """Phase 7 Task 4: ``research.web_research`` joins ``data_qa.metric_
+    query`` as the second enabled, registered skill -- customer_insight
+    stays disabled (its ``task.yml`` still carries ``enabled: false``), so
+    the real tree's discovered set is exactly these two, in sorted-by-id
+    order (``registry.py``'s own discovery-is-deterministic contract)."""
     reg = SkillRegistry.discover()
-    assert reg.skill_ids == ["data_qa.metric_query"]  # customer_insight is disabled
+    assert reg.skill_ids == ["data_qa.metric_query", "research.web_research"]
 
 
 def test_schema_dispatch_parity():
@@ -439,12 +444,19 @@ def test_bedrock_unsafe_overlong_name_fails_discovery(tasks_package: Callable[..
 
 
 def test_real_tasks_pass_the_bedrock_safe_name_check():
-    """The one real registered skill today (``data_qa.metric_query``) maps to
-    a well-under-cap, collision-free Bedrock tool name -- discovery must not
-    raise on the actual repo tree, not just on throwaway fixtures built to
-    trigger the check."""
+    """Every real registered skill today (``data_qa.metric_query``,
+    ``research.web_research`` -- Phase 7 Task 4) maps to a well-under-cap,
+    collision-free Bedrock tool name -- discovery must not raise on the
+    actual repo tree, not just on throwaway fixtures built to trigger the
+    check. Membership, not exact-list equality: this test's own claim is
+    "discovery survives the real tree," never "the real tree holds exactly
+    these skills and no more" -- ``test_discovery_finds_metric_query_and_
+    research_only`` above is the dedicated exclusivity pin, so this one
+    stays correct without an edit the next time a skill is added.
+    """
     reg = SkillRegistry.discover()
-    assert reg.skill_ids == ["data_qa.metric_query"]
+    assert "data_qa.metric_query" in reg.skill_ids
+    assert "research.web_research" in reg.skill_ids
 
 
 def test_malformed_task_manifest_fails_discovery_as_a_definition_error(

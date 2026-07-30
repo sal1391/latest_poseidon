@@ -53,6 +53,8 @@ from poseidon.core.parsing.pipeline import DEFAULT_ENTITY
 from poseidon.core.skills.context import ConversationSlots, SkillContext
 from poseidon.core.skills.registry import SkillRegistry
 from poseidon.core.skills.result import SkillResult, problem, table_part, text_part
+from poseidon.mcp.perplexity.fixture_tool import FixtureResearchTool
+from poseidon.mcp.registry import ToolServerRegistry
 
 REQUIRED_ENV = {
     "DATABASE_URL": "postgresql+psycopg://x:x@localhost:5432/poseidon",
@@ -60,6 +62,9 @@ REQUIRED_ENV = {
 }
 
 METRIC_QUERY = "data_qa.metric_query"
+# Task 4 (Phase 7): the second offline-runnable routing case's own expected
+# skill -- research.web_research, now registered and enabled.
+RESEARCH = "research.web_research"
 REGISTRY = SkillRegistry.discover()
 ROUTING_CASES_PATH = Path(__file__).parent / "routing_cases.yml"
 
@@ -198,12 +203,15 @@ def _call(args: dict, *, call_id: str = "tool-1", skill: str = METRIC_QUERY) -> 
     return ToolCall(id=call_id, name=skill, arguments=args)
 
 
-def _context(settings: Settings, slots: ConversationSlots | None = None) -> SkillContext:
+def _context(
+    settings: Settings, slots: ConversationSlots | None = None, tools: object | None = None
+) -> SkillContext:
     return SkillContext(
         data=FakeDataClient(),
         artifacts=None,
         settings=settings,
         state=ConversationSlots() if slots is None else slots,
+        tools=tools,
     )
 
 
@@ -220,6 +228,7 @@ def _run(
     slots: ConversationSlots | None = None,
     provider_key: str = "stub",
     sink: RecordingSink | None = None,
+    tools: object | None = None,
 ) -> tuple[TurnResult, RecordingSink, StubProvider]:
     """One offline turn. Returns the result plus the two recorders every
     assertion in this file reads: the event sink and the provider stub.
@@ -227,6 +236,11 @@ def _run(
     ``sink`` overrides the default recorder, which is what lets a test run
     the identical turn through a DELIBERATELY misbehaving sink (see
     ``_ArgumentMutatingSink``) without a second copy of this helper.
+    ``tools`` (Task 4, Phase 7) defaults to ``None`` -- SkillContext's own
+    default, unchanged for every one of this file's existing calls -- and
+    is threaded straight to ``_context`` for the one routing case
+    (``pivot_to_research_with_carry``) that needs a working
+    ``ctx.tools.research`` to dispatch against.
     """
     provider = StubProvider(script)
     role_client = RoleClient(settings, providers={provider_key: provider})
@@ -234,7 +248,7 @@ def _run(
     result = run_turn(
         role_client=role_client,
         registry=REGISTRY,
-        context=_context(settings, slots),
+        context=_context(settings, slots, tools),
         prompt_registry=PromptRegistry(DEFAULT_PROMPTS_DIR),
         user_instruction="",
         memory_doc="",
@@ -1121,8 +1135,15 @@ def test_loop_through_bedrock_provider_keeps_the_wire_name_on_the_wire(monkeypat
 
     # The wire name exists exactly where Converse requires it: the tool
     # definitions, and the assistant turn echoed back on iteration 2.
+    # Membership, not exact list equality (Task 4, Phase 7): REGISTRY now
+    # also carries research.web_research's own translated wire name
+    # alongside metric_query's -- this test's actual claim is about ONE
+    # tool's own round trip, never "the registry holds exactly one tool",
+    # so asserting membership stays correct regardless of how many more
+    # skills register in the future.
     second = client.requests[1]
-    assert [tool["toolSpec"]["name"] for tool in second["toolConfig"]["tools"]] == [_WIRE_NAME]
+    wire_names = [tool["toolSpec"]["name"] for tool in second["toolConfig"]["tools"]]
+    assert _WIRE_NAME in wire_names
     assert second["messages"][1]["content"][0]["toolUse"]["name"] == _WIRE_NAME
     assert len(client.requests) == 2
 
@@ -1327,22 +1348,36 @@ def test_every_routing_case_declares_user_expect_and_execution():
         assert "execution" in case, case["id"]
 
 
-def test_exactly_four_cases_are_live_only_and_each_names_its_owning_phase():
+def test_exactly_three_cases_are_live_only_and_each_names_its_owning_phase():
+    """Task 4 (Phase 7): pivot_to_research_with_carry moves from live_only
+    to offline (research.web_research is now registered and enabled), so
+    the live-only count drops from 4 to 3 and OFFLINE_CASES grows from 1
+    to 2 -- see the sibling test below."""
     live_only = [case for case in ROUTING_CASES if case["execution"].get("live_only")]
 
-    assert len(live_only) == 4
-    assert len(OFFLINE_CASES) == 1
+    assert len(live_only) == 3
+    assert len(OFFLINE_CASES) == 2
     for case in live_only:
         reason = case["execution"]["reason"]
         assert "Phase" in reason, case["id"]
 
 
-def test_the_offline_case_is_the_data_qa_breakdown_and_carries_a_stub_script():
-    case = OFFLINE_CASES[0]
+def test_the_offline_cases_are_metric_query_and_research_each_carrying_a_stub_script():
+    """OFFLINE_CASES preserves ROUTING_CASES' own order, which
+    ``test_routing_cases_are_doc_03_section_6_verbatim_in_order`` already
+    pins to ``DOC_CASE_IDS`` -- so indexing ``[0]``/``[1]`` here is reading
+    a guaranteed fixed order, not assuming one."""
+    assert len(OFFLINE_CASES) == 2
 
-    assert case["id"] == "default_data_qa_breakdown"
-    assert case["expect"]["skill"] == METRIC_QUERY
-    assert len(case["execution"]["stub_script"]) == 2
+    metric_case = OFFLINE_CASES[0]
+    assert metric_case["id"] == "default_data_qa_breakdown"
+    assert metric_case["expect"]["skill"] == METRIC_QUERY
+    assert len(metric_case["execution"]["stub_script"]) == 2
+
+    research_case = OFFLINE_CASES[1]
+    assert research_case["id"] == "pivot_to_research_with_carry"
+    assert research_case["expect"]["skill"] == RESEARCH
+    assert len(research_case["execution"]["stub_script"]) == 2
 
 
 def test_every_case_setup_maps_onto_real_conversation_slots():
@@ -1397,12 +1432,25 @@ def test_stub_routing_case_end_to_end(case, settings):
     """The recorded router decision, replayed through the REAL registry and
     the REAL skill against the fake DataClient: the loop dispatches what the
     script asked for, with the doc's critical arguments, and the answer
-    comes back as a renderable part plus both kinds of record."""
+    comes back as a renderable part plus both kinds of record.
+
+    ``tools`` (Task 4, Phase 7) is a REAL ``ToolServerRegistry`` with a
+    ``FixtureResearchTool`` override -- required for
+    ``pivot_to_research_with_carry`` to dispatch against anything at all
+    (``research.web_research``'s own ``ctx.tools is None`` path would
+    otherwise render the honest "unavailable" degrade, never a table),
+    and harmless for ``default_data_qa_breakdown``, which never touches
+    ``ctx.tools``. Passed unconditionally rather than per-case: this test
+    is parametrized generically over every offline case, and a working
+    tools registry costs the metric_query case nothing.
+    """
+    tools = ToolServerRegistry(settings, overrides={"research": FixtureResearchTool()})
     result, sink, _ = _run(
         settings,
         _script_from(case),
         window=[{"role": "user", "content": case["user"]}],
         slots=_slots_for(case),
+        tools=tools,
     )
 
     assert result.status == "ok", result.problem

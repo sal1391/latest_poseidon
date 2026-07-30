@@ -3,13 +3,16 @@
 and by how much. Pure data -- no behavior lives here; see ``skill_hinter.py``
 for how these tables are matched and summed.
 
-Future skill ids
------------------
-Every skill id referenced below names a skill this repo does not yet expose
-through :class:`~poseidon.core.skills.registry.SkillRegistry`:
+Future skill ids (updated, Phase 7 Task 4)
+--------------------------------------------
+``research.web_research`` USED TO be future here -- it turned real the
+moment Phase 7 Task 4 landed ``poseidon/tasks/research/skills/web_research/``,
+exactly the "no lexicon change required" promise the paragraph below always
+made, now demonstrated rather than merely asserted. ``data_qa.metric_query``
+and ``research.web_research`` are both registered, router-visible skills
+today; the remaining two ids this table still references are genuinely
+future:
 
-* ``research.web_research`` -- no ``research`` task directory exists at all
-  yet (doc 02 section 4 describes it; a later phase builds it).
 * ``customer_insight.existing_customer_brief`` /
   ``customer_insight.new_prospect_brief`` -- the ``customer_insight`` task
   directory exists (``poseidon/tasks/customer_insight/``) but its
@@ -20,10 +23,12 @@ through :class:`~poseidon.core.skills.registry.SkillRegistry`:
   are future ids today (Phase 8 finishes and enables it; see that package's
   own docstrings).
 
-Referencing all three here is deliberate, not a typo: the hinter is advisory
-lexicon data, decoupled from what is registered TODAY, so each id turns real
-the moment its owning phase lands the skill -- no lexicon change required.
-``data_qa.metric_query`` is the one id already live (see
+Referencing a not-yet-registered id here is deliberate, not a typo: the
+hinter is advisory lexicon data, decoupled from what is registered TODAY,
+so each id turns real the moment its owning phase lands the skill -- no
+lexicon change required, exactly what just happened for
+``research.web_research`` above. ``data_qa.metric_query`` was the original
+proof of that same decoupling, from the other direction (see
 ``poseidon/tasks/data_qa/skills/metric_query/schema.py`` -- its own
 ``SKILL_META['examples']`` even includes "Top GP customers for Port of
 Singapore in April 2026" verbatim, which is why that phrase is this task's

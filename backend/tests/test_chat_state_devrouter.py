@@ -61,11 +61,13 @@ from poseidon.core.llm.prompts import (
 from poseidon.core.llm.roles import RoleClient
 from poseidon.core.llm.types import LLMResponse, ToolCall
 from poseidon.core.ontology.loader import get_ontology
+from poseidon.core.parsing.lexicon import WEB_RESEARCH
 from poseidon.core.parsing.pipeline import DEFAULT_ENTITY
 from poseidon.core.parsing.types import CandidateSkill, ParsedTurn, ResolvedEntity
 from poseidon.core.skills.context import ConversationSlots
 from poseidon.core.skills.registry import SkillRegistry
 from poseidon.tasks.data_qa.skills.metric_query.schema import Args
+from poseidon.tasks.research.skills.web_research.schema import Args as ResearchArgs
 
 # U+2014 EM DASH, written as an escape for the reason given in the module
 # docstring.
@@ -73,6 +75,7 @@ _EM_DASH = "\u2014"
 
 _ENTITY_NAME = "MARINE_SALES_PLANNING_V"
 _METRIC_QUERY = "data_qa.metric_query"
+_RESEARCH = "research.web_research"
 
 _PERIOD_A = PeriodWindow(start=date(2026, 4, 1), end=date(2026, 5, 1))
 _PERIOD_B = PeriodWindow(start=date(2025, 4, 1), end=date(2025, 5, 1))
@@ -253,6 +256,34 @@ def _assert_valid_metric_query_args(call: ToolCall) -> None:
     names, no invented ones -- not just look plausible."""
     assert call.name == _METRIC_QUERY
     Args.model_validate(call.arguments)
+
+
+def _assert_valid_research_args(call: ToolCall) -> None:
+    """Same bar as :func:`_assert_valid_metric_query_args`, for
+    ``research.web_research``'s own real schema (Task 4)."""
+    assert call.name == _RESEARCH
+    ResearchArgs.model_validate(call.arguments)
+
+
+def _research_tool_use_message(call_id: str, args: dict) -> dict:
+    return _tool_use_message(call_id, _RESEARCH, args)
+
+
+def _research_tool_result_message(
+    call_id: str, results: int, *, transport: str = "fixture"
+) -> dict:
+    """A ``research.web_research`` toolResult, shaped like the REAL digest
+    ``loop.py``'s own ``tool_result_digest`` builds from this skill's own
+    ``tools/format_parts.py`` proof lines -- "Results: {n}" is what
+    :func:`~poseidon.core.chat.dev_router._research_summary` (Task 4) reads
+    the source count back out of, the same anchored-regex discipline every
+    other line this router parses already uses."""
+    digest = (
+        f"{_RESEARCH} ok\n"
+        f"parts: text(chars=42), table(rows={results})\n"
+        f"proof: Query: q | Transport: {transport} | Results: {results}"
+    )
+    return _tool_result_message(call_id, digest)
 
 
 # ---------------------------------------------------------------------------
@@ -705,6 +736,269 @@ def test_tool_result_present_but_no_period_resolved_falls_back_to_capability_mes
 
 
 # ---------------------------------------------------------------------------
+# Case (b2)/(c2), Task 4 CLOSURE: hints lead research.web_research AND a
+# customer/port is known (resolved-or-carried) -> ONE tool_use; a second
+# invoke closes with a research summary. See dev_router.py's own "Task 4
+# CLOSURE" for the full rule.
+# ---------------------------------------------------------------------------
+
+
+def test_hints_leading_research_with_resolved_customer_emits_research_tool_call():
+    router = DevDeterministicRouter()
+    system = _system(
+        _parsed(customer=_MAERSK, hints=(CandidateSkill(skill_id=_RESEARCH, score=1.0),))
+    )
+    question = "any relevant news on Maersk I should be aware of?"
+
+    response = router.invoke(
+        system=system, messages=[_user_message(question)], tools=[], model="m", params={}
+    )
+
+    assert response.stop_reason == "tool_use"
+    call = response.tool_calls[0]
+    assert call.id == "dev-1"
+    assert call.arguments == {"question": question, "customer": "MAERSK LINE"}
+    _assert_valid_research_args(call)
+
+
+def test_hints_leading_research_with_resolved_port_emits_research_tool_call():
+    router = DevDeterministicRouter()
+    system = _system(
+        _parsed(port=_SINGAPORE, hints=(CandidateSkill(skill_id=_RESEARCH, score=1.0),))
+    )
+    question = "any market news at Singapore?"
+
+    response = router.invoke(
+        system=system, messages=[_user_message(question)], tools=[], model="m", params={}
+    )
+
+    call = response.tool_calls[0]
+    assert call.arguments == {"question": question, "port": "SINGAPORE"}
+    _assert_valid_research_args(call)
+
+
+def test_hints_leading_research_with_resolved_customer_and_port_attaches_both():
+    router = DevDeterministicRouter()
+    system = _system(
+        _parsed(
+            customer=_MAERSK,
+            port=_SINGAPORE,
+            hints=(CandidateSkill(skill_id=_RESEARCH, score=1.0),),
+        )
+    )
+
+    response = router.invoke(
+        system=system,
+        messages=[_user_message("any news on Maersk at Singapore?")],
+        tools=[],
+        model="m",
+        params={},
+    )
+
+    call = response.tool_calls[0]
+    assert call.arguments["customer"] == "MAERSK LINE"
+    assert call.arguments["port"] == "SINGAPORE"
+    _assert_valid_research_args(call)
+
+
+def test_hints_leading_research_with_carried_customer_only_emits_research_tool_call():
+    """The pivot-with-carry scenario (``routing_cases.yml``'s own
+    ``pivot_to_research_with_carry``): NOTHING resolved fresh this turn,
+    but a customer is still carried from a prior one -- "resolved-or-
+    carried" means the carry alone is enough to both PERMIT dispatch and
+    SUPPLY the subject arg."""
+    router = DevDeterministicRouter()
+    slots = ConversationSlots(customer="CUSTOMER_X")
+    parsed = _parsed(hints=(CandidateSkill(skill_id=_RESEARCH, score=1.0),))
+    system = _system(parsed, slots)
+    assert "Carried customer: CUSTOMER_X" in system  # sanity: the line IS present
+    assert "Resolved customer" not in system  # sanity: but not as a fresh resolution
+    question = "any relevant news on them I should be aware of?"
+
+    response = router.invoke(
+        system=system, messages=[_user_message(question)], tools=[], model="m", params={}
+    )
+
+    assert response.stop_reason == "tool_use"
+    call = response.tool_calls[0]
+    assert call.arguments == {"question": question, "customer": "CUSTOMER_X"}
+    _assert_valid_research_args(call)
+
+
+def test_hints_leading_research_with_carried_port_only_emits_research_tool_call():
+    router = DevDeterministicRouter()
+    slots = ConversationSlots(port="ROTTERDAM")
+    parsed = _parsed(hints=(CandidateSkill(skill_id=_RESEARCH, score=1.0),))
+    system = _system(parsed, slots)
+
+    response = router.invoke(
+        system=system,
+        messages=[_user_message("any news I should know about?")],
+        tools=[],
+        model="m",
+        params={},
+    )
+
+    call = response.tool_calls[0]
+    assert call.arguments == {"question": "any news I should know about?", "port": "ROTTERDAM"}
+
+
+def test_hints_leading_research_without_any_subject_falls_back_to_capability_message():
+    """The AND half of the gate: hints leading research alone is not
+    enough -- no customer or port known, resolved or carried, means there
+    is nothing to research ABOUT, so this still falls through to the
+    unchanged capability message (case (d))."""
+    router = DevDeterministicRouter()
+    system = _system(_parsed(hints=(CandidateSkill(skill_id=_RESEARCH, score=1.0),)))
+
+    response = router.invoke(
+        system=system,
+        messages=[_user_message("any relevant news?")],
+        tools=[],
+        model="m",
+        params={},
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert response.tool_calls == ()
+    assert response.text.startswith("I can answer certified metric questions")
+
+
+def test_hints_leading_a_brief_skill_does_not_trigger_research_or_metric_dispatch():
+    """Hints leading something OTHER than research.web_research or
+    data_qa.metric_query changes nothing -- the "hints NOT leading
+    research" half of this task's own instruction: existing behavior
+    (capability message) stays exactly as it was before this task."""
+    router = DevDeterministicRouter()
+    system = _system(
+        _parsed(
+            customer=_MAERSK,
+            hints=(CandidateSkill(skill_id="customer_insight.existing_customer_brief", score=1.0),),
+        )
+    )
+
+    response = router.invoke(
+        system=system,
+        messages=[_user_message("brief for Maersk")],
+        tools=[],
+        model="m",
+        params={},
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert response.tool_calls == ()
+    assert response.text.startswith("I can answer certified metric questions")
+
+
+def test_research_tool_result_present_closes_with_research_summary():
+    router = DevDeterministicRouter()
+    system = _system(
+        _parsed(customer=_MAERSK, hints=(CandidateSkill(skill_id=_RESEARCH, score=1.0),))
+    )
+    question = "any relevant news on Maersk?"
+    messages = [
+        _user_message(question),
+        _research_tool_use_message("dev-1", {"question": question, "customer": "MAERSK LINE"}),
+        _research_tool_result_message("dev-1", 2),
+    ]
+
+    response = router.invoke(system=system, messages=messages, tools=[], model="m", params={})
+
+    assert response == LLMResponse(
+        text="Research summary for MAERSK LINE " + _EM_DASH + " 2 sources.",
+        tool_calls=(),
+        stop_reason="end_turn",
+        input_tokens=0,
+        output_tokens=0,
+    )
+
+
+def test_research_tool_result_with_port_only_uses_port_label():
+    router = DevDeterministicRouter()
+    system = _system(
+        _parsed(port=_SINGAPORE, hints=(CandidateSkill(skill_id=_RESEARCH, score=1.0),))
+    )
+    messages = [
+        _user_message("any news at Singapore?"),
+        _research_tool_use_message(
+            "dev-1", {"question": "any news at Singapore?", "port": "SINGAPORE"}
+        ),
+        _research_tool_result_message("dev-1", 3),
+    ]
+
+    response = router.invoke(system=system, messages=messages, tools=[], model="m", params={})
+
+    assert response.text == "Research summary for SINGAPORE " + _EM_DASH + " 3 sources."
+
+
+def test_research_tool_result_with_only_carried_customer_uses_the_carried_label():
+    """The SAME ``system`` string (unchanged across a turn's iterations --
+    ``loop.py``'s own "built ONCE per turn") means the close reads the
+    identical carried customer the tool call itself used."""
+    router = DevDeterministicRouter()
+    slots = ConversationSlots(customer="CUSTOMER_X")
+    system = _system(_parsed(hints=(CandidateSkill(skill_id=_RESEARCH, score=1.0),)), slots)
+    question = "any relevant news on them I should be aware of?"
+    messages = [
+        _user_message(question),
+        _research_tool_use_message("dev-1", {"question": question, "customer": "CUSTOMER_X"}),
+        _research_tool_result_message("dev-1", 1),
+    ]
+
+    response = router.invoke(system=system, messages=messages, tools=[], model="m", params={})
+
+    assert response.text == "Research summary for CUSTOMER_X " + _EM_DASH + " 1 sources."
+
+
+def test_research_tool_result_with_zero_results_reports_zero_sources():
+    router = DevDeterministicRouter()
+    system = _system(
+        _parsed(customer=_MAERSK, hints=(CandidateSkill(skill_id=_RESEARCH, score=1.0),))
+    )
+    messages = [
+        _user_message("any news?"),
+        _research_tool_use_message("dev-1", {"question": "any news?", "customer": "MAERSK LINE"}),
+        _research_tool_result_message("dev-1", 0),
+    ]
+
+    response = router.invoke(system=system, messages=messages, tools=[], model="m", params={})
+
+    assert response.text == "Research summary for MAERSK LINE " + _EM_DASH + " 0 sources."
+
+
+def test_research_tool_result_present_takes_priority_even_when_a_period_is_also_resolved():
+    """The collision case this task's own precedence rule exists for: a
+    period is ALSO resolved this turn (so case (c)'s own condition --
+    ``_has_tool_result(messages) and period is not None`` -- would ALSO be
+    true), yet the toolUse that actually ran was research.web_research, not
+    data_qa.metric_query. The close must name the research summary, never
+    the metric-flavored "Certified answer for..." text -- proving
+    ``_last_tool_use_name`` is checked, not merely "a toolResult exists
+    somewhere"."""
+    router = DevDeterministicRouter()
+    system = _system(
+        _parsed(
+            customer=_MAERSK,
+            period_a=_PERIOD_A,
+            hints=(CandidateSkill(skill_id=_RESEARCH, score=1.0),),
+        )
+    )
+    question = "any news on Maersk this period?"
+    messages = [
+        _user_message(question),
+        _research_tool_use_message("dev-1", {"question": question, "customer": "MAERSK LINE"}),
+        _research_tool_result_message("dev-1", 2),
+    ]
+
+    response = router.invoke(system=system, messages=messages, tools=[], model="m", params={})
+
+    assert response.stop_reason == "end_turn"
+    assert response.tool_calls == ()
+    assert response.text.startswith("Research summary for")
+    assert "Certified answer" not in response.text
+
+
+# ---------------------------------------------------------------------------
 # Cross-module consistency: this router's hardcoded entity must match the
 # entity the deterministic parser actually parses against (fix round 1,
 # minor fold-in 2)
@@ -722,6 +1016,15 @@ def test_default_entity_matches_the_parser_default_entity():
     into the router itself -- the same decoupling ``loop.py``'s own
     precedent uses."""
     assert dev_router._DEFAULT_ENTITY == DEFAULT_ENTITY
+
+
+def test_research_skill_id_matches_the_hinter_lexicons_own_constant():
+    """Same decoupling precedent as the entity pin above, for Task 4's own
+    new constant: this router's ``_RESEARCH_SKILL_ID`` must name the exact
+    same skill id ``lexicon.py``'s ``WEB_RESEARCH`` scores hints against,
+    or a hints line that genuinely leads research would never be
+    recognized as leading research by this router's own gate."""
+    assert dev_router._RESEARCH_SKILL_ID == WEB_RESEARCH
 
 
 # ---------------------------------------------------------------------------

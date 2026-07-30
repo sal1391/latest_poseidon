@@ -12,6 +12,7 @@ from poseidon.core.llm.prompts import DEFAULT_PROMPTS_DIR, PromptRegistry
 from poseidon.core.llm.roles import RoleClient
 from poseidon.core.runlog import RunLogWriter
 from poseidon.core.skills.registry import SkillRegistry
+from poseidon.mcp.registry import ToolServerRegistry
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -102,7 +103,9 @@ def _wire_live_chat(app: FastAPI) -> None:
     and the real Bedrock provider (what answers in ``LLM_MODE=live`` with
     ``llm_profile=bedrock``) -- the two canonical shapes ``roles.py``'s own
     docstring documents; registering both at once is harmless
-    (``RoleClient.invoke`` reads exactly one key per call).
+    (``RoleClient.invoke`` reads exactly one key per call). ``tool_registry``
+    (Phase 7 Task 4) follows the identical "build once, share" discipline --
+    see :func:`_build_tool_registry`.
     """
     settings = app.state.settings
     app.state.conversation_state_store = ConversationStateStore()
@@ -118,6 +121,7 @@ def _wire_live_chat(app: FastAPI) -> None:
     app.state.prompt_registry = PromptRegistry(prompts_dir)
     app.state.data_client = SyntheticDataClient(settings.database_url)
     app.state.run_log_writer = _build_run_log_writer(settings)
+    app.state.tool_registry = _build_tool_registry(settings)
     app.include_router(live_chat.router)
 
 
@@ -149,3 +153,48 @@ def _build_run_log_writer(settings: Settings) -> RunLogWriter | None:
         return None
     print("run-log writer: enabled (DATABASE_URL configured)", flush=True)
     return writer
+
+
+def _build_tool_registry(settings: Settings) -> ToolServerRegistry:
+    """The ``ToolServerRegistry`` every live chat turn's ``SkillContext.
+    tools`` resolves against (Phase 7 Task 4) -- see ``poseidon.mcp.
+    registry.ToolServerRegistry``'s own docstring for the ``overrides``
+    seam this function is the production caller of.
+
+    AMENDED post-Task-2: a REAL ``PERPLEXITY_API_KEY`` can exist in an
+    operator's ambient environment while the chat is still running
+    ``LLM_MODE=stub`` -- key PRESENCE is the wrong gate for whether a
+    research dispatch should hit the real Perplexity API, since it would
+    silently burn API credits on every research-shaped demo/dev turn. The
+    gate is ``settings.llm_mode`` instead, the SAME switch that already
+    decides which LLM provider answers this app's ``role_client``
+    (``_wire_live_chat``, above) -- doc 06's "stub LLM mode throughout":
+    LLM and research move together, one mode switch governing every
+    external call this app makes. ``"stub"`` installs a
+    ``FixtureResearchTool`` override (bypassing transport resolution
+    entirely, reading the clean, recorded fixture -- see that class's own
+    module docstring); ``"live"`` supplies no override at all, leaving
+    ``ToolServerRegistry`` to resolve a real transport per
+    ``TOOL_TRANSPORT_PERPLEXITY`` exactly as it was designed to on its own.
+
+    Never resolves eagerly, either mode: constructing the registry (and,
+    under ``"stub"``, constructing ``FixtureResearchTool`` -- itself proven
+    to read no file at construction time, only inside its own ``search()``)
+    is a plain object build with no I/O of its own; only a skill's
+    ``ctx.tools.research`` access ever triggers real resolution
+    (``ToolServerRegistry``'s own laziness rule, unaffected by this
+    function). The boot log line below reports the CONFIGURED choice, not
+    a resolved instance, for exactly that reason -- reading ``.research``
+    here just to log it would defeat the laziness this function otherwise
+    preserves.
+    """
+    if settings.llm_mode == "stub":
+        from poseidon.mcp.perplexity.fixture_tool import FixtureResearchTool
+
+        overrides = {"research": FixtureResearchTool()}
+        label = "fixture (llm_mode=stub)"
+    else:
+        overrides = None
+        label = f"{settings.tool_transport_perplexity} (llm_mode=live)"
+    print(f"research transport: {label}", flush=True)
+    return ToolServerRegistry(settings, overrides=overrides)

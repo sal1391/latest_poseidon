@@ -46,6 +46,10 @@ _EM_DASH = chr(0x2014)
 _PLACEHOLDER_DSN = "postgresql+psycopg://nobody:nope@127.0.0.1:1/void"
 
 _METRIC_QUERY_DESCRIPTION = REGISTRY.get("data_qa.metric_query").description
+# Phase 7 Task 4: research.web_research joined the real registry as its
+# second enabled skill -- see test_get_skills_returns_registry_backed_shape
+# below.
+_RESEARCH_DESCRIPTION = REGISTRY.get("research.web_research").description
 
 
 @pytest.fixture
@@ -151,11 +155,42 @@ def test_live_mode_app_wires_the_expected_app_state():
     assert hasattr(app.state, "role_client")
     assert hasattr(app.state, "prompt_registry")
     assert hasattr(app.state, "data_client")
+    # Phase 7 Task 4.
+    assert hasattr(app.state, "tool_registry")
     # DATABASE_URL is always syntactically valid here (a placeholder host,
     # never a malformed DSN), so the writer is a real, constructed one --
     # see test_run_log_writer_is_none_when_the_engine_cannot_be_built below
     # for the disclosed else-branch.
     assert app.state.run_log_writer is not None
+
+
+def test_stub_llm_mode_installs_a_fixture_research_tool(capsys):
+    """Phase 7 Task 4 (AMENDED post-Task-2): ``LLM_MODE=stub`` (``_settings
+    ()``'s own default) installs a ``FixtureResearchTool`` override --
+    never a live transport, no matter what ``PERPLEXITY_API_KEY`` happens
+    to be set in the ambient environment (key PRESENCE is the wrong gate --
+    see ``app.py``'s own ``_build_tool_registry`` docstring)."""
+    app = _live_app()
+
+    result = app.state.tool_registry.research.search(query="q", schema_name="web_research")
+
+    assert result.transport == "fixture"
+    assert "research transport: fixture (llm_mode=stub)" in capsys.readouterr().out
+
+
+def test_live_llm_mode_resolves_the_configured_perplexity_transport(capsys):
+    """The other half of the AMENDED gate: ``LLM_MODE=live`` leaves
+    resolution to ``ToolServerRegistry`` itself, per
+    ``TOOL_TRANSPORT_PERPLEXITY`` (default ``"direct"``) -- proven WITHOUT
+    ever firing a live call: only the CONSTRUCTED adapter's type is
+    checked, never ``.search()`` (``PerplexityDirectAdapter``'s own lazy-
+    client contract already proves construction alone touches no network)."""
+    from poseidon.mcp.perplexity.adapter import PerplexityDirectAdapter
+
+    app = _live_app(llm_mode="live")
+
+    assert isinstance(app.state.tool_registry.research, PerplexityDirectAdapter)
+    assert "research transport: direct (llm_mode=live)" in capsys.readouterr().out
 
 
 def test_live_mode_local_deploy_discovers_the_skill_registry_exactly_once(monkeypatch):
@@ -394,6 +429,9 @@ async def test_unhandled_exception_with_no_writer_still_ends_stream_cleanly(monk
 
 @pytest.mark.anyio
 async def test_get_skills_returns_registry_backed_shape():
+    """Phase 7 Task 4: research.web_research is now the registry's second
+    entry (``registry.skill_ids``' own sorted-by-id order -- "data_qa" <
+    "research" -- so metric_query still comes first)."""
     app = _live_app()
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
@@ -406,7 +444,12 @@ async def test_get_skills_returns_registry_backed_shape():
             "id": "data_qa.metric_query",
             "label": "Metric query",
             "description": _METRIC_QUERY_DESCRIPTION,
-        }
+        },
+        {
+            "id": "research.web_research",
+            "label": "Web research",
+            "description": _RESEARCH_DESCRIPTION,
+        },
     ]
 
 

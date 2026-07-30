@@ -77,10 +77,27 @@
   user: "any relevant news on them I should be aware of?"
   expect: { skill: research.web_research, args_subset: { customer: "CUSTOMER_X" } }
   execution:
-    live_only: true
-    reason: >-
-      research.web_research does not exist yet: Phase 7 builds the research
-      task, so there is no registered skill for a stub script to dispatch.
+    # Runnable offline now (Phase 7 Task 4): research.web_research is
+    # registered and enabled, so this script exercises the whole path --
+    # loop, dispatch, argument validation, a fixture-backed ResearchTool,
+    # parts, digest, records -- with only the model faked, the same
+    # discipline default_data_qa_breakdown's own script already
+    # established. The stub executor injects a FixtureResearchTool
+    # override so this never fires a live Perplexity call.
+    stub_script:
+      - stop_reason: tool_use
+        input_tokens: 1050
+        output_tokens: 62
+        tool_use:
+          id: tool-1
+          skill: research.web_research
+          arguments:
+            question: "any relevant news on them I should be aware of?"
+            customer: "CUSTOMER_X"
+      - stop_reason: end_turn
+        input_tokens: 1320
+        output_tokens: 58
+        text: "Here's what we found on CUSTOMER_X: 2 sources."
 
 - id: post_brief_pivot_to_internal
   setup: { mode: prospect, state: { mentioned_ports: ["ROTTERDAM"] } }

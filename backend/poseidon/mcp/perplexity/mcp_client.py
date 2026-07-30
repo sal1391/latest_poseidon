@@ -232,12 +232,14 @@ class PerplexityMcpClient:
         if parsed is None:
             return _degrade(_REASON_PARSE_FAILED)
 
-        items = validate_and_normalize(parsed, schema)
-        if items is None:
+        normalized = validate_and_normalize(parsed, schema)
+        if normalized is None:
             return _degrade(_REASON_INVALID_SCHEMA)
+        items, summary = normalized
 
         return ResearchResult(
             items=items,
             raw_digest=f"{len(items)} results via {_TRANSPORT}",
             transport=_TRANSPORT,
+            summary=summary,
         )

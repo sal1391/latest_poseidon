@@ -215,6 +215,15 @@ def test_search_returns_items_from_the_clean_fixture():
         transport="mcp",
         degraded=False,
         degrade_reason=None,
+        # Task 4 (amendment 9a5ca1b): the same recorded content Task 2's own
+        # clean fixture carries (see _mcp_envelope_from_fixture) includes a
+        # "summary" key, threaded through the shared validate_and_normalize
+        # path exactly like the direct adapter's own equivalent test.
+        summary=(
+            "Recent coverage highlights growing biofuel bunkering capacity in "
+            "Singapore and regulatory pressure from IMO 2030 targets pushing "
+            "carriers toward lower-carbon marine fuels."
+        ),
     )
 
 
@@ -238,6 +247,10 @@ def test_search_recovers_the_truncated_mid_string_fixture():
     assert result.raw_digest == f"{len(result.items)} results via mcp"
     for item in result.items:
         assert set(item) == {"title", "url", "snippet", "relevance"}
+    # Same reasoning as test_perplexity_adapter.py's own equivalent
+    # assertion: the truncation landmark lands before the fixture's
+    # "summary" key, so the recovered JSON never has one to extract.
+    assert result.summary == ""
 
 
 def test_search_degrades_on_the_unrecoverable_fixture():

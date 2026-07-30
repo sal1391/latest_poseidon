@@ -221,6 +221,7 @@ def execute_turn(
     prompt_registry: PromptRegistry,
     sink: SseEnvelopeSink,
     reference_date: date,
+    tools: object | None = None,
 ) -> TurnOutcome:
     """Run one chat turn to completion. See the module docstring for the
     full pinned order and the three terminal-state disciplines.
@@ -231,6 +232,16 @@ def execute_turn(
     own ``start_turn`` failed, per its never-raises contract -- see
     ``runlog.py``): the turn produces the identical stream and state-store
     behavior either way, only the run log gains no rows.
+
+    ``tools`` (Phase 7 Task 4, additive -- defaults to ``None`` so every
+    call site before this task keeps working unchanged) is threaded
+    straight to ``SkillContext.tools`` below, unexamined: this function has
+    no opinion about what it is or where it came from, the same "typed
+    ``object``, cast at the skill's own call site" seam ``SkillContext``
+    itself documents. ``poseidon.api.live_chat`` supplies the real
+    ``ToolServerRegistry`` ``api/app.py`` builds once per app; a skill that
+    never reads ``ctx.tools`` (``data_qa.metric_query`` today) is
+    unaffected either way.
     """
     prior_slots = state.get(conversation_id)
     parsed = parse_turn(text, prior_slots, reference_date, data)
@@ -284,7 +295,9 @@ def execute_turn(
             started=started,
         )
 
-    context = SkillContext(data=data, artifacts=None, settings=settings, state=parsed.slots)
+    context = SkillContext(
+        data=data, artifacts=None, settings=settings, state=parsed.slots, tools=tools
+    )
     router_version, router_hash = _router_prompt_provenance(
         settings=settings,
         prompt_registry=prompt_registry,

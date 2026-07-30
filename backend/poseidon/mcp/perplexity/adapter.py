@@ -220,18 +220,15 @@ def load_schema(schema_name: str) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def validate_and_normalize(parsed: Any, schema: dict) -> tuple[dict, ...] | None:
-    """Gate + normalize a parsed response against ``schema``.
+def validate_and_normalize(parsed: Any, schema: dict) -> tuple[tuple[dict, ...], str] | None:
+    """Gate + normalize a parsed response against ``schema``, returning
+    ``(items, summary)`` -- or ``None`` on an invalid-schema degrade.
 
     "Validate against the schema's required keys" (the brief) is read
     literally as the schema's TOP-LEVEL ``required`` list (for
-    ``web_research.json``, just ``["items"]`` -- ``summary`` is
-    descriptive, not load-bearing, since nothing downstream of
-    :class:`~poseidon.mcp.registry.ResearchResult` carries it forward
-    today; see ``schemas/web_research.json``'s own docstring-equivalent
-    ``description`` field): if any required top-level key is absent, or
-    ``items`` is not a list, this is an invalid-schema degrade -- returns
-    ``None``.
+    ``web_research.json``, just ``["items"]``): if any required top-level
+    key is absent, or ``items`` is not a list, this is an invalid-schema
+    degrade -- returns ``None``.
 
     Per-ITEM fields are NORMALIZED rather than validated the same strict
     way: each element becomes a dict with exactly the keys the schema's
@@ -240,6 +237,17 @@ def validate_and_normalize(parsed: Any, schema: dict) -> tuple[dict, ...] | None
     defaulting a missing field to ``""`` rather than rejecting the whole
     response over one incomplete item. Non-dict elements are dropped
     defensively (never raise on a malformed element).
+
+    ``summary`` (Task 4, amendment 9a5ca1b): the schema's OPTIONAL
+    top-level ``summary`` key -- not in ``required``, so its absence never
+    degrades the response -- extracted the same defaulting-not-validating
+    way a missing per-item field already is: ``parsed.get("summary", "")``.
+    This corrects this docstring's own earlier claim ("summary is
+    descriptive, not load-bearing, since nothing downstream of
+    ResearchResult carries it forward today") -- Task 2/3 flagged that gap,
+    Task 4 closes it: both transports' ``search()`` now thread this
+    function's ``summary`` straight into ``ResearchResult.summary``, which
+    a skill's rendered text part carries to the user verbatim.
     """
     if not isinstance(parsed, dict):
         return None
@@ -254,9 +262,11 @@ def validate_and_normalize(parsed: Any, schema: dict) -> tuple[dict, ...] | None
         schema.get("properties", {}).get("items", {}).get("items", {}).get("properties", {})
     )
     keys = tuple(item_properties)
-    return tuple(
+    items = tuple(
         {key: item.get(key, "") for key in keys} for item in raw_items if isinstance(item, dict)
     )
+    summary = parsed.get("summary", "")
+    return items, summary
 
 
 class PerplexityDirectAdapter:
@@ -329,14 +339,16 @@ class PerplexityDirectAdapter:
         if parsed is None:
             return _degrade(_REASON_PARSE_FAILED)
 
-        items = validate_and_normalize(parsed, schema)
-        if items is None:
+        normalized = validate_and_normalize(parsed, schema)
+        if normalized is None:
             return _degrade(_REASON_INVALID_SCHEMA)
+        items, summary = normalized
 
         return ResearchResult(
             items=items,
             raw_digest=f"{len(items)} results via {_TRANSPORT}",
             transport=_TRANSPORT,
+            summary=summary,
         )
 
 

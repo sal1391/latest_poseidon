@@ -145,7 +145,73 @@ refuses_research_leading`` (formerly ``test_tool_call_is_identical_
 regardless_of_hints_value`` -- flipped per this task's instructions, not
 deleted): metric-leading and empty hints both still dispatch identically to
 before; a research-leading hints line now produces the capability message
-instead.
+instead -- UNLESS Task 4 (below) also finds a subject to research, in which
+case it now dispatches research instead of merely refusing metric_query.
+
+**Task 4 CLOSURE (research pivot; Phase 7).** Task 3's closure (above) only
+ever taught this router to RESPECT a research-leading hints line by
+REFUSING metric_query -- the turn still fell through to the capability
+message either way, since nothing yet dispatched research.web_research
+itself. Task 4 closes that other half, additively: case (b)'s own gate and
+``_metric_query_call`` are UNTOUCHED; this is a new, independent branch
+checked only once (b) has already declined to fire, so the two skills never
+compete for the same turn. The rule: a "Skill hints:" line present AND
+leading with ``research.web_research`` (:attr:`_ParsedState.hints_lead_
+research`, computed by the identical ``_HINTS_RE`` match ``hints_permit_
+dispatch`` already reads, just checked against a different target id) AND a
+customer or port is KNOWN -- resolved THIS turn (``Resolved customer:``/
+``Resolved port:``) OR still carried from before (``Carried customer:``/
+``Carried port:``) -- together produce ONE ``tool_use`` for ``research.
+web_research`` (:func:`_research_call`): ``question`` is the last
+user-authored text (:func:`_last_user_text`, the SAME helper case (b)'s own
+"top" detection already uses), and ``customer``/``port`` are each
+independently attached from whichever of resolved-this-turn or carried is
+present (a disclosed judgment call: "resolved-or-carried" is read as
+governing the ARGS the same way it governs the GATE -- per FIELD, not as an
+all-resolved-or-all-carried group choice -- see the task report for the
+full reasoning). This is deliberately MORE permissive than case (b)'s own
+filter-building, which reads ONLY resolved-this-turn lines on purpose (see
+case (b)'s own paragraph below) -- research's gate NAMES carry explicitly
+("resolved-or-carried"), metric_query's does not, so the two are allowed to
+differ.
+
+A second invoke closes a research turn the SAME way case (c) closes a
+metric one, but keyed on WHICH skill actually ran rather than "any
+toolResult exists": :func:`_last_tool_use_name` reads the ``name`` off the
+MOST RECENTLY appended ``toolUse`` block anywhere in ``messages`` (the
+model's own echoed tool call -- ``loop.py``'s ``_assistant_tool_use_
+message``), and when that name is ``research.web_research``, this router
+ends the turn with ``f"Research summary for {subject} -- {n} sources."``
+(:func:`_research_summary`) -- checked BEFORE case (c) itself, and
+regardless of whether a period also happens to be resolved the same turn
+(case (c)'s own condition, ``_has_tool_result(messages) and period is not
+None``, would otherwise ALSO be satisfied and produce the wrong text; see
+``test_research_tool_result_present_takes_priority_even_when_a_period_is_
+also_resolved``). ``{subject}`` reuses the exact same resolved-or-carried
+customer/port precedence the tool call itself used -- correct because
+``system`` is built ONCE per turn (``loop.py``'s own module docstring) and
+handed unchanged to every iteration's ``invoke()`` call, so both
+computations read the identical state block. ``{n}`` is read off the
+toolResult's own digest text (``loop.py``'s ``tool_result_digest``; this
+skill's own proof line, ``tools/format_parts.py``'s ``"Results: {n}"``) via
+the same anchored-regex discipline (:data:`_RESULTS_COUNT_RE`) every other
+line this module parses already uses; a missing/malformed digest defaults
+to ``0`` rather than raising, matching this router's own total-function
+discipline for every other off-contract shape ``invoke()`` is exercised
+against directly.
+
+Hints NOT leading research change NOTHING here, per this task's own
+instruction. Case (b)'s own gate already refused metric_query dispatch the
+moment hints lead ANYTHING other than ``data_qa.metric_query`` (Task 3
+CLOSURE) -- research included -- so before this task, every one of those
+refusals fell straight through to the capability message. This task
+intercepts exactly ONE of them (a hints line leading research.web_research,
+WITH a subject to attach) with a real dispatch; every other refusal --
+hints leading a brief skill, or leading research with no customer/port
+known at all -- still falls through to the byte-identical capability
+message it always did (pinned by ``test_hints_leading_research_without_
+any_subject_falls_back_to_capability_message`` and ``test_hints_leading_a_
+brief_skill_does_not_trigger_research_or_metric_dispatch``).
 
 Behavior table (the phase-6 plan; case (a), ambiguous turns, is the
 orchestrator's short-circuit -- Task 3 -- and never reaches this class, so
@@ -171,10 +237,16 @@ there is no code for it here):
     signal than a lexical cue on the message text). The tool call id is
     always ``"dev-1"``: this case never emits more than one call, so
     per-invoke-sequence numbering never has occasion to reach ``"dev-2"``.
-(c) A ``toolResult`` block is present anywhere in ``messages`` -> end the
-    turn with ``f"Certified answer for {entity_label} -- {period_label}."``
-    (the module's own em dash -- see :data:`_EM_DASH`). ``entity_label`` is
-    the resolved customer if present, else the resolved port, else the
+(b2) (Task 4) Case (b) declined (hints do not permit metric_query), hints
+    instead LEAD with ``research.web_research``, AND a customer or port is
+    known, resolved-or-carried -> ONE ``tool_use`` for ``research.
+    web_research``. See "Task 4 CLOSURE" above for the full rule.
+(c) A ``toolResult`` block is present anywhere in ``messages``, the most
+    recently appended ``toolUse`` did NOT name ``research.web_research``
+    (see (c2), checked first), and a period is resolved -> end the turn
+    with ``f"Certified answer for {entity_label} -- {period_label}."`` (the
+    module's own em dash -- see :data:`_EM_DASH`). ``entity_label`` is the
+    resolved customer if present, else the resolved port, else the
     fallback ``"All Customers"``; ``period_label`` is the resolved period's
     own ``start..end`` substring, plus `` vs {compare_start..compare_end}``
     when a compare period is also resolved -- reusing the block's own ISO
@@ -185,14 +257,20 @@ there is no code for it here):
     ``toolResult``'s own ``status`` ("success" or "error") -- distinguishing
     the two is a real model's job; this fake's whole point is a canned,
     demoable answer, not error-recovery behavior.
-(d) Anything else (most commonly: no period resolved, so (b) cannot fire
-    and there is nothing yet to certify for (c)) -> end the turn with the
-    pinned capability message. This is also the graceful fallback for a
-    shape a real caller (``run_turn``) can never actually produce -- a
+(c2) (Task 4) The most recently appended ``toolUse`` anywhere in
+    ``messages`` names ``research.web_research`` -> end the turn with
+    ``f"Research summary for {subject} -- {n} sources."``, regardless of
+    whether a period is ALSO resolved (checked BEFORE (c) for exactly that
+    reason -- see "Task 4 CLOSURE" above).
+(d) Anything else (most commonly: no period resolved and hints do not lead
+    research with a known subject, so neither (b)/(b2) can fire and there
+    is nothing yet to certify for (c)/(c2)) -> end the turn with the pinned
+    capability message. This is also the graceful fallback for a shape a
+    real caller (``run_turn``) can never actually produce -- a
     ``toolResult`` present with NO period resolved, since (b)'s own
-    precondition means a period was necessarily resolved before any tool
-    could have run this turn -- rather than an unhandled exception on an
-    input nothing today sends.
+    precondition means a period was necessarily resolved before any
+    METRIC tool could have run this turn -- rather than an unhandled
+    exception on an input nothing today sends.
 
 Every response carries ``input_tokens=0``/``output_tokens=0``: this router
 is not a model, so there is nothing to count. Phase 6's run-log rows will
@@ -212,12 +290,28 @@ from poseidon.core.llm.types import LLMResponse, ToolCall
 _EM_DASH = chr(0x2014)
 
 _METRIC_QUERY_SKILL_ID = "data_qa.metric_query"
+# Task 4: bare string constant, not an import of poseidon.tasks.research --
+# this router imports no task/chat-wiring module (see the module docstring's
+# opening contract paragraph), the same reason _METRIC_QUERY_SKILL_ID above
+# is a literal rather than `from poseidon.tasks.data_qa... import`. Pinned
+# equal to poseidon.core.parsing.lexicon.WEB_RESEARCH by
+# test_research_skill_id_matches_the_hinter_lexicons_own_constant, the same
+# decoupled-equality precedent _DEFAULT_ENTITY below already uses.
+_RESEARCH_SKILL_ID = "research.web_research"
 _DEFAULT_ENTITY = "MARINE_SALES_PLANNING_V"
 _DEFAULT_METRIC = "GP"
 _CUST_NM = "CUST_NM"
 _LOC_NM = "LOC_NM"
 _GROUP_BY_TOP_N = 5
 _NO_ENTITY_LABEL = "All Customers"
+# Defensive-only fallback for _research_summary: unreachable through this
+# router's OWN gate (case (b2) already requires a subject before ever
+# placing the research tool_use that a second invoke's toolUse/toolResult
+# pair would echo back), kept for the same total-function reason
+# _certified_answer's own _NO_ENTITY_LABEL exists -- invoke() is exercised
+# directly by this suite's own off-contract tests, not only through a real
+# two-invoke cycle this router itself drove.
+_NO_RESEARCH_SUBJECT_LABEL = "the requested topic"
 _TOOL_CALL_ID = "dev-1"
 
 _CAPABILITY_MESSAGE = (
@@ -254,6 +348,16 @@ _COMPARE_PERIOD_RE = re.compile(
     r"^Compare period: (?P<start>\d{4}-\d{2}-\d{2})\.\.(?P<end>\d{4}-\d{2}-\d{2})$", re.MULTILINE
 )
 
+# Task 4: the CARRIED counterparts of _RESOLVED_CUSTOMER_RE/_RESOLVED_PORT_RE
+# -- prompts.py's own _render_slots emits these with no "(tier=..., confidence
+# =...)" suffix at all (a carried slot is already a certified value, nothing
+# left to express confidence about), so the two pairs of regexes are
+# necessarily shaped differently, not merely renamed. Anchored to the WHOLE
+# line for the same reason every regex in this module is: "Carried customer:"
+# must never be mistaken for a differently-prefixed line sharing a substring.
+_CARRIED_CUSTOMER_RE = re.compile(r"^Carried customer: (?P<value>.+)$", re.MULTILINE)
+_CARRIED_PORT_RE = re.compile(r"^Carried port: (?P<value>.+)$", re.MULTILINE)
+
 # Anchored to the WHOLE pinned line format `prompts.py`'s new `_render_hints`
 # produces ("Skill hints: <id> (<score>), ..."), same discipline as every
 # regex above -- only the FIRST (best-scored) entry is captured, since the
@@ -272,6 +376,17 @@ _HINTS_RE = re.compile(r"^Skill hints: (?P<first_skill>[\w.]+) \([0-9.]+\)", re.
 # one lexeme the behavior table names explicitly.
 _TOP_WORD_RE = re.compile(r"\btop\b")
 
+# Task 4: read off the toolResult digest text a research.web_research
+# dispatch produced -- loop.py's own tool_result_digest renders this
+# skill's "Results: {n}" proof line (tools/format_parts.py) verbatim into
+# the toolResult content this router's second invoke actually receives
+# (_tool_result_block's own "content": [{"text": digest}] shape). Not
+# anchored to line-start (unlike every regex above): the digest is a
+# multi-line block this router never fully re-parses, only searches, so a
+# loose search is the correct amount of parsing for one line inside a blob
+# this module does not otherwise inspect the shape of.
+_RESULTS_COUNT_RE = re.compile(r"Results: (?P<n>\d+)")
+
 
 @dataclass(frozen=True)
 class _ParsedState:
@@ -281,7 +396,8 @@ class _ParsedState:
 
     ``hints_permit_dispatch`` is not a straight field read -- see the
     module docstring's "Task 3 CLOSURE" for the permissive-when-absent rule
-    it implements.
+    it implements. ``hints_lead_research``/``carried_customer``/
+    ``carried_port`` are Task 4 additions -- see "Task 4 CLOSURE".
     """
 
     customer: str | None
@@ -289,6 +405,9 @@ class _ParsedState:
     period: tuple[str, str] | None
     compare_period: tuple[str, str] | None
     hints_permit_dispatch: bool
+    hints_lead_research: bool
+    carried_customer: str | None
+    carried_port: str | None
 
 
 class DevDeterministicRouter:
@@ -313,10 +432,19 @@ class DevDeterministicRouter:
         values -- see the module docstring's opening paragraph.
         """
         parsed_state = _parse_state(system)
+        # Case (c2), Task 4: checked FIRST, and independent of whether a
+        # period is also resolved -- see the module docstring's "Task 4
+        # CLOSURE" for why this must win over case (c)'s own toolResult
+        # check rather than the two racing on "any toolResult exists".
+        if _last_tool_use_name(messages) == _RESEARCH_SKILL_ID:
+            return _research_summary(parsed_state, messages)
         if _has_tool_result(messages) and parsed_state.period is not None:
             return _certified_answer(parsed_state)
         if parsed_state.period is not None and parsed_state.hints_permit_dispatch:
             return _metric_query_call(parsed_state, messages)
+        # Case (b2), Task 4: only reached once (b) has already declined.
+        if parsed_state.hints_lead_research and _research_subject(parsed_state) is not None:
+            return _research_call(parsed_state, messages)
         return _capability_response()
 
 
@@ -332,6 +460,8 @@ def _parse_state(system: str) -> _ParsedState:
     period_match = _PERIOD_RE.search(block)
     compare_match = _COMPARE_PERIOD_RE.search(block)
     hints_match = _HINTS_RE.search(block)
+    carried_customer_match = _CARRIED_CUSTOMER_RE.search(block)
+    carried_port_match = _CARRIED_PORT_RE.search(block)
     return _ParsedState(
         customer=customer_match.group("value") if customer_match else None,
         port=port_match.group("value") if port_match else None,
@@ -346,6 +476,16 @@ def _parse_state(system: str) -> _ParsedState:
         hints_permit_dispatch=(
             hints_match is None or hints_match.group("first_skill") == _METRIC_QUERY_SKILL_ID
         ),
+        # Task 4: the OPPOSITE polarity from hints_permit_dispatch above --
+        # this is an opt-IN signal (a hints line must be present AND
+        # actually lead research), not a permissive-when-absent one, since
+        # research dispatch has no OTHER required signal the way case (b)'s
+        # own period requirement gives metric_query -- see "Task 4 CLOSURE".
+        hints_lead_research=(
+            hints_match is not None and hints_match.group("first_skill") == _RESEARCH_SKILL_ID
+        ),
+        carried_customer=carried_customer_match.group("value") if carried_customer_match else None,
+        carried_port=carried_port_match.group("value") if carried_port_match else None,
     )
 
 
@@ -359,6 +499,56 @@ def _has_tool_result(messages: list[dict]) -> bool:
         for message in messages
         for block in (message.get("content") or [])
     )
+
+
+def _last_tool_use_name(messages: list[dict]) -> str | None:
+    """Task 4: the ``name`` off the MOST RECENTLY appended Converse
+    ``toolUse`` block anywhere in ``messages`` (``loop.py``'s own
+    ``_assistant_tool_use_message`` shape -- the model's own echoed tool
+    call), or ``None`` when there is none yet. This is how a second invoke
+    tells WHICH skill a ``toolResult`` is closing out, rather than merely
+    that one exists (see the module docstring's "Task 4 CLOSURE" for why
+    that distinction matters the moment a period is ALSO resolved the same
+    turn a research call ran). This router only ever emits ONE tool call
+    per turn (:data:`_TOOL_CALL_ID` is always ``"dev-1"``), so at most one
+    such block can exist within a turn's ``messages`` -- scanning in
+    reverse is future-proofing the read, not a response to any real
+    ambiguity today.
+    """
+    for message in reversed(messages):
+        for block in reversed(message.get("content") or []):
+            if isinstance(block, dict) and "toolUse" in block:
+                tool_use = block["toolUse"]
+                if isinstance(tool_use, dict):
+                    name = tool_use.get("name")
+                    return name if isinstance(name, str) else None
+    return None
+
+
+def _last_tool_result_text(messages: list[dict]) -> str:
+    """Task 4: the text content of the MOST RECENTLY appended ``toolResult``
+    block, or ``""`` when there is none (or its content is not the plain
+    ``{"text": ...}`` shape a successful dispatch produces -- see
+    ``loop.py``'s own ``_tool_result_block``; an ``error``-status result
+    carries ``{"json": ...}`` instead, which this deliberately does not try
+    to read: :func:`_research_summary` only ever reaches this after
+    confirming the LAST toolUse was research.web_research, and this
+    skill's own ``run`` (Task 4) always returns ``ok=True`` -- see
+    ``skill.py``'s own module docstring -- so an error-shaped result is not
+    a real shape this router needs to parse, only a shape it must not
+    crash on).
+    """
+    for message in reversed(messages):
+        for block in reversed(message.get("content") or []):
+            if isinstance(block, dict) and "toolResult" in block:
+                tool_result = block["toolResult"]
+                if isinstance(tool_result, dict):
+                    content = tool_result.get("content") or []
+                    if content and isinstance(content[0], dict):
+                        text = content[0].get("text")
+                        if isinstance(text, str):
+                            return text
+    return ""
 
 
 def _last_user_text(messages: list[dict]) -> str | None:
@@ -414,6 +604,66 @@ def _metric_query_call(parsed_state: _ParsedState, messages: list[dict]) -> LLMR
     call = ToolCall(id=_TOOL_CALL_ID, name=_METRIC_QUERY_SKILL_ID, arguments=arguments)
     return LLMResponse(
         text="", tool_calls=(call,), stop_reason="tool_use", input_tokens=0, output_tokens=0
+    )
+
+
+def _research_subject(parsed_state: _ParsedState) -> str | None:
+    """Task 4: the resolved-or-carried customer/port that both
+    :func:`_research_call` (the tool call's own args) and
+    :func:`_research_summary` (the close's own label) read -- customer
+    before port, resolved before carried, matching the same "customer wins
+    over port" precedence :func:`_certified_answer`'s own ``entity_label``
+    already uses. ``None`` when NEITHER customer nor port is known any way
+    -- the AND-gate condition case (b2) checks before ever calling
+    :func:`_research_call`."""
+    return (
+        parsed_state.customer
+        or parsed_state.carried_customer
+        or parsed_state.port
+        or parsed_state.carried_port
+    )
+
+
+def _research_call(parsed_state: _ParsedState, messages: list[dict]) -> LLMResponse:
+    """Case (b2), Task 4: build the one tool call for ``research.
+    web_research``. ``parsed_state`` is guaranteed to have a customer or
+    port, resolved-or-carried, by :meth:`DevDeterministicRouter.invoke`'s
+    own gate (:func:`_research_subject` is not ``None``).
+
+    ``customer``/``port`` are attached INDEPENDENTLY -- both, when both are
+    known -- from whichever of resolved-this-turn or carried is present per
+    field (the module docstring's "Task 4 CLOSURE" disclosed judgment
+    call), unlike :func:`_metric_query_call`'s own filters, which read ONLY
+    resolved-this-turn lines on purpose.
+    """
+    question = _last_user_text(messages) or ""
+    arguments: dict[str, object] = {"question": question}
+    customer = parsed_state.customer or parsed_state.carried_customer
+    port = parsed_state.port or parsed_state.carried_port
+    if customer is not None:
+        arguments["customer"] = customer
+    if port is not None:
+        arguments["port"] = port
+
+    call = ToolCall(id=_TOOL_CALL_ID, name=_RESEARCH_SKILL_ID, arguments=arguments)
+    return LLMResponse(
+        text="", tool_calls=(call,), stop_reason="tool_use", input_tokens=0, output_tokens=0
+    )
+
+
+def _research_summary(parsed_state: _ParsedState, messages: list[dict]) -> LLMResponse:
+    """Case (c2), Task 4: close a research turn. ``system`` is unchanged
+    across a turn's iterations (``loop.py``'s own "built ONCE per turn"),
+    so ``parsed_state`` here is byte-identical to what :func:`_research_call`
+    computed on the first invoke -- the subject label can never disagree
+    with the tool call that produced it.
+    """
+    subject = _research_subject(parsed_state) or _NO_RESEARCH_SUBJECT_LABEL
+    count_match = _RESULTS_COUNT_RE.search(_last_tool_result_text(messages))
+    count = int(count_match.group("n")) if count_match else 0
+    text = f"Research summary for {subject} {_EM_DASH} {count} sources."
+    return LLMResponse(
+        text=text, tool_calls=(), stop_reason="end_turn", input_tokens=0, output_tokens=0
     )
 
 
