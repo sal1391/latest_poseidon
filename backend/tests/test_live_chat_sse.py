@@ -514,6 +514,31 @@ async def test_a_real_turn_is_recorded_into_the_transcript_user_then_assistant_p
 
 
 @pytest.mark.anyio
+async def test_a_clarify_turn_is_recorded_into_the_transcript_as_chips_then_text():
+    """Final-review wave item 6: contrast with
+    ``test_post_conversations_returns_the_same_opener_shape_as_mock``'s own
+    OPENER kinds (``["text", "chips"]``) -- the clarify TURN's own
+    transcript kinds are the opposite order, chips first then text, matching
+    ``orchestrator.py``'s own ``_finish_clarify`` push order (the chips part,
+    then the "did you mean" text part)."""
+    app = _live_app(data_client=FakeDataClient(), writer=RecordingWriter())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
+        await read_sse(client, cid, "gp for Meridiann in April 2026", None)
+        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["messages"]
+
+    assistant_msg = msgs[-1]
+    kinds = [p["kind"] for p in assistant_msg["parts"]]
+    assert kinds == ["chips", "text"]
+    # The clarification chips carry the same "for <name>" send_text
+    # orchestrator.py now emits (final-review wave item 2) -- the transcript
+    # records the part payload verbatim, envelope stripped.
+    first_option = assistant_msg["parts"][0]["payload"]["options"][0]
+    assert first_option["send_text"] == f"for {first_option['label']}"
+
+
+@pytest.mark.anyio
 async def test_streaming_route_auto_vivifies_transcript_for_an_unregistered_conversation_id():
     """Backward compatibility, disclosed in the module docstring: the
     streaming route itself stays opaque about cid (Task 4's own documented

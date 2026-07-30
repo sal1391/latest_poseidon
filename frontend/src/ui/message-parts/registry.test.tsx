@@ -1,4 +1,6 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { vi } from "vitest";
 import { PartRenderer } from "./registry";
 
 test("renders markdown text", () => {
@@ -11,6 +13,55 @@ test("renders tool event with done glyph", () => {
     tool_seq: 1, tool: "t", server: "internal", status: "done", label: "top_customers · done" } }} />);
   expect(screen.getByText(/top_customers · done/)).toBeInTheDocument();
   expect(screen.getByText(/✓/)).toBeInTheDocument();
+});
+
+// Final-review wave item 2 (I1 + M6): send_text is SCOPED to clarification
+// chips only -- a blanket "for " prefix would corrupt the opener's own flow
+// chips into "for Existing customer", which the customer resolver reads as
+// customer_unknown. Both directions pinned here, at the ChipsPart level
+// (registry.test.tsx already exercises other part kinds through
+// PartRenderer directly, in isolation from the full ChatScreen).
+
+test("clicking a clarification chip sends its send_text, not its bare label", async () => {
+  const onChipSelect = vi.fn();
+  render(
+    <PartRenderer
+      part={{
+        kind: "chips",
+        payload: {
+          options: [
+            {
+              id: "Meridian Shipping",
+              label: "Meridian Shipping",
+              send_text: "for Meridian Shipping",
+            },
+          ],
+        },
+      }}
+      onChipSelect={onChipSelect}
+    />,
+  );
+
+  await userEvent.click(screen.getByRole("button", { name: "Meridian Shipping" }));
+
+  expect(onChipSelect).toHaveBeenCalledWith("Meridian Shipping", "for Meridian Shipping");
+});
+
+test("clicking a chip with no send_text (an opener flow chip) still sends its bare label", async () => {
+  const onChipSelect = vi.fn();
+  render(
+    <PartRenderer
+      part={{
+        kind: "chips",
+        payload: { options: [{ id: "existing_customer", label: "Existing customer" }] },
+      }}
+      onChipSelect={onChipSelect}
+    />,
+  );
+
+  await userEvent.click(screen.getByRole("button", { name: "Existing customer" }));
+
+  expect(onChipSelect).toHaveBeenCalledWith("existing_customer", "Existing customer");
 });
 
 test("unknown kind falls back safely", () => {

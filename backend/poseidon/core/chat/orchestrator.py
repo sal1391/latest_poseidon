@@ -27,7 +27,11 @@ Three terminal states, three writer/state disciplines
 - **ok**: ``run_turn`` returns ``status="ok"``. Token + done stream; every
   ``LLMRecord``/``ToolRecord`` appended; ``finalize(status="ok")``;
   ``state.put`` with pass-through repopulated from any group-by dispatch
-  this turn produced.
+  this turn produced -- guarded (final-review wave item 5): a
+  ``_repopulate_pass_through`` failure logs at ERROR and skips ``state.put``
+  for this turn only, rather than raising back through a turn whose
+  ``done``/``finalize`` already went out (see that function's own
+  docstring).
 - **clarify**: ``parsed.issues`` contains a ``customer_ambiguous`` issue.
   Short-circuits BEFORE ``run_turn`` is ever called -- no LLM call, no
   dispatch, per the Global Constraints' "NO skill dispatch for that turn".
@@ -121,6 +125,7 @@ writer call in this module uses it; nothing else in the pinned
 """
 
 import dataclasses
+import logging
 from dataclasses import dataclass
 from datetime import date
 from time import monotonic
@@ -149,6 +154,8 @@ from poseidon.core.runlog import RunLogWriter
 from poseidon.core.skills.context import ConversationSlots, SkillContext
 from poseidon.core.skills.registry import SkillRegistry
 from poseidon.core.skills.result import problem
+
+logger = logging.getLogger(__name__)
 
 # The plan's own fixed identity constant (Global Constraints: "the fixed dev
 # user sub `dev|local` everywhere a user_sub is required") -- Phase 9
@@ -323,6 +330,7 @@ def execute_turn(
             turn_result=turn_result,
             router_version=router_version,
             router_hash=router_hash,
+            settings=settings,
         )
         writer.finalize(
             turn_run_id=turn_run_id,
@@ -336,8 +344,31 @@ def execute_turn(
         )
 
     if turn_result.status == "ok":
-        final_slots = _repopulate_pass_through(parsed.slots, turn_result.tool_records, sink)
-        state.put(conversation_id, final_slots)
+        # Double-terminal guard (final-review wave item 5 / I5): by this
+        # point sink.done() and writer.finalize(status="ok") have ALREADY
+        # gone out for this turn (above). _repopulate_pass_through's own
+        # docstring names two reachable raisers on a malformed table part
+        # (table["payload"] KeyError; row[0] IndexError on an empty row) --
+        # letting either escape here would propagate out of execute_turn
+        # entirely, and at the HTTP layer would drive run_turn_sync's own
+        # crash handler into a SECOND, contradictory finalize/error frame for
+        # a turn that already finished successfully (live_chat.py's own
+        # "Fix round 1, REQUIRED F1" guard was written for a failure BEFORE
+        # this point, not a second one after it). Scoped to ONLY this pair,
+        # not the append/finalize block above it: an append failure must
+        # still reach finalize, or the turn_run row orphans at 'running'
+        # forever (see that guard's own docstring one level up).
+        try:
+            final_slots = _repopulate_pass_through(parsed.slots, turn_result.tool_records, sink)
+            state.put(conversation_id, final_slots)
+        except Exception as exc:  # noqa: BLE001 - a second failure must never re-terminate a finished turn
+            logger.error(
+                "pass-through repopulation failed: conversation_id=%s turn_run_id=%s: %s: %s",
+                conversation_id,
+                turn_run_id,
+                type(exc).__name__,
+                exc,
+            )
     # else (error): slots unchanged -- state.put is simply never called.
 
     return TurnOutcome(
@@ -369,7 +400,17 @@ def _finish_clarify(
         "chips",
         {
             "options": [
-                {"id": candidate, "label": candidate} for candidate in ambiguous_issue.candidates
+                # send_text SCOPED to clarify chips only (final-review wave
+                # item 2 / I1 + M6) -- a "for <name>" cue is what makes the
+                # customer resolver treat the click as naming a customer at
+                # tier-exact 1.0 (verified against the full seeded pool: 40/40
+                # customers, 0/30 ports misresolved). This is NOT a blanket
+                # prefix: the opener's own flow chips (ChatScreen.tsx/
+                # mock_chat.py) carry no send_text at all, since "for Existing
+                # customer" would corrupt that click into customer_unknown --
+                # see ChipsPart.tsx's own option.send_text ?? option.label.
+                {"id": candidate, "label": candidate, "send_text": f"for {candidate}"}
+                for candidate in ambiguous_issue.candidates
             ]
         },
     )
@@ -419,17 +460,35 @@ def _router_prompt_provenance(
 
 
 def _append_records(
-    *, writer: RunLogWriter, turn_run_id: str, turn_result, router_version: str, router_hash: str
+    *,
+    writer: RunLogWriter,
+    turn_run_id: str,
+    turn_result,
+    router_version: str,
+    router_hash: str,
+    settings: Settings,
 ) -> None:
     """Every ``LLMRecord``/``ToolRecord`` the turn collected, regardless of
     whether it ultimately succeeded -- doc 06: a turn that failed on its
-    Nth call still has N-1 real dispatches worth logging."""
+    Nth call still has N-1 real dispatches worth logging.
+
+    ``provider`` (final-review wave item 4 / I3): ``record.provider`` is the
+    CONFIGURED provider (``RoleClient.resolve``'s own answer -- see
+    ``LLMRecord``'s docstring, "truthful in either mode... the only answer
+    available to a loop that never learns which provider actually
+    answered"), which is exactly WRONG for a run-log row: under
+    ``LLM_MODE=stub`` the call was actually answered by
+    ``DevDeterministicRouter``, not the configured provider, and doc 06
+    section 1 reserves the literal ``"stub"`` for that case. ``settings`` is
+    the one thing ``_append_records`` has that ``record`` itself does not --
+    the ``llm_mode`` the loop that produced ``record`` never gets to see.
+    """
     for record in turn_result.llm_records:
         writer.append_llm_call(
             turn_run_id=turn_run_id,
             user_sub=DEV_USER_SUB,
             seq=record.call_seq,
-            provider=record.provider,
+            provider=("stub" if settings.llm_mode == "stub" else record.provider),
             model_id=record.model,
             role=record.role,
             prompt_version=router_version,
@@ -489,6 +548,17 @@ def _repopulate_pass_through(
     never merge" semantics ``ConversationSlots.pass_through``'s own
     docstring requires, without extending a dataclass the brief marks
     off-limits.
+
+    Can raise on a malformed table part -- ``table["payload"]`` (``KeyError``
+    if a table part somehow carries no ``"payload"`` key) and ``row[0]``
+    (``IndexError`` if a row is unexpectedly empty). Neither is reachable
+    through any real dispatch this codebase can produce today (verified: no
+    caller builds a table part this way), but the caller
+    (:func:`execute_turn`) guards this call regardless -- final-review wave
+    item 5's double-terminal guard -- because by the time this runs,
+    ``sink.done()`` and ``writer.finalize(status="ok")`` have already gone
+    out for this turn, so a raise here must never be allowed to re-terminate
+    an already-finished turn.
     """
     new_pairs: tuple[tuple[str, str], ...] | None = None
     for record in tool_records:

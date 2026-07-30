@@ -41,6 +41,26 @@ const FALLBACK_SKILLS: Skill[] = [
   },
 ];
 
+// Final-review wave item 12 (M4): a lookup from BARE skill name (the
+// segment after a dotted id's last part -- see live_chat.py's own
+// `skill_label`/`bareSkillName` derivation) to its curated example, built
+// from the curated list above. GET /api/skills returns namespaced ids
+// (e.g. "data_qa.metric_query"), so a registry-backed skill needs its bare
+// name computed before it can find its match here -- without this map,
+// EVERY registry-backed skill fell back to inserting its bare label instead
+// of a runnable example, even when the exact same skill's curated example
+// already existed one line above.
+const EXAMPLES_BY_BARE_NAME: Record<string, string> = Object.fromEntries(
+  FALLBACK_SKILLS.filter(
+    (skill): skill is Skill & { example: string } => skill.example !== undefined,
+  ).map((skill) => [skill.id, skill.example]),
+);
+
+function bareSkillName(id: string): string {
+  const dot = id.lastIndexOf(".");
+  return dot === -1 ? id : id.slice(dot + 1);
+}
+
 export interface SkillsPickerProps {
   /** Receives the chosen skill's example prompt (or, for a registry-backed
    * skill with no curated example, its label) as a composer starter. */
@@ -61,7 +81,12 @@ export function SkillsPicker({ onPick }: SkillsPickerProps) {
     try {
       const body = await listSkills();
       setSkills(
-        body.map((skill) => ({ id: skill.id, name: skill.label, description: skill.description })),
+        body.map((skill) => ({
+          id: skill.id,
+          name: skill.label,
+          description: skill.description,
+          example: EXAMPLES_BY_BARE_NAME[bareSkillName(skill.id)],
+        })),
       );
     } catch {
       setSkills(FALLBACK_SKILLS);

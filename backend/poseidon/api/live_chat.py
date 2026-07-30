@@ -196,7 +196,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from poseidon.core.chat.events import SseEnvelopeSink
+from poseidon.core.chat.events import SseEnvelopeSink, skill_label
 from poseidon.core.chat.orchestrator import execute_turn
 from poseidon.core.skills.registry import SkillRegistry
 from poseidon.core.skills.result import problem
@@ -444,31 +444,20 @@ def get_messages(cid: str, request: Request) -> dict:
     return {"messages": messages}
 
 
-def _label(skill_id: str) -> str:
-    """Human-readable label derived from a skill id -- SKILL_META itself
-    carries no such field (only ``description``/``examples``; see
-    ``registry.py``'s own ``_register``), so this derives one the same way
-    the frontend's own static skills list already names things: the skill's
-    bare name (the segment after the last dot -- the task prefix dropped),
-    underscores as spaces, first letter capitalized
-    (``"data_qa.metric_query"`` -> ``"metric_query"`` -> ``"Metric query"``,
-    byte-identical to the existing static ``SkillsPicker`` entry for the
-    same skill).
-    """
-    name = skill_id.rpartition(".")[2]
-    return name.replace("_", " ").capitalize()
-
-
 @router.get("/skills")
 def list_skills(request: Request) -> list[dict[str, str]]:
     """``[{id, label, description}]`` for every router-visible skill, in
     ``SkillRegistry.skill_ids`` order (already deterministic -- see that
-    property's own docstring)."""
+    property's own docstring). ``label`` is ``events.skill_label`` (final-
+    review wave item 3 / I4: the ONE shared home for this derivation --
+    byte-identical to the existing static ``SkillsPicker`` entry for the
+    same skill, and to the SSE tool-step label
+    :class:`~poseidon.core.chat.events.SseEnvelopeSink` now emits)."""
     registry: SkillRegistry = request.app.state.skill_registry
     return [
         {
             "id": skill_id,
-            "label": _label(skill_id),
+            "label": skill_label(skill_id),
             "description": registry.get(skill_id).description,
         }
         for skill_id in registry.skill_ids

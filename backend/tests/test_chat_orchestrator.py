@@ -34,6 +34,7 @@ enforces that for this file and the two modules it tests.
 
 import hashlib
 import json
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
@@ -68,7 +69,13 @@ _EM_DASH = "\u2014"
 
 METRIC_QUERY = "data_qa.metric_query"
 REGISTRY = SkillRegistry.discover()
-_METRIC_QUERY_LABEL = REGISTRY.get(METRIC_QUERY).description
+# Final-review wave item 3 (I4): the SSE tool-step label is the humanized
+# short name ("data_qa.metric_query" -> "Metric query"), never the raw
+# SKILL_META description (172 chars, model-facing prose, not a UI label) --
+# see events.py's own module-level skill_label, which this hardcodes rather
+# than recomputes, since the whole point is pinning the ACTUAL text a human
+# reads, independent of the implementation that produces it.
+_METRIC_QUERY_LABEL = "Metric query"
 
 REQUIRED_ENV = {
     "DATABASE_URL": "postgresql+psycopg://x:x@localhost:5432/poseidon",
@@ -286,7 +293,12 @@ def test_accepted_frame_shape():
     assert data == {"turn_id": "t-1", "message_id": "m-1", "event_seq": 1, "turn_index": 3}
 
 
-def test_tool_start_frame_uses_skill_meta_description_as_the_label():
+def test_tool_start_frame_uses_the_humanized_skill_label_not_the_full_description():
+    """Final-review wave item 3 (I4): the tool step line used to carry
+    ``SKILL_META['description']`` verbatim (172 characters of model-facing
+    prose meant for the router prompt, not a UI label) -- it now carries the
+    same short, humanized name ``GET /api/skills`` already showed the
+    SkillsPicker (``events.skill_label``, the shared home both now use)."""
     frames, send = _capturing_send()
     sink = SseEnvelopeSink(turn_id="t", message_id="m", send=send, registry=REGISTRY)
 
@@ -308,18 +320,20 @@ def test_tool_start_frame_uses_skill_meta_description_as_the_label():
     }
 
 
-def test_tool_start_unknown_skill_falls_back_to_the_bare_skill_id_as_the_label():
-    """The registry lookup is a ``try/except KeyError`` -- an id the
-    registry has never heard of (an unknown-skill dispatch, or a live
-    router hallucinating a name) still produces a legible label instead of
-    raising out of the sink."""
+def test_tool_start_unrecognized_skill_id_still_gets_a_humanized_label():
+    """``skill_label`` is a pure string derivation over the dotted id, never
+    a registry lookup (final-review wave item 3) -- an id the registry has
+    never heard of (an unknown-skill dispatch, or a live router
+    hallucinating a name) still produces a legible, humanized label the
+    exact same way a real one does, rather than falling back to the bare
+    dotted id: there is no registry-membership check left to fail."""
     frames, send = _capturing_send()
     sink = SseEnvelopeSink(turn_id="t", message_id="m", send=send, registry=REGISTRY)
 
     sink.emit("tool_start", {"tool_seq": 1, "skill_id": "data_qa.made_up", "arguments": {}})
 
     _, _, data = _parse_frame(frames[0])
-    assert data["label"] == "data_qa.made_up"
+    assert data["label"] == "Made up"
 
 
 def test_tool_done_ok_emits_tool_frame_then_each_part_then_proof():
@@ -480,6 +494,57 @@ def test_tool_done_defensively_converts_artifact_refs_when_present():
     assert name == "part"
     assert data["kind"] == "artifact"
     assert data["payload"] == {
+        "name": "brief.pdf",
+        "url": "https://example.test/brief.pdf",
+        "mime": "application/pdf",
+    }
+
+
+def test_tool_done_with_parts_proof_and_artifacts_together_orders_part_then_proof_then_artifact():
+    """Final-review wave item 8: combines what
+    ``test_tool_done_ok_emits_tool_frame_then_each_part_then_proof`` and
+    ``test_tool_done_defensively_converts_artifact_refs_when_present`` each
+    prove separately -- a single ``tool_done`` payload carrying parts, proof
+    AND artifacts all at once (not yet producible by any real skill today,
+    see events.py's own "Artifacts: coded, currently unreachable") emits
+    tool, then each part, then proof, then each artifact, exactly matching
+    ``_handle_tool_done``'s own emission order."""
+    frames, send = _capturing_send()
+    sink = SseEnvelopeSink(turn_id="t", message_id="m", send=send, registry=REGISTRY)
+    table = {"kind": "table", "payload": {"columns": ["Customer"], "rows": [["A"]]}}
+    ref = ArtifactRef(
+        name="brief.pdf", url="https://example.test/brief.pdf", mime="application/pdf"
+    )
+
+    sink.emit(
+        "tool_done",
+        {
+            "tool_seq": 1,
+            "skill_id": METRIC_QUERY,
+            "status": "ok",
+            "duration_ms": 1,
+            "digest": "d",
+            "parts": [table],
+            "proof": ["Rows: 1"],
+            "problem": None,
+            "artifacts": [ref],
+        },
+    )
+
+    names = [_parse_frame(f)[1] for f in frames]
+    assert names == ["tool", "part", "part", "part"]
+
+    _, _, table_frame = _parse_frame(frames[1])
+    assert table_frame["kind"] == "table"
+    assert table_frame["payload"] == table["payload"]
+
+    _, _, proof_frame = _parse_frame(frames[2])
+    assert proof_frame["kind"] == "proof"
+    assert proof_frame["payload"] == {"lines": ["Rows: 1"]}
+
+    _, _, artifact_frame = _parse_frame(frames[3])
+    assert artifact_frame["kind"] == "artifact"
+    assert artifact_frame["payload"] == {
         "name": "brief.pdf",
         "url": "https://example.test/brief.pdf",
         "mime": "application/pdf",
@@ -715,7 +780,13 @@ def test_flagship_singapore_top_gp_frame_sequence_and_writer_rows(monkeypatch):
     for row in (first_llm, second_llm):
         assert row["turn_run_id"] == "turn-1"
         assert row["user_sub"] == DEV_USER_SUB
-        assert row["provider"] == "bedrock"
+        # Final-review wave item 4 (I3): LLM_MODE=stub means
+        # DevDeterministicRouter answered, not the CONFIGURED provider
+        # ("bedrock", from LLM_PROFILE) RoleClient.resolve reports -- a live
+        # row must never claim a paid provider name for a call that cost
+        # nothing and touched no network (doc 06 section 1 reserves the
+        # literal "stub" for exactly this case).
+        assert row["provider"] == "stub"
         assert row["role"] == "router"
         assert row["status"] == "ok"
         assert row["prompt_version"]  # non-empty; exact value pinned below
@@ -821,6 +892,57 @@ def test_flagship_prompt_hash_matches_the_real_system_text_the_provider_saw(monk
     assert stub.systems[0] == stub.systems[1]  # one system per turn, reused
     real_hash = hashlib.sha256(stub.systems[0].encode("utf-8")).hexdigest()
     assert writer.append_llm_calls[0]["prompt_hash"] == real_hash
+
+
+# ===========================================================================
+# execute_turn -- Final-review wave item 4 (I3): provider truthfulness in
+# stub mode -- doc 06 section 1 reserves the literal "stub" for a call the
+# DevDeterministicRouter answered; a live row must never claim a paid
+# provider name for a call that cost nothing and touched no network.
+# ===========================================================================
+
+
+def test_llm_call_rows_record_provider_stub_under_llm_mode_stub_not_the_configured_provider(
+    monkeypatch,
+):
+    """``RoleClient.resolve``'s CONFIGURED provider ("bedrock", from
+    ``LLM_PROFILE=bedrock``) is truthful about CONFIG, never about who
+    actually ANSWERED -- ``LLM_MODE=stub`` always substitutes
+    ``DevDeterministicRouter`` at call time (``roles.py``'s own module
+    docstring). ``execute_turn``'s ``_append_records`` is the one place that
+    holds both ``settings.llm_mode`` and the record, so it is the one place
+    that can tell the difference; ``LLMRecord.provider`` itself cannot (see
+    that dataclass's own docstring: "the only answer available to a loop
+    that never learns which provider actually answered")."""
+    settings = _settings(monkeypatch, LLM_MODE="stub", LLM_PROFILE="bedrock")
+    data = FakeDataClient()
+    state = ConversationStateStore()
+    writer = RecordingWriter()
+    role_client = _dev_role_client(settings)
+    prompt_registry = PromptRegistry(DEFAULT_PROMPTS_DIR)
+    sink = SseEnvelopeSink(turn_id="t", message_id="m", send=lambda _f: None, registry=REGISTRY)
+
+    execute_turn(
+        conversation_id="conv-provider",
+        text="Top GP customers for Port of Singapore in April 2026",
+        client_turn_key=None,
+        settings=settings,
+        registry=REGISTRY,
+        data=data,
+        state=state,
+        writer=writer,
+        role_client=role_client,
+        prompt_registry=prompt_registry,
+        sink=sink,
+        reference_date=REFERENCE_DATE,
+    )
+
+    assert len(writer.append_llm_calls) == 2
+    assert all(row["provider"] == "stub" for row in writer.append_llm_calls)
+    # model_id is untouched by this fix -- still the CONFIGURED model, which
+    # stays meaningful even under a stub (it names what a live call WOULD
+    # have used).
+    assert all(row["model_id"] for row in writer.append_llm_calls)
 
 
 # ===========================================================================
@@ -1014,11 +1136,27 @@ def test_ambiguous_turn_produces_chips_and_text_parts_clarify_status_no_dispatch
 
     chips_data = decoded[1][2]
     assert chips_data["kind"] == "chips"
+    # Final-review wave item 2 (I1 + M6): clarification chips carry a
+    # "for <name>" send_text -- SCOPED to clarify chips only (never a blanket
+    # prefix; see ChipsPart.tsx's own option.send_text ?? option.label and
+    # the opener flow chips, which carry no send_text at all).
     assert chips_data["payload"] == {
         "options": [
-            {"id": "Meridian Tankers", "label": "Meridian Tankers"},
-            {"id": "Meridian Lines", "label": "Meridian Lines"},
-            {"id": "Meridian Shipping", "label": "Meridian Shipping"},
+            {
+                "id": "Meridian Tankers",
+                "label": "Meridian Tankers",
+                "send_text": "for Meridian Tankers",
+            },
+            {
+                "id": "Meridian Lines",
+                "label": "Meridian Lines",
+                "send_text": "for Meridian Lines",
+            },
+            {
+                "id": "Meridian Shipping",
+                "label": "Meridian Shipping",
+                "send_text": "for Meridian Shipping",
+            },
         ]
     }
 
@@ -1134,6 +1272,13 @@ def test_error_turn_emits_error_event_and_finalizes_error_state_untouched(monkey
     assert finalize["status"] == "error"
     assert finalize["error"]["status"] == 404
     assert finalize["message_id"] == "m"
+    # Final-review wave item 7: usage is summed from turn_result.llm_records
+    # UNCONDITIONALLY (before the ok/error branch), so an error-terminated
+    # turn's finalize call still reports the real token spend of the two
+    # calls the script scripted (10/5 input/output tokens each) -- never 0,
+    # which would misreport a turn that really did call the provider twice.
+    assert finalize["input_tokens"] == 20
+    assert finalize["output_tokens"] == 10
 
     # Slots unchanged: state.put is never called on the error path.
     assert state.get("conv-err") == ConversationSlots()
@@ -1345,6 +1490,96 @@ def test_pass_through_untouched_when_no_group_by_dispatch_happened():
     )
 
     assert new_slots.pass_through == (("Old", "Old"),)  # untouched, still carried
+
+
+# ===========================================================================
+# execute_turn -- Final-review wave item 5 (I5): the double-terminal guard.
+# _repopulate_pass_through's own docstring names two reachable raisers
+# (table["payload"] KeyError; row[0] IndexError on an empty row) -- by the
+# time that call runs, sink.done() and writer.finalize(status="ok") have
+# ALREADY gone out for this turn, so a second, unguarded exception here would
+# either force run_turn_sync's own try/except into a SECOND finalize/error
+# frame for an already-finished turn (the "double terminal" this item is
+# named for), or -- offline, with no HTTP layer to catch it -- propagate out
+# of execute_turn entirely.
+# ===========================================================================
+
+
+class _RowCorruptingSink(SseEnvelopeSink):
+    """Wraps the real sink but corrupts its OWN cached ``tool_result_parts``
+    right after ``_handle_tool_done`` populates them -- simulating exactly
+    the ``IndexError`` ``_repopulate_pass_through``'s own docstring names as
+    reachable (a table part whose row is unexpectedly empty), without
+    touching ``format_parts.py`` or inventing a payload shape a real
+    dispatch could ever produce on the WIRE: the frames already sent to the
+    frontend by the real ``_handle_tool_done`` call below are untouched
+    (``super()._handle_tool_done`` runs first) -- only the cached copy
+    ``_repopulate_pass_through`` reads AFTER ``run_turn`` returns is broken."""
+
+    def _handle_tool_done(self, payload: dict) -> None:
+        super()._handle_tool_done(payload)
+        for tool_seq, parts in list(self.tool_result_parts.items()):
+            self.tool_result_parts[tool_seq] = [
+                (
+                    {"kind": "table", "payload": {"rows": [[]]}}
+                    if part.get("kind") == "table"
+                    else part
+                )
+                for part in parts
+            ]
+
+
+def test_pass_through_repopulation_failure_is_caught_logged_and_does_not_break_the_turn(
+    monkeypatch, caplog
+):
+    """A table part with an empty row -> the turn still reports "ok", with
+    exactly one ``done`` frame and one ``finalize`` call, an ERROR logged,
+    and the pass-through slot simply not repopulated -- the guard wraps ONLY
+    the ``state.put``/``_repopulate_pass_through`` pair, so a failure there
+    skips state.put for this turn entirely rather than orphaning the
+    already-finalized turn_run row or double-signaling its terminal state."""
+    settings = _settings(monkeypatch, LLM_MODE="stub", LLM_PROFILE="bedrock")
+    data = FakeDataClient()
+    state = ConversationStateStore()
+    writer = RecordingWriter()
+    role_client = _dev_role_client(settings)
+    prompt_registry = PromptRegistry(DEFAULT_PROMPTS_DIR)
+    frames, send = _capturing_send()
+    sink = _RowCorruptingSink(turn_id="t", message_id="m", send=send, registry=REGISTRY)
+
+    with caplog.at_level(logging.ERROR, logger="poseidon.core.chat.orchestrator"):
+        outcome = execute_turn(
+            conversation_id="conv-corrupt",
+            text="Top GP customers for Port of Singapore in April 2026",
+            client_turn_key=None,
+            settings=settings,
+            registry=REGISTRY,
+            data=data,
+            state=state,
+            writer=writer,
+            role_client=role_client,
+            prompt_registry=prompt_registry,
+            sink=sink,
+            reference_date=REFERENCE_DATE,
+        )
+
+    assert outcome.status == "ok"
+    names = [_parse_frame(f)[1] for f in frames]
+    assert names.count("done") == 1
+    assert names.count("error") == 0
+
+    assert len(writer.finalize_calls) == 1
+    assert writer.finalize_calls[0]["status"] == "ok"
+
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1
+    assert "conv-corrupt" in errors[0].message
+
+    # Pass-through simply not repopulated: state.put was never reached this
+    # turn (the guard wraps repopulate AND state.put as one unit), so the
+    # conversation's slots stay whatever they were before this turn -- here,
+    # the store's own default-for-an-unseen-id, ConversationSlots().
+    assert state.get("conv-corrupt") == ConversationSlots()
 
 
 # ===========================================================================

@@ -499,8 +499,15 @@ def test_finalize_never_raises_on_broken_engine_and_logs_error(caplog):
 def test_runlog_module_is_ascii_on_disk():
     """Matches ``test_llm_prompts_module_files_are_ascii_on_disk``'s
     convention -- byte-pinned SQL fragments and log messages stay pinned only
-    if no look-alike codepoint can slip into the source."""
-    paths = (Path(runlog.__file__), Path(__file__))
+    if no look-alike codepoint can slip into the source. Final-review wave
+    item 9: the migration itself (0003, this module's own SQL made real) was
+    missing from this guard -- added alongside the two files it already
+    covered."""
+    paths = (
+        Path(runlog.__file__),
+        Path(__file__),
+        Path(runlog.__file__).resolve().parents[2] / "migrations" / "versions" / "0003_run_log.py",
+    )
     for path in paths:
         offending = sorted({byte for byte in path.read_bytes() if byte > 0x7F})
         assert not offending, f"{path.name} holds non-ASCII bytes: {offending}"

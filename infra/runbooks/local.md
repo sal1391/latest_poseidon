@@ -279,6 +279,15 @@ docker exec infra-backend-1 python -m poseidon.scripts.generate_synthetic
 # sales_rows=24000 gl_rows=16200 checksum=886dd91a... (must match every time)
 ```
 
+**Frontend serving stale code.** After a long-lived local session, the
+`frontend` container can keep serving code from before your latest change
+even though `../frontend` is bind-mounted — if the UI does not reflect a
+change you know landed, restart just that service:
+
+```bash
+docker compose -f infra/docker-compose.yml restart frontend
+```
+
 ### The 4-turn gate script
 
 The Phase 6 Phase Gate's own scripted conversation, driven either at
@@ -306,11 +315,37 @@ silently ask a different question depending on which day you run this).
    Meridian family (`Meridian Tankers` / `Meridian Lines` / `Meridian
    Shipping`) + a "did you mean...?" text part; `turn_run.status =
    'clarify'`, no skill dispatch, no `llm_calls` rows. Clicking a chip sends
-   its label as a new plain message (doc 02 section 5's v1 click-to-send
-   contract) — since a bare customer name carries no cue word of its own,
-   the deterministic parser does not attach a customer filter to that
-   follow-up either (the same asymmetry as turn 3, again not a bug); the
-   turn still completes normally.
+   a `"for <name>"` send text as a new plain message, not the bare label
+   (final-review wave item 2) — that "for " cue is what lets the
+   deterministic parser resolve the customer on this follow-up (a bare name
+   alone carries no cue word, the same asymmetry turn 3's own "for
+   Rotterdam" note describes); the turn resolves to the chosen customer and
+   completes normally.
+
+Turn 1 alone, direct against the API with curl (a quick sanity check
+without opening the UI):
+
+```bash
+curl -N -s -X POST localhost:8000/api/conversations/8f14e45f-ceea-467e-add8-3f8d1a5e2b1c/messages \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Top GP customers for Port of Singapore in April 2026","client_turn_key":"3f9d9d0a-6e1e-4b8b-9c9b-2f6f6c5a9d11"}'
+```
+
+Expect an SSE stream: `accepted`, two `tool` frames (start then done), two
+`part` frames (table then proof), one `token` frame with the certified
+answer, then `done`. Both the conversation id in the URL and
+`client_turn_key` in the body must be real UUIDs, like the shipped
+frontend's own `crypto.randomUUID()`: the streaming route itself accepts
+any string as the conversation id (it never validates or looks it up), but
+`turn_run.conversation_id`/`client_turn_key` are both UUID columns, so a
+hand-typed non-UUID value for either one (e.g. a bare `demo-1` in the URL,
+or `client_turn_key: "turn-1"`) fails the run-log insert silently
+(`RunLogWriter` never raises) — leaving no `turn_run` row and nothing for
+the idempotent-retry check to match against, even though the chat turn
+itself still streams and answers normally (live-verified: curling this
+exact example with a bare `demo-1` conversation id gets the identical SSE
+stream above, but logs `runlog start_turn failed: ... invalid input syntax
+for type uuid: "demo-1"` on the server and writes no row at all).
 
 ### Inspecting the run-log rows the script wrote
 

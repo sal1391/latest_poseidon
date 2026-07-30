@@ -61,19 +61,28 @@ Human labels (doc 01 section 4's ``tool_event``/``tool`` ``label`` field)
 The interface this task's brief pins names three constructor keywords
 (``turn_id``, ``message_id``, ``send``); this implementation adds a fourth,
 required, keyword-only ``registry: SkillRegistry`` -- disclosed here and in
-the task report as a necessary, minimal interface extension: "human label
-from SKILL_META description, or skill id fallback" cannot be implemented
-without SOME way to look up a skill's ``SKILL_META['description']``, and
-``SkillRegistry.get(skill_id).description`` (the exact accessor
-``prompts.py``'s own ``skill_lines_block`` already uses) is the natural,
-already-established way to get it -- passing the whole registry, not a
-pre-computed ``dict[str, str]``, mirrors how every other chat/llm module in
-this codebase that needs a skill's description reaches for the registry
-directly rather than a derived mapping. The fallback (skill id verbatim) is
-not just defensive: a dispatch aimed at an UNKNOWN skill id (a genuine
-404, or a live model hallucinating a name) has no ``SKILL_META`` to read at
-all, and ``registry.get`` raising ``KeyError`` for exactly that case is what
-makes the fallback reachable by construction, not just by accident.
+the task report as a necessary, minimal interface extension.
+
+**Final-review wave amendment (item 3 / I4).** The label was originally
+``SKILL_META['description']`` (``registry.get(skill_id).description``,
+falling back to the bare skill id on ``KeyError``) -- correct as "a string
+the registry can produce," but wrong as a UI label: that description is
+model-facing prose meant for the router prompt (172 characters for
+``data_qa.metric_query``), not something a human wants to read as a tool
+step's name. It also duplicated a SECOND, independent derivation
+``poseidon.api.live_chat`` already had for its ``GET /api/skills`` response
+(the segment after a skill id's last dot, underscores as spaces, first
+letter capitalized -- ``"data_qa.metric_query"`` -> ``"Metric query"``).
+:func:`skill_label` below is that derivation, moved to this module as the
+ONE shared home; ``live_chat.py`` now imports it instead of keeping its own
+copy. Being a pure string transform over the id itself, it needs no
+registry lookup and therefore never raises -- an id the registry has never
+heard of (an unknown-skill dispatch, or a live model hallucinating a name)
+gets the identical humanized treatment a real one does, which is why
+``_label`` below no longer catches ``KeyError``. ``registry`` stays a
+required constructor keyword regardless: it is still this task's pinned
+interface shape, and removing it would ripple into every call site and test
+in this suite for no behavioral gain.
 
 Parts retained for pass-through (doc 02 section 5)
 ------------------------------------------------------
@@ -135,6 +144,29 @@ from poseidon.core.skills.registry import SkillRegistry
 # "ok" is never a valid value on the wire (see the module docstring's "The
 # one real translation").
 _TOOL_STATUS_ON_WIRE = {"ok": "done", "error": "error"}
+
+
+def skill_label(skill_id: str) -> str:
+    """Human-readable label derived from a skill id -- SKILL_META itself
+    carries no such field (only ``description``/``examples``; see
+    ``registry.py``'s own ``_register``), so this derives one the same way
+    the frontend's own static skills list already names things: the bare
+    skill name (the segment after the last dot -- the task prefix dropped),
+    underscores as spaces, first letter capitalized
+    (``"data_qa.metric_query"`` -> ``"metric_query"`` -> ``"Metric query"``).
+
+    The shared home for this derivation (final-review wave item 3 / I4):
+    previously duplicated between this module's own
+    :meth:`SseEnvelopeSink._label` (which returned the SKILL_META
+    description instead -- see this module's own "Human labels" section)
+    and ``poseidon.api.live_chat``'s own module-level ``_label`` (this exact
+    computation). ``live_chat.py`` now imports this function instead of
+    defining its own copy. Pure string manipulation over the id itself --
+    never raises, so an id no registry has ever heard of still gets a
+    legible label.
+    """
+    name = skill_id.rpartition(".")[2]
+    return name.replace("_", " ").capitalize()
 
 
 class SseEnvelopeSink:
@@ -230,13 +262,10 @@ class SseEnvelopeSink:
         )
 
     def _label(self, skill_id: str) -> str:
-        """``SKILL_META['description']``, or the bare skill id when the
-        registry has never heard of it -- see the module docstring's "Human
-        labels"."""
-        try:
-            return self._registry.get(skill_id).description
-        except KeyError:
-            return skill_id
+        """The tool step line's human label -- see the module docstring's
+        "Human labels" and the module-level :func:`skill_label` this
+        delegates to."""
+        return skill_label(skill_id)
 
     # -----------------------------------------------------------------
     # Direct pushes -- called BY execute_turn, never by run_turn
@@ -270,4 +299,4 @@ class SseEnvelopeSink:
         self._send(frame)
 
 
-__all__ = ["SseEnvelopeSink"]
+__all__ = ["SseEnvelopeSink", "skill_label"]

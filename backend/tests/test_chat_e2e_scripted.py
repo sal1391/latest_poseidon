@@ -399,7 +399,12 @@ async def test_scripted_four_turn_conversation_against_live_seeded_postgres():
     assert turn_id_4 not in llm_calls_by_turn
 
     for call in llm_call_rows:
-        assert call["provider"] == "bedrock"
+        # Final-review wave item 4 (I3): llm_mode="stub" (line ~169 above)
+        # means DevDeterministicRouter answered every one of these calls, not
+        # the CONFIGURED "bedrock" profile -- doc 06 section 1 reserves the
+        # literal "stub" for exactly this case, so the row must say so
+        # instead of claiming a paid provider that never ran.
+        assert call["provider"] == "stub"
         assert call["role"] == "router"
         assert call["prompt_version"] == "v1"
         prompt_hash = call["prompt_hash"]

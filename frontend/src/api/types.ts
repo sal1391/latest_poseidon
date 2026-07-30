@@ -1,6 +1,10 @@
 export type PartKind = "text" | "chips" | "tool_event" | "error" | "table" | "proof";
 export interface TextPayload { markdown: string }
-export interface ChipOption { id: string; label: string }
+// send_text (final-review wave item 2): SCOPED to clarification chips only
+// (orchestrator.py's own _finish_clarify) -- the opener's flow chips (mock
+// and live alike) carry no such field, so ChipsPart's own `?? label`
+// fallback is what keeps them sending their bare label unchanged.
+export interface ChipOption { id: string; label: string; send_text?: string }
 export interface ChipsPayload { options: ChipOption[]; disabled?: boolean }
 export interface ToolEventPayload {
   tool_seq: number; tool: string;

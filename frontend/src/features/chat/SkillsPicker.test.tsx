@@ -62,7 +62,12 @@ test("falls back to the static list when GET /api/skills does not exist (mock mo
   ).toBeInTheDocument();
 });
 
-test("picking a registry-backed skill with no curated example inserts its label", async () => {
+test("picking a registry-backed skill reuses the static list's curated example (final-review wave item 12)", async () => {
+  // "data_qa.metric_query" is namespaced (GET /api/skills' own wire shape),
+  // but its bare name "metric_query" matches FALLBACK_SKILLS' own curated
+  // entry -- picking it must insert that RUNNABLE example, not just its
+  // label, even though this list came from the registry fetch, not the
+  // static fallback.
   server.use(
     http.get("/api/skills", () =>
       HttpResponse.json([
@@ -77,5 +82,25 @@ test("picking a registry-backed skill with no curated example inserts its label"
 
   await userEvent.click(screen.getByText("Metric query"));
 
-  expect(onPick).toHaveBeenCalledWith("Metric query");
+  expect(onPick).toHaveBeenCalledWith("Top GP customers for Port of Singapore in April 2026");
+});
+
+test("picking a registry-backed skill with no curated example inserts its label", async () => {
+  // A bare name ("something_new") with no match in FALLBACK_SKILLS at all --
+  // the fallback-to-label path item 12 keeps for a genuinely uncurated skill.
+  server.use(
+    http.get("/api/skills", () =>
+      HttpResponse.json([
+        { id: "data_qa.something_new", label: "Something new", description: "d" },
+      ]),
+    ),
+  );
+  const onPick = vi.fn();
+  render(<SkillsPicker onPick={onPick} />);
+  await userEvent.click(screen.getByRole("button", { name: /skills/i }));
+  await waitFor(() => screen.getByText("Something new"));
+
+  await userEvent.click(screen.getByText("Something new"));
+
+  expect(onPick).toHaveBeenCalledWith("Something new");
 });
