@@ -34,6 +34,35 @@ Section map:
   H. D30 egress discipline -- fixed lens phrases only, the sentinel test.
   I. ASCII guards, extended to every file this task introduces or touches.
 
+Phase 8 Task 3 (the ``contextualize``/``strategize`` subskills) extends
+this file with further sections, continuing the same lettering:
+  J. poseidon.core.skills.result.phase_section_part -- the Task 3
+     relocation from research/tools/format_phase_section.py (re-imported
+     there now; this section proves the move is a genuine re-export, not
+     a second definition, and that Section C's own tests above still
+     exercise the identical function).
+  K. Shared Task 3 test fixtures: stub/live Settings, a wired-or-empty
+     ctx.llm, and LLMResponse builders (the P5 StubProvider-scripted
+     RoleClient pattern -- see test_llm_loop.py).
+  L. prompts/contextualizer.md and prompts/strategist.md: file existence,
+     the version-comment marker, placeholder wiring (rendered with
+     sentinel content), StrictUndefined on a missing variable, and the
+     CRM headers / prospect rule.
+  M. contextualize subskill: SubskillResult reuse, mode validation, and
+     stub-mode synthesis (the byte-pinned opening line, the real-input
+     digest, determinism).
+  N. contextualize subskill: live-mode synthesis (a StubProvider-scripted
+     RoleClient) and the pinned LLM-error / ctx.llm-unwired failure text.
+  O. strategize subskill: SubskillResult reuse, mode validation, and
+     stub-mode CRM field fill (Account Name / Current Services
+     deterministic, every other header the pinned placeholder).
+  P. strategize subskill: live-mode synthesis and the same failure
+     handling as contextualize.
+  Q. ASCII guards for Task 3's new backend modules (and a narrow pin on
+     just the new phase_section_part function inside result.py, which
+     predates this task's guard with unrelated non-ASCII prose -- see
+     that section for the precedent this follows).
+
 Non-ASCII characters in expected strings are written as literal ``--`` for
 an em dash (never a typed Unicode character), matching the convention every
 earlier Phase 4-8 suite in this codebase uses; ``_EM_DASH`` below is used
@@ -47,13 +76,25 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# jinja2: pins StrictUndefined for Task 3's skill-local prompt templates
+# below (see the module docstring's own "L." section).
+import jinja2
 import pytest
 
 from poseidon.core.config import Settings
+from poseidon.core.llm.prompts import prompt_version
+from poseidon.core.llm.roles import RoleClient
+from poseidon.core.llm.stub import StubProvider
+from poseidon.core.llm.types import LLMResponse
+from poseidon.core.skills import result as result_module
 from poseidon.core.skills.context import ConversationSlots, SkillContext
+from poseidon.core.skills.result import phase_section_part as result_phase_section_part
 from poseidon.mcp.perplexity import fixture_tool
 from poseidon.mcp.perplexity.fixture_tool import FixtureResearchTool
 from poseidon.mcp.registry import ResearchResult
+from poseidon.tasks.customer_insight.skills.existing_customer_brief.subskills.contextualize import (  # noqa: E501
+    subskill as contextualize_subskill,
+)
 
 # Import paths below are long because doc 02 section 1's folder law is
 # deep by design (task/skill/subskills/subskill/tools); several "from ...
@@ -84,6 +125,9 @@ from poseidon.tasks.customer_insight.skills.existing_customer_brief.subskills.re
     format_degraded,
     format_success,
     phase_section_part,
+)
+from poseidon.tasks.customer_insight.skills.existing_customer_brief.subskills.strategize import (  # noqa: E501
+    subskill as strategize_subskill,
 )
 
 _EM_DASH = chr(0x2014)
@@ -846,3 +890,764 @@ def test_modified_fixture_tool_module_is_still_ascii_on_disk():
     pre-existing identical guard over the same file."""
     offending = sorted({byte for byte in Path(fixture_tool.__file__).read_bytes() if byte > 0x7F})
     assert not offending
+
+
+# ===========================================================================
+# Phase 8 Task 3 -- contextualize + strategize subskills, prompts-as-config,
+# and honest stub synthesis. Continues the lettering above (Sections A-I are
+# Task 2's, unmodified).
+# ===========================================================================
+
+# ===========================================================================
+# Section J -- poseidon.core.skills.result.phase_section_part: the Task 3
+# relocation from research/tools/format_phase_section.py. The move is
+# ADDITIVE from Section C's own point of view: format_success/format_
+# degraded (tested above, unchanged) call the SAME function object, now
+# re-imported rather than locally defined -- see format_phase_section.py's
+# own module docstring for the full move rationale.
+# ===========================================================================
+
+
+def test_phase_section_part_lives_in_result_module():
+    """The new, canonical home: importable directly from
+    poseidon.core.skills.result, alongside text_part/table_part/
+    metric_grid_part."""
+    part = result_phase_section_part("My Title", "some markdown")
+
+    assert part == {
+        "kind": "phase_section",
+        "payload": {"title": "My Title", "markdown": "some markdown"},
+    }
+
+
+def test_format_phase_section_reexports_the_relocated_function_not_a_copy():
+    """Proves the move is a genuine re-export (one function object, one
+    definition), not a second, independently-defined phase_section_part
+    that merely happens to produce the same dict shape -- Section C's
+    tests above exercise format_success/format_degraded, which call
+    exactly this object internally."""
+    assert phase_section_part is result_phase_section_part
+
+
+def test_phase_section_part_new_home_is_ascii_on_disk():
+    """result.py carries PRE-EXISTING non-ASCII prose (real em-dash and
+    section-sign bytes in docstrings that predate this task -- e.g. its
+    module docstring and SkillResult's own docstring), so a whole-file
+    ASCII guard would fail for reasons this task did not create -- the
+    same situation test_emit_seam_loop_events.py's own test_context_new_
+    field_lines_are_ascii_though_the_file_predates_the_guard documents for
+    context.py. This pins only the NEW function this task actually adds:
+    the source slice from phase_section_part's own ``def`` line up to (but
+    not including) the next top-level ``def problem`` -- see result.py's
+    own file order, where phase_section_part is placed directly before
+    problem, beside the other part constructors."""
+    source = Path(result_module.__file__).read_text(encoding="utf-8")
+    start = source.index("def phase_section_part")
+    end = source.index("def problem", start)
+    snippet = source[start:end]
+    offending = sorted({byte for byte in snippet.encode("utf-8") if byte > 0x7F})
+    assert not offending, f"phase_section_part holds non-ASCII bytes: {offending}"
+
+
+# ===========================================================================
+# Section K -- shared Task 3 test fixtures: stub/live Settings, a wired-or-
+# empty ctx.llm, and LLMResponse builders (the P5 StubProvider-scripted
+# RoleClient pattern -- test_llm_loop.py's own test_stub_seam_substitution_
+# proof is the direct precedent: llm_mode="live" + llm_profile="bedrock"
+# resolves the synthesis role's provider to "bedrock", so a StubProvider
+# registered under that key stands in for a real model with zero live
+# calls).
+# ===========================================================================
+
+
+def _stub_settings() -> Settings:
+    """Explicit llm_mode="stub" -- contextualize/strategize are the first
+    callers in this file to branch on ctx.settings.llm_mode, so this is
+    spelled out explicitly rather than relying on Settings' own default
+    (defensive hermeticity: an ambient LLM_MODE env var must never change
+    what this helper produces). A new, independent helper -- Task 2's own
+    ``_settings()`` above is left completely untouched."""
+    return Settings(
+        _env_file=None,
+        database_url=_PLACEHOLDER_DSN,
+        s3_bucket="poseidon-artifacts",
+        llm_mode="stub",
+    )
+
+
+def _live_settings() -> Settings:
+    """llm_mode="live", llm_profile="bedrock" -- resolves the synthesis
+    role's provider to "bedrock" (models.yml), so a live-path test
+    registers its StubProvider under that key."""
+    return Settings(
+        _env_file=None,
+        database_url=_PLACEHOLDER_DSN,
+        s3_bucket="poseidon-artifacts",
+        llm_mode="live",
+        llm_profile="bedrock",
+    )
+
+
+def _ctx_with_llm(
+    *,
+    settings: Settings,
+    tools: object | None = None,
+    state: ConversationSlots | None = None,
+    llm: object | None = None,
+) -> SkillContext:
+    """Like ``_ctx`` (Task 2's own helper, left untouched), plus explicit
+    ``settings`` and ``llm`` -- contextualize/strategize are the first
+    callers in this file to read ``ctx.settings.llm_mode`` and ``ctx.llm``,
+    so ``settings`` has no default (every call site must say which mode it
+    means) while ``tools``/``state``/``llm`` keep ``_ctx``'s own optional
+    shape."""
+    return SkillContext(
+        data=object(),
+        artifacts=None,
+        settings=settings,
+        state=ConversationSlots() if state is None else state,
+        tools=tools,
+        llm=llm,
+    )
+
+
+def _synthesis_response(text: str, *, input_tokens: int = 500, output_tokens: int = 200):
+    return LLMResponse(
+        text=text,
+        tool_calls=(),
+        stop_reason="end_turn",
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+    )
+
+
+def _error_response():
+    """Mirrors test_llm_loop.py's/test_llm_types_roles.py's own provider-
+    error shape: real text a model transport might send, stop_reason
+    "error" -- the ONE thing contextualize/strategize's live branch reads
+    off this response, never the text (see each subskill's pinned failure
+    text instead, matching titles.py's own "provider error text must never
+    reach the user" precedent)."""
+    return LLMResponse(
+        text="bedrock error: ThrottlingException",
+        tool_calls=(),
+        stop_reason="error",
+        input_tokens=0,
+        output_tokens=0,
+    )
+
+
+class _ExplodingLLM:
+    """A ``ctx.llm`` that fails the test the instant anything calls
+    ``.invoke`` -- proves stub-mode synthesis genuinely never touches
+    ``ctx.llm``, the same style of proof ``research.subskill``'s own
+    ``ctx.tools is None`` branch gets via ``test_run_with_ctx_tools_none_
+    never_crashes_and_never_needs_a_research_tool`` (there, a real tool
+    server would work too; the point is that NONE is ever dereferenced)."""
+
+    def invoke(self, *args, **kwargs):
+        raise AssertionError("stub-mode synthesis must never call ctx.llm.invoke")
+
+
+_STUB_OPENING_LINE = "Stub-mode synthesis " + _EM_DASH + " flip LLM_MODE=live for model narrative."
+
+_EXPECTED_CRM_HEADERS = (
+    "Account Name",
+    "Industry",
+    "Current Services",
+    "Opportunity Summary",
+    "Key Contacts Strategy",
+    "Risk Factors",
+    "Next Steps",
+)
+
+_PROSPECT_NO_SERVICES_TEXT = "Prospect " + _EM_DASH + " no current services"
+
+_SKILL_PROMPTS_DIR = (
+    Path(contextualize_subskill.__file__).resolve().parent.parent.parent / "prompts"
+)
+
+
+# ===========================================================================
+# Section L -- prompts/contextualizer.md and prompts/strategist.md: file
+# existence, the version-comment marker, placeholder wiring, StrictUndefined
+# on a missing variable, and the CRM headers / prospect rule.
+# ===========================================================================
+
+
+def test_contextualizer_prompt_file_exists():
+    assert (_SKILL_PROMPTS_DIR / "contextualizer.md").is_file()
+
+
+def test_strategist_prompt_file_exists():
+    assert (_SKILL_PROMPTS_DIR / "strategist.md").is_file()
+
+
+def test_contextualizer_prompt_version_is_v1():
+    assert prompt_version(_SKILL_PROMPTS_DIR, "contextualizer") == "v1"
+
+
+def test_strategist_prompt_version_is_v1():
+    assert prompt_version(_SKILL_PROMPTS_DIR, "strategist") == "v1"
+
+
+def test_contextualizer_render_wires_the_data_block_placeholder():
+    """Isolation-style contract test (matches test_llm_prompts.py's own
+    test_router_prompt_metric_names_present_independent_of_other_blocks):
+    a SENTINEL value for data_block, nothing else, proves the template
+    genuinely interpolates {{ data_block }} rather than merely mentioning
+    the words "data block" somewhere in static prose."""
+    rendered = contextualize_subskill.render_prompt(
+        subject="Acme",
+        mode=MODE_EXISTING,
+        data_block="SENTINEL-DATA-BLOCK-CONTENT-4471",
+        field_dictionary="filler",
+        research_block="filler",
+    )
+
+    assert "SENTINEL-DATA-BLOCK-CONTENT-4471" in rendered
+
+
+def test_contextualizer_render_wires_the_field_dictionary_placeholder():
+    rendered = contextualize_subskill.render_prompt(
+        subject="Acme",
+        mode=MODE_EXISTING,
+        data_block="filler",
+        field_dictionary="SENTINEL-FIELD-DICTIONARY-CONTENT-8823",
+        research_block="filler",
+    )
+
+    assert "SENTINEL-FIELD-DICTIONARY-CONTENT-8823" in rendered
+
+
+def test_contextualizer_render_missing_variable_raises_strict_undefined():
+    with pytest.raises(jinja2.exceptions.UndefinedError):
+        contextualize_subskill.render_prompt(subject="Acme")
+
+
+def test_strategist_render_contains_every_crm_header_byte_exact():
+    rendered = strategize_subskill.render_prompt(
+        subject="Northstar Lines",
+        mode=MODE_EXISTING,
+        context_text="filler context",
+        research_block="filler research",
+        data_summary_block="filler data",
+    )
+
+    for header in _EXPECTED_CRM_HEADERS:
+        assert header in rendered
+
+
+def test_strategist_render_missing_variable_raises_strict_undefined():
+    with pytest.raises(jinja2.exceptions.UndefinedError):
+        strategize_subskill.render_prompt(subject="Acme")
+
+
+def test_strategist_render_prospect_mode_renders_the_pinned_no_services_rule():
+    rendered = strategize_subskill.render_prompt(
+        subject="Meridian Global Shipping",
+        mode=MODE_PROSPECT,
+        context_text="filler context",
+        research_block="filler research",
+        data_summary_block="(none on file)",
+    )
+
+    assert _PROSPECT_NO_SERVICES_TEXT in rendered
+
+
+def test_strategist_render_existing_mode_does_not_render_the_prospect_rule():
+    """Contrast case: the conditional is genuinely conditional, not
+    always-on prose that happens to satisfy the prospect test above."""
+    rendered = strategize_subskill.render_prompt(
+        subject="Northstar Lines",
+        mode=MODE_EXISTING,
+        context_text="filler context",
+        research_block="filler research",
+        data_summary_block="- VOLUME: 100",
+    )
+
+    assert _PROSPECT_NO_SERVICES_TEXT not in rendered
+
+
+# ===========================================================================
+# Section M -- contextualize subskill: SubskillResult reuse, mode
+# validation, and stub-mode synthesis.
+# ===========================================================================
+
+
+def test_contextualize_subskill_reuses_research_subskill_result_class():
+    """ "reuse T2's dataclass by import" (Task 3 brief) -- proven by
+    identity, not merely by shape equality."""
+    assert contextualize_subskill.SubskillResult is SubskillResult
+
+
+def test_contextualize_unknown_mode_raises_value_error():
+    ctx = _ctx_with_llm(settings=_stub_settings())
+
+    with pytest.raises(ValueError):
+        contextualize_subskill.run(ctx, "not_a_real_mode", "subject", {}, ())
+
+
+def test_contextualize_stub_mode_opens_with_the_pinned_line():
+    ctx = _ctx_with_llm(settings=_stub_settings())
+
+    result = contextualize_subskill.run(ctx, MODE_EXISTING, "Northstar Lines", {"VOLUME": 1}, ())
+
+    assert result.parts[0]["payload"]["markdown"].startswith(_STUB_OPENING_LINE)
+
+
+def test_contextualize_stub_digest_is_byte_exact_for_real_inputs():
+    ctx = _ctx_with_llm(settings=_stub_settings())
+    data_block = {"VOLUME": 18500.0, "GP": 412000.0}
+    research_inputs = (
+        {
+            "schema_name": "sustainability",
+            "title": "Sustainability & ESG",
+            "summary": "s",
+            "items": (),
+            "degraded": False,
+            "degrade_reason": None,
+        },
+    )
+
+    result = contextualize_subskill.run(
+        ctx, MODE_EXISTING, "Northstar Lines", data_block, research_inputs
+    )
+
+    assert result.parts[0]["payload"]["markdown"] == (
+        _STUB_OPENING_LINE + "\n\n"
+        "Subject: Northstar Lines\n"
+        "Data block metrics: 2\n"
+        "Research sections: 1"
+    )
+    assert result.failed is False
+
+
+def test_contextualize_stub_mode_with_empty_data_block_and_no_research_reports_zero_counts():
+    """The new-prospect shape: doc 02's own "nothing exists for a
+    prospect" -- data_block={} and research_inputs=() must still produce
+    an honest, non-crashing digest reporting zero, never a fabricated
+    count."""
+    ctx = _ctx_with_llm(settings=_stub_settings())
+
+    result = contextualize_subskill.run(ctx, MODE_PROSPECT, "Meridian Global Shipping", {}, ())
+
+    markdown = result.parts[0]["payload"]["markdown"]
+    assert "Data block metrics: 0" in markdown
+    assert "Research sections: 0" in markdown
+
+
+def test_contextualize_stub_mode_is_deterministic():
+    ctx = _ctx_with_llm(settings=_stub_settings())
+    data_block = {"VOLUME": 1}
+
+    first = contextualize_subskill.run(ctx, MODE_EXISTING, "Acme", data_block, ())
+    second = contextualize_subskill.run(ctx, MODE_EXISTING, "Acme", data_block, ())
+
+    assert first == second
+
+
+def test_contextualize_stub_mode_returns_one_phase_section_part_titled_context():
+    ctx = _ctx_with_llm(settings=_stub_settings())
+
+    result = contextualize_subskill.run(ctx, MODE_EXISTING, "Acme", {}, ())
+
+    assert len(result.parts) == 1
+    assert result.parts[0]["kind"] == "phase_section"
+    assert result.parts[0]["payload"]["title"] == "Context"
+    assert result.failed is False
+
+
+def test_contextualize_stub_mode_never_touches_ctx_llm():
+    ctx = _ctx_with_llm(settings=_stub_settings(), llm=_ExplodingLLM())
+
+    contextualize_subskill.run(ctx, MODE_EXISTING, "Acme", {}, ())  # must not raise
+
+
+def test_contextualize_synthesis_inputs_is_a_one_tuple_carrying_the_same_text_as_the_part():
+    """ "Returns one phase_section part + text for downstream" (Task 3
+    brief) -- synthesis_inputs is what a future Task 4 wiring reads as
+    strategize.run's own context_text argument."""
+    ctx = _ctx_with_llm(settings=_stub_settings())
+
+    result = contextualize_subskill.run(ctx, MODE_EXISTING, "Acme", {}, ())
+
+    assert len(result.synthesis_inputs) == 1
+    assert result.synthesis_inputs[0]["text"] == result.parts[0]["payload"]["markdown"]
+
+
+# ===========================================================================
+# Section N -- contextualize subskill: live-mode synthesis (StubProvider-
+# scripted RoleClient, the P5 pattern) and the pinned failure text.
+# ===========================================================================
+
+
+def test_contextualize_live_mode_success_text_lands_in_the_phase_section():
+    provider = StubProvider([_synthesis_response("Northstar Lines runs a Supramax-heavy fleet.")])
+    role_client = RoleClient(_live_settings(), providers={"bedrock": provider})
+    ctx = _ctx_with_llm(settings=_live_settings(), llm=role_client)
+
+    result = contextualize_subskill.run(ctx, MODE_EXISTING, "Northstar Lines", {"VOLUME": 1}, ())
+
+    assert result.failed is False
+    assert result.parts[0]["payload"]["markdown"] == "Northstar Lines runs a Supramax-heavy fleet."
+    assert result.synthesis_inputs[0]["text"] == "Northstar Lines runs a Supramax-heavy fleet."
+    assert result.parts[0]["payload"]["title"] == "Context"
+
+
+def test_contextualize_live_mode_invokes_synthesis_role_with_the_rendered_system_prompt():
+    provider = StubProvider([_synthesis_response("narrative")])
+    role_client = RoleClient(_live_settings(), providers={"bedrock": provider})
+    ctx = _ctx_with_llm(settings=_live_settings(), llm=role_client)
+    research_inputs = (
+        {
+            "schema_name": "sustainability",
+            "title": "Sustainability & ESG",
+            "summary": "Net-zero pledge by 2040.",
+            "items": (),
+            "degraded": False,
+            "degrade_reason": None,
+        },
+    )
+
+    contextualize_subskill.run(
+        ctx, MODE_EXISTING, "Northstar Lines", {"VOLUME": 18500.0}, research_inputs
+    )
+
+    assert len(provider.calls) == 1
+    call = provider.calls[0]
+    assert "Northstar Lines" in call["system"]
+    assert "VOLUME: 18500.0" in call["system"]
+    assert "Sustainability & ESG" in call["system"]
+    assert "Net-zero pledge by 2040." in call["system"]
+    assert call["tools"] == []
+    # role="synthesis" resolved (models.yml, bedrock profile): max_tokens
+    # 8192 / temperature 0.3 distinguish it from every other role sharing
+    # this profile's model string (router/utility/memory all differ here).
+    assert call["params"]["max_tokens"] == 8192
+    assert call["params"]["temperature"] == 0.3
+
+
+def test_contextualize_live_mode_system_prompt_names_every_certified_metric():
+    """The field dictionary placeholder's real content (see the module's
+    own "FIELD DICTIONARY" judgment call) -- exercised through the public
+    run()/render_prompt() pipeline, not by reaching into a private
+    constant."""
+    provider = StubProvider([_synthesis_response("narrative")])
+    role_client = RoleClient(_live_settings(), providers={"bedrock": provider})
+    ctx = _ctx_with_llm(settings=_live_settings(), llm=role_client)
+
+    contextualize_subskill.run(ctx, MODE_EXISTING, "Acme", {}, ())
+
+    system = provider.calls[0]["system"]
+    for metric in ("VOLUME", "GP", "MARGIN", "NUM_WON", "NUM_INQUIRIES", "NUM_LOST"):
+        assert metric in system
+
+
+def test_field_dictionary_keys_match_fetch_metrics_six_metrics_exactly():
+    """Cross-checks contextualize's own authored field dictionary against
+    the P3 tool module's SIX_METRICS -- the same "two independently
+    authored lists must agree" discipline strategist.md's CRM headers get
+    against _EXPECTED_CRM_HEADERS above, rather than a production-code
+    import used only to validate itself at import time (see the
+    subskill's own "FIELD DICTIONARY" judgment call)."""
+    from poseidon.tasks.customer_insight.skills.existing_customer_brief.tools.fetch_metrics import (  # noqa: E501
+        SIX_METRICS,
+    )
+
+    assert set(contextualize_subskill._FIELD_DICTIONARY) == set(SIX_METRICS)
+
+
+def test_contextualize_live_mode_messages_carry_the_pinned_user_directive():
+    provider = StubProvider([_synthesis_response("narrative")])
+    role_client = RoleClient(_live_settings(), providers={"bedrock": provider})
+    ctx = _ctx_with_llm(settings=_live_settings(), llm=role_client)
+
+    contextualize_subskill.run(ctx, MODE_EXISTING, "Acme", {}, ())
+
+    assert provider.calls[0]["messages"] == [
+        {
+            "role": "user",
+            "content": "Write the contextualization narrative now, following the "
+            "instructions above.",
+        }
+    ]
+
+
+def test_contextualize_live_mode_error_stop_reason_yields_pinned_failure_text_and_failed_true():
+    provider = StubProvider([_error_response()])
+    role_client = RoleClient(_live_settings(), providers={"bedrock": provider})
+    ctx = _ctx_with_llm(settings=_live_settings(), llm=role_client)
+
+    result = contextualize_subskill.run(ctx, MODE_EXISTING, "Acme", {}, ())
+
+    expected = (
+        "Contextualization is unavailable right now "
+        + _EM_DASH
+        + " the synthesis model returned an error."
+    )
+    assert result.failed is True
+    assert result.parts[0]["payload"]["markdown"] == expected
+    assert result.synthesis_inputs[0]["text"] == expected
+
+
+def test_contextualize_live_mode_with_ctx_llm_none_yields_pinned_failure_text_and_failed_true():
+    """Defensive symmetry with research.subskill's own ``ctx.tools is
+    None`` -> all-degraded branch (not explicitly named by the Task 3
+    brief's two failure cases, but doc 02 section 6's anti-happy-path rule
+    covers every upstream gap, including a wiring bug that leaves
+    ``ctx.llm`` unset in live mode) -- an AttributeError would be an
+    ugly, unexplained crash where a pinned, honest failure text belongs
+    instead."""
+    ctx = _ctx_with_llm(settings=_live_settings(), llm=None)
+
+    result = contextualize_subskill.run(ctx, MODE_EXISTING, "Acme", {}, ())
+
+    assert result.failed is True
+    assert result.parts[0]["payload"]["markdown"] == (
+        "Contextualization is unavailable right now "
+        + _EM_DASH
+        + " the synthesis model returned an error."
+    )
+
+
+# ===========================================================================
+# Section O -- strategize subskill: SubskillResult reuse, mode validation,
+# and stub-mode CRM field fill.
+# ===========================================================================
+
+
+def test_strategize_subskill_reuses_research_subskill_result_class():
+    assert strategize_subskill.SubskillResult is SubskillResult
+
+
+def test_strategize_unknown_mode_raises_value_error():
+    ctx = _ctx_with_llm(settings=_stub_settings())
+
+    with pytest.raises(ValueError):
+        strategize_subskill.run(ctx, "not_a_real_mode", "subject", "context", (), {})
+
+
+def test_strategize_stub_mode_opens_with_the_pinned_line():
+    ctx = _ctx_with_llm(settings=_stub_settings())
+
+    result = strategize_subskill.run(ctx, MODE_EXISTING, "Acme", "context text", (), {})
+
+    assert result.parts[0]["payload"]["markdown"].startswith(_STUB_OPENING_LINE)
+
+
+def test_strategize_stub_mode_fills_account_name_from_subject():
+    ctx = _ctx_with_llm(settings=_stub_settings())
+
+    result = strategize_subskill.run(ctx, MODE_EXISTING, "Northstar Lines", "context", (), {})
+
+    assert "Account Name: Northstar Lines" in result.parts[0]["payload"]["markdown"]
+
+
+def test_strategize_stub_mode_fills_current_services_from_data_when_existing_and_present():
+    ctx = _ctx_with_llm(settings=_stub_settings())
+    data_summary = {"services": ("Marine Fuel Supply", "Lubricants")}
+
+    result = strategize_subskill.run(ctx, MODE_EXISTING, "Acme", "context", (), data_summary)
+
+    assert (
+        "Current Services: Marine Fuel Supply, Lubricants" in result.parts[0]["payload"]["markdown"]
+    )
+
+
+def test_strategize_stub_mode_current_services_is_the_pinned_prospect_text_in_prospect_mode():
+    ctx = _ctx_with_llm(settings=_stub_settings())
+
+    result = strategize_subskill.run(
+        ctx, MODE_PROSPECT, "Meridian Global Shipping", "context", (), {}
+    )
+
+    assert (
+        f"Current Services: {_PROSPECT_NO_SERVICES_TEXT}" in result.parts[0]["payload"]["markdown"]
+    )
+
+
+def test_strategize_stub_mode_current_services_requires_live_synthesis_when_existing_and_unknown():
+    """An EXISTING customer with no "services" key on data_summary is a
+    genuine gap this subskill cannot honestly fill from data alone --
+    distinct from a prospect's pinned "definitely none" text (see the
+    module's own "CURRENT SERVICES" judgment call)."""
+    ctx = _ctx_with_llm(settings=_stub_settings())
+
+    result = strategize_subskill.run(ctx, MODE_EXISTING, "Acme", "context", (), {})
+
+    assert "Current Services: [requires live synthesis]" in result.parts[0]["payload"]["markdown"]
+
+
+def test_strategize_stub_mode_every_other_header_is_the_requires_live_synthesis_placeholder():
+    ctx = _ctx_with_llm(settings=_stub_settings())
+    data_summary = {"services": ("Marine Fuel Supply",)}
+
+    result = strategize_subskill.run(ctx, MODE_EXISTING, "Acme", "context", (), data_summary)
+
+    markdown = result.parts[0]["payload"]["markdown"]
+    for header in (
+        "Industry",
+        "Opportunity Summary",
+        "Key Contacts Strategy",
+        "Risk Factors",
+        "Next Steps",
+    ):
+        assert f"{header}: [requires live synthesis]" in markdown
+
+
+def test_strategize_stub_mode_contains_every_crm_header():
+    ctx = _ctx_with_llm(settings=_stub_settings())
+
+    result = strategize_subskill.run(ctx, MODE_EXISTING, "Acme", "context", (), {})
+
+    markdown = result.parts[0]["payload"]["markdown"]
+    for header in _EXPECTED_CRM_HEADERS:
+        assert header in markdown
+
+
+def test_strategize_stub_mode_full_text_is_byte_exact_for_a_prospect():
+    ctx = _ctx_with_llm(settings=_stub_settings())
+
+    result = strategize_subskill.run(
+        ctx, MODE_PROSPECT, "Meridian Global Shipping", "context", (), {}
+    )
+
+    expected = (
+        _STUB_OPENING_LINE + "\n\n"
+        "Account Name: Meridian Global Shipping\n"
+        "Industry: [requires live synthesis]\n"
+        f"Current Services: {_PROSPECT_NO_SERVICES_TEXT}\n"
+        "Opportunity Summary: [requires live synthesis]\n"
+        "Key Contacts Strategy: [requires live synthesis]\n"
+        "Risk Factors: [requires live synthesis]\n"
+        "Next Steps: [requires live synthesis]"
+    )
+    assert result.parts[0]["payload"]["markdown"] == expected
+
+
+def test_strategize_stub_mode_is_deterministic():
+    ctx = _ctx_with_llm(settings=_stub_settings())
+
+    first = strategize_subskill.run(ctx, MODE_EXISTING, "Acme", "context", (), {})
+    second = strategize_subskill.run(ctx, MODE_EXISTING, "Acme", "context", (), {})
+
+    assert first == second
+
+
+def test_strategize_returns_one_phase_section_part_titled_strategy():
+    ctx = _ctx_with_llm(settings=_stub_settings())
+
+    result = strategize_subskill.run(ctx, MODE_EXISTING, "Acme", "context", (), {})
+
+    assert len(result.parts) == 1
+    assert result.parts[0]["kind"] == "phase_section"
+    assert result.parts[0]["payload"]["title"] == "Strategy"
+    assert result.failed is False
+
+
+def test_strategize_stub_mode_never_touches_ctx_llm():
+    ctx = _ctx_with_llm(settings=_stub_settings(), llm=_ExplodingLLM())
+
+    strategize_subskill.run(ctx, MODE_EXISTING, "Acme", "context", (), {})  # must not raise
+
+
+# ===========================================================================
+# Section P -- strategize subskill: live-mode synthesis and the same
+# failure handling as contextualize.
+# ===========================================================================
+
+
+def test_strategize_live_mode_success_text_lands_in_the_phase_section():
+    provider = StubProvider([_synthesis_response("Account Name: Acme\nIndustry: Logistics")])
+    role_client = RoleClient(_live_settings(), providers={"bedrock": provider})
+    ctx = _ctx_with_llm(settings=_live_settings(), llm=role_client)
+
+    result = strategize_subskill.run(ctx, MODE_EXISTING, "Acme", "context text", (), {})
+
+    assert result.failed is False
+    assert result.parts[0]["payload"]["markdown"] == "Account Name: Acme\nIndustry: Logistics"
+    assert result.parts[0]["payload"]["title"] == "Strategy"
+
+
+def test_strategize_live_mode_invokes_synthesis_role_with_the_rendered_system_prompt():
+    provider = StubProvider([_synthesis_response("narrative")])
+    role_client = RoleClient(_live_settings(), providers={"bedrock": provider})
+    ctx = _ctx_with_llm(settings=_live_settings(), llm=role_client)
+
+    strategize_subskill.run(
+        ctx,
+        MODE_PROSPECT,
+        "Meridian Global Shipping",
+        "Contextualizer said: fleet is Supramax-heavy.",
+        (),
+        {},
+    )
+
+    assert len(provider.calls) == 1
+    call = provider.calls[0]
+    assert "Meridian Global Shipping" in call["system"]
+    assert "Contextualizer said: fleet is Supramax-heavy." in call["system"]
+    assert _PROSPECT_NO_SERVICES_TEXT in call["system"]
+    assert call["tools"] == []
+    assert call["params"]["max_tokens"] == 8192
+    assert call["params"]["temperature"] == 0.3
+
+
+def test_strategize_live_mode_messages_carry_the_pinned_user_directive():
+    provider = StubProvider([_synthesis_response("narrative")])
+    role_client = RoleClient(_live_settings(), providers={"bedrock": provider})
+    ctx = _ctx_with_llm(settings=_live_settings(), llm=role_client)
+
+    strategize_subskill.run(ctx, MODE_EXISTING, "Acme", "context", (), {})
+
+    assert provider.calls[0]["messages"] == [
+        {"role": "user", "content": "Fill in the CRM fields now, following the instructions above."}
+    ]
+
+
+def test_strategize_live_mode_error_stop_reason_yields_pinned_failure_text_and_failed_true():
+    provider = StubProvider([_error_response()])
+    role_client = RoleClient(_live_settings(), providers={"bedrock": provider})
+    ctx = _ctx_with_llm(settings=_live_settings(), llm=role_client)
+
+    result = strategize_subskill.run(ctx, MODE_EXISTING, "Acme", "context", (), {})
+
+    expected = (
+        "Strategy synthesis is unavailable right now "
+        + _EM_DASH
+        + " the synthesis model returned an error."
+    )
+    assert result.failed is True
+    assert result.parts[0]["payload"]["markdown"] == expected
+    assert result.synthesis_inputs[0]["text"] == expected
+
+
+def test_strategize_live_mode_with_ctx_llm_none_yields_pinned_failure_text_and_failed_true():
+    ctx = _ctx_with_llm(settings=_live_settings(), llm=None)
+
+    result = strategize_subskill.run(ctx, MODE_EXISTING, "Acme", "context", (), {})
+
+    assert result.failed is True
+    assert result.parts[0]["payload"]["markdown"] == (
+        "Strategy synthesis is unavailable right now "
+        + _EM_DASH
+        + " the synthesis model returned an error."
+    )
+
+
+# ===========================================================================
+# Section Q -- ASCII guards for Task 3's new backend modules.
+# ===========================================================================
+
+
+def test_new_task3_backend_modules_are_ascii_on_disk():
+    paths = [
+        Path(contextualize_subskill.__file__),
+        Path(strategize_subskill.__file__),
+        Path(contextualize_subskill.__file__).parent / "__init__.py",
+        Path(strategize_subskill.__file__).parent / "__init__.py",
+    ]
+    for path in paths:
+        offending = sorted({byte for byte in path.read_bytes() if byte > 0x7F})
+        assert not offending, f"{path.name} holds non-ASCII bytes: {offending}"

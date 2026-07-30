@@ -14,31 +14,28 @@ phase (this subskill contributes one per research call; Task 3's
 their own); the frontend renders each under its own heading rather than
 one undifferentiated wall of prose.
 
-:func:`phase_section_part` is defined HERE, not in
-``poseidon.core.skills.result`` alongside ``text_part``/``table_part``/
-``metric_grid_part``, because Task 2's own sanctioned edit surface (the
-plan's own File Map) does not include ``result.py`` -- promoting a shared
-constructor there is a call for whichever task first needs
-``phase_section`` from a SECOND call site (Task 3's ``contextualize``/
-``strategize``, per this same plan) to make, not this one. Doc 02 section
-1's own folder law already names this exactly right: a subskill's
-``tools/`` directory holds "deterministic helpers PRIVATE to this
-subskill" -- this function is one.
+:func:`phase_section_part` MOVED to ``poseidon.core.skills.result`` in
+Phase 8 Task 3 (re-imported here, immediately below), once the second call
+site Task 2's own report anticipated -- Task 3's ``contextualize``/
+``strategize`` subskills -- actually landed. It lived HERE first, in Task
+2, because Task 2's own sanctioned edit surface (the plan's own File Map)
+did not include ``result.py``; doc 02 section 1's own folder law named the
+reasoning exactly right at the time: a subskill's ``tools/`` directory
+holds "deterministic helpers PRIVATE to this subskill", and a constructor
+with exactly one call site is private by definition. This module keeps
+re-exporting the name (rather than every caller switching its import
+path) so the move costs the research subskill's own tests nothing:
+:func:`format_success`/:func:`format_degraded` below call it completely
+unchanged, still the SAME function object, not a copy.
 """
 
+from poseidon.core.skills.result import phase_section_part
 from poseidon.mcp.registry import ResearchResult
 
 # U+2014 EM DASH, built via chr() rather than typed literally so this file
 # stays pure ASCII on disk -- the same convention poseidon.mcp.registry's
 # own _EM_DASH, and every earlier phase's degrade-text module, uses.
 _EM_DASH = chr(0x2014)
-
-
-def phase_section_part(title: str, markdown: str) -> dict:
-    """One ``phase_section`` part -- see the module docstring for the
-    payload shape and why this constructor lives here rather than in
-    ``poseidon.core.skills.result``."""
-    return {"kind": "phase_section", "payload": {"title": title, "markdown": markdown}}
 
 
 def _item_fields(schema_name: str, item: dict) -> tuple[str, str, str, str]:

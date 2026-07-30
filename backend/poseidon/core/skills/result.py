@@ -50,6 +50,25 @@ def metric_grid_part(periods: dict, metrics: list[dict]) -> dict:
     }
 
 
+def phase_section_part(title: str, markdown: str) -> dict:
+    """A titled block of markdown -- one phase of a multi-phase skill (a
+    brief) rendering as its own section rather than one undifferentiated
+    wall of prose (Poseidon Phase 8, doc 02 section 4).
+
+    Introduced by the ``research`` subskill (Phase 8 Task 2, in its own
+    ``tools/format_phase_section.py`` -- Task 2's own sanctioned edit
+    surface did not include this file). Relocated HERE in Phase 8 Task 3,
+    once a second call site existed (the ``contextualize``/``strategize``
+    subskills, each contributing one ``phase_section`` of their own) --
+    exactly the promotion Task 2's own report named as a future call for
+    "whichever task first needs phase_section from a second call site".
+    ``research``'s own module keeps working unchanged: it re-imports this
+    function rather than defining it, so ``format_success``/
+    ``format_degraded`` there call the SAME object, not a copy.
+    """
+    return {"kind": "phase_section", "payload": {"title": title, "markdown": markdown}}
+
+
 def problem(status: int, title: str, detail: str, type_: str = "about:blank") -> dict:
     """An RFC-7807 problem detail.
 
