@@ -235,3 +235,15 @@ def run(
 
     part = phase_section_part(_TITLE, text)
     return SubskillResult(parts=(part,), synthesis_inputs=({"text": text},), failed=failed)
+
+
+def failed_result() -> SubskillResult:
+    """See ``contextualize.subskill.failed_result``'s own docstring for the
+    full rationale (identical here, independently declared per this
+    codebase's own near-identical-siblings convention): skill.py's
+    exception-escape guard (P8 whole-branch final-review wave, 2026-07-30,
+    item 2 / I-4) synthesizes this when a call to :func:`run` raises
+    outright, reusing the SAME pinned failure text :func:`run` itself
+    already returns for its own internal error case."""
+    part = phase_section_part(_TITLE, _FAILURE_TEXT)
+    return SubskillResult(parts=(part,), synthesis_inputs=({"text": _FAILURE_TEXT},), failed=True)

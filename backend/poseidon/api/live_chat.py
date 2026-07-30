@@ -139,22 +139,31 @@ cross -- :func:`_record_transcript_frame` decodes each frame the SAME way
 every test module in this codebase already does (``_parse_frame``/
 ``read_sse``'s own line-splitting discipline: ``events.py``'s wire format
 is pinned byte-for-byte, so this decoding is exactly as stable as the
-format itself), then folds it into the assistant message's parts under
-``mock_chat.py``'s OWN accumulation rules: a ``tool`` frame with
-``status="done"`` becomes one ``tool_event`` part (envelope fields
-stripped, matching mock's un-enveloped ``tool_event`` payload shape
-exactly); a ``part`` frame is appended verbatim (kind + payload, envelope
-stripped -- the same fields the frontend's own ``applyEventTo`` keeps for
-its "part" case); a ``token`` frame folds into the trailing text part, or
-starts a new one, mirroring the frontend's own token-folding rule (never
-mock's, since mock's illustrative multi-chunk demo has no live equivalent
-to match -- see ``orchestrator.py``'s own "never chunked" note); an
+format itself), then folds it into the assistant message's parts: a
+``part`` frame is appended verbatim (kind + payload, envelope stripped --
+the same fields the frontend's own ``applyEventTo`` keeps for its "part"
+case); a ``token`` frame folds into the trailing text part, or starts a
+new one, mirroring the frontend's own token-folding rule (never mock's,
+since mock's illustrative multi-chunk demo has no live equivalent to
+match -- see ``orchestrator.py``'s own "never chunked" note); an
 ``accepted``/``done``/``error`` frame persists nothing, exactly mirroring
 mock's own comment that "the error is a stream event, not a persisted
 part." This runs inside ``send`` itself (called synchronously, from
 whichever thread is running the turn), so recording is complete by the
 time the client sees the final frame -- there is no separate "at done-time"
 step to race.
+
+A ``tool`` frame (P8 whole-branch final-review wave, 2026-07-30, item 8 /
+M-1 -- corrects this paragraph's own earlier claim) folds through
+:meth:`TranscriptStore.record_tool_event` on EVERY status, not only
+``"done"``: ``mock_chat.py``'s own accumulation rule records a tool_event
+only at "done" too, but that is harmless FOR MOCK specifically, since its
+scripted demo has no ``ctx.emit_part`` concept and therefore nothing
+ever lands between one step's own "start" and "done" -- see that
+method's own docstring for why replaying "start" too is what a REAL
+dispatch (one that streams a part early, Phase 8 Task 1's own seam)
+needs to keep the reloaded transcript's part order agreeing with the
+live view's.
 
 **The snowflake guard (Task 5 amendment).** ``dev_runner.py``'s own
 ``_build_ctx`` refuses ``data_backend != "synthetic"`` with a structured
@@ -201,7 +210,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from poseidon.core.chat.events import SseEnvelopeSink, skill_label
-from poseidon.core.chat.orchestrator import execute_turn
+from poseidon.core.chat.orchestrator import (
+    ENTRY_PHRASE_EXISTING,
+    ENTRY_PHRASE_PROSPECT,
+    execute_turn,
+)
 from poseidon.core.skills.registry import SkillRegistry
 from poseidon.core.skills.result import problem
 
@@ -285,7 +298,12 @@ class TranscriptStore:
         ?? option.label``), now exercised by the opener's own chips too,
         not only a clarify turn's. Phase 6 had no live-specific
         flow-branching content of its own yet (Phase 8 owns the two brief
-        flows the chips name); this amendment is that content landing."""
+        flows the chips name); this amendment is that content landing.
+
+        ``send_text`` values are IMPORTED from ``orchestrator.py`` (P8
+        whole-branch final-review wave, 2026-07-30, item 6 / I-6), not
+        retyped as independent literals -- see that module's own
+        ``ENTRY_PHRASE_EXISTING``/``ENTRY_PHRASE_PROSPECT`` for why."""
         cid = str(uuid.uuid4())
         conversation = {"id": cid, "title": "New chat"}
         opener = _message(
@@ -299,12 +317,12 @@ class TranscriptStore:
                             {
                                 "id": "existing_customer",
                                 "label": "Existing customer",
-                                "send_text": "start an existing-customer brief",
+                                "send_text": ENTRY_PHRASE_EXISTING,
                             },
                             {
                                 "id": "new_prospect",
                                 "label": "New customer prospect",
-                                "send_text": "start a new-prospect brief",
+                                "send_text": ENTRY_PHRASE_PROSPECT,
                             },
                         ]
                     },
@@ -353,6 +371,49 @@ class TranscriptStore:
     def append_part(self, assistant: dict, part: dict) -> None:
         with self._lock:
             assistant["parts"].append(part)
+
+    def record_tool_event(self, assistant: dict, payload: dict) -> None:
+        """A ``tool`` frame (either status) folds into ``assistant``'s
+        parts by ``tool_seq`` -- mirroring the frontend's own
+        ``applyEventTo`` "tool" case (chatStore.ts) EXACTLY (P8
+        whole-branch final-review wave, 2026-07-30, item 8 / M-1): a
+        ``tool_seq`` not yet present is PUSHED (a "start" frame always
+        arrives first for any given dispatch), and a ``tool_seq`` already
+        present is REPLACED IN PLACE, at its EXISTING array position,
+        never re-appended.
+
+        Before this method existed, ``_record_transcript_frame`` recorded
+        a tool_event only on ``status="done"`` -- byte-identical to the
+        live view for a dispatch that never streams a part early (the
+        common case today), but WRONG the moment a subskill streams a
+        part between the wire's own ``tool_start`` and ``tool_done``
+        frames (``ctx.emit_part``, Phase 8 Task 1): the reloaded
+        transcript would show that early part BEFORE the tool_event
+        (recorded late, once ``tool_done`` finally arrived), while the
+        live view -- which pushed a tool_event placeholder the moment
+        ``tool_start`` arrived, then only updated it in place at
+        ``tool_done`` -- shows the tool_event FIRST, exactly where
+        ``tool_start`` put it. Replaying this rule server-side is what
+        makes GET .../messages agree with the live view's own part order
+        under progressive streaming, not merely under the no-early-part
+        common case.
+        """
+        with self._lock:
+            parts = assistant["parts"]
+            index = next(
+                (
+                    i
+                    for i, part in enumerate(parts)
+                    if part["kind"] == "tool_event"
+                    and part["payload"]["tool_seq"] == payload["tool_seq"]
+                ),
+                None,
+            )
+            part = {"kind": "tool_event", "payload": payload}
+            if index is not None:
+                parts[index] = part
+            else:
+                parts.append(part)
 
     def fold_token(self, assistant: dict, text: str) -> None:
         """A ``token`` frame's text folds into the trailing text part, or
@@ -404,13 +465,15 @@ def _record_transcript_frame(frame: str, assistant: dict, store: TranscriptStore
     """Fold one already-serialized SSE frame into ``assistant``'s persisted
     parts -- see the module docstring's "Recording the transcript" for the
     accumulation rules this implements (mock_chat.py's own rules for
-    ``tool``/``part``/everything-else; the frontend's own token-folding
-    rule, since mock's multi-chunk demo has no live equivalent)."""
+    ``part``/everything-else; the frontend's own token-folding rule, since
+    mock's multi-chunk demo has no live equivalent). ``tool`` frames --
+    EVERY status, not only "done" -- fold through ``store.record_tool_
+    event`` (item 8 / M-1, see that method's own docstring for why both
+    statuses matter, not only the terminal one)."""
     name, data = _decode_frame(frame)
     if name == "tool":
-        if data["status"] == "done":
-            payload = {key: value for key, value in data.items() if key not in _ENVELOPE_KEYS}
-            store.append_part(assistant, {"kind": "tool_event", "payload": payload})
+        payload = {key: value for key, value in data.items() if key not in _ENVELOPE_KEYS}
+        store.record_tool_event(assistant, payload)
         return
     if name == "part":
         store.append_part(assistant, {"kind": data["kind"], "payload": data["payload"]})

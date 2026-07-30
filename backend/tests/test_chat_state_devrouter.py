@@ -65,6 +65,7 @@ from poseidon.core.llm.types import LLMResponse, ToolCall
 from poseidon.core.ontology.loader import get_ontology
 from poseidon.core.parsing.lexicon import EXISTING_CUSTOMER_BRIEF, NEW_PROSPECT_BRIEF, WEB_RESEARCH
 from poseidon.core.parsing.pipeline import DEFAULT_ENTITY
+from poseidon.core.parsing.skill_hinter import hint
 from poseidon.core.parsing.types import CandidateSkill, ParsedTurn, ResolvedEntity
 from poseidon.core.skills.context import ConversationSlots
 from poseidon.core.skills.registry import SkillRegistry
@@ -1030,6 +1031,42 @@ def test_hints_leading_existing_brief_tied_via_mode_alone_still_dispatches_when_
     assert response.tool_calls[0].name == _EXISTING_BRIEF
 
 
+def test_hints_tied_existing_brief_and_metric_query_with_period_dispatches_metric_query():
+    """Final-review wave item 7 (candidate 4): the COMPLEMENT of the tie
+    test just above -- the IDENTICAL tie (customer_insight.
+    existing_customer_brief and data_qa.metric_query, both 1.0), but with
+    a period ALSO resolved and no brief word anywhere in the text. Case
+    (b) is checked strictly BEFORE case (b3) in ``invoke()``'s own order,
+    and ``hints_permit_dispatch`` is tie-inclusive (Task 5): metric_query
+    ties the hints line's own max, so ``hints_permit_dispatch`` is True
+    and case (b) dispatches outright, regardless of what else ties it --
+    the brief branch never even gets a chance to look at the tie.
+    Reviewer-verified genuinely uncovered before this pin (no prior test
+    resolves a period alongside a metric_query/brief tie)."""
+    router = DevDeterministicRouter()
+    system = _system(
+        _parsed(
+            period_a=_PERIOD_A,
+            hints=(
+                CandidateSkill(skill_id=_EXISTING_BRIEF, score=1.0),
+                CandidateSkill(skill_id=_METRIC_QUERY, score=1.0),
+            ),
+        )
+    )
+
+    response = router.invoke(
+        system=system,
+        messages=[_user_message("gp this period")],
+        tools=[],
+        model="m",
+        params={},
+    )
+
+    assert response.stop_reason == "tool_use"
+    assert response.tool_calls[0].name == _METRIC_QUERY
+    _assert_valid_metric_query_args(response.tool_calls[0])
+
+
 def test_hints_leading_existing_brief_no_resolved_customer_falls_back_to_capability_message():
     router = DevDeterministicRouter()
     system = _system(_parsed(hints=(CandidateSkill(skill_id=_EXISTING_BRIEF, score=2.0),)))
@@ -1119,6 +1156,53 @@ def test_hints_leading_new_prospect_brief_with_brief_word_emits_tool_call_with_f
     assert call.id == "dev-1"
     assert call.arguments == {"prospect_name": question}
     ProspectBriefArgs.model_validate(call.arguments)
+
+
+def test_prospect_twin_declines_a_bare_brief_word_tie_with_no_prospect_signal():
+    """Final-review wave item 4 (I-2): the reviewer's own reproduced
+    over-trigger, a T5 regression against the plan's own gate. Before this
+    fix, ``_prospect_brief_call``'s own gate (case b3, prospect branch)
+    checked only ``hints_lead_new_prospect_brief and _mentions_brief_word``
+    -- unlike the existing-brief branch right above it, which ALSO
+    requires a customer resolved THIS turn, the prospect branch had no
+    OTHER signal to tell "this really is a prospect request" apart from
+    "this ties (or leads) the prospect brief's own score" -- and Task 5's
+    own tie-inclusive ``_hints_lead`` widening (see dev_router.py's "Leads
+    redefined") means EXISTING_CUSTOMER_BRIEF tying the SAME score also
+    satisfies ``hints_lead_new_prospect_brief`` right alongside it.
+
+    REAL-hinter-shaped, not a synthetic score: a bare brief-shaped word,
+    with no mode carried and no customer resolved, already produces
+    exactly this tie via ``lexicon.KEYWORDS`` alone (the ``"report"``
+    entry names BOTH brief skills at equal weight -- see lexicon.py's own
+    "Brief words and mode hints"). Before the fix, this tie fired the
+    prospect gate anyway, dispatching ``new_prospect_brief`` with the
+    ENTIRE message as ``prospect_name`` -- a heavy, side-effecting
+    dispatch (external research calls, a stored PDF) for a message that
+    never named a prospect, or even a customer, at all. After the fix
+    (``and not parsed_state.hints_lead_existing_brief`` added to the
+    prospect gate), the identical tie correctly falls through to the
+    capability message instead.
+    """
+    text = "can you give me a report?"
+    hints = hint(text, ConversationSlots())
+    # REAL-hinter-shaped: "report" alone ties both briefs at 1.0/1.0, no
+    # mode signal, no customer, no port -- probe-verified directly against
+    # skill_hinter.hint before being pinned here.
+    assert hints == (
+        CandidateSkill(skill_id=_EXISTING_BRIEF, score=1.0),
+        CandidateSkill(skill_id=_NEW_PROSPECT_BRIEF, score=1.0),
+    )
+    router = DevDeterministicRouter()
+    system = _system(_parsed(hints=hints))
+
+    response = router.invoke(
+        system=system, messages=[_user_message(text)], tools=[], model="m", params={}
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert response.tool_calls == ()
+    assert response.text.startswith("I can answer certified metric questions")
 
 
 def test_hints_leading_new_prospect_brief_tied_via_mode_alone_declines_without_brief_word():

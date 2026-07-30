@@ -92,9 +92,9 @@ new renderer, never a change to chat logic.
 | `text` | markdown string | streamed markdown |
 | `chips` | options[] | selectable chip row (mode selection, clarifications) |
 | `customer_picker` | none | type-ahead input part |
-| `metric_grid` | periods, metrics[] | the 12-metric card grid (Volume, GP, Margin, Win rate, Won/Inquiries/Lost × prior-year/YTD) |
+| `metric_grid` | periods, metrics[] | the six certified metrics (Volume, GP, Margin, # Won, # Inquiries, # Lost) side by side across two periods — prior year vs YTD (doc 02 §4.1) |
 | `table` | columns, rows | top-5 ports and similar tabular results |
-| `phase_section` | phase, markdown | one agent phase (Contextualizer / Researcher / Strategist) as an expandable section |
+| `phase_section` | title, markdown | one agent phase (Contextualizer / Researcher / Strategist) as an expandable section |
 | `tool_event` | tool, server, status, label | a visible step line in the transcript — e.g. "Calling Perplexity — marine news search…" → "✓ Perplexity — 3 sources"; updated in place as status changes |
 | `artifact` | name, url, mime | download card (PDF brief from S3 pre-signed URL) — assembled by the chat emitter from the skill result's `ArtifactRef` field (doc 02); skills never emit this part directly |
 | `proof` | lines[] | collapsible provenance block (doc 06) — assembled by the chat emitter from `SkillResult.proof` (a field per doc 02); skills never emit this part directly |

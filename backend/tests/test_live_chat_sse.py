@@ -32,6 +32,9 @@ import logging
 import httpx
 import pytest
 
+from poseidon.api import live_chat
+from poseidon.api.live_chat import TranscriptStore
+from poseidon.core.chat.events import SseEnvelopeSink
 from poseidon.core.config import Settings
 from poseidon.core.skills.registry import SkillRegistry
 from tests.test_chat_orchestrator import REGISTRY, FakeDataClient, RecordingWriter
@@ -601,6 +604,69 @@ async def test_a_real_turn_is_recorded_into_the_transcript_user_then_assistant_p
     assert assistant_msg["parts"][3]["payload"]["markdown"].startswith(
         "Certified answer for SINGAPORE"
     )
+
+
+def test_record_transcript_frame_tool_event_position_matches_the_live_views_own_rule():
+    """Final-review wave item 8 (M-1): a tool_event's position in the
+    RELOADED transcript must match where the LIVE view shows it -- pinned
+    directly at the ``_record_transcript_frame``/``TranscriptStore`` unit
+    level (no HTTP app needed; a real ``SseEnvelopeSink`` produces the
+    exact frames a real dispatch would, ``part_emitter`` included, so
+    nothing here is a hand-typed approximation of the wire format).
+
+    A dispatch that streams a part EARLY (between the wire's own
+    ``tool_start`` and ``tool_done`` frames -- Phase 8 Task 1's own
+    ``ctx.emit_part`` seam, e.g. a brief's metric_grid) must still show
+    its tool_event BEFORE that early part once the transcript is
+    reloaded, mirroring chatStore.ts's own ``applyEventTo`` "tool" case:
+    a tool_seq not yet seen is pushed (at "start" time, before any part
+    exists yet); the SAME tool_seq seen again is replaced IN PLACE, never
+    re-appended (at "done" time). Before this fix, ``_record_transcript_
+    frame`` recorded a tool_event only on "done" -- byte-identical to the
+    live view for the common, no-early-part case (see the flagship
+    ``test_a_real_turn_is_recorded_into_the_transcript_...`` test above,
+    unaffected by this fix), but WRONG here: the early part would already
+    be recorded by the time "done" finally appended the tool_event,
+    landing the tool_event AFTER it instead of before.
+    """
+    store = TranscriptStore()
+    assistant = store.start_assistant_message("conv-1", "msg-1")
+    frames: list[str] = []
+    sink = SseEnvelopeSink(turn_id="t", message_id="msg-1", send=frames.append, registry=REGISTRY)
+    emit = sink.part_emitter(1)
+    early_part = {"kind": "metric_grid", "payload": {"periods": {}, "metrics": []}}
+
+    sink.emit(
+        "tool_start",
+        {"tool_seq": 1, "skill_id": "customer_insight.existing_customer_brief", "arguments": {}},
+    )
+    emit(early_part)
+    sink.emit(
+        "tool_done",
+        {
+            "tool_seq": 1,
+            "skill_id": "customer_insight.existing_customer_brief",
+            "status": "ok",
+            "duration_ms": 1,
+            "digest": "d",
+            "parts": [early_part],
+            "proof": [],
+            "problem": None,
+        },
+    )
+
+    for frame in frames:
+        live_chat._record_transcript_frame(frame, assistant, store)
+
+    kinds = [p["kind"] for p in assistant["parts"]]
+    assert kinds == ["tool_event", "metric_grid"]
+    tool_event = assistant["parts"][0]["payload"]
+    # replaced in place, not appended a second time -- the FINAL status is
+    # "done", carried by the SAME single part this dispatch ever gets.
+    assert tool_event["status"] == "done"
+    assert tool_event["tool"] == "customer_insight.existing_customer_brief"
+    assert "turn_id" not in tool_event and "event_seq" not in tool_event
+    assert assistant["parts"][1]["payload"] == early_part["payload"]
 
 
 @pytest.mark.anyio

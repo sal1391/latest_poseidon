@@ -63,7 +63,7 @@ from poseidon.core.llm.types import LLMResponse, ToolCall
 from poseidon.core.skills import context as context_module
 from poseidon.core.skills.context import ArtifactRef, ConversationSlots, SkillContext
 from poseidon.core.skills.registry import RegisteredSkill, SkillRegistry
-from poseidon.core.skills.result import SkillResult
+from poseidon.core.skills.result import SkillResult, problem
 
 REQUIRED_ENV = {
     "DATABASE_URL": "postgresql+psycopg://x:x@localhost:5432/poseidon",
@@ -772,6 +772,109 @@ def test_execute_turn_without_a_dispatch_still_wires_emit_part_harmlessly(monkey
     assert outcome.status == "ok"
     names = [_parse_frame(f)[1] for f in frames]
     assert names == ["accepted", "token", "done"]
+
+
+# ===========================================================================
+# P8 final-review wave (2026-07-30), item 3 / I-1: the retired-dispatch
+# guard. NOT the same "final-review wave item N" this file's OWN module
+# docstring and events.py's Fix round 1 correction already discuss --
+# those predate Phase 8 entirely. This is the reviewer's own VERIFIED
+# repro: the "hypothetical second dispatch" the Fix round 1 correction
+# above describes is reachable for real, through loop.py's one-shot
+# self-correction retry on a ROUTED brief dispatch (tool_seq counts
+# DISPATCHES, not successes -- a failed first attempt and a retried
+# second attempt of the SAME skill get tool_seq 1 and tool_seq 2, while
+# ctx.emit_part stays tool_seq 1's own closure, SkillContext being built
+# once per TURN, never once per dispatch).
+# ===========================================================================
+
+
+def _self_correcting_streaming_skill(*, early_part: dict):
+    """Fails its FIRST dispatch (a structured problem, as if argument
+    validation failed) and succeeds on a SECOND dispatch of the SAME skill
+    within the turn -- the model's one self-correction retry (loop.py's
+    own per-skill chance) -- streaming ``early_part`` through
+    ``ctx.emit_part`` mid-dispatch on that second attempt, the same way a
+    real brief subskill streams a completed phase."""
+    attempts = {"n": 0}
+
+    def _run(ctx: SkillContext, _args: _NoArgs) -> SkillResult:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return SkillResult(ok=False, error=problem(422, "invalid request", "bad input"))
+        assert ctx.emit_part is not None, "this fake skill requires emit_part to be wired"
+        ctx.emit_part(early_part)
+        return SkillResult(ok=True, parts=[early_part])
+
+    return _run
+
+
+def test_part_emitter_on_a_self_correction_retry_does_not_orphan_or_keyerror(settings):
+    """The reviewer's own verified repro shape: a routed dispatch fails at
+    tool_seq 1 (a structured 422), the model's one self-correction retry
+    re-dispatches the SAME skill at tool_seq 2, and the skill streams a
+    part mid-dispatch through ``ctx.emit_part`` on that retry.
+
+    Before the guard: ``ctx.emit_part`` is STILL tool_seq 1's own closure
+    on this second dispatch (see the section comment above) -- tool_seq
+    1's entry was already popped when tool_seq 1's own ``tool_done`` fired,
+    so the retry's call pushes an ORPHANED ``part`` frame (no later
+    ``tool_done`` will ever explain it) and then raises ``KeyError`` on the
+    count increment. ``SkillRegistry.dispatch``'s own never-raises contract
+    catches that into a SECOND structured failure for the SAME skill this
+    turn, which ends the turn in error (``loop.py``'s own "the SAME skill
+    failing a second time... ends the turn").
+
+    After the guard: the stale closure silently no-ops instead of pushing
+    or raising, so the retry's own ``SkillResult`` is the real ``ok=True``
+    the fake skill actually returns -- the turn succeeds, and the streamed
+    part reaches the wire EXACTLY ONCE, at tool_seq 2's own real
+    ``tool_done`` (its full ``parts`` list already includes it, since
+    ``part_emitter`` was never actually called FOR tool_seq 2 -- the
+    no-streamed-early count defaults to zero, so ``tool_done`` emits the
+    whole list, byte-identical to any dispatch that never streams early).
+    """
+    early = {"kind": "text", "payload": {"markdown": "phase 1 done"}}
+    registry = _registry_with(_self_correcting_streaming_skill(early_part=early))
+    provider = StubProvider(
+        [
+            _tool_use(ToolCall(id="c1", name=FAKE_SKILL, arguments={})),
+            _tool_use(ToolCall(id="c2", name=FAKE_SKILL, arguments={})),
+            _end_turn("done"),
+        ]
+    )
+    role_client = RoleClient(settings, providers={"stub": provider})
+    frames, send = _capturing_send()
+    sink = SseEnvelopeSink(turn_id="t", message_id="m", send=send, registry=registry)
+
+    outcome = execute_turn(
+        conversation_id="conv-retry-emit",
+        text="run the fake skill",
+        client_turn_key=None,
+        settings=settings,
+        registry=registry,
+        data=_ParseOnlyDataClient(),
+        state=ConversationStateStore(),
+        writer=None,
+        role_client=role_client,
+        prompt_registry=PromptRegistry(DEFAULT_PROMPTS_DIR),
+        sink=sink,
+        reference_date=REFERENCE_DATE,
+    )
+
+    assert outcome.status == "ok"
+    decoded = [_parse_frame(f) for f in frames]
+    names = [name for _seq, name, _data in decoded]
+    # tool_seq 1 (start, error) -- tool_seq 2 (start, done) -- then the ONE
+    # real part, streamed at tool_seq 2's own tool_done, never an earlier
+    # orphan -- then the router's closing token + done.
+    assert names == ["accepted", "tool", "tool", "tool", "tool", "part", "token", "done"]
+    statuses = [data["status"] for _seq, name, data in decoded if name == "tool"]
+    assert statuses == ["start", "error", "start", "done"]
+    part_frames = [data for _seq, name, data in decoded if name == "part"]
+    assert len(part_frames) == 1
+    assert part_frames[0]["kind"] == "text"
+    assert part_frames[0]["payload"] == {"markdown": "phase 1 done"}
 
 
 # ===========================================================================

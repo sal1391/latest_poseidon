@@ -286,6 +286,35 @@ brief ties 1.0/1.0 the same way) -- a principled, uniform reading of "leads"
 is more defensible than an ad hoc asymmetry between the four gates this
 router now has.
 
+**Correction (P8 whole-branch final-review wave, 2026-07-30, item 4 /
+I-2, M-8).** The paragraph above's own verification argument -- "nothing
+before Task 5 could ever make ``ConversationSlots.mode`` produce one
+[a tie] outside a hand-built test fixture" -- is WRONG, and its own
+narrowness is what hid the I-2 over-trigger this same wave fixes (see
+:func:`DevDeterministicRouter.invoke`'s own prospect-branch gate, below).
+``ConversationSlots.mode`` is not the only way to reach a tie:
+:data:`~poseidon.core.parsing.lexicon.KEYWORDS`' own four generic brief
+words (brief/report/profile/overview) name BOTH
+``customer_insight.existing_customer_brief`` AND ``customer_insight.
+new_prospect_brief`` at equal weight (see that table's own "Brief words
+and mode hints" section) -- so an ENTIRELY ORDINARY, mode-free, customer-
+free, first-message turn like "can you give me a report?" already ties
+the two brief skills at 1.0/1.0 through ``skill_hinter.hint`` alone,
+probe-verified: ``hint("can you give me a report?", ConversationSlots())``
+returns exactly that tie, sorted alphabetically, with ``mode`` never
+touched. This has been true since ``lexicon.py``'s ``KEYWORDS`` table was
+first authored, not since Task 5 wrote to ``ConversationSlots.mode`` --
+the tie mechanism this section's own widening addresses PREDATES
+mode-writability entirely, and covers a broader latent bug than either
+this section's own rationale or the original prospect-branch gate's own
+review claimed: any bare brief-shaped word can tie, on any turn, with no
+carried state required at all. The widening itself (:func:`_hints_lead`,
+tie-inclusive) is unaffected by this correction -- it is still the right
+fix for the reproduced research-pivot gap above -- but this docstring's
+own claim about WHEN a tie was reachable was never the full truth, and
+that gap in the verification is exactly what let the prospect branch's
+own missing ``not hints_lead_existing_brief`` guard ship unnoticed.
+
 The brief-word guard (:func:`_mentions_brief_word`, a NEW, independent
 lexical check on :func:`_last_user_text` -- the same "borrow the hinter's
 matching DISCIPLINE, never its import" precedent :data:`_TOP_WORD_RE`
@@ -626,7 +655,11 @@ class DevDeterministicRouter:
             and _mentions_brief_word(messages)
         ):
             return _existing_brief_call(parsed_state)
-        if parsed_state.hints_lead_new_prospect_brief and _mentions_brief_word(messages):
+        if (
+            parsed_state.hints_lead_new_prospect_brief
+            and not parsed_state.hints_lead_existing_brief
+            and _mentions_brief_word(messages)
+        ):
             return _prospect_brief_call(messages)
         return _capability_response()
 

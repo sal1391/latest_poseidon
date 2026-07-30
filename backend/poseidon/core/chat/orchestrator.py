@@ -303,14 +303,25 @@ _PASS_THROUGH_CAP = 10
 _MODE_EXISTING = "existing_customer"
 _MODE_PROSPECT = "new_prospect"
 
-# The two pinned flow-chip phrases (api/live_chat.py's own opener chips
-# carry these verbatim as `send_text`) -- matched casefolded-exact against
-# the raw turn text, before parse_turn ever runs.
-_ENTRY_PHRASE_EXISTING = "start an existing-customer brief"
-_ENTRY_PHRASE_PROSPECT = "start a new-prospect brief"
+# The two pinned flow-chip phrases (P8 whole-branch final-review wave,
+# 2026-07-30, item 6 / I-6: now PUBLIC and imported by api/live_chat.py's
+# own opener chips, which carry these verbatim as `send_text`, rather than
+# keeping an independent literal copy of each string -- before this wave,
+# a lockstep copy tweak here could silently break the D19 branch with
+# every test green, since nothing cross-checked the two copies against
+# each other. `poseidon.api.live_chat` already imports
+# `poseidon.core.chat.events` -- this import keeps the SAME layering
+# direction (api -> core.chat), never the reverse) -- matched
+# casefolded-exact against the raw turn text, before parse_turn ever
+# runs. The five literal copies already pinned directly in this suite's
+# OWN tests (test_entry_orchestration.py, test_chat_e2e_scripted.py,
+# test_live_chat_sse.py) stay as independent pins on purpose: they now
+# guard these shared constants' VALUES, not merely duplicate them.
+ENTRY_PHRASE_EXISTING = "start an existing-customer brief"
+ENTRY_PHRASE_PROSPECT = "start a new-prospect brief"
 _ENTRY_MODE_BY_PHRASE = {
-    _ENTRY_PHRASE_EXISTING: _MODE_EXISTING,
-    _ENTRY_PHRASE_PROSPECT: _MODE_PROSPECT,
+    ENTRY_PHRASE_EXISTING: _MODE_EXISTING,
+    ENTRY_PHRASE_PROSPECT: _MODE_PROSPECT,
 }
 
 _SUBJECT_PROMPT_BY_MODE = {
@@ -530,6 +541,31 @@ def execute_turn(
         # ships (a brief skill is always the sole dispatch of its turn), a
         # real, sharp failure mode for a hypothetical second one -- not the
         # harmless fallback earlier claimed.
+        #
+        # Second correction (P8 whole-branch final-review wave, 2026-07-30,
+        # item 3 / I-1): "a hypothetical second one" above undersold ONE of
+        # its own two paragraphs -- the self-correction-retry case this
+        # SAME comment already named ("a likely-identical failure on the
+        # model's one self-correction retry") is not hypothetical at all.
+        # tool_seq counts DISPATCHES, not successes (`_dispatch_one`'s own
+        # `tool_seq=len(tool_records) + 1`), so a routed brief dispatch that
+        # fails once and gets retried by loop.py's own one-shot correction
+        # reaches tool_seq 2 on an entirely ordinary turn, while this
+        # closure -- built once, right here, before any dispatch exists --
+        # stays bound to tool_seq 1 regardless. Reproduced directly, not
+        # merely re-argued: see events.py's own module docstring for its
+        # identical second correction and the pinning test. This wave adds
+        # the guard events.py's own `part_emitter` now documents (a retired
+        # tool_seq's closure no-ops instead of pushing-then-KeyError-ing),
+        # which makes the CONSUMER-FACING claim two paragraphs up --
+        # "correct for every consumer this plan ships" -- actually true
+        # for this reachable case too: the retry now succeeds, and its
+        # streamed part reaches the wire once, at its own real tool_done.
+        # The remaining, still-unfixed shape is narrower than either
+        # earlier paragraph implied: two DIFFERENTLY-NAMED skills each
+        # dispatched once in the same turn, both wanting to stream early --
+        # THAT still needs the per-dispatch rebinding described above, and
+        # remains genuinely out of this phase's sanctioned edit.
         emit_part=sink.part_emitter(1),
     )
     router_version, router_hash = _router_prompt_provenance(
@@ -972,11 +1008,40 @@ def _finish_subject_turn(
         )
 
     state.set_brief_done(conversation_id, True)
+    # D19 subject carry (P8 whole-branch final-review wave, 2026-07-30,
+    # item 5 / I-3 -- a SEPARATE, unrelated "item 5" from the double-
+    # terminal guard comment immediately below, which is this SAME file's
+    # own earlier-phase wave numbering): a successful EXISTING-mode
+    # dispatch's resolved customer becomes this conversation's carried
+    # subject, so a later bare pivot ("any relevant news I should know
+    # about?" -- no subject named) still has a customer to attach (doc
+    # 08's own "pivots with carried entities" promise, previously UNMET on
+    # this path -- prior_slots.customer stayed whatever it was before the
+    # D19 entry branch ever ran, since _repopulate_pass_through only ever
+    # touches pass_through, never customer, and a brief skill's own
+    # arguments never include group_by). Deliberately EXISTING MODE ONLY:
+    # a prospect's subject (`text.strip()`, D19's own "text = subject"
+    # rule) is never resolved against the certified customer dimension, so
+    # writing it into slots.customer would carry an UNCERTIFIED value into
+    # a slot later code treats as certified (dev_router.py's own filters,
+    # the customer resolver's own hint machinery) -- the SAME shape of
+    # hazard morning decision 8 already names for the resolver's own
+    # fuzzy-capture on pivots (a prospect name sharing tokens with a real
+    # customer). This carry does not create that hazard on its own, but it
+    # would hand the resolver's existing fuzzy-match behavior a plausible-
+    # looking "certified" customer to latch onto that was never actually
+    # certified -- so prospect mode is excluded here, not merely
+    # unimplemented.
+    carried_slots = (
+        dataclasses.replace(prior_slots, customer=subject)
+        if mode == _MODE_EXISTING
+        else prior_slots
+    )
     # The identical double-terminal guard execute_turn's own normal path
     # uses (final-review wave item 5 / I5): by this point sink.done() and
     # writer.finalize(status="ok") have already gone out for this turn.
     try:
-        final_slots = _repopulate_pass_through(prior_slots, (tool_record,), sink)
+        final_slots = _repopulate_pass_through(carried_slots, (tool_record,), sink)
         state.put(conversation_id, final_slots)
     except Exception as exc:  # noqa: BLE001 - a second failure must never re-terminate a finished turn
         logger.error(
@@ -1248,4 +1313,10 @@ def _json_safe(value):
     return value
 
 
-__all__ = ["DEV_USER_SUB", "TurnOutcome", "execute_turn"]
+__all__ = [
+    "DEV_USER_SUB",
+    "ENTRY_PHRASE_EXISTING",
+    "ENTRY_PHRASE_PROSPECT",
+    "TurnOutcome",
+    "execute_turn",
+]

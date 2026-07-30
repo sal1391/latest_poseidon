@@ -206,6 +206,50 @@ test("renders a metric_grid value with no certified unit as a bare number", () =
   expect(screen.getByText("48.5")).toBeInTheDocument();
 });
 
+// The five payloads below are the existing-customer brief flow's own
+// captured pg-E2E shape (backend/tests/test_chat_e2e_scripted.py::
+// test_existing_customer_brief_flow_scripted_against_live_seeded_postgres,
+// phase_parts titles + markdown prefixes), reused verbatim rather than
+// invented -- the same "captured, not guessed at" discipline the table/
+// proof/metric_grid tests above already follow. Before PhaseSectionPart
+// existed, all five fell back to FallbackPart's raw-JSON dump (P8's own
+// T5 E2E capture: "data correct, presentation missing").
+
+test("renders a phase_section part as an open, titled expandable block", () => {
+  render(
+    <PartRenderer
+      part={{
+        kind: "phase_section",
+        payload: {
+          title: "Context",
+          markdown:
+            "Stub-mode synthesis — flip LLM_MODE=live for model narrative.\n\n" +
+            "Subject: Northstar Lines\nData block metrics: 14\nResearch sections: 3",
+        },
+      }}
+    />,
+  );
+
+  const details = screen.getByText("Context").closest("details");
+  expect(details).toHaveAttribute("open");
+  expect(screen.getByText(/Subject: Northstar Lines/)).toBeInTheDocument();
+});
+
+test.each([
+  ["Context", "Subject: Northstar Lines"],
+  ["Sustainability & ESG", "The fleet is actively piloting biofuel blends"],
+  ["Market Position", "A mid-tier regional challenger gaining share"],
+  ["Strategic Profile", "A charter-focused dry-bulk operator with steady growth"],
+  ["Strategy", "Account Name: Northstar Lines"],
+])("renders the %s phase_section title from the real brief flow", (title, snippet) => {
+  render(
+    <PartRenderer part={{ kind: "phase_section", payload: { title, markdown: snippet } }} />,
+  );
+
+  expect(screen.getByText(title)).toBeInTheDocument();
+  expect(screen.getByText(new RegExp(snippet.slice(0, 20)))).toBeInTheDocument();
+});
+
 test("renders an artifact part as a download link plus a mime badge", () => {
   render(
     <PartRenderer

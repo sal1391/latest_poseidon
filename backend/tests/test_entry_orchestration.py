@@ -497,6 +497,10 @@ def test_subject_turn_existing_mode_resolves_and_dispatches_the_brief(monkeypatc
 
     assert state.get_brief_done("conv-subj-1") is True
     assert state.get("conv-subj-1").mode == "existing_customer"  # mode stays, advisory
+    # D19 subject carry (final-review wave item 5 / I-3): the resolved
+    # customer now rides in slots.customer too -- see the "After the
+    # brief" section below for the pivot this carry actually unblocks.
+    assert state.get("conv-subj-1").customer == "Northstar Lines"
 
 
 def test_subject_turn_existing_mode_ambiguous_customer_produces_chips_no_dispatch(monkeypatch):
@@ -754,6 +758,79 @@ def test_after_brief_completes_a_normal_turn_routes_through_the_full_registry(mo
     assert len(writer.append_llm_calls) == 2
     tool_row = writer.append_tool_calls[0]
     assert tool_row["tool"] == "data_qa.metric_query"
+
+
+def test_after_an_existing_brief_a_bare_research_pivot_dispatches_with_the_carried_customer(
+    monkeypatch,
+):
+    """Final-review wave item 5 (I-3): D19 subject carry, EXISTING MODE
+    ONLY. Before this fix, ``_finish_subject_turn``'s own ``state.put``
+    only ever repopulated ``pass_through`` (a brief skill never requests
+    ``group_by``), so ``ConversationSlots.customer`` stayed whatever it
+    was BEFORE the entry branch -- ``None`` for a conversation that just
+    started -- straight through a successful brief dispatch. A bare pivot
+    naming no subject at all ("any relevant news I should know about?")
+    then had no customer to attach: dev_router.py's own case (b2) gate
+    (``_research_subject`` reads customer-or-port, resolved-or-carried;
+    both ``None`` here) fell through to the capability message instead of
+    dispatching research -- doc 08's own "pivots with carried entities"
+    promise, unmet on this path (the live E2E script sidestepped it by
+    re-naming the subject in its own pivot text).
+
+    After the fix, the entry -> subject -> pivot sequence below carries
+    the resolved customer through ``state.put``, so the SAME bare pivot
+    now reaches ``dev_router.py``'s ``Carried customer:`` line and
+    dispatches ``research.web_research`` with it attached.
+    """
+    settings = _settings(monkeypatch, LLM_MODE="stub", LLM_PROFILE="bedrock")
+    state = ConversationStateStore()
+    writer = RecordingWriter()
+
+    entry_outcome = _run(
+        conversation_id="conv-carry-pivot",
+        text=ENTRY_TEXT_EXISTING,
+        settings=settings,
+        state=state,
+        writer=writer,
+        sink=_sink(turn_id="turn-1", message_id="msg-1")[1],
+        client_turn_key="ctk-carry-1",
+    )
+    assert entry_outcome.status == "clarify"
+
+    subject_outcome = _run(
+        conversation_id="conv-carry-pivot",
+        text="Northstar Lines",
+        settings=settings,
+        state=state,
+        writer=writer,
+        sink=_sink(turn_id="turn-2", message_id="msg-2")[1],
+        client_turn_key="ctk-carry-2",
+        data=_BriefFakeDataClient(),
+    )
+    assert subject_outcome.status == "ok"
+    assert state.get("conv-carry-pivot").customer == "Northstar Lines"
+
+    pivot_frames, pivot_sink = _sink(turn_id="turn-3", message_id="msg-3")
+    pivot_outcome = _run(
+        conversation_id="conv-carry-pivot",
+        text="any relevant news I should know about?",
+        settings=settings,
+        state=state,
+        writer=writer,
+        sink=pivot_sink,
+        client_turn_key="ctk-carry-3",
+        data=_BriefFakeDataClient(),
+    )
+
+    assert pivot_outcome.status == "ok"
+    names = [_parse_frame(f)[1] for f in pivot_frames]
+    # The identical routed shape test_after_brief_completes_a_normal_turn_
+    # routes_through_the_full_registry already pins for metric_query --
+    # a real router call happened (this turn's own 2 llm_calls rows).
+    assert names == ["accepted", "tool", "tool", "part", "part", "token", "done"]
+    pivot_tool_row = writer.append_tool_calls[-1]
+    assert pivot_tool_row["tool"] == "research.web_research"
+    assert pivot_tool_row["args"]["customer"] == "Northstar Lines"
 
 
 # ===========================================================================

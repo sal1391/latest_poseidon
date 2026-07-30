@@ -1,10 +1,16 @@
 export type PartKind =
-  | "text" | "chips" | "tool_event" | "error" | "table" | "proof" | "metric_grid" | "artifact";
+  | "text" | "chips" | "tool_event" | "error" | "table" | "proof" | "metric_grid" | "artifact"
+  | "phase_section";
 export interface TextPayload { markdown: string }
-// send_text (final-review wave item 2): SCOPED to clarification chips only
-// (orchestrator.py's own _finish_clarify) -- the opener's flow chips (mock
-// and live alike) carry no such field, so ChipsPart's own `?? label`
-// fallback is what keeps them sending their bare label unchanged.
+// send_text: orchestrator.py's own _finish_clarify sends a "for <name>"
+// cue on clarification chips, and (P8 whole-branch final-review wave,
+// 2026-07-30, item 9 / M-6 -- corrects this comment's own earlier claim)
+// api/live_chat.py's opener chips carry it too, the pinned D19 entry
+// phrase ("start an existing-customer brief" / "start a new-prospect
+// brief") -- NOT scoped to clarification chips alone as this comment used
+// to say. ChipsPart's own `?? label` fallback exists for whatever OTHER
+// chip payload carries no send_text at all, not for the opener
+// specifically.
 export interface ChipOption { id: string; label: string; send_text?: string }
 export interface ChipsPayload { options: ChipOption[]; disabled?: boolean }
 export interface ToolEventPayload {
@@ -20,6 +26,14 @@ export interface ToolEventPayload {
 export interface ErrorPayload { code: string; message: string; hint?: string }
 export interface TablePayload { columns: string[]; rows: (string | number)[][] }
 export interface ProofPayload { lines: string[] }
+// phase_section's real producer: poseidon.core.skills.result.
+// phase_section_part (backend/poseidon/core/skills/result.py) -- one
+// titled block of markdown per completed agent phase of a brief
+// (contextualize / each research lens call / strategize). The payload
+// ships `title`, never `phase` (doc 01 section 4's own table names the
+// field `phase`; item 9 of this wave corrects that row to match this
+// shipped shape -- see that doc's own git history for the correction).
+export interface PhaseSectionPayload { title: string; markdown: string }
 // metric_grid's real producer: poseidon.tasks.data_qa.skills.metric_query.
 // tools.format_parts._metric_grid_parts (backend/.../tools/format_parts.py)
 // -- "a"/"b" are the two compared periods' ISO date bounds, never rendered

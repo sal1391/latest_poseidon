@@ -265,3 +265,21 @@ def run(
 
     part = phase_section_part(_TITLE, text)
     return SubskillResult(parts=(part,), synthesis_inputs=({"text": text},), failed=failed)
+
+
+def failed_result() -> SubskillResult:
+    """The failed-phase result skill.py's own exception-escape guard (P8
+    whole-branch final-review wave, 2026-07-30, item 2 / I-4) synthesizes
+    when a call to :func:`run` raises OUTRIGHT instead of returning
+    normally (e.g. a raw ``BotoCoreError`` past bedrock's own
+    ``ClientError``-only catch) -- the SAME pinned text and shape
+    :func:`run` itself already returns for its own internal "the
+    synthesis model returned an error" case (``ctx.llm is None`` or
+    ``response.stop_reason == "error"``). A phase that failed is a phase
+    that failed, whether the failure was caught inside this module or
+    escaped it entirely; the user sees the identical honest message
+    either way, and the brief's OTHER phases -- already computed, already
+    streamed -- are unaffected (doc 02 section 6's anti-happy-path rule:
+    "the phase fails, previously streamed deterministic parts stand")."""
+    part = phase_section_part(_TITLE, _FAILURE_TEXT)
+    return SubskillResult(parts=(part,), synthesis_inputs=({"text": _FAILURE_TEXT},), failed=True)

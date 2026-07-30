@@ -35,9 +35,13 @@ Section map:
   D. Concurrency determinism: slow-research/fast-contextualize and
      inverted -- byte-identical part order both ways.
   E. Degraded research (ctx.tools is None): both briefs continue, ok=True.
-  F. PDF path with a fake artifact store.
-  G. Dispatch through the real SkillRegistry, with validated Args.
-  H. ASCII guard.
+  F. Exception-escape guard (P8 whole-branch final-review wave, 2026-07-30,
+     item 2 / I-4): a raising fake subskill in EACH of the three phases,
+     in BOTH flows -- both briefs continue, ok=True, the raising phase's
+     own pinned failure text stands in for it.
+  G. PDF path with a fake artifact store.
+  H. Dispatch through the real SkillRegistry, with validated Args.
+  I. ASCII guard.
 """
 
 import datetime as dt
@@ -133,6 +137,17 @@ class _FakeDataClient:
 @dataclass
 class _Tools:
     research: object
+
+
+def _raising_subskill(*_args: object, **_kwargs: object):
+    """A subskill ``.run`` double that always raises -- Section F's own
+    exception-escape-guard pin (final-review wave item 2 / I-4): skill.py's
+    own try/except must catch this regardless of which subskill or which
+    flow it stands in for, never let it propagate and 500 the whole
+    brief. ``*_args, **_kwargs`` accepts any subskill's own signature
+    unchanged (contextualize/strategize/research each take a different
+    number of positional arguments)."""
+    raise RuntimeError("boom -- simulated subskill failure")
 
 
 @dataclass
@@ -475,7 +490,157 @@ def test_new_prospect_brief_continues_when_research_is_degraded():
 
 
 # ===========================================================================
-# Section F -- PDF path with a fake artifact store.
+# Section F -- exception-escape guard (P8 whole-branch final-review wave,
+# 2026-07-30, item 2 / I-4): a raw exception escaping a subskill's own
+# dispatch (e.g. a BotoCoreError past bedrock's ClientError-only catch, or
+# any failure a subskill's own stub/live branches do not already turn into
+# failed=True) must not 500 the whole brief -- skill.py's own try/except
+# (`_run_subskill_or_failed`, independently declared in both skill.py
+# modules) catches it and synthesizes that phase's own failed-phase
+# result, the SAME shape (and, for contextualize/strategize, the SAME
+# pinned text) the subskill's own internal error branches already use --
+# doc 02 section 6's anti-happy-path rule read at this outer grain too.
+# One test per subskill, per flow: six in total, each proving the OTHER
+# two phases complete normally and only the raising one is marked failed.
+# ===========================================================================
+
+
+def test_existing_customer_brief_continues_when_contextualize_raises(monkeypatch):
+    monkeypatch.setattr(existing_skill, "_today", lambda: _ANCHOR)
+    monkeypatch.setattr(existing_skill.contextualize_subskill, "run", _raising_subskill)
+    ctx = _ctx(data=_FakeDataClient(), tools=_Tools(research=FixtureResearchTool()))
+    args = existing_schema.Args(customer="Northstar Lines")
+
+    result = existing_skill.run(ctx, args)
+
+    assert result.ok is True
+    kinds = [part["kind"] for part in result.parts]
+    assert kinds == ["metric_grid", "table"] + ["phase_section"] * 5
+    titles = [part["payload"]["title"] for part in result.parts[2:]]
+    assert titles == [
+        "Context",
+        "Sustainability & ESG",
+        "Market Position",
+        "Strategic Profile",
+        "Strategy",
+    ]
+    context_markdown = result.parts[2]["payload"]["markdown"]
+    assert "unavailable" in context_markdown
+    assert "Phases completed: research, strategize" in result.proof
+    assert "Phases failed: contextualize" in result.proof
+
+
+def test_existing_customer_brief_continues_when_research_raises(monkeypatch, caplog):
+    monkeypatch.setattr(existing_skill, "_today", lambda: _ANCHOR)
+    monkeypatch.setattr(existing_skill.research_subskill, "run", _raising_subskill)
+    ctx = _ctx(data=_FakeDataClient(), tools=_Tools(research=FixtureResearchTool()))
+    args = existing_schema.Args(customer="Northstar Lines")
+
+    with caplog.at_level("ERROR"):
+        result = existing_skill.run(ctx, args)
+
+    assert result.ok is True
+    kinds = [part["kind"] for part in result.parts]
+    assert kinds == ["metric_grid", "table"] + ["phase_section"] * 5
+    titles = [part["payload"]["title"] for part in result.parts[2:]]
+    assert titles == [
+        "Context",
+        "Sustainability & ESG",
+        "Market Position",
+        "Strategic Profile",
+        "Strategy",
+    ]
+    research_parts = result.parts[3:6]
+    for part in research_parts:
+        assert "unavailable" in part["payload"]["markdown"]
+    assert "Phases completed: contextualize, strategize" in result.proof
+    assert "Phases failed: research" in result.proof
+    # the guard logs the escape rather than letting it vanish silently --
+    # proven, not merely documented (the module docstring's own contract).
+    assert any("research" in r.message and "RuntimeError" in r.message for r in caplog.records)
+
+
+def test_existing_customer_brief_continues_when_strategize_raises(monkeypatch):
+    monkeypatch.setattr(existing_skill, "_today", lambda: _ANCHOR)
+    monkeypatch.setattr(existing_skill.strategize_subskill, "run", _raising_subskill)
+    ctx = _ctx(data=_FakeDataClient(), tools=_Tools(research=FixtureResearchTool()))
+    args = existing_schema.Args(customer="Northstar Lines")
+
+    result = existing_skill.run(ctx, args)
+
+    assert result.ok is True
+    kinds = [part["kind"] for part in result.parts]
+    assert kinds == ["metric_grid", "table"] + ["phase_section"] * 5
+    titles = [part["payload"]["title"] for part in result.parts[2:]]
+    assert titles == [
+        "Context",
+        "Sustainability & ESG",
+        "Market Position",
+        "Strategic Profile",
+        "Strategy",
+    ]
+    strategy_markdown = result.parts[-1]["payload"]["markdown"]
+    assert "unavailable" in strategy_markdown
+    assert "Phases completed: contextualize, research" in result.proof
+    assert "Phases failed: strategize" in result.proof
+
+
+def test_new_prospect_brief_continues_when_research_raises(monkeypatch):
+    monkeypatch.setattr(prospect_skill.research_subskill, "run", _raising_subskill)
+    ctx = _ctx(tools=_Tools(research=FixtureResearchTool()))
+    args = prospect_schema.Args(prospect_name="Meridian Global Shipping")
+
+    result = prospect_skill.run(ctx, args)
+
+    assert result.ok is True
+    kinds = [part["kind"] for part in result.parts]
+    assert kinds == ["phase_section"] * 4
+    titles = [part["payload"]["title"] for part in result.parts]
+    assert titles == ["Operational Profile", "Web Research", "Context", "Strategy"]
+    for part in result.parts[:2]:
+        assert "unavailable" in part["payload"]["markdown"]
+    assert "Phases completed: contextualize, strategize" in result.proof
+    assert "Phases failed: research" in result.proof
+
+
+def test_new_prospect_brief_continues_when_contextualize_raises(monkeypatch):
+    monkeypatch.setattr(prospect_skill.contextualize_subskill, "run", _raising_subskill)
+    ctx = _ctx(tools=_Tools(research=FixtureResearchTool()))
+    args = prospect_schema.Args(prospect_name="Meridian Global Shipping")
+
+    result = prospect_skill.run(ctx, args)
+
+    assert result.ok is True
+    kinds = [part["kind"] for part in result.parts]
+    assert kinds == ["phase_section"] * 4
+    titles = [part["payload"]["title"] for part in result.parts]
+    assert titles == ["Operational Profile", "Web Research", "Context", "Strategy"]
+    context_markdown = result.parts[2]["payload"]["markdown"]
+    assert "unavailable" in context_markdown
+    assert "Phases completed: research, strategize" in result.proof
+    assert "Phases failed: contextualize" in result.proof
+
+
+def test_new_prospect_brief_continues_when_strategize_raises(monkeypatch):
+    monkeypatch.setattr(prospect_skill.strategize_subskill, "run", _raising_subskill)
+    ctx = _ctx(tools=_Tools(research=FixtureResearchTool()))
+    args = prospect_schema.Args(prospect_name="Meridian Global Shipping")
+
+    result = prospect_skill.run(ctx, args)
+
+    assert result.ok is True
+    kinds = [part["kind"] for part in result.parts]
+    assert kinds == ["phase_section"] * 4
+    titles = [part["payload"]["title"] for part in result.parts]
+    assert titles == ["Operational Profile", "Web Research", "Context", "Strategy"]
+    strategy_markdown = result.parts[-1]["payload"]["markdown"]
+    assert "unavailable" in strategy_markdown
+    assert "Phases completed: research, contextualize" in result.proof
+    assert "Phases failed: strategize" in result.proof
+
+
+# ===========================================================================
+# Section G -- PDF path with a fake artifact store.
 # ===========================================================================
 
 
@@ -528,7 +693,7 @@ def test_new_prospect_brief_pdf_path_with_a_fake_artifact_store():
 
 
 # ===========================================================================
-# Section G -- dispatch through the real SkillRegistry, with validated Args.
+# Section H -- dispatch through the real SkillRegistry, with validated Args.
 # ===========================================================================
 
 
@@ -584,7 +749,7 @@ def test_new_prospect_brief_dispatch_rejects_missing_prospect_name_as_a_422():
 
 
 # ===========================================================================
-# Section H -- ASCII guard.
+# Section I -- ASCII guard.
 # ===========================================================================
 
 

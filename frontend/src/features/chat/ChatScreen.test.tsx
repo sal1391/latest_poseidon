@@ -117,7 +117,7 @@ test("skills picker inserts an example prompt", async () => {
     "Top GP customers for Port of Singapore in April 2026");
 });
 
-test("clicking a chip sends its label as a user message, not just a composer insert", async () => {
+test("clicking a chip sends its entry phrase as a user message, not just a composer insert", async () => {
   render(<ChatScreen />);
   // The opener's own flow chips (mocks/handlers.ts's mockOpener) -- waiting
   // for them is what guarantees bootstrap has landed and activeId is set.
@@ -125,7 +125,14 @@ test("clicking a chip sends its label as a user message, not just a composer ins
 
   await userEvent.click(screen.getByRole("button", { name: "Existing customer" }));
 
-  expect(streamTurn).toHaveBeenCalledWith("c1", "Existing customer", expect.any(Function));
+  // The pinned D19 entry phrase (P8 whole-branch final-review wave,
+  // 2026-07-30, item 9 / M-2), not the bare button label: mockOpener now
+  // carries send_text on its opener chips, matching api/live_chat.py's own
+  // real opener -- this is what gives D19 a frontend-side pin (before this
+  // fix, the mock's own missing send_text let this assertion pass while
+  // checking something no real backend click ever sends).
+  expect(streamTurn).toHaveBeenCalledWith(
+    "c1", "start an existing-customer brief", expect.any(Function));
   // The composer itself was never populated -- this went straight through
   // the send path, unlike SkillsPicker's insert-only affordance above.
   expect(screen.getByPlaceholderText(/message poseidon/i)).toHaveValue("");

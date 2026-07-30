@@ -4,7 +4,16 @@ import type { Conversation, Message } from "../api/types";
 /** Fixed ids keep component assertions readable: one conversation, one opener. */
 export const mockConversation: Conversation = { id: "c1", title: "New chat" };
 
-/** Task-6 opener shape: an intro line plus the two flow-entry chips. */
+/** Task-6 opener shape: an intro line plus the two flow-entry chips.
+ *
+ * `send_text` (P8 whole-branch final-review wave, 2026-07-30, item 9 /
+ * M-2): the pinned D19 entry phrases, matching `api/live_chat.py`'s own
+ * real `TranscriptStore.create_conversation` opener byte-for-byte (that
+ * module's own `ENTRY_PHRASE_EXISTING`/`ENTRY_PHRASE_PROSPECT`, imported
+ * from `orchestrator.py`) -- this mock used to omit the field entirely,
+ * which is what let ChatScreen.test.tsx's own chip-click test keep
+ * passing while asserting the WRONG thing (the bare label, never sent by
+ * a real backend) for the D19 entry click it exercises. */
 export const mockOpener: Message = {
   id: "m0",
   role: "assistant",
@@ -14,8 +23,16 @@ export const mockOpener: Message = {
       kind: "chips",
       payload: {
         options: [
-          { id: "existing_customer", label: "Existing customer" },
-          { id: "new_prospect", label: "New customer prospect" },
+          {
+            id: "existing_customer",
+            label: "Existing customer",
+            send_text: "start an existing-customer brief",
+          },
+          {
+            id: "new_prospect",
+            label: "New customer prospect",
+            send_text: "start a new-prospect brief",
+          },
         ],
       },
     },

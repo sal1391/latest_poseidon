@@ -8,12 +8,15 @@ import type { PartProps } from "./registry";
  * OR while a send for this conversation is already in flight (ChatScreen's
  * `sendingFor` gate, threaded down as `disabled`).
  *
- * `send_text` (final-review wave item 2) is SCOPED to clarification chips
- * only: orchestrator.py's own `_finish_clarify` sends a "for <name>" cue so
- * the deterministic parser resolves the customer on the click, but the
- * opener's flow chips carry no `send_text` at all, so they keep sending
- * their bare label unchanged -- this fallback is what makes that scoping
- * live entirely in the payload, with no branching here or in ChatScreen. */
+ * `send_text` is not scoped to any one chip kind (P8 whole-branch
+ * final-review wave, 2026-07-30, item 9 / M-6 -- corrects this comment's
+ * own earlier "clarification chips only" claim, now false): orchestrator.
+ * py's own `_finish_clarify` sends a "for <name>" cue on clarification
+ * chips, and `api/live_chat.py`'s opener chips carry the pinned D19 entry
+ * phrase the same way. This component stays agnostic either way -- the
+ * `?? label` fallback exists for whatever chip payload carries no
+ * `send_text` at all, with no branching here or in ChatScreen either
+ * time. */
 export function ChipsPart({ part, onChipSelect, disabled }: PartProps) {
   const { options, disabled: payloadDisabled } = part.payload as ChipsPayload;
   const isDisabled = disabled === true || payloadDisabled === true;

@@ -77,9 +77,10 @@ this flow never touches ``ctx.data`` at all, so there is no entity, no
 backend, and no period to honestly name.
 """
 
-from collections.abc import Mapping
+import logging
+from collections.abc import Callable, Mapping
 from datetime import date
-from typing import Protocol, cast
+from typing import Protocol, TypeVar, cast
 
 from poseidon.core.skills.context import SkillContext
 from poseidon.core.skills.result import SkillResult
@@ -99,6 +100,10 @@ _PHASE_ORDER = ("research", "contextualize", "strategize")
 
 _ARTIFACT_SKIP_PROOF = "Artifact: skipped (no artifact store configured)"
 
+logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
 
 def _today() -> date:
     """Only used to date-partition the PDF's storage key -- see
@@ -106,6 +111,24 @@ def _today() -> date:
     rationale (identical here; this flow has no window/anchor math to make
     deterministic, only a storage key)."""
     return date.today()
+
+
+def _run_subskill_or_failed(
+    phase: str, call: Callable[[], _T], failed_result: Callable[[], _T]
+) -> _T:
+    """See ``existing_customer_brief.skill._run_subskill_or_failed``'s own
+    docstring for the full exception-escape-guard rationale (P8
+    whole-branch final-review wave, 2026-07-30, item 2 / I-4; identical
+    here, independently declared -- this flow's own subskill dispatches
+    are all direct ``.run(...)`` calls rather than
+    ``ThreadPoolExecutor`` futures, so every call site below wraps ``call``
+    in a small closure instead of passing a future's own ``.result``, but
+    the guard itself is byte-identical logic)."""
+    try:
+        return call()
+    except Exception as exc:  # noqa: BLE001 - one subskill's escape must not fail the whole brief
+        logger.error("brief subskill %r raised: %s: %s", phase, type(exc).__name__, exc)
+        return failed_result()
 
 
 class _ToolServer(Protocol):
@@ -154,26 +177,41 @@ def _render_markdown(prospect_name: str, parts: list[dict]) -> str:
 
 def run(ctx: SkillContext, args: Args) -> SkillResult:
     """See the module docstring for the full D10 ordering and sharing-
-    decision rationale."""
-    research_result = research_subskill.run(ctx, MODE_PROSPECT, args.prospect_name)
+    decision rationale. Each subskill call below is guarded (item 2 / I-4,
+    see ``_run_subskill_or_failed``'s own docstring): a raw exception
+    escaping any one of them becomes that phase's own failed-phase result,
+    never a crash that discards the whole brief."""
+    research_result = _run_subskill_or_failed(
+        "research",
+        lambda: research_subskill.run(ctx, MODE_PROSPECT, args.prospect_name),
+        lambda: research_subskill.failed_result(MODE_PROSPECT),
+    )
     parts: list[dict] = list(research_result.parts)
     for part in research_result.parts:
         _emit(ctx, part)
 
-    contextualize_result = contextualize_subskill.run(
-        ctx, MODE_PROSPECT, args.prospect_name, {}, research_result.synthesis_inputs
+    contextualize_result = _run_subskill_or_failed(
+        "contextualize",
+        lambda: contextualize_subskill.run(
+            ctx, MODE_PROSPECT, args.prospect_name, {}, research_result.synthesis_inputs
+        ),
+        contextualize_subskill.failed_result,
     )
     parts.extend(contextualize_result.parts)
     for part in contextualize_result.parts:
         _emit(ctx, part)
 
-    strategize_result = strategize_subskill.run(
-        ctx,
-        MODE_PROSPECT,
-        args.prospect_name,
-        contextualize_result.synthesis_inputs[0]["text"],
-        research_result.synthesis_inputs,
-        {},
+    strategize_result = _run_subskill_or_failed(
+        "strategize",
+        lambda: strategize_subskill.run(
+            ctx,
+            MODE_PROSPECT,
+            args.prospect_name,
+            contextualize_result.synthesis_inputs[0]["text"],
+            research_result.synthesis_inputs,
+            {},
+        ),
+        strategize_subskill.failed_result,
     )
     parts.extend(strategize_result.parts)
     for part in strategize_result.parts:

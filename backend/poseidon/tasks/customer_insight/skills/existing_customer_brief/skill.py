@@ -64,16 +64,27 @@ prospect gets the different, pinned "no current services" text instead --
 not this skill's concern; see ``strategize.subskill`` directly). Neither
 ``fetch_metrics`` nor ``fetch_top_ports`` exposes a service-line dimension
 -- ``ontology/ontology.yml``'s own ``MARINE_SALES_PLANNING_V`` entity has
-no such column at all (checked directly against the certified column list:
-``POI_ID``, the two fixture/inquiry measures, ``LIFT_ETA_DATE``,
-``GROSS_PROFIT``, ``FIXED_TONS``, ``CUST_NM``, ``LOC_NM`` -- nothing that
-distinguishes bunkering from brokering from any other marine service this
-customer might use). Inferring "this customer buys bunkering" from the
-mere PRESENCE of sales figures on a general marine-sales entity would be
-guessing a business fact this tool never asked for and never received --
-exactly what the T4 dispatch carry's own instruction warns against. This
-module's ``_data_summary`` therefore never sets a ``"services"`` key,
-letting ``strategize.subskill``'s own documented fallback apply honestly.
+no such column at all (checked directly against its FULL certified column
+list -- all 22 entries, not a sampled subset: ``POI_ID``, the two
+fixture/inquiry measures, ``LIFT_ETA_DATE``, ``GROSS_PROFIT``,
+``FIXED_TONS``, ``CUST_NM``, ``SUPPLIER_NM``, ``LOC_NM``,
+``SUPPLY_TEAM_NAME``, ``SUPP_BRKR``, ``PRIMARY_SUPPLY_TEAM_OFFICE`` (+
+its own ``_REGION``), ``PRIMARY_BRKR`` (+ its own ``_OFFICE``/``_REGION``),
+``CUSTOMER_BRKR``, ``CUSTOMER_TEAM_NAME``, ``CBO_REGION``,
+``DEAL_CLASSIFICATION_TRADE_CUT``, ``VESSEL_DASHBOARD_SHIPTYPE_GRP``,
+``CUST_DASHBOARD_SHIPTYPE_GRP`` -- nothing that distinguishes bunkering
+from brokering from any other marine service this customer might use).
+The NEAREST candidates a skim might mistake for one -- ``SUPP_BRKR``
+("Supply Broker") and ``DEAL_CLASSIFICATION_TRADE_CUT`` ("Deal Class",
+e.g. TRADED/INVENTORY) -- are broker and deal-type classifications, not a
+service-line dimension either (checked directly against their own
+``ontology.yml`` descriptions, not assumed from their names). Inferring
+"this customer buys bunkering" from the mere PRESENCE of sales figures on
+a general marine-sales entity would be guessing a business fact this tool
+never asked for and never received -- exactly what the T4 dispatch
+carry's own instruction warns against. This module's ``_data_summary``
+therefore never sets a ``"services"`` key, letting ``strategize.
+subskill``'s own documented fallback apply honestly.
 
 METRIC DISPLAY -- A FIXED, HAND-AUTHORED CONSTANT, NOT AN ONTOLOGY LOOKUP
 (disclosed judgment call, mirroring ``contextualize.subskill``'s own
@@ -101,9 +112,12 @@ numeric rule keyed only by metric name.
 PROOF-LINE COMPOSITION. This skill's own proof block opens with two header
 lines (``Entity:``/``Backend:``) this skill IS positioned to prove (it
 holds ``ctx.settings``, which none of the P3 tools receive -- see
-``existing_customer_brief/tools/__init__.py``'s own "Proof-line ownership"
-section, written ahead of this task specifically to hand that
-responsibility here), then the P3 tools' own already-tested proof
+``existing_customer_brief/__init__.py``'s own "Proof-line ownership"
+section (P8 whole-branch final-review wave, 2026-07-30, item 9 / M-4
+corrects this citation -- the section lives in the skill package's own
+root ``__init__.py``, one directory up from ``tools/``, not inside
+``tools/__init__.py``), written ahead of this task specifically to hand
+that responsibility here), then the P3 tools' own already-tested proof
 fragments VERBATIM (never reformatted -- a reader sees the SAME lines
 ``fetch_metrics``'/``fetch_top_ports``'s own tests already pin), then this
 skill's own summary lines: which of the three subskill PHASES (
@@ -130,10 +144,11 @@ discipline ``data_qa.metric_query``'s own ``skill.py`` uses for
 ``SpecValidationError``.
 """
 
-from collections.abc import Mapping
+import logging
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
-from typing import Protocol, cast
+from typing import Protocol, TypeVar, cast
 
 from poseidon.core.data.client import BreakdownResult, MetricResult
 from poseidon.core.data.specs import PeriodWindow
@@ -191,6 +206,43 @@ _PORTS_COLUMNS = ["Port", "Gross Profit"]
 _PHASE_ORDER = ("contextualize", "research", "strategize")
 
 _ARTIFACT_SKIP_PROOF = "Artifact: skipped (no artifact store configured)"
+
+logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+
+def _run_subskill_or_failed(
+    phase: str, call: Callable[[], _T], failed_result: Callable[[], _T]
+) -> _T:
+    """The exception-escape guard (P8 whole-branch final-review wave,
+    2026-07-30, item 2 / I-4): ``call`` is a zero-argument callable --
+    a ``ThreadPoolExecutor`` future's own ``.result`` (contextualize,
+    research), or a closure wrapping a direct subskill ``.run(...)`` call
+    (strategize) -- invoked exactly once.
+
+    A raw exception escaping it (e.g. a ``BotoCoreError`` past bedrock's
+    own ``ClientError``-only catch, or any other failure mode a subskill's
+    own stub/live branches do not already turn into a ``failed=True``
+    result) is logged and replaced with ``failed_result()``'s own pinned
+    failure text, rather than propagating out of this skill's ``run`` and
+    500ing the WHOLE brief -- discarding every phase already computed and
+    already streamed. Doc 02 section 6's own anti-happy-path rule ("the
+    phase fails, previously streamed deterministic parts stand") applies
+    at THIS grain, not only within a subskill's own internal error
+    handling: a phase this guard catches is exactly as failed, and exactly
+    as isolated from its siblings, as one a subskill already reports
+    ``failed=True`` for on its own. ``SkillRegistry.dispatch``'s own
+    try/except remains the last resort for a truly unexpected failure;
+    this guard is what keeps that resort from ever being needed for a
+    subskill failure this brief already knows how to name and continue
+    past.
+    """
+    try:
+        return call()
+    except Exception as exc:  # noqa: BLE001 - one subskill's escape must not fail the whole brief
+        logger.error("brief subskill %r raised: %s: %s", phase, type(exc).__name__, exc)
+        return failed_result()
 
 
 def _today() -> date:
@@ -377,9 +429,18 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
         # FIXED consumption order (doc 02 section 4.1's own numbering:
         # contextualize before research) regardless of which future's
         # worker actually finished first -- see the module docstring's
-        # "ORDER" section.
-        contextualize_result = contextualize_future.result()
-        research_result = research_future.result()
+        # "ORDER" section. Each `.result()` is guarded (item 2 / I-4,
+        # above): a raw exception escaping either subskill's own dispatch
+        # becomes that phase's own failed-phase result, never a crash that
+        # discards the whole brief.
+        contextualize_result = _run_subskill_or_failed(
+            "contextualize", contextualize_future.result, contextualize_subskill.failed_result
+        )
+        research_result = _run_subskill_or_failed(
+            "research",
+            research_future.result,
+            lambda: research_subskill.failed_result(MODE_EXISTING),
+        )
 
     parts.extend(contextualize_result.parts)
     parts.extend(research_result.parts)
@@ -388,13 +449,17 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
     for part in research_result.parts:
         _emit(ctx, part)
 
-    strategize_result = strategize_subskill.run(
-        ctx,
-        MODE_EXISTING,
-        args.customer,
-        contextualize_result.synthesis_inputs[0]["text"],
-        research_result.synthesis_inputs,
-        data_summary,
+    strategize_result = _run_subskill_or_failed(
+        "strategize",
+        lambda: strategize_subskill.run(
+            ctx,
+            MODE_EXISTING,
+            args.customer,
+            contextualize_result.synthesis_inputs[0]["text"],
+            research_result.synthesis_inputs,
+            data_summary,
+        ),
+        strategize_subskill.failed_result,
     )
     parts.extend(strategize_result.parts)
     for part in strategize_result.parts:

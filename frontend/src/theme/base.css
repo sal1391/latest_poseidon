@@ -478,6 +478,35 @@ body {
   font-size: 0.6875rem;
 }
 
+/* phase_section part: one agent phase (Contextualizer / Researcher /
+   Strategist) as its own titled, expandable block -- same collapsible-
+   details idiom as .proof-part/.fallback-part, but OPEN by default: this
+   is the brief's own narrative content, not supplementary evidence, so a
+   reader sees it without an extra click. */
+.phase-section-part {
+  margin: 0.5rem 0;
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  background: var(--surface-raised);
+}
+
+.phase-section-part summary {
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.phase-section-part[open] summary {
+  margin-bottom: 0.5rem;
+}
+
+.phase-section-part :last-child {
+  margin-bottom: 0;
+}
+
 /* Collapsible "How this was computed" proof block -- same idiom as .fallback-part. */
 .proof-part {
   padding: 0.5rem 0.75rem;

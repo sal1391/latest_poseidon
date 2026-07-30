@@ -748,8 +748,24 @@ async def test_existing_customer_brief_flow_scripted_against_live_seeded_postgre
 
     # ===================================================================
     # Turn 3: the pivot -> routed normally (a real router call: 2
-    # llm_calls), mode still carried from turn 1, byte-identical to this
-    # file's own flagship turn 1 (same text, same seeded pool).
+    # llm_calls).
+    #
+    # RE-PINNED (P8 whole-branch final-review wave, 2026-07-30, item 5 /
+    # I-3, D19 subject carry): this pivot's own table/proof/token used to
+    # be BYTE-IDENTICAL to this file's own flagship turn 1 (same text, same
+    # seeded pool) -- true only because turn 2's successful D19 dispatch
+    # never carried its resolved customer into slots.customer, so this
+    # pivot's own "no customer/port phrase found this turn -> fall back to
+    # the CARRIED customer as the phrase" rule (pipeline.py's own step 3)
+    # had nothing to carry. Now that it does, "Port of Singapore" is still
+    # consumed by the PORT cue exactly as before (customer detection scans
+    # the port-blanked copy and finds nothing new to resolve), so the
+    # carried "Northstar Lines" becomes THIS turn's own re-resolved
+    # customer -- exactly the same "say it once, it carries" rule that
+    # already applied to an ORDINARILY-parsed customer before this fix; a
+    # D19-dispatched one no longer sits outside that established rule.
+    # Verified directly against the real seeded pool (not hand-computed)
+    # before being re-pinned here.
     # ===================================================================
     names_3 = [name for name, _data in events_3]
     assert names_3 == ["accepted", "tool", "tool", "part", "part", "token", "done"]
@@ -758,18 +774,11 @@ async def test_existing_customer_brief_flow_scripted_against_live_seeded_postgre
 
     table_3 = payloads_3[3]
     assert table_3["kind"] == "table"
-    # Byte-identical to this file's own flagship turn 1 (same text, same
-    # seeded pool, unaffected by mode="existing_customer" being carried --
-    # verified directly, twice, before being pinned here).
+    # Narrowed to Northstar Lines' own row -- the carried customer is now
+    # ALSO a filter on this breakdown, same as the port.
     assert table_3["payload"] == {
         "columns": ["Customer", "Gross Profit"],
-        "rows": [
-            ["Meridian Marine", 70119],
-            ["Meridian Maritime", 47958],
-            ["Meridian Shipmanagement", 38087],
-            ["Blue Anchor Marine", 30411],
-            ["Northstar Lines", 25325],
-        ],
+        "rows": [["Northstar Lines", 25325]],
     }
 
     proof_3 = payloads_3[4]
@@ -777,13 +786,18 @@ async def test_existing_customer_brief_flow_scripted_against_live_seeded_postgre
         "Entity: SANDBOX.MCA.MARINE_SALES_PLANNING_V",
         "Backend: synthetic",
         "Period: 2026-04-01..2026-05-01",
-        "Filters: LOC_NM IN (Singapore)",
+        "Filters: CUST_NM IN (Northstar Lines) AND LOC_NM IN (Singapore)",
         "Group by: CUST_NM (top 5)",
-        "Rows: 5",
+        "Rows: 1",
     ]
     token_3 = payloads_3[5]
+    # entity_label prefers a resolved CUSTOMER over a resolved PORT
+    # (dev_router.py's own _certified_answer, unchanged) -- now that the
+    # carried customer resolves fresh this turn too, it wins the label the
+    # same way an ordinarily-parsed one already would.
     assert (
-        token_3["text"] == "Certified answer for Singapore " + _EM_DASH + " 2026-04-01..2026-05-01."
+        token_3["text"]
+        == "Certified answer for Northstar Lines " + _EM_DASH + " 2026-04-01..2026-05-01."
     )
 
     turn_ids = [turn_id_1, turn_id_2, turn_id_3]

@@ -8,6 +8,7 @@ import { TablePart } from "./TablePart";
 import { ProofPart } from "./ProofPart";
 import { MetricGridPart } from "./MetricGridPart";
 import { ArtifactPart } from "./ArtifactPart";
+import { PhaseSectionPart } from "./PhaseSectionPart";
 import { FallbackPart } from "./FallbackPart";
 
 export interface PartProps {
@@ -33,6 +34,12 @@ const registry: Record<string, ComponentType<PartProps>> = {
   // SkillResult.artifacts -- see core/llm/loop.py and core/chat/events.py).
   metric_grid: MetricGridPart,
   artifact: ArtifactPart,
+  // phase_section: P8 whole-branch final-review wave (2026-07-30), item 1
+  // -- the brief flows' own narrative parts (contextualize / each
+  // research lens call / strategize) had no renderer until now; both
+  // briefs' phase content fell back to FallbackPart's raw-JSON dump (data
+  // correct, presentation missing -- Task 5's own T5 E2E capture).
+  phase_section: PhaseSectionPart,
 };
 
 export function PartRenderer(props: PartProps) {

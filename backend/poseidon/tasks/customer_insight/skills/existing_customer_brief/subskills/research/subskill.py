@@ -146,6 +146,15 @@ _NO_TOOLS_REASON = "no research tools configured"
 # transport, only by a test double that does not follow that contract.
 _UNKNOWN_REASON = "unknown error"
 
+# P8 whole-branch final-review wave (2026-07-30), item 2 / I-4: the
+# exception-escape guard's own pinned reason -- see failed_result's
+# docstring below. Distinct from _NO_TOOLS_REASON/_UNKNOWN_REASON on
+# purpose: each names a DIFFERENT actual cause honestly (no tool server
+# configured; a malformed degrade with no reason; this subskill's own
+# dispatch raising outright), never one borrowing another's text for a
+# cause it does not describe.
+_ESCAPED_EXCEPTION_REASON = "the research subskill raised an unexpected exception"
+
 # The two mode values this subskill accepts -- the exact literal strings
 # already established across this codebase for ConversationSlots.mode
 # (see e.g. test_parsing_hinter_pipeline.py, test_llm_loop.py, api/live_
@@ -275,3 +284,21 @@ def run(ctx: SkillContext, mode: str, subject: str) -> SubskillResult:
     return SubskillResult(
         parts=tuple(parts), synthesis_inputs=tuple(inputs), failed=not any_success
     )
+
+
+def failed_result(mode: str) -> SubskillResult:
+    """The failed-phase result skill.py's own exception-escape guard (P8
+    whole-branch final-review wave, 2026-07-30, item 2 / I-4) synthesizes
+    when a call to :func:`run` raises OUTRIGHT instead of returning
+    normally -- the SAME "every call in the mode's list renders degraded"
+    shape :func:`_all_degraded` already builds for the ``ctx.tools is
+    None`` case (one ``phase_section`` per call, each titled per that
+    call's own spec), with a reason that names THIS actual cause honestly
+    (:data:`_ESCAPED_EXCEPTION_REASON`) rather than reusing
+    :data:`_NO_TOOLS_REASON`'s unrelated one. ``mode`` is not
+    re-validated: skill.py only ever calls this with the same literal
+    mode it already passed to :func:`run` (which would have raised first
+    had that literal been invalid), so an unrecognized ``mode`` here can
+    only mean an internal wiring bug in this module's own caller -- a
+    plain ``KeyError``, not a swallowed, misleadingly-labeled failure."""
+    return _all_degraded(_MODE_CALLS[mode], _ESCAPED_EXCEPTION_REASON)

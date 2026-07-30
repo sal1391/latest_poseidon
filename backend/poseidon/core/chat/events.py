@@ -221,6 +221,52 @@ deliberately out of this phase's sanctioned edit (the one
 artifacts-forwarding line; see loop.py's own docstring). Not a gap this
 sink can close on its own.
 
+**Second correction (P8 whole-branch final-review wave, 2026-07-30, item
+3 / I-1) -- NOT the "final-review wave item N" labels used elsewhere in
+this codebase for earlier phases' own review rounds.** Fix round 1 above
+already corrected "safe no-op" to "loud ``KeyError`` failure, judged the
+better design" -- but its own framing still undersold the second
+dispatch as close to theoretical ("if the model retries the identical
+skill call... a repeat of the same deterministic ``KeyError``"). It is
+not theoretical. It needs no multi-dispatch turn and no two different
+skills: ANY routed dispatch of a progressively-streaming skill (a brief,
+reached through ``dev_router.py``'s own brief branch -- "Run the brief
+for Maersk" typed directly, not only D19's deterministic entry) that
+fails its first attempt and gets retried by ``loop.py``'s own one-shot
+self-correction reaches this exact shape on an entirely ordinary turn,
+because ``tool_seq`` counts DISPATCHES, not successes (``_dispatch_one``'s
+own call site: ``tool_seq=len(tool_records) + 1``) -- the retry is
+tool_seq 2 while ``ctx.emit_part`` is still tool_seq 1's own closure.
+Reproduced directly, not merely re-argued: ``test_emit_seam_loop_events.
+py::test_part_emitter_on_a_self_correction_retry_does_not_orphan_or_
+keyerror`` fails a fake skill's first attempt with a structured 422,
+retries it exactly the way ``loop.py``'s own per-skill correction chance
+allows, and (before this wave's own fix below) produces precisely the
+orphaned frame and the ``KeyError``-turned-second-failure this section
+already described in the abstract.
+
+This wave's guard (:meth:`part_emitter`'s own ``_emit`` closure -- see
+its docstring's identical second correction) resolves the reachable gap
+the OTHER way from Fix round 1's own verdict: rather than continuing to
+accept a loud failure as the lesser evil, a RETIRED ``tool_seq`` (one
+whose ``tool_done`` already fired, so its key is gone from
+``_streamed_counts``) now makes the stale closure a silent no-op instead
+of pushing an orphan and raising. This is safe, not merely convenient,
+precisely BECAUSE of the fact the loud-failure design above already
+established: ``run_turn`` drives dispatches strictly sequentially, so a
+stale closure is only ever called from a genuine retry of the SAME
+logical call it was built for, and that retry's own ``SkillResult.parts``
+still carries whatever it tried to stream early (a real skill's
+contract, per "Incremental part streaming" above) -- its OWN
+``tool_done`` then emits that part normally, since a ``tool_seq``
+``part_emitter`` was never actually called FOR defaults its
+streamed-early count to zero. The user sees the identical part either
+way; only the orphan frame and the spurious second failure are removed.
+This makes the VERY FIRST version of this docstring's claim -- the one
+Fix round 1 corrected to "loud failure" -- true again, but for the right
+reason: not because a second dispatch was always harmless, but because
+this guard now makes it so.
+
 Synchronous by construction
 -------------------------------
 Every method here is a plain, synchronous function -- required, since
@@ -400,10 +446,44 @@ class SseEnvelopeSink:
         round 1 correction (under "Incremental part streaming") for the
         reproduced failure mode and why that is the better of the two
         available designs.
+
+        **Second correction (P8 whole-branch final-review wave, 2026-07-30,
+        item 3 / I-1):** "hypothetical" above was wrong -- this shape is
+        reachable on an entirely ordinary turn, via ``loop.py``'s own
+        one-shot self-correction retrying a routed brief dispatch that
+        failed its first attempt (``tool_seq`` counts DISPATCHES, not
+        successes, so the retry lands on ``tool_seq`` 2 while this same
+        closure, built for ``tool_seq`` 1, never gets rebound). Reproduced
+        directly (see the module docstring's own second correction for the
+        pinning test). The verdict changes too: calling this closure for a
+        retired ``tool_seq`` now returns silently, before ``push_part``,
+        instead of raising -- see :meth:`part_emitter`'s own ``_emit``
+        implementation just below for the guard and why a stale closure can
+        only ever be reached by a genuine retry of the call it was built
+        for, never a second, unrelated dispatch's own fresh part.
         """
         self._streamed_counts[tool_seq] = 0
 
         def _emit(part: dict) -> None:
+            # P8 final-review wave (2026-07-30), item 3 / I-1 -- the
+            # retired-dispatch guard, reviewer-verified by patching and
+            # re-running. A ``tool_seq`` no longer in ``_streamed_counts``
+            # means ITS OWN ``tool_done`` already fired (the dict entry was
+            # popped there -- see ``_handle_tool_done``), so this closure is
+            # STALE: this is the self-correction-retry shape (see this
+            # module's own "Fix round 1 correction" and its second
+            # correction just below), not a fresh dispatch this closure was
+            # ever rebound for. Returning here, before ``push_part``, is
+            # what makes the retry's own stream call a silent no-op instead
+            # of an orphaned wire frame followed by a ``KeyError`` -- the
+            # part the skill wanted to stream early still reaches the user
+            # exactly once, carried in its own ``SkillResult.parts`` and
+            # emitted normally by the retry's OWN ``tool_done`` below (that
+            # tool_seq's own count was never incremented, so it defaults to
+            # zero streamed-early and emits its full parts list, same as
+            # any dispatch that never called ``part_emitter`` at all).
+            if tool_seq not in self._streamed_counts:
+                return
             self.push_part(part["kind"], part["payload"])
             self._streamed_counts[tool_seq] += 1
 
