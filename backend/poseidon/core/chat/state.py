@@ -13,6 +13,17 @@ replaces the dict with persisted, per-user state behind this SAME surface --
 :meth:`~ConversationStateStore.next_turn_index` -- so nothing above this
 seam (the orchestrator) needs to change when that lands; only what backs it
 does.
+
+Phase 8 Task 5 (D19) adds a THIRD, additive dict here: :meth:`~
+ConversationStateStore.get_brief_done`/:meth:`~ConversationStateStore.
+set_brief_done`, a per-conversation ``bool`` recording whether a
+bubble-entry brief has already completed. Additive, not a reshaping of
+``ConversationSlots`` (a parked shape this phase does not touch beyond the
+already-present ``mode`` field) -- see :meth:`~ConversationStateStore.
+get_brief_done`'s own docstring for the full reasoning, and
+``core/chat/orchestrator.py`` for the one caller (the D19 entry/subject-turn
+branch). Joins the SAME "Phase 10 replaces the backing store, not the
+surface" promise as the two methods above it.
 """
 
 import threading
@@ -30,21 +41,27 @@ _EMPTY_SLOTS = ConversationSlots()
 
 class ConversationStateStore:
     """In-memory ``conversation_id -> ConversationSlots`` map, plus an
-    independent per-conversation turn counter. See the module docstring for
+    independent per-conversation turn counter and (Phase 8 Task 5) a
+    per-conversation brief-completion flag. See the module docstring for
     why in-memory and what eventually replaces it.
 
-    One :class:`threading.Lock` guards BOTH dicts below, not one each:
-    every method here does a single dict read or write, already atomic
-    under CPython's GIL in practice, but the lock is what makes that
-    guarantee explicit and independent of any particular interpreter's
-    implementation detail -- every call from every concurrent request
-    handler serializes cleanly against every other.
+    One :class:`threading.Lock` guards all THREE dicts below, not one
+    each: every method here does a single dict read or write, already
+    atomic under CPython's GIL in practice, but the lock is what makes
+    that guarantee explicit and independent of any particular
+    interpreter's implementation detail -- every call from every
+    concurrent request handler serializes cleanly against every other.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._slots: dict[str, ConversationSlots] = {}
         self._turn_index: dict[str, int] = {}
+        # Phase 8 Task 5 (D19): whether THIS conversation has already
+        # dispatched a bubble-entry brief to completion -- see this class's
+        # own docstring's "brief_done" paragraph for why this rides the
+        # store rather than ConversationSlots.
+        self._brief_done: dict[str, bool] = {}
 
     def get(self, conversation_id: str) -> ConversationSlots:
         """The conversation's current slots, or an empty
@@ -80,6 +97,48 @@ class ConversationStateStore:
             index = self._turn_index.get(conversation_id, 0) + 1
             self._turn_index[conversation_id] = index
             return index
+
+    def get_brief_done(self, conversation_id: str) -> bool:
+        """Whether ``conversation_id`` has already dispatched a D19
+        bubble-entry brief to a SUCCESSFUL completion (Phase 8 Task 5).
+        ``False`` for an id never passed to :meth:`set_brief_done`, the
+        same "unseen id -> the harmless default" convention :meth:`get`
+        already uses for slots.
+
+        This is an ADDITIVE method on the SAME in-memory store
+        :meth:`get`/:meth:`put`/:meth:`next_turn_index` already share
+        (guarded by the identical lock, one more plain dict keyed by
+        ``conversation_id``) -- not a new field on
+        :class:`~poseidon.core.skills.context.ConversationSlots`. Two
+        reasons, both from the orchestrator's own D19 entry-branch design:
+        ``ConversationSlots`` is a PARKED shape this phase does not
+        reshape (only ``mode`` -- already present since Phase 4 -- is
+        actually written by this task); and "has a brief completed THIS
+        conversation" is orchestration bookkeeping about the CONVERSATION,
+        the same category as ``next_turn_index``'s own counter, not a
+        piece of parsed conversational STATE a skill or a prompt ever
+        needs to read (contrast ``mode``, which DOES ride slots because
+        the hinter and every downstream prompt need to see it). Phase 10
+        (History + RLS) replaces this whole store's in-memory dicts with
+        persisted, per-user state behind this SAME surface, exactly as
+        this class's own module docstring already promises for
+        :meth:`get`/:meth:`put`/:meth:`next_turn_index` -- this method
+        joins that promise, not a new one.
+        """
+        with self._lock:
+            return self._brief_done.get(conversation_id, False)
+
+    def set_brief_done(self, conversation_id: str, value: bool) -> None:
+        """Record whether ``conversation_id``'s current D19 brief flow is
+        done. ``True`` once a bubble-entry brief dispatch SUCCEEDS
+        (``execute_turn`` then routes every later turn through the normal
+        registry again); the D19 entry branch resets this back to
+        ``False`` on a fresh flow-chip click, so a second brief can be
+        started in the same conversation without carrying over the first
+        one's completion.
+        """
+        with self._lock:
+            self._brief_done[conversation_id] = value
 
 
 __all__ = ["ConversationStateStore"]

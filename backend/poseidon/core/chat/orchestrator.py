@@ -65,6 +65,115 @@ runs (a known, accepted residual: a dense-numbering gap on retry, harmless --
 ``turn_index`` is advisory ordering, never a primary key). Phase 11 upgrades
 this short-circuit to true replay, per doc 01 section 5.
 
+D19 entry orchestration (Phase 8 Task 5): two MORE short-circuits, both
+BEFORE parse_turn's normal path
+-------------------------------------------------------------------------
+The bubble-entry flow (doc 02 section 4's "Entry orchestration rule") adds
+two branches this function checks BEFORE ``parse_turn`` is ever called --
+literally before, not merely before ``run_turn``: neither branch has any
+customer/port/period cue for ``parse_turn`` to find, and D19's own contract
+("no dispatch, no router") means neither ever needs the carry/hint
+machinery ``parse_turn`` exists to run.
+
+**The entry branch** (:func:`_finish_entry`). ``text`` is compared,
+casefolded, against the two pinned flow-chip phrases (``"start an
+existing-customer brief"`` / ``"start a new-prospect brief"`` -- the SAME
+strings ``api/live_chat.py``'s opener chips now carry as ``send_text``).
+An EXACT match sets ``slots.mode`` via ``dataclasses.replace(prior_slots,
+mode=...)`` -- the P6 pass_through precedent
+(:func:`_repopulate_pass_through`'s own identical "replace wholesale,
+never merge" pattern, applied here to one field instead of one whole
+object) -- pushes ONE text part asking for the subject, and finalizes
+``clarify``. No skill dispatch, no ``run_turn`` call, matching the
+Global Constraints' D19 rule verbatim (mirrors the ambiguous-customer
+clarify short-circuit's own "chips/text, done, finalize, clarify" shape,
+minus the chips -- there is nothing to pick from yet, only a question to
+answer). :meth:`~poseidon.core.chat.state.ConversationStateStore.
+set_brief_done` is reset to ``False`` here too: a SECOND flow-chip click
+mid-conversation starts a SECOND brief, never blocked by the first one's
+completion.
+
+**The subject branch** (:func:`_finish_subject_turn`). Reached when
+``prior_slots.mode`` is one of the two D19 modes AND :meth:`~poseidon.core.
+chat.state.ConversationStateStore.get_brief_done` is still ``False`` for
+this conversation -- i.e. exactly the turn immediately following a
+successful entry branch, or a retry after that turn failed to resolve a
+subject. ``mode == "existing_customer"`` resolves the ENTIRE message
+directly through :func:`~poseidon.core.parsing.customer_resolver.resolve`
+(never ``parse_turn`` -- there is no cue word to gate on; the whole
+message IS the candidate phrase, "the customer resolver (full ambiguity
+contract)" the Global Constraints name): a confident match dispatches: a
+candidate-band or unknown result surfaces the SAME shape the ambiguous
+short-circuit does (chips -- bare ``send_text``, no "for " cue, since this
+branch never goes back through ``parse_turn``'s cue-gated detector -- or
+just text for an unknown match), ``clarify``, ``brief_done`` left
+``False`` so the very next message retries. ``mode == "new_prospect"``
+skips resolution entirely -- ``text.strip()`` IS the subject (D19's own
+"text = subject" rule: a prospect is by definition not a certified
+dimension value, so there is nothing to resolve against).
+
+Once a subject is in hand, dispatch is DETERMINISTIC: ``registry.
+dispatch`` is called directly, never ``run_turn`` -- no router, live or
+stub, ever sees this turn. The tool events (``tool_start``/``tool_done``,
+carrying ``parts``/``proof``/``artifacts`` exactly like a routed dispatch)
+and the run-log rows (one ``tool_calls`` row; ZERO ``llm_calls`` rows in
+stub mode, since ``run_turn``'s own two-call loop never runs -- the one
+concrete, testable difference from a normal routed dispatch, which always
+logs at least two) are built by hand here, reusing ``loop.py``'s PUBLIC
+:func:`~poseidon.core.llm.loop.tool_result_digest` and its public
+:class:`~poseidon.core.llm.loop.ToolRecord`/:class:`~poseidon.core.llm.
+loop.TurnResult` dataclasses (never its private ``_dispatch_one`` --
+leading-underscore boundary, the same convention ``dev_router.py`` and
+this module's own "Why the system prompt is rendered TWICE" section
+already establish) so that :func:`_append_records`/
+:func:`_repopulate_pass_through` below can be reused UNCHANGED for this
+path too, rather than each growing a parallel implementation. A
+successful dispatch (``result.ok``) streams progressively exactly like a
+brief reached through the ROUTED path (``dev_router.py``'s own brief
+branch, distinct code, same two skills) -- ``ctx.emit_part`` wired to
+``sink.part_emitter(1)`` the identical way the normal path wires it below
+-- then marks :meth:`~poseidon.core.chat.state.ConversationStateStore.
+set_brief_done` ``True`` and ends with ``sink.done`` -- no
+``sink.push_token``: there is no router call to have composed a reply,
+and the brief's own streamed parts already ARE the answer. A FAILED
+dispatch (``not result.ok`` -- a structural 422, or a genuine skill bug)
+ends the turn the same way any other failure does: one ``turn_error``
+frame carrying ``result.error`` verbatim, ``finalize(status="error", ...)``,
+``brief_done`` left ``False`` so a corrected subject can retry.
+
+After a successful dispatch, ``mode`` is NOT reset -- it rides in
+``slots`` (via the unchanged ``state.put``/pass-through path below)
+exactly as the entry branch left it, ADVISORY context for
+:func:`~poseidon.core.parsing.skill_hinter.hint` from then on (see
+``dev_router.py``'s own "Task 5 CLOSURE" for how that advisory weight is
+kept from silently hijacking an ordinary post-brief pivot). ``get_brief_
+done`` being ``True`` is what actually gates this branch shut: every turn
+after a successful dispatch falls straight through the two D19 checks and
+reaches ``parse_turn``'s normal path exactly as before this task existed.
+
+DISTINCT FROM ``dev_router.py``'s OWN brief branch (Task 5, the ROUTED
+path -- "Run the brief for Maersk" typed directly, any mode, no bubble
+click at all). That path goes through the ordinary ``run_turn`` loop, a
+real (fake, in stub mode) router decision, and lands on the identical two
+skills through ``SkillRegistry.dispatch`` the SAME way every other routed
+call does -- llm_calls rows included. D19 never risks a router's
+judgment call for its own bubble-entry flow; the routed path is what lets
+an ORDINARY chat message ALSO reach a brief, the same way any other skill
+already is. See ``dev_router.py``'s own module docstring, "Task 5
+CLOSURE", for the full contrast from that side.
+
+Shared turn bookkeeping (:func:`_begin_turn`). All three branches --
+normal, entry, subject -- open with the identical sequence: mint
+``turn_index``, open the run-log row (``mode``/``parsed`` differ per
+branch, computed by the caller), emit ``accepted``, and apply the retry
+short-circuit above. Factored into one helper once a THIRD call site
+needed it (this task) -- the same "duplication tolerated until a second,
+then extracted" judgment call ``result.py``'s own ``phase_section_part``
+promotion already used one call site earlier -- rather than three
+independently near-identical copies drifting apart. Behavior-preserving
+for the pre-existing normal path: identical kwargs, identical order,
+verified against this module's own pre-Task-5 test suite (zero diffs).
+
 Ids: who mints what
 -----------------------
 ``turn_run_id`` IS :attr:`~poseidon.core.chat.events.SseEnvelopeSink.
@@ -134,7 +243,13 @@ from poseidon.core.chat.events import SseEnvelopeSink
 from poseidon.core.chat.state import ConversationStateStore
 from poseidon.core.config import Settings
 from poseidon.core.data.client import DataClient
-from poseidon.core.llm.loop import ROUTER_GUARDRAIL_ENTITY, run_turn
+from poseidon.core.llm.loop import (
+    ROUTER_GUARDRAIL_ENTITY,
+    ToolRecord,
+    TurnResult,
+    run_turn,
+    tool_result_digest,
+)
 from poseidon.core.llm.prompts import (
     DEFAULT_PROMPTS_DIR,
     PromptRegistry,
@@ -148,8 +263,9 @@ from poseidon.core.llm.prompts import (
 )
 from poseidon.core.llm.roles import RoleClient
 from poseidon.core.ontology.loader import get_ontology
-from poseidon.core.parsing.pipeline import parse_turn
-from poseidon.core.parsing.types import ParsedTurn
+from poseidon.core.parsing import customer_resolver
+from poseidon.core.parsing.pipeline import DEFAULT_ENTITY, parse_turn
+from poseidon.core.parsing.types import ParsedTurn, ParseIssue
 from poseidon.core.runlog import RunLogWriter
 from poseidon.core.skills.context import ConversationSlots, SkillContext
 from poseidon.core.skills.registry import SkillRegistry
@@ -167,6 +283,48 @@ _ANSWER_SUMMARY_CAP = 500
 
 # doc 02 section 5's pass-through cap (Global Constraints: "capped at 10").
 _PASS_THROUGH_CAP = 10
+
+# ---------------------------------------------------------------------------
+# D19 entry orchestration (Phase 8 Task 5) -- see the module docstring's own
+# "D19 entry orchestration" section for the full contract these constants
+# and the functions below implement.
+# ---------------------------------------------------------------------------
+
+# ConversationSlots.mode values the bubble-entry flow writes -- the SAME
+# strings poseidon.core.parsing.lexicon.MODE_SLOT_ALIASES already keys off
+# of (that table has anticipated these values since Phase 4; this task is
+# simply the first code that ever WRITES either one) and the SAME strings
+# poseidon.tasks.customer_insight.skills.existing_customer_brief.subskills.
+# research.subskill.MODE_EXISTING/MODE_PROSPECT already hold. Declared here
+# as bare string literals rather than imported from that subskill module:
+# core/chat must not depend on poseidon.tasks (the same layering
+# dev_router.py's own module docstring states explicitly for its own
+# skill-id constants).
+_MODE_EXISTING = "existing_customer"
+_MODE_PROSPECT = "new_prospect"
+
+# The two pinned flow-chip phrases (api/live_chat.py's own opener chips
+# carry these verbatim as `send_text`) -- matched casefolded-exact against
+# the raw turn text, before parse_turn ever runs.
+_ENTRY_PHRASE_EXISTING = "start an existing-customer brief"
+_ENTRY_PHRASE_PROSPECT = "start a new-prospect brief"
+_ENTRY_MODE_BY_PHRASE = {
+    _ENTRY_PHRASE_EXISTING: _MODE_EXISTING,
+    _ENTRY_PHRASE_PROSPECT: _MODE_PROSPECT,
+}
+
+_SUBJECT_PROMPT_BY_MODE = {
+    _MODE_EXISTING: "Which customer is this brief for?",
+    _MODE_PROSPECT: "What company should I research?",
+}
+
+# Bare string literals, not imports -- the same "core/chat names a skill id
+# it never imports" convention dev_router.py's own _RESEARCH_SKILL_ID etc.
+# already establish, for the identical layering reason.
+_EXISTING_CUSTOMER_BRIEF_SKILL_ID = "customer_insight.existing_customer_brief"
+_NEW_PROSPECT_BRIEF_SKILL_ID = "customer_insight.new_prospect_brief"
+
+_CUST_NM = "CUST_NM"
 
 _CUSTOMER_AMBIGUOUS = "customer_ambiguous"
 _ROUTER_SYSTEM_PROMPT_NAME = "router/system"
@@ -255,39 +413,55 @@ def execute_turn(
     either way.
     """
     prior_slots = state.get(conversation_id)
-    parsed = parse_turn(text, prior_slots, reference_date, data)
-    turn_index = state.next_turn_index(conversation_id)
 
-    handle = None
-    if writer is not None:
-        handle = writer.start_turn(
-            user_sub=DEV_USER_SUB,
+    # D19, branch 1 (Phase 8 Task 5): a pinned flow-chip phrase, matched
+    # BEFORE parse_turn ever runs -- see the module docstring's "D19 entry
+    # orchestration".
+    entry_mode = _ENTRY_MODE_BY_PHRASE.get(text.casefold())
+    if entry_mode is not None:
+        return _finish_entry(
+            entry_mode=entry_mode,
+            text=text,
             conversation_id=conversation_id,
             client_turn_key=client_turn_key,
-            turn_index=turn_index,
-            question=text,
-            mode=parsed.slots.mode,
-            parsed=_parsed_to_loggable_dict(parsed),
-            kind="chat_turn",
-            trace_id=None,
-            # Turn-id unification (Task 4 amendment): turn_run.id IS the SSE
-            # turn_id every frame of this response already carries -- see the
-            # module docstring's "Ids: who mints what".
-            turn_run_id=sink.turn_id,
+            prior_slots=prior_slots,
+            state=state,
+            writer=writer,
+            sink=sink,
         )
-    turn_run_id = handle.turn_run_id if handle is not None else None
 
-    sink.accepted(turn_index)
-
-    if handle is not None and not handle.created:
-        # The retry short-circuit (Task 4 amendment): see the module
-        # docstring's "A fourth, EARLIER short-circuit". turn_run_id here is
-        # the ORIGINAL row's id (the one start_turn found, not sink.turn_id),
-        # since this request never created a row of its own.
-        sink.emit(
-            "turn_error", {"problem": problem(409, _DUPLICATE_TURN_TITLE, _DUPLICATE_TURN_DETAIL)}
+    # D19, branch 2: the subject turn following a successful entry branch
+    # (or a retry after one that failed to resolve a subject) -- also
+    # checked BEFORE parse_turn; see the module docstring's same section.
+    if prior_slots.mode in _SUBJECT_PROMPT_BY_MODE and not state.get_brief_done(conversation_id):
+        return _finish_subject_turn(
+            text=text,
+            conversation_id=conversation_id,
+            client_turn_key=client_turn_key,
+            prior_slots=prior_slots,
+            settings=settings,
+            registry=registry,
+            data=data,
+            state=state,
+            writer=writer,
+            role_client=role_client,
+            sink=sink,
+            tools=tools,
         )
-        return TurnOutcome(status="error", message_id=sink.message_id, turn_run_id=turn_run_id)
+
+    parsed = parse_turn(text, prior_slots, reference_date, data)
+    turn_index, turn_run_id, retry_outcome = _begin_turn(
+        conversation_id=conversation_id,
+        text=text,
+        client_turn_key=client_turn_key,
+        mode=parsed.slots.mode,
+        parsed_loggable=_parsed_to_loggable_dict(parsed),
+        state=state,
+        writer=writer,
+        sink=sink,
+    )
+    if retry_outcome is not None:
+        return retry_outcome
 
     started = monotonic()
 
@@ -478,10 +652,17 @@ def _finish_clarify(
                 # customer resolver treat the click as naming a customer at
                 # tier-exact 1.0 (verified against the full seeded pool: 40/40
                 # customers, 0/30 ports misresolved). This is NOT a blanket
-                # prefix: the opener's own flow chips (ChatScreen.tsx/
-                # mock_chat.py) carry no send_text at all, since "for Existing
-                # customer" would corrupt that click into customer_unknown --
-                # see ChipsPart.tsx's own option.send_text ?? option.label.
+                # prefix: "for Existing customer" would corrupt an opener
+                # flow-chip click into customer_unknown, which is why the
+                # opener's own two chips (api/live_chat.py's TranscriptStore.
+                # create_conversation) carry a DIFFERENT send_text of their
+                # own instead (Phase 8 Task 5: the D19 bubble-entry phrases,
+                # "start an existing-customer brief"/"start a new-prospect
+                # brief") rather than either this "for <name>" cue or no
+                # send_text at all -- this scoping note updates the earlier,
+                # now-stale claim that opener chips carried none whatsoever.
+                # See ChipsPart.tsx's own option.send_text ?? option.label
+                # for the frontend fallback either shape relies on.
                 {"id": candidate, "label": candidate, "send_text": f"for {candidate}"}
                 for candidate in ambiguous_issue.candidates
             ]
@@ -505,6 +686,389 @@ def _finish_clarify(
 
     state.put(conversation_id, parsed.slots)
     return TurnOutcome(status="clarify", message_id=sink.message_id, turn_run_id=turn_run_id)
+
+
+def _begin_turn(
+    *,
+    conversation_id: str,
+    text: str,
+    client_turn_key: str | None,
+    mode: str,
+    parsed_loggable: dict,
+    state: ConversationStateStore,
+    writer: RunLogWriter | None,
+    sink: SseEnvelopeSink,
+) -> tuple[int, str | None, "TurnOutcome | None"]:
+    """Turn bookkeeping shared by every ``execute_turn`` path -- see the
+    module docstring's "Shared turn bookkeeping" for why this was factored
+    out once a THIRD call site (this task's two D19 branches, alongside the
+    pre-existing normal path) needed the identical sequence: mint
+    ``turn_index``, open the run-log row, emit ``accepted``, and apply the
+    retry short-circuit (Task 4 amendment -- see the module docstring's "A
+    fourth, EARLIER short-circuit").
+
+    ``mode``/``parsed_loggable`` are computed by the CALLER, since each of
+    the three paths has a different notion of both (the normal path's own
+    ``parsed.slots.mode``/``_parsed_to_loggable_dict(parsed)``; the D19
+    branches' own small hand-built dicts -- see :func:`_finish_entry`/
+    :func:`_finish_subject_turn`).
+
+    Returns ``(turn_index, turn_run_id, retry_outcome)``. ``retry_outcome``
+    is non-``None`` exactly when the caller must return it immediately,
+    without doing anything else -- the SAME "the ORIGINAL turn owns the
+    row" contract the pre-Task-5 inline version of this code already
+    implemented, moved here unchanged.
+    """
+    turn_index = state.next_turn_index(conversation_id)
+    handle = None
+    if writer is not None:
+        handle = writer.start_turn(
+            user_sub=DEV_USER_SUB,
+            conversation_id=conversation_id,
+            client_turn_key=client_turn_key,
+            turn_index=turn_index,
+            question=text,
+            mode=mode,
+            parsed=parsed_loggable,
+            kind="chat_turn",
+            trace_id=None,
+            # Turn-id unification (Task 4 amendment): turn_run.id IS the SSE
+            # turn_id every frame of this response already carries -- see the
+            # module docstring's "Ids: who mints what".
+            turn_run_id=sink.turn_id,
+        )
+    turn_run_id = handle.turn_run_id if handle is not None else None
+
+    sink.accepted(turn_index)
+
+    if handle is not None and not handle.created:
+        # turn_run_id here is the ORIGINAL row's id (the one start_turn
+        # found, not sink.turn_id), since this request never created a row
+        # of its own.
+        sink.emit(
+            "turn_error", {"problem": problem(409, _DUPLICATE_TURN_TITLE, _DUPLICATE_TURN_DETAIL)}
+        )
+        return (
+            turn_index,
+            turn_run_id,
+            TurnOutcome(status="error", message_id=sink.message_id, turn_run_id=turn_run_id),
+        )
+
+    return turn_index, turn_run_id, None
+
+
+def _finish_entry(
+    *,
+    entry_mode: str,
+    text: str,
+    conversation_id: str,
+    client_turn_key: str | None,
+    prior_slots: ConversationSlots,
+    state: ConversationStateStore,
+    writer: RunLogWriter | None,
+    sink: SseEnvelopeSink,
+) -> TurnOutcome:
+    """D19 branch 1: the bubble-entry phrase itself -- see the module
+    docstring's "D19 entry orchestration" for the full contract. Mode set
+    via ``dataclasses.replace`` (the P6 pass_through precedent), one text
+    part asking the subject, ``clarify`` finalize, no dispatch, no router.
+    """
+    new_slots = dataclasses.replace(prior_slots, mode=entry_mode)
+    turn_index, turn_run_id, retry_outcome = _begin_turn(
+        conversation_id=conversation_id,
+        text=text,
+        client_turn_key=client_turn_key,
+        mode=entry_mode,
+        parsed_loggable=_entry_loggable_dict(text, new_slots),
+        state=state,
+        writer=writer,
+        sink=sink,
+    )
+    if retry_outcome is not None:
+        return retry_outcome
+
+    started = monotonic()
+    prompt_text = _SUBJECT_PROMPT_BY_MODE[entry_mode]
+    sink.push_part("text", {"markdown": prompt_text})
+    sink.done({"input_tokens": 0, "output_tokens": 0})
+
+    latency_ms = int((monotonic() - started) * 1000)
+    if writer is not None and turn_run_id is not None:
+        writer.finalize(
+            turn_run_id=turn_run_id,
+            status="clarify",
+            message_id=sink.message_id,
+            answer_summary=_capped(prompt_text),
+            input_tokens=0,
+            output_tokens=0,
+            latency_ms=latency_ms,
+            error=None,
+        )
+
+    state.put(conversation_id, new_slots)
+    # A second flow-chip click starts a SECOND brief in the same
+    # conversation -- never blocked by an earlier one's completion.
+    state.set_brief_done(conversation_id, False)
+    return TurnOutcome(status="clarify", message_id=sink.message_id, turn_run_id=turn_run_id)
+
+
+def _finish_subject_turn(
+    *,
+    text: str,
+    conversation_id: str,
+    client_turn_key: str | None,
+    prior_slots: ConversationSlots,
+    settings: Settings,
+    registry: SkillRegistry,
+    data: DataClient,
+    state: ConversationStateStore,
+    writer: RunLogWriter | None,
+    role_client: RoleClient,
+    sink: SseEnvelopeSink,
+    tools: object | None,
+) -> TurnOutcome:
+    """D19 branch 2: the subject turn -- see the module docstring's "D19
+    entry orchestration" for the full contract (resolution rules, the
+    deterministic-dispatch shape, the ``brief_done`` gating).
+    """
+    mode = prior_slots.mode
+    turn_index, turn_run_id, retry_outcome = _begin_turn(
+        conversation_id=conversation_id,
+        text=text,
+        client_turn_key=client_turn_key,
+        mode=mode,
+        parsed_loggable={"subject_text": text, "mode": mode},
+        state=state,
+        writer=writer,
+        sink=sink,
+    )
+    if retry_outcome is not None:
+        return retry_outcome
+
+    started = monotonic()
+
+    if mode == _MODE_EXISTING:
+        resolution = _resolve_subject_customer(text, data)
+        if resolution.entity is None:
+            return _finish_subject_clarify(
+                issue=resolution.issue,
+                sink=sink,
+                writer=writer,
+                turn_run_id=turn_run_id,
+                started=started,
+            )
+        subject = resolution.entity.value
+        skill_id = _EXISTING_CUSTOMER_BRIEF_SKILL_ID
+        arguments: dict[str, object] = {"customer": subject}
+    else:  # _MODE_PROSPECT -- D19's own "text = subject" rule: no resolver.
+        subject = text.strip()
+        skill_id = _NEW_PROSPECT_BRIEF_SKILL_ID
+        arguments = {"prospect_name": subject}
+
+    context = SkillContext(
+        data=data,
+        artifacts=None,
+        settings=settings,
+        state=prior_slots,
+        tools=tools,
+        llm=role_client,
+        # tool_seq 1 -- the SAME "this turn's only dispatch" reasoning
+        # execute_turn's own SkillContext construction documents at length
+        # for the normal path; identically true here (see the module
+        # docstring's "The subject branch").
+        emit_part=sink.part_emitter(1),
+    )
+
+    sink.emit("tool_start", {"tool_seq": 1, "skill_id": skill_id, "arguments": dict(arguments)})
+    dispatch_started = monotonic()
+    result = registry.dispatch(skill_id, dict(arguments), context)
+    duration_ms = int((monotonic() - dispatch_started) * 1000)
+    digest = tool_result_digest(skill_id, result)
+    status = "ok" if result.ok else "error"
+    sink.emit(
+        "tool_done",
+        {
+            "tool_seq": 1,
+            "skill_id": skill_id,
+            "status": status,
+            "duration_ms": duration_ms,
+            "digest": digest,
+            "parts": result.parts,
+            "proof": result.proof,
+            "artifacts": result.artifacts,
+            "problem": result.error,
+        },
+    )
+    tool_record = ToolRecord(
+        tool_seq=1,
+        skill_id=skill_id,
+        arguments=dict(arguments),
+        status=status,
+        duration_ms=duration_ms,
+        result_digest=digest,
+    )
+    # A synthetic TurnResult carrying this ONE record and NO llm_records --
+    # never a real run_turn output (there was no router call to produce
+    # one) -- built purely so _append_records below can be reused
+    # unchanged; see the module docstring's "The subject branch".
+    fake_turn_result = TurnResult(
+        text="",
+        status=status,
+        tool_records=(tool_record,),
+        llm_records=(),
+        problem=(result.error if not result.ok else None),
+    )
+
+    if not result.ok:
+        sink.emit("turn_error", {"problem": result.error})
+        latency_ms = int((monotonic() - started) * 1000)
+        if writer is not None and turn_run_id is not None:
+            _append_records(
+                writer=writer,
+                turn_run_id=turn_run_id,
+                turn_result=fake_turn_result,
+                router_version="",
+                router_hash="",
+                settings=settings,
+            )
+            writer.finalize(
+                turn_run_id=turn_run_id,
+                status="error",
+                message_id=sink.message_id,
+                answer_summary=None,
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=latency_ms,
+                error=result.error,
+            )
+        # brief_done left False -- a corrected subject can retry.
+        return TurnOutcome(status="error", message_id=sink.message_id, turn_run_id=turn_run_id)
+
+    # No sink.push_token: there was no router call to compose a reply, and
+    # the brief's own streamed parts already ARE the answer (see the module
+    # docstring's "The subject branch").
+    sink.done({"input_tokens": 0, "output_tokens": 0})
+    answer_summary = f"Brief generated for {subject}."
+
+    latency_ms = int((monotonic() - started) * 1000)
+    if writer is not None and turn_run_id is not None:
+        _append_records(
+            writer=writer,
+            turn_run_id=turn_run_id,
+            turn_result=fake_turn_result,
+            router_version="",
+            router_hash="",
+            settings=settings,
+        )
+        writer.finalize(
+            turn_run_id=turn_run_id,
+            status="ok",
+            message_id=sink.message_id,
+            answer_summary=_capped(answer_summary),
+            input_tokens=0,
+            output_tokens=0,
+            latency_ms=latency_ms,
+            error=None,
+        )
+
+    state.set_brief_done(conversation_id, True)
+    # The identical double-terminal guard execute_turn's own normal path
+    # uses (final-review wave item 5 / I5): by this point sink.done() and
+    # writer.finalize(status="ok") have already gone out for this turn.
+    try:
+        final_slots = _repopulate_pass_through(prior_slots, (tool_record,), sink)
+        state.put(conversation_id, final_slots)
+    except Exception as exc:  # noqa: BLE001 - a second failure must never re-terminate a finished turn
+        logger.error(
+            "pass-through repopulation failed: conversation_id=%s turn_run_id=%s: %s: %s",
+            conversation_id,
+            turn_run_id,
+            type(exc).__name__,
+            exc,
+        )
+
+    return TurnOutcome(status="ok", message_id=sink.message_id, turn_run_id=turn_run_id)
+
+
+def _resolve_subject_customer(text: str, data: DataClient) -> customer_resolver.Resolution:
+    """The subject turn's OWN customer resolution (D19, existing mode): the
+    WHOLE subject message -- never cue-gated the way ``parse_turn``'s own
+    customer detector is -- is handed directly to ``customer_resolver.
+    resolve()``, "the customer resolver (full ambiguity contract)" the
+    Global Constraints name. This deliberately bypasses ``parse_turn``
+    entirely (see the module docstring's "D19 entry orchestration" --
+    checked BEFORE parse_turn's normal path), so this is the one place in
+    this module that calls ``customer_resolver.resolve()`` directly rather
+    than reading a already-resolved ``ParsedTurn.customer``.
+    """
+    values = data.list_dimension_values(DEFAULT_ENTITY, _CUST_NM)
+    return customer_resolver.resolve(text.strip(), values, "customer")
+
+
+def _finish_subject_clarify(
+    *,
+    issue: ParseIssue,
+    sink: SseEnvelopeSink,
+    writer: RunLogWriter | None,
+    turn_run_id: str | None,
+    started: float,
+) -> TurnOutcome:
+    """The subject turn's own customer-resolution failure (candidate-band
+    or unknown) -- the same ``clarify`` discipline :func:`_finish_clarify`
+    uses for a normal turn's ``customer_ambiguous`` issue, scoped to the
+    subject turn's own direct ``customer_resolver.resolve()`` call.
+
+    Chips (when ``issue.candidates`` is non-empty) carry BARE ``send_text``
+    (falls back to ``label``) rather than :func:`_finish_clarify`'s own
+    "for <name>" cue: the subject turn feeds the ENTIRE next message
+    straight back into ``customer_resolver.resolve()`` (no cue-word
+    requirement), so a bare candidate name already resolves at exact tier
+    1.0 without needing the "for " prefix that only matters for
+    ``parse_turn``'s own cue-gated detector.
+
+    No ``state.put``: nothing resolved this turn (an ambiguous or unknown
+    result carries no new customer/port/period), so ``prior_slots`` is
+    already exactly what ``state.get`` would return -- unlike
+    :func:`_finish_clarify`, which ran ``parse_turn`` and so may have a
+    freshly resolved period to carry even when the customer did not.
+    ``brief_done`` is likewise left untouched (still ``False``, or this
+    branch would never have been reached) -- so the very next message is
+    read as another subject-turn attempt.
+    """
+    if issue.candidates:
+        sink.push_part(
+            "chips",
+            {"options": [{"id": candidate, "label": candidate} for candidate in issue.candidates]},
+        )
+    sink.push_part("text", {"markdown": issue.message})
+    sink.done({"input_tokens": 0, "output_tokens": 0})
+
+    latency_ms = int((monotonic() - started) * 1000)
+    if writer is not None and turn_run_id is not None:
+        writer.finalize(
+            turn_run_id=turn_run_id,
+            status="clarify",
+            message_id=sink.message_id,
+            answer_summary=_capped(issue.message),
+            input_tokens=0,
+            output_tokens=0,
+            latency_ms=latency_ms,
+            error=None,
+        )
+
+    return TurnOutcome(status="clarify", message_id=sink.message_id, turn_run_id=turn_run_id)
+
+
+def _entry_loggable_dict(text: str, slots: ConversationSlots) -> dict:
+    """A small, JSON-safe dict for the entry turn's run-log ``parsed``
+    column -- there is no ``ParsedTurn`` here (``parse_turn`` never runs
+    for this branch), so this is not :func:`_parsed_to_loggable_dict`'s
+    concern; reuses :func:`_json_safe` regardless, since a carried
+    ``slots.period_a``/``period_b`` (from a conversation already in
+    progress before the flow-chip click) can still hold raw ``date``
+    values ``json.dumps`` cannot serialize on its own.
+    """
+    return {"entry_phrase": text, "slots": _json_safe(dataclasses.asdict(slots))}
 
 
 def _router_prompt_provenance(

@@ -374,6 +374,88 @@ runs this exact script (with the two disclosed text substitutions above)
 against a REAL `create_app(chat_mode="live")` app and re-derives every one
 of these assertions from the live database.
 
+### The two brief flow scripts (Phase 8 Task 5, D19)
+
+The bubble-entry flow's own Phase Gate, driven at `localhost:5173`. Both
+scripts start from a fresh chat (`+ New chat`) and click one of the
+opener's two flow chips rather than typing the pinned phrase by hand — the
+chip's own `send_text` sends it verbatim (`api/live_chat.py`'s
+`TranscriptStore.create_conversation`).
+
+**Script A — existing customer.**
+
+1. Click **Existing customer**. The assistant asks "Which customer is
+   this brief for?" — `turn_run.status = 'clarify'`, no tool frame at all
+   (D19's entry branch never dispatches, never calls the router).
+2. Type `Northstar Lines`, send. The customer resolver matches it exactly
+   (tier `exact`), and the brief dispatches DETERMINISTICALLY —
+   `registry.dispatch` directly, no router call: `turn_run.status = 'ok'`,
+   exactly 1 `tool_calls` row (`customer_insight.existing_customer_brief`),
+   ZERO `llm_calls` rows (the loop's own two-call shape never runs for this
+   turn — contrast turn 3 below). The metric-card grid (six certified
+   metrics, prior year vs YTD) and the top-ports table stream in
+   immediately, then five phase sections (Context, Sustainability & ESG,
+   Market Position, Strategic Profile, Strategy — `existing_customer_brief`
+   always produces exactly this many: one contextualize + three research
+   lens calls + one strategize), then a collapsible "How this was
+   computed" proof block ending in `Artifact: skipped (no artifact store
+   configured)` — `execute_turn` never wires a real `ArtifactStore` into
+   `SkillContext` on any path, so this honest skip line is what a real run
+   always shows here, never a PDF card.
+3. Ask a pivot: `top GP customers for Port of Singapore in April 2026`.
+   Routes normally (a real router call, 2 `llm_calls` rows) — byte-identical
+   to the 4-turn gate script's own turn 1 above, unaffected by
+   `mode="existing_customer"` still being carried.
+
+**Script B — new prospect.**
+
+1. Click **New customer prospect**. The assistant asks "What company
+   should I research?"
+2. Type `Meridian Global Shipping` (deliberately NOT a real customer —
+   proves the prospect path never calls the resolver at all: the whole
+   subject line dispatches verbatim as `prospect_name`), send. D10's
+   research-first order is visible directly in the streamed part sequence:
+   Operational Profile and Web Research (the two prospect-mode research
+   lens calls) arrive BEFORE Context (contextualize, which consumes
+   research's own output) and Strategy — four phase sections total, no
+   metric grid or table at all (`new_prospect_brief` never touches
+   `ctx.data`; there is no internal-data tool for a company that is not a
+   certified customer). The Strategy section's own "Current Services" line
+   reads "Prospect — no current services", never the existing-customer
+   placeholder.
+3. Ask a research pivot: `any relevant news on Meridian Global Shipping?`.
+   Routes normally to `research.web_research` — **but resolves the wrong
+   entity**: the pivot's own "on X" customer cue hands "Meridian Global
+   Shipping" to the REAL customer resolver, which fuzzy-matches it (subset-
+   tolerant `token_set_ratio`) to the certified value "Meridian Shipping" —
+   an unrelated, real seeded customer that happens to share two of three
+   words — at confidence 1.0, no ambiguity chip at all. The query text and
+   the closing "Research summary for Meridian Shipping — 2 sources." both
+   name the wrong company. This is pre-existing `customer_resolver.py`
+   behavior (Phase 4), not a Task 5 bug, and the pivot still keeps its own
+   promise — `research.web_research` dispatches and answers — it is simply
+   attached to a surprising entity. Live-verified, not a hypothetical:
+   `backend/tests/test_chat_e2e_scripted.py::
+   test_new_prospect_brief_flow_scripted_against_live_seeded_postgres` pins
+   this exact behavior (its own module docstring, judgment call 5).
+
+**Honest capture (Playwright, this task): phase sections render as raw
+JSON, not a formatted card.** `frontend/src/ui/message-parts/registry.tsx`
+registers a component for `metric_grid`, `table`, `proof` and `artifact`
+(Phase 8 Task 1's own sanctioned scope) but never for `phase_section` —
+that part kind has been produced since Task 2 (the research subskill) and
+is now the bulk of both briefs' own content, but no task in this phase's
+plan was ever scoped to give it a real renderer. Every phase section above
+therefore shows as a collapsed "Unsupported part: phase_section" disclosure
+(`FallbackPart`'s own generic, non-crashing degrade) that dumps the raw
+`{title, markdown}` JSON when expanded, rather than a titled markdown
+card. The DATA is correct end to end (confirmed both by the raw JSON dump
+itself and by the pg-marked E2E scripts, which assert the SSE payload
+directly) — this is a frontend presentation gap, not a pipeline bug, and it
+is outside Task 5's own sanctioned edit surface (no frontend files) to fix.
+Screenshots of both flows, phase sections expanded, live at
+`.superpowers/sdd/2026-07-30-phase-8-brief-flows/task-5-screenshots/`.
+
 ## Native fallback
 
 Use this path when Docker isn't available. It runs the backend and frontend

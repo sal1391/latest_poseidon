@@ -43,6 +43,8 @@ import threading
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from poseidon.core import chat
 from poseidon.core.chat import dev_router, state
 from poseidon.core.chat.dev_router import DevDeterministicRouter
@@ -61,11 +63,17 @@ from poseidon.core.llm.prompts import (
 from poseidon.core.llm.roles import RoleClient
 from poseidon.core.llm.types import LLMResponse, ToolCall
 from poseidon.core.ontology.loader import get_ontology
-from poseidon.core.parsing.lexicon import WEB_RESEARCH
+from poseidon.core.parsing.lexicon import EXISTING_CUSTOMER_BRIEF, NEW_PROSPECT_BRIEF, WEB_RESEARCH
 from poseidon.core.parsing.pipeline import DEFAULT_ENTITY
 from poseidon.core.parsing.types import CandidateSkill, ParsedTurn, ResolvedEntity
 from poseidon.core.skills.context import ConversationSlots
 from poseidon.core.skills.registry import SkillRegistry
+from poseidon.tasks.customer_insight.skills.existing_customer_brief.schema import (
+    Args as ExistingBriefArgs,
+)
+from poseidon.tasks.customer_insight.skills.new_prospect_brief.schema import (
+    Args as ProspectBriefArgs,
+)
 from poseidon.tasks.data_qa.skills.metric_query.schema import Args
 from poseidon.tasks.research.skills.web_research.schema import Args as ResearchArgs
 
@@ -76,6 +84,8 @@ _EM_DASH = "\u2014"
 _ENTITY_NAME = "MARINE_SALES_PLANNING_V"
 _METRIC_QUERY = "data_qa.metric_query"
 _RESEARCH = "research.web_research"
+_EXISTING_BRIEF = "customer_insight.existing_customer_brief"
+_NEW_PROSPECT_BRIEF = "customer_insight.new_prospect_brief"
 
 _PERIOD_A = PeriodWindow(start=date(2026, 4, 1), end=date(2026, 5, 1))
 _PERIOD_B = PeriodWindow(start=date(2025, 4, 1), end=date(2025, 5, 1))
@@ -185,6 +195,64 @@ def test_next_turn_index_is_thread_safe_under_concurrent_calls():
 
     assert len(results) == thread_count * calls_per_thread
     assert sorted(results) == list(range(1, thread_count * calls_per_thread + 1))
+
+
+# ---------------------------------------------------------------------------
+# ConversationStateStore.get_brief_done/set_brief_done (Phase 8 Task 5): an
+# additive per-conversation flag alongside slots, NOT a ConversationSlots
+# field -- see state.py's own module docstring for why (D19's "brief
+# completed" marker rides the store itself, the same P6-store/P10-replaced
+# surface next_turn_index already uses, rather than extending the parked
+# ConversationSlots shape).
+# ---------------------------------------------------------------------------
+
+
+def test_get_brief_done_defaults_to_false_for_an_unseen_conversation_id():
+    store = ConversationStateStore()
+
+    assert store.get_brief_done("never-seen") is False
+
+
+def test_set_brief_done_then_get_round_trips():
+    store = ConversationStateStore()
+
+    store.set_brief_done("conv-1", True)
+
+    assert store.get_brief_done("conv-1") is True
+
+
+def test_set_brief_done_is_isolated_per_conversation_id():
+    store = ConversationStateStore()
+    store.set_brief_done("conv-1", True)
+
+    assert store.get_brief_done("conv-2") is False
+    assert store.get_brief_done("conv-1") is True
+
+
+def test_set_brief_done_can_be_reset_back_to_false():
+    """A second flow-chip click starts a SECOND brief in the same
+    conversation -- the entry branch resets this flag, proven here at the
+    store level independent of the orchestrator."""
+    store = ConversationStateStore()
+    store.set_brief_done("conv-1", True)
+
+    store.set_brief_done("conv-1", False)
+
+    assert store.get_brief_done("conv-1") is False
+
+
+def test_brief_done_is_independent_of_slots_and_turn_index():
+    """The three dicts this store now holds (slots, turn_index, brief_done)
+    are independently keyed -- writing one must not disturb the others."""
+    store = ConversationStateStore()
+    store.put("conv-1", ConversationSlots(customer="MAERSK LINE"))
+    store.next_turn_index("conv-1")
+
+    store.set_brief_done("conv-1", True)
+
+    assert store.get("conv-1") == ConversationSlots(customer="MAERSK LINE")
+    assert store.next_turn_index("conv-1") == 2
+    assert store.get_brief_done("conv-1") is True
 
 
 # ---------------------------------------------------------------------------
@@ -864,22 +932,111 @@ def test_hints_leading_research_without_any_subject_falls_back_to_capability_mes
     assert response.text.startswith("I can answer certified metric questions")
 
 
-def test_hints_leading_a_brief_skill_does_not_trigger_research_or_metric_dispatch():
-    """Hints leading something OTHER than research.web_research or
-    data_qa.metric_query changes nothing -- the "hints NOT leading
-    research" half of this task's own instruction: existing behavior
-    (capability message) stays exactly as it was before this task."""
+def test_hints_leading_research_without_a_brief_word_still_dispatches_research():
+    """Sanity check for the Task 5 gate additions below: an ordinary
+    research turn with no brief-family word anywhere is unaffected --
+    :func:`dev_router._mentions_brief_word` only ever GATES the two new
+    brief branches, it never blocks research's own pre-existing gate."""
+    router = DevDeterministicRouter()
+    system = _system(
+        _parsed(customer=_MAERSK, hints=(CandidateSkill(skill_id=_RESEARCH, score=1.0),))
+    )
+
+    response = router.invoke(
+        system=system,
+        messages=[_user_message("any relevant news on Maersk?")],
+        tools=[],
+        model="m",
+        params={},
+    )
+
+    assert response.stop_reason == "tool_use"
+    assert response.tool_calls[0].name == _RESEARCH
+
+
+# ---------------------------------------------------------------------------
+# Case (b3)/(c3), Task 5 CLOSURE: hints lead a customer_insight brief skill
+# (brief lexemes + mode hints -- lexicon.py's own "Brief words and mode
+# hints" section) -> ONE tool_use for that brief. See dev_router.py's own
+# "Task 5 CLOSURE" for the full rule, including why "leads" is redefined
+# here (and for research's own gate, retroactively) as "ties for the best
+# score", not "is textually first" -- a real, reproduced gap: the moment
+# ConversationSlots.mode can actually BE "existing_customer"/"new_prospect"
+# (this task is what first makes that true), an ORDINARY single-lexeme
+# pivot question tallies 1.0 for its own skill and 1.0 for the carried
+# mode's brief skill, and skill_hinter.hint's own alphabetical tie-break
+# ("customer_insight..." < "data_qa..."/"research...") would otherwise
+# always favor the brief -- silently breaking "route normally" for the doc
+# 08 P8 self-review's own "post-brief pivots" promise. Reproduced directly:
+# hint("any relevant news on Meridian Global Shipping?",
+# ConversationSlots(mode="new_prospect")) == (CandidateSkill(
+# 'customer_insight.new_prospect_brief', 1.0), CandidateSkill(
+# 'research.web_research', 1.0)) -- research is NOT textually first.
+# ---------------------------------------------------------------------------
+
+
+def test_hints_leading_existing_brief_with_resolved_customer_and_brief_word_emits_tool_call():
     router = DevDeterministicRouter()
     system = _system(
         _parsed(
             customer=_MAERSK,
-            hints=(CandidateSkill(skill_id="customer_insight.existing_customer_brief", score=1.0),),
+            hints=(
+                CandidateSkill(skill_id=_EXISTING_BRIEF, score=2.0),
+                CandidateSkill(skill_id=_NEW_PROSPECT_BRIEF, score=1.0),
+            ),
         )
     )
 
     response = router.invoke(
         system=system,
-        messages=[_user_message("brief for Maersk")],
+        messages=[_user_message("Run the brief for Maersk")],
+        tools=[],
+        model="m",
+        params={},
+    )
+
+    assert response.stop_reason == "tool_use"
+    call = response.tool_calls[0]
+    assert call.id == "dev-1"
+    assert call.arguments == {"customer": "MAERSK LINE"}
+    ExistingBriefArgs.model_validate(call.arguments)
+
+
+def test_hints_leading_existing_brief_tied_via_mode_alone_still_dispatches_when_text_says_brief():
+    """The POSITIVE half of the tie-inclusive widening: a genuine "brief"
+    request whose hints line only TIES (not textually leads) still
+    dispatches -- the brief-word guard is what makes this safe, not
+    avoiding ties altogether."""
+    router = DevDeterministicRouter()
+    system = _system(
+        _parsed(
+            customer=_MAERSK,
+            hints=(
+                CandidateSkill(skill_id=_EXISTING_BRIEF, score=1.0),
+                CandidateSkill(skill_id=_METRIC_QUERY, score=1.0),
+            ),
+        )
+    )
+
+    response = router.invoke(
+        system=system,
+        messages=[_user_message("give me a brief overview")],
+        tools=[],
+        model="m",
+        params={},
+    )
+
+    assert response.stop_reason == "tool_use"
+    assert response.tool_calls[0].name == _EXISTING_BRIEF
+
+
+def test_hints_leading_existing_brief_no_resolved_customer_falls_back_to_capability_message():
+    router = DevDeterministicRouter()
+    system = _system(_parsed(hints=(CandidateSkill(skill_id=_EXISTING_BRIEF, score=2.0),)))
+
+    response = router.invoke(
+        system=system,
+        messages=[_user_message("give me a brief")],
         tools=[],
         model="m",
         params={},
@@ -888,6 +1045,218 @@ def test_hints_leading_a_brief_skill_does_not_trigger_research_or_metric_dispatc
     assert response.stop_reason == "end_turn"
     assert response.tool_calls == ()
     assert response.text.startswith("I can answer certified metric questions")
+
+
+def test_hints_leading_existing_brief_with_carried_only_customer_does_not_dispatch():
+    """Deliberately stricter than research's own resolved-or-carried rule
+    (dev_router.py's own docstring, disclosed): the brief branch requires a
+    customer resolved THIS turn, not merely carried from a prior one -- a
+    full brief dispatch (external research, a stored PDF) is heavier-weight
+    than a read-only metric/research call, so it does not fire on stale
+    carried context alone."""
+    router = DevDeterministicRouter()
+    slots = ConversationSlots(customer="MAERSK LINE")
+    system = _system(_parsed(hints=(CandidateSkill(skill_id=_EXISTING_BRIEF, score=2.0),)), slots)
+
+    response = router.invoke(
+        system=system,
+        messages=[_user_message("give me a brief")],
+        tools=[],
+        model="m",
+        params={},
+    )
+
+    assert response.tool_calls == ()
+    assert response.text.startswith("I can answer certified metric questions")
+
+
+def test_hints_leading_existing_brief_without_a_brief_word_in_text_does_not_dispatch():
+    """The tie-break safety net itself, isolated: hints LEAD (not merely
+    tie) the brief skill, a customer IS resolved, but the message never
+    actually says brief/report/profile/overview -- this must not fire (see
+    the section docstring above for the reproduced scenario this guards
+    against)."""
+    router = DevDeterministicRouter()
+    system = _system(
+        _parsed(customer=_MAERSK, hints=(CandidateSkill(skill_id=_EXISTING_BRIEF, score=1.0),))
+    )
+
+    response = router.invoke(
+        system=system,
+        messages=[_user_message("what is the volume for this customer")],
+        tools=[],
+        model="m",
+        params={},
+    )
+
+    assert response.tool_calls == ()
+    assert response.text.startswith("I can answer certified metric questions")
+
+
+def test_hints_leading_new_prospect_brief_with_brief_word_emits_tool_call_with_free_text_name():
+    """The prospect twin: no customer/port resolution exists for a
+    prospect (D19's own "text = subject" rule, mirrored here) -- the whole
+    last user message becomes ``prospect_name`` verbatim, the same crude
+    "no clean extraction" precedent ``_research_call``'s own ``question``
+    field already uses."""
+    router = DevDeterministicRouter()
+    system = _system(
+        _parsed(
+            hints=(
+                CandidateSkill(skill_id=_NEW_PROSPECT_BRIEF, score=2.0),
+                CandidateSkill(skill_id=_EXISTING_BRIEF, score=1.0),
+            )
+        )
+    )
+    question = "Start a new prospect brief for Meridian Global Shipping"
+
+    response = router.invoke(
+        system=system, messages=[_user_message(question)], tools=[], model="m", params={}
+    )
+
+    assert response.stop_reason == "tool_use"
+    call = response.tool_calls[0]
+    assert call.id == "dev-1"
+    assert call.arguments == {"prospect_name": question}
+    ProspectBriefArgs.model_validate(call.arguments)
+
+
+def test_hints_leading_new_prospect_brief_tied_via_mode_alone_declines_without_brief_word():
+    """The exact reproduced scenario from the section docstring: a research
+    pivot after a prospect brief, mode carried, hints tie 1.0/1.0 -- no
+    brief word in text, so the prospect twin correctly declines (falls
+    through to the research check below it, case (b2))."""
+    router = DevDeterministicRouter()
+    system = _system(
+        _parsed(
+            customer=_MAERSK,
+            hints=(
+                CandidateSkill(skill_id=_NEW_PROSPECT_BRIEF, score=1.0),
+                CandidateSkill(skill_id=_RESEARCH, score=1.0),
+            ),
+        )
+    )
+
+    response = router.invoke(
+        system=system,
+        messages=[_user_message("any relevant news on Maersk?")],
+        tools=[],
+        model="m",
+        params={},
+    )
+
+    assert response.stop_reason == "tool_use"
+    assert response.tool_calls[0].name == _RESEARCH
+
+
+def test_hints_leading_new_prospect_brief_without_a_brief_word_falls_back_to_capability_message():
+    """The same scenario with no customer/port at all (so research's own
+    AND-gate also declines) -- proves the prospect twin's decline does not
+    accidentally leave the turn stuck on a tool_use with nothing to call."""
+    router = DevDeterministicRouter()
+    system = _system(_parsed(hints=(CandidateSkill(skill_id=_NEW_PROSPECT_BRIEF, score=1.0),)))
+
+    response = router.invoke(
+        system=system,
+        messages=[_user_message("any relevant news?")],
+        tools=[],
+        model="m",
+        params={},
+    )
+
+    assert response.tool_calls == ()
+    assert response.text.startswith("I can answer certified metric questions")
+
+
+def test_existing_brief_tool_result_present_closes_with_a_brief_complete_summary():
+    router = DevDeterministicRouter()
+    system = _system(
+        _parsed(customer=_MAERSK, hints=(CandidateSkill(skill_id=_EXISTING_BRIEF, score=2.0),))
+    )
+    messages = [
+        _user_message("Run the brief for Maersk"),
+        _tool_use_message("dev-1", _EXISTING_BRIEF, {"customer": "MAERSK LINE"}),
+        _tool_result_message("dev-1", f"{_EXISTING_BRIEF} ok\nparts: metric_grid(metrics=6)"),
+    ]
+
+    response = router.invoke(system=system, messages=messages, tools=[], model="m", params={})
+
+    assert response == LLMResponse(
+        text="Brief complete for MAERSK LINE.",
+        tool_calls=(),
+        stop_reason="end_turn",
+        input_tokens=0,
+        output_tokens=0,
+    )
+
+
+def test_existing_brief_tool_result_present_takes_priority_even_when_a_period_is_also_resolved():
+    """Mirrors research's own identical precedence test: checked BEFORE
+    case (c), so a period ALSO being resolved this turn never overrides
+    the brief close with the metric-flavored "Certified answer" text."""
+    router = DevDeterministicRouter()
+    system = _system(
+        _parsed(
+            customer=_MAERSK,
+            period_a=_PERIOD_A,
+            hints=(CandidateSkill(skill_id=_EXISTING_BRIEF, score=2.0),),
+        )
+    )
+    messages = [
+        _user_message("Run the brief for Maersk this period"),
+        _tool_use_message("dev-1", _EXISTING_BRIEF, {"customer": "MAERSK LINE"}),
+        _tool_result_message("dev-1", f"{_EXISTING_BRIEF} ok"),
+    ]
+
+    response = router.invoke(system=system, messages=messages, tools=[], model="m", params={})
+
+    assert response.text == "Brief complete for MAERSK LINE."
+    assert "Certified answer" not in response.text
+
+
+def test_new_prospect_brief_tool_result_present_closes_with_the_echoed_prospect_name():
+    """The prospect close reads its subject off the ECHOED toolUse input
+    (there is no resolved-customer state block line for a prospect) --
+    proven distinct from the existing-brief close, which reads
+    ``parsed_state.customer`` instead."""
+    router = DevDeterministicRouter()
+    system = _system(_parsed(hints=(CandidateSkill(skill_id=_NEW_PROSPECT_BRIEF, score=2.0),)))
+    question = "Start a new prospect brief for Meridian Global Shipping"
+    messages = [
+        _user_message(question),
+        _tool_use_message("dev-1", _NEW_PROSPECT_BRIEF, {"prospect_name": question}),
+        _tool_result_message("dev-1", f"{_NEW_PROSPECT_BRIEF} ok"),
+    ]
+
+    response = router.invoke(system=system, messages=messages, tools=[], model="m", params={})
+
+    assert response.text == f"Brief complete for {question}."
+
+
+def test_existing_brief_skill_id_matches_the_hinter_lexicons_own_constant():
+    assert dev_router._EXISTING_CUSTOMER_BRIEF_SKILL_ID == EXISTING_CUSTOMER_BRIEF
+
+
+def test_new_prospect_brief_skill_id_matches_the_hinter_lexicons_own_constant():
+    assert dev_router._NEW_PROSPECT_BRIEF_SKILL_ID == NEW_PROSPECT_BRIEF
+
+
+@pytest.mark.parametrize("word", ["brief", "report", "profile", "overview"])
+def test_mentions_brief_word_matches_every_lexicon_brief_lexeme(word):
+    """Pinned against lexicon.py's own four generic brief words (its
+    "-- brief words" KEYWORDS section) -- dev_router.py does not import
+    that table (see its own module docstring's opening contract), so this
+    is the cross-check that keeps the two from silently drifting apart,
+    the same discipline the skill-id equality tests above already use."""
+    assert dev_router._mentions_brief_word([_user_message(f"give me a {word} please")]) is True
+
+
+def test_mentions_brief_word_false_for_ordinary_text():
+    assert dev_router._mentions_brief_word([_user_message("any relevant news?")]) is False
+
+
+def test_mentions_brief_word_false_for_no_user_text():
+    assert dev_router._mentions_brief_word([]) is False
 
 
 def test_research_tool_result_present_closes_with_research_summary():

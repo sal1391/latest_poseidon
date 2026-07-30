@@ -276,11 +276,16 @@ class TranscriptStore:
         self._feedback: dict[str, dict] = {}
 
     def create_conversation(self) -> tuple[dict, dict]:
-        """Same opener mock_chat.py's own ``create_conversation`` builds --
-        Phase 6 has no live-specific flow-branching content of its own yet
-        (Phase 8 owns the two brief flows the chips name), so this amendment
-        does not invent different copy for a distinction that does not
-        exist yet."""
+        """Same opener mock_chat.py's own ``create_conversation`` builds,
+        PLUS ``send_text`` on both flow chips (Phase 8 Task 5): clicking
+        either one now sends the exact pinned D19 entry phrase
+        (``core/chat/orchestrator.py``'s own ``_ENTRY_MODE_BY_PHRASE``,
+        matched casefolded-exact) rather than the bare button label -- the
+        P6 send_text mechanism (``ChipsPart.tsx``'s own ``option.send_text
+        ?? option.label``), now exercised by the opener's own chips too,
+        not only a clarify turn's. Phase 6 had no live-specific
+        flow-branching content of its own yet (Phase 8 owns the two brief
+        flows the chips name); this amendment is that content landing."""
         cid = str(uuid.uuid4())
         conversation = {"id": cid, "title": "New chat"}
         opener = _message(
@@ -291,8 +296,16 @@ class TranscriptStore:
                     "kind": "chips",
                     "payload": {
                         "options": [
-                            {"id": "existing_customer", "label": "Existing customer"},
-                            {"id": "new_prospect", "label": "New customer prospect"},
+                            {
+                                "id": "existing_customer",
+                                "label": "Existing customer",
+                                "send_text": "start an existing-customer brief",
+                            },
+                            {
+                                "id": "new_prospect",
+                                "label": "New customer prospect",
+                                "send_text": "start a new-prospect brief",
+                            },
                         ]
                     },
                 },

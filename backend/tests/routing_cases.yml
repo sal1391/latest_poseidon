@@ -25,11 +25,24 @@
   user: "Run the brief for Maersk"
   expect: { skill: customer_insight.existing_customer_brief, args_subset: { customer: "MAERSK*" } }
   execution:
-    live_only: true
-    reason: >-
-      customer_insight.existing_customer_brief is not registered: its task.yml
-      carries enabled: false until Phase 8 builds the skill, so nothing offline
-      can dispatch it.
+    # Un-gated (Phase 8 Task 5): customer_insight.existing_customer_brief is
+    # registered and enabled now, so this script exercises the whole path --
+    # loop, dispatch, argument validation, fetch_metrics/fetch_top_ports,
+    # parts, digest, records -- with only the model faked, the same
+    # discipline default_data_qa_breakdown's own script already established.
+    stub_script:
+      - stop_reason: tool_use
+        input_tokens: 1120
+        output_tokens: 64
+        tool_use:
+          id: tool-1
+          skill: customer_insight.existing_customer_brief
+          arguments:
+            customer: "Maersk"
+      - stop_reason: end_turn
+        input_tokens: 1380
+        output_tokens: 52
+        text: "Here is the brief for Maersk."
 
 - id: ambiguous_customer_clarifies
   user: "brief for pacific"

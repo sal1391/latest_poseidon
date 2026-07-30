@@ -200,18 +200,137 @@ to ``0`` rather than raising, matching this router's own total-function
 discipline for every other off-contract shape ``invoke()`` is exercised
 against directly.
 
-Hints NOT leading research change NOTHING here, per this task's own
-instruction. Case (b)'s own gate already refused metric_query dispatch the
+Hints NOT leading research (Task 4) or a brief skill (Task 5) change
+NOTHING here. Case (b)'s own gate already refused metric_query dispatch the
 moment hints lead ANYTHING other than ``data_qa.metric_query`` (Task 3
-CLOSURE) -- research included -- so before this task, every one of those
-refusals fell straight through to the capability message. This task
-intercepts exactly ONE of them (a hints line leading research.web_research,
-WITH a subject to attach) with a real dispatch; every other refusal --
-hints leading a brief skill, or leading research with no customer/port
-known at all -- still falls through to the byte-identical capability
-message it always did (pinned by ``test_hints_leading_research_without_
-any_subject_falls_back_to_capability_message`` and ``test_hints_leading_a_
-brief_skill_does_not_trigger_research_or_metric_dispatch``).
+CLOSURE) -- research and the two brief skills included -- so before Task 4,
+every one of those refusals fell straight through to the capability
+message. Task 4 intercepted exactly ONE of them (a hints line leading
+research.web_research, WITH a subject to attach) with a real dispatch; Task
+5 (below) intercepts two more (a hints line leading a brief skill, WITH its
+own required signal). Every OTHER refusal -- research with no customer/port
+known at all, or a brief skill with no resolved customer / no brief word in
+the text -- still falls through to the byte-identical capability message it
+always did (pinned by ``test_hints_leading_research_without_any_subject_
+falls_back_to_capability_message`` and the Task 5 CLOSURE's own "does not
+dispatch" tests below).
+
+**Task 5 CLOSURE (bubble-entry brief routing; Phase 8).** Task 4's own
+closure taught this router to RESPECT a research-leading hints line; this
+task teaches it to respect a BRIEF-leading one too, additively, on the
+identical "checked only once (b)/(b2) have already declined" principle --
+metric_query, research and the two brief skills never compete for the same
+turn, since a hints line has exactly one best score.
+
+The rule: a "Skill hints:" line present AND ``customer_insight.
+existing_customer_brief`` TIES the line's best score (:func:`_hints_lead`,
+below) AND a customer is resolved THIS TURN (``Resolved customer:`` --
+deliberately NOT resolved-or-carried, unlike research's own gate; see
+"Stricter than research's carry rule" below) AND the message text itself
+names a brief/report/profile/overview word (:func:`_mentions_brief_word`;
+see "The brief-word guard" below) -> ONE ``tool_use`` for ``customer_
+insight.existing_customer_brief``, ``arguments={"customer": <resolved
+value>}`` (:func:`_existing_brief_call`). The prospect twin
+(:func:`_prospect_brief_call`) fires the identical shape for ``customer_
+insight.new_prospect_brief`` when hints instead tie-lead THAT id and the
+brief-word guard passes -- no customer/port gate at all, since a prospect
+has nothing to resolve (D19's own "text = subject" rule, mirrored here):
+``arguments={"prospect_name": <the whole last user message>}``, the same
+crude, no-extraction precedent :func:`_research_call`'s own ``question``
+field already established. A second invoke closes either branch the same
+way case (c2) closes research's: :func:`_last_tool_use_name` names the
+brief skill that actually ran -> ``f"Brief complete for {subject}."``
+(:func:`_brief_summary`), checked alongside (c2) and BEFORE (c), for the
+identical "a period ALSO resolved must not override the real close" reason.
+``subject`` is ``parsed_state.customer`` for the existing branch (the same
+system-built-once reasoning research's own close relies on) but the ECHOED
+toolUse's own ``input["prospect_name"]`` for the prospect branch
+(:func:`_last_tool_use_input`) -- there is no state-block line a prospect's
+name could ever appear on.
+
+"Leads" redefined -- tie-inclusive, retroactively, for EVERY gate in this
+module (:func:`_hints_lead`, replacing the bare ``hints_match.group(
+"first_skill") == ...`` comparison every gate used through Task 4). A real,
+reproduced gap, not a hypothetical one: the moment ``ConversationSlots.
+mode`` can actually BE ``"existing_customer"``/``"new_prospect"`` (Task 5's
+own D19 entry is the FIRST code that ever writes either value), an
+ORDINARY single-lexeme pivot question -- "any relevant news on Meridian
+Global Shipping?" after a completed prospect brief, mode still carried per
+this plan's own "mode stays in slots (advisory)" rule -- scores its own
+skill 1.0 (the "news" lexeme) and the carried-mode's brief skill ALSO 1.0
+(``lexicon.MODE_HINTS``'s own bonus), and ``skill_hinter.hint``'s
+alphabetical tie-break (``"customer_insight..."`` sorts before
+``"data_qa..."``/``"research..."``) would make EVERY strict-first-entry
+gate in this module -- metric_query's included -- silently favor the
+carried-mode's brief skill over the turn's own real intent. Reproduced
+directly: ``hint("any relevant news on Meridian Global Shipping?",
+ConversationSlots(mode="new_prospect"))`` returns ``(CandidateSkill(
+'customer_insight.new_prospect_brief', 1.0), CandidateSkill(
+'research.web_research', 1.0))`` -- research is NOT textually first, yet
+the doc 08 P8 self-review's own "post-brief pivots" promise (and this
+plan's own Global Constraints: "subsequent turns route normally") requires
+this exact pivot to still dispatch research. :func:`_hints_lead` closes
+this for every gate uniformly: "leads" now means "is present in the hints
+line AND its score equals the line's maximum", which is PROVABLY identical
+to the old "textually first" reading whenever there is no tie (the
+hinter's own line is already best-first, so the first entry already IS an
+entry achieving the max score) and therefore changes NOTHING for any
+turn this suite pinned before Task 5 -- verified: no PRE-Task-5 test in
+this file constructs a hints tuple with two equal-score entries, since
+nothing before Task 5 could ever make ``ConversationSlots.mode`` produce
+one outside a hand-built test fixture. Widened symmetrically rather than
+only for research (the minimal fix THIS one reproduced case needs) because
+the identical mechanism threatens metric_query's own gate the same way (a
+"what is the volume for this customer" pivot after an existing-customer
+brief ties 1.0/1.0 the same way) -- a principled, uniform reading of "leads"
+is more defensible than an ad hoc asymmetry between the four gates this
+router now has.
+
+The brief-word guard (:func:`_mentions_brief_word`, a NEW, independent
+lexical check on :func:`_last_user_text` -- the same "borrow the hinter's
+matching DISCIPLINE, never its import" precedent :data:`_TOP_WORD_RE`
+already set for the single lexeme case (b) reads) is what keeps the
+tie-inclusive widening from over-correcting: a brief skill LEADING or
+TYING the hints line is, by itself, not enough to justify placing an
+actual brief dispatch (research calls, a stored PDF -- a heavier, more
+side-effecting action than a metric or research call) -- the turn's own
+text has to actually ask for one. Pinned directly: hints tie-leading
+``customer_insight.new_prospect_brief`` 1.0/1.0 with ``research.
+web_research`` on "any relevant news on Meridian Global Shipping?" (the
+exact reproduced scenario above) correctly falls through PAST the
+brief-word-gated (b3) check to (b2)'s own tie-inclusive research gate,
+which fires -- proving the widening fixes the pivot without ever placing a
+spurious brief dispatch. Word list matches ``lexicon.KEYWORDS``' own four
+generic "-- brief words" entries (brief/report/profile/overview) exactly,
+cross-checked by a dedicated test rather than imported (this router imports
+no lexicon table -- see the module docstring's opening contract).
+
+Stricter than research's carry rule (disclosed judgment call). Research's
+own case (b2) reads "resolved-or-carried" (Task 4 CLOSURE, above); the
+existing-brief branch reads ONLY "resolved THIS turn" -- deliberately, not
+an oversight. A full brief is a heavier action than a read-only query, and
+"Run the brief for Maersk" (the plan's own illustrative routed-path
+example) always names its own subject in the SAME message anyway, so
+requiring a fresh resolution costs nothing for the realistic case while
+avoiding a brief firing three turns after a customer was last mentioned,
+purely because it is still sitting in ``ConversationSlots.customer``.
+
+DISTINCT FROM D19 (the orchestrator's own deterministic entry, ``core/chat/
+orchestrator.py``). This router's brief branch is the ROUTED path: a
+default-mode (or any-mode) turn that happens to say something like "Run
+the brief for Maersk" gets there through the ordinary ``run_turn`` loop, a
+real (fake, in stub mode) LLM decision, going through THIS class same as
+any other dispatch. D19 is the DETERMINISTIC path: a pinned flow-chip
+phrase sets ``slots.mode`` and prompts for a subject; the FOLLOWING
+message, once resolved (or taken as-is for a prospect), dispatches the
+brief WITHOUT ever calling ``run_turn``/this router at all -- see
+``orchestrator.py``'s own module docstring, "D19 entry orchestration", for
+the full contrast. The two paths reach the identical two skills through
+entirely different code, on purpose: D19 never risks a live model's
+judgment call for its own bubble-entry flow (zero llm_calls in stub mode,
+by construction), while this router's branch is what lets an ORDINARY chat
+message ALSO reach a brief, the same way any other skill is reachable
+through ordinary conversation.
 
 Behavior table (the phase-6 plan; case (a), ambiguous turns, is the
 orchestrator's short-circuit -- Task 3 -- and never reaches this class, so
@@ -238,39 +357,51 @@ there is no code for it here):
     always ``"dev-1"``: this case never emits more than one call, so
     per-invoke-sequence numbering never has occasion to reach ``"dev-2"``.
 (b2) (Task 4) Case (b) declined (hints do not permit metric_query), hints
-    instead LEAD with ``research.web_research``, AND a customer or port is
-    known, resolved-or-carried -> ONE ``tool_use`` for ``research.
-    web_research``. See "Task 4 CLOSURE" above for the full rule.
+    instead LEAD (tie-inclusive since Task 5 -- see "Task 5 CLOSURE" above)
+    with ``research.web_research``, AND a customer or port is known,
+    resolved-or-carried -> ONE ``tool_use`` for ``research.web_research``.
+    See "Task 4 CLOSURE" above for the full rule.
+(b3) (Task 5) Cases (b)/(b2) declined, hints LEAD (tie-inclusive) with a
+    ``customer_insight`` brief skill, AND the message text names a brief/
+    report/profile/overview word, AND -- existing branch only -- a customer
+    is resolved THIS turn -> ONE ``tool_use`` for that brief skill. See
+    "Task 5 CLOSURE" above for the full rule, the brief-word guard, and why
+    the two branches (existing/prospect) gate differently.
 (c) A ``toolResult`` block is present anywhere in ``messages``, the most
-    recently appended ``toolUse`` did NOT name ``research.web_research``
-    (see (c2), checked first), and a period is resolved -> end the turn
-    with ``f"Certified answer for {entity_label} -- {period_label}."`` (the
-    module's own em dash -- see :data:`_EM_DASH`). ``entity_label`` is the
-    resolved customer if present, else the resolved port, else the
-    fallback ``"All Customers"``; ``period_label`` is the resolved period's
-    own ``start..end`` substring, plus `` vs {compare_start..compare_end}``
-    when a compare period is also resolved -- reusing the block's own ISO
-    half-open substrings verbatim rather than reformatting them, so the
-    label can never disagree with the block it was read from. Checked
-    BEFORE (b): once a tool has run this turn, the router's job is to close
-    the turn, not place a second call. Fires regardless of the
-    ``toolResult``'s own ``status`` ("success" or "error") -- distinguishing
-    the two is a real model's job; this fake's whole point is a canned,
-    demoable answer, not error-recovery behavior.
+    recently appended ``toolUse`` did NOT name ``research.web_research`` or
+    either brief skill (see (c2)/(c3), both checked first), and a period is
+    resolved -> end the turn with ``f"Certified answer for {entity_label}
+    -- {period_label}."`` (the module's own em dash -- see :data:`_EM_DASH`).
+    ``entity_label`` is the resolved customer if present, else the resolved
+    port, else the fallback ``"All Customers"``; ``period_label`` is the
+    resolved period's own ``start..end`` substring, plus `` vs
+    {compare_start..compare_end}`` when a compare period is also resolved
+    -- reusing the block's own ISO half-open substrings verbatim rather
+    than reformatting them, so the label can never disagree with the block
+    it was read from. Checked BEFORE (b): once a tool has run this turn,
+    the router's job is to close the turn, not place a second call. Fires
+    regardless of the ``toolResult``'s own ``status`` ("success" or
+    "error") -- distinguishing the two is a real model's job; this fake's
+    whole point is a canned, demoable answer, not error-recovery behavior.
 (c2) (Task 4) The most recently appended ``toolUse`` anywhere in
     ``messages`` names ``research.web_research`` -> end the turn with
     ``f"Research summary for {subject} -- {n} sources."``, regardless of
     whether a period is ALSO resolved (checked BEFORE (c) for exactly that
     reason -- see "Task 4 CLOSURE" above).
+(c3) (Task 5) The most recently appended ``toolUse`` anywhere in
+    ``messages`` names either brief skill -> end the turn with ``f"Brief
+    complete for {subject}."``, checked alongside (c2) and BEFORE (c) for
+    the identical reason. See "Task 5 CLOSURE" above for where ``subject``
+    comes from on each branch.
 (d) Anything else (most commonly: no period resolved and hints do not lead
-    research with a known subject, so neither (b)/(b2) can fire and there
-    is nothing yet to certify for (c)/(c2)) -> end the turn with the pinned
-    capability message. This is also the graceful fallback for a shape a
-    real caller (``run_turn``) can never actually produce -- a
-    ``toolResult`` present with NO period resolved, since (b)'s own
-    precondition means a period was necessarily resolved before any
-    METRIC tool could have run this turn -- rather than an unhandled
-    exception on an input nothing today sends.
+    research or a brief with their own required signal, so none of
+    (b)/(b2)/(b3) can fire and there is nothing yet to certify for
+    (c)/(c2)/(c3)) -> end the turn with the pinned capability message. This
+    is also the graceful fallback for a shape a real caller (``run_turn``)
+    can never actually produce -- a ``toolResult`` present with NO period
+    resolved, since (b)'s own precondition means a period was necessarily
+    resolved before any METRIC tool could have run this turn -- rather
+    than an unhandled exception on an input nothing today sends.
 
 Every response carries ``input_tokens=0``/``output_tokens=0``: this router
 is not a model, so there is nothing to count. Phase 6's run-log rows will
@@ -298,6 +429,13 @@ _METRIC_QUERY_SKILL_ID = "data_qa.metric_query"
 # test_research_skill_id_matches_the_hinter_lexicons_own_constant, the same
 # decoupled-equality precedent _DEFAULT_ENTITY below already uses.
 _RESEARCH_SKILL_ID = "research.web_research"
+# Task 5: the identical bare-string-constant convention, one level further --
+# pinned equal to poseidon.core.parsing.lexicon.EXISTING_CUSTOMER_BRIEF/
+# NEW_PROSPECT_BRIEF by test_existing_brief_skill_id_matches_the_hinter_
+# lexicons_own_constant / test_new_prospect_brief_skill_id_matches_the_
+# hinter_lexicons_own_constant.
+_EXISTING_CUSTOMER_BRIEF_SKILL_ID = "customer_insight.existing_customer_brief"
+_NEW_PROSPECT_BRIEF_SKILL_ID = "customer_insight.new_prospect_brief"
 _DEFAULT_ENTITY = "MARINE_SALES_PLANNING_V"
 _DEFAULT_METRIC = "GP"
 _CUST_NM = "CUST_NM"
@@ -312,6 +450,12 @@ _NO_ENTITY_LABEL = "All Customers"
 # directly by this suite's own off-contract tests, not only through a real
 # two-invoke cycle this router itself drove.
 _NO_RESEARCH_SUBJECT_LABEL = "the requested topic"
+# Task 5: the identical defensive-only fallback, one level further, for
+# _brief_summary's prospect branch -- unreachable through this router's OWN
+# gate (the prospect tool_use always carries a "prospect_name" input, echoed
+# back verbatim by loop.py's _assistant_tool_use_message), kept for the same
+# total-function reason _NO_RESEARCH_SUBJECT_LABEL exists.
+_NO_PROSPECT_SUBJECT_LABEL = "the requested prospect"
 _TOOL_CALL_ID = "dev-1"
 
 _CAPABILITY_MESSAGE = (
@@ -359,14 +503,18 @@ _CARRIED_CUSTOMER_RE = re.compile(r"^Carried customer: (?P<value>.+)$", re.MULTI
 _CARRIED_PORT_RE = re.compile(r"^Carried port: (?P<value>.+)$", re.MULTILINE)
 
 # Anchored to the WHOLE pinned line format `prompts.py`'s new `_render_hints`
-# produces ("Skill hints: <id> (<score>), ..."), same discipline as every
-# regex above -- only the FIRST (best-scored) entry is captured, since the
-# gate below only ever asks "what does this line LEAD with" (see the module
-# docstring's "Task 3 CLOSURE"). Skill ids are dotted words
+# produces ("Skill hints: <id> (<score>), <id> (<score>), ..."), same
+# discipline as every regex above. Task 5 CLOSURE (see the module docstring):
+# EVERY entry is now captured, not just the first -- "leads" is redefined as
+# "ties for the line's best score" (:func:`_hints_lead`, below), which needs
+# the WHOLE line, not merely its first entry. `_HINTS_LINE_RE` isolates the
+# line's own text (everything after "Skill hints: "); `_HINT_ENTRY_RE` then
+# finds every `<id> (<score>)` pair inside it. Skill ids are dotted words
 # (`[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)+`); `[\w.]+` is simpler and just as safe
-# here since nothing else in the line's prefix can produce a `\w` or `.` run
-# before the first ` (`.
-_HINTS_RE = re.compile(r"^Skill hints: (?P<first_skill>[\w.]+) \([0-9.]+\)", re.MULTILINE)
+# here since nothing else in an entry's prefix can produce a `\w` or `.` run
+# before its ` (`.
+_HINTS_LINE_RE = re.compile(r"^Skill hints: (?P<entries>.+)$", re.MULTILINE)
+_HINT_ENTRY_RE = re.compile(r"(?P<skill_id>[\w.]+) \((?P<score>[0-9.]+)\)")
 
 # Word-boundary, casefolded -- the same discipline skill_hinter.py's own
 # lexicon matching uses (its module docstring: a lexeme like "top" matches
@@ -375,6 +523,14 @@ _HINTS_RE = re.compile(r"^Skill hints: (?P<first_skill>[\w.]+) \([0-9.]+\)", re.
 # "hints gap" paragraph above) but borrows its matching DISCIPLINE for the
 # one lexeme the behavior table names explicitly.
 _TOP_WORD_RE = re.compile(r"\btop\b")
+
+# Task 5: the identical discipline, for the brief branch's own guard (see
+# the module docstring's "The brief-word guard"). Matches lexicon.KEYWORDS'
+# own four generic "-- brief words" entries exactly, cross-checked by
+# test_mentions_brief_word_matches_every_lexicon_brief_lexeme rather than
+# imported (this router imports no lexicon table -- see the module
+# docstring's opening contract paragraph).
+_BRIEF_WORD_RE = re.compile(r"\b(brief|report|profile|overview)\b")
 
 # Task 4: read off the toolResult digest text a research.web_research
 # dispatch produced -- loop.py's own tool_result_digest renders this
@@ -395,9 +551,17 @@ class _ParsedState:
     was not present.
 
     ``hints_permit_dispatch`` is not a straight field read -- see the
-    module docstring's "Task 3 CLOSURE" for the permissive-when-absent rule
-    it implements. ``hints_lead_research``/``carried_customer``/
-    ``carried_port`` are Task 4 additions -- see "Task 4 CLOSURE".
+    module docstring's "Task 3 CLOSURE" for the rule it implements (upgraded
+    to tie-inclusive by Task 5's own "Task 5 CLOSURE" -- see that section
+    for the reproduced gap this closes). ``hints_lead_research``/
+    ``carried_customer``/``carried_port`` are Task 4 additions -- see "Task
+    4 CLOSURE" (``hints_lead_research`` is likewise now tie-inclusive).
+    ``hints_lead_existing_brief``/``hints_lead_new_prospect_brief`` are
+    Task 5 additions -- see "Task 5 CLOSURE". All four ``hints_lead_*``/
+    ``hints_permit_dispatch`` fields are computed by the SAME
+    :func:`_hints_lead` helper against the SAME parsed hint-entry tuple, so
+    the four gates can never disagree about what the hints line's maximum
+    score is.
     """
 
     customer: str | None
@@ -406,6 +570,8 @@ class _ParsedState:
     compare_period: tuple[str, str] | None
     hints_permit_dispatch: bool
     hints_lead_research: bool
+    hints_lead_existing_brief: bool
+    hints_lead_new_prospect_brief: bool
     carried_customer: str | None
     carried_port: str | None
 
@@ -432,12 +598,17 @@ class DevDeterministicRouter:
         values -- see the module docstring's opening paragraph.
         """
         parsed_state = _parse_state(system)
+        last_tool_use = _last_tool_use_name(messages)
         # Case (c2), Task 4: checked FIRST, and independent of whether a
         # period is also resolved -- see the module docstring's "Task 4
         # CLOSURE" for why this must win over case (c)'s own toolResult
         # check rather than the two racing on "any toolResult exists".
-        if _last_tool_use_name(messages) == _RESEARCH_SKILL_ID:
+        if last_tool_use == _RESEARCH_SKILL_ID:
             return _research_summary(parsed_state, messages)
+        # Case (c3), Task 5: the identical priority, for either brief skill
+        # -- see the module docstring's "Task 5 CLOSURE".
+        if last_tool_use in (_EXISTING_CUSTOMER_BRIEF_SKILL_ID, _NEW_PROSPECT_BRIEF_SKILL_ID):
+            return _brief_summary(parsed_state, messages, last_tool_use)
         if _has_tool_result(messages) and parsed_state.period is not None:
             return _certified_answer(parsed_state)
         if parsed_state.period is not None and parsed_state.hints_permit_dispatch:
@@ -445,7 +616,53 @@ class DevDeterministicRouter:
         # Case (b2), Task 4: only reached once (b) has already declined.
         if parsed_state.hints_lead_research and _research_subject(parsed_state) is not None:
             return _research_call(parsed_state, messages)
+        # Case (b3), Task 5: only reached once (b)/(b2) have already
+        # declined -- see the module docstring's "Task 5 CLOSURE" for the
+        # brief-word guard and why the existing/prospect branches gate
+        # differently (a resolved customer vs. nothing to resolve at all).
+        if (
+            parsed_state.hints_lead_existing_brief
+            and parsed_state.customer is not None
+            and _mentions_brief_word(messages)
+        ):
+            return _existing_brief_call(parsed_state)
+        if parsed_state.hints_lead_new_prospect_brief and _mentions_brief_word(messages):
+            return _prospect_brief_call(messages)
         return _capability_response()
+
+
+def _hints_lead(hint_entries: tuple[tuple[str, float], ...], skill_id: str) -> bool:
+    """Whether ``skill_id`` appears in the parsed hints line AND its score
+    equals the line's own maximum -- "leads", read tie-inclusively. See the
+    module docstring's "Task 5 CLOSURE" ("Leads redefined") for why this
+    replaces the old "is the textually first entry" reading for every gate
+    in this module, and why that is provably identical to the old reading
+    whenever there is no tie. ``False`` when ``hint_entries`` is empty (a
+    permissive-when-absent caller, like ``hints_permit_dispatch``, checks
+    emptiness separately -- this function only ever answers "does X lead",
+    never "is there no opinion").
+    """
+    if not hint_entries:
+        return False
+    best_score = max(score for _skill_id, score in hint_entries)
+    return any(
+        entry_skill_id == skill_id and score == best_score for entry_skill_id, score in hint_entries
+    )
+
+
+def _parse_hint_entries(block: str) -> tuple[tuple[str, float], ...]:
+    """Every ``(skill_id, score)`` pair on the "Skill hints:" line, in the
+    order rendered (``prompts.py``'s own ``_render_hints``: already
+    best-first, comma-separated) -- ``()`` when the line is absent. See the
+    module docstring's "Task 5 CLOSURE" for why this reads the WHOLE line
+    now, not just its first entry."""
+    line_match = _HINTS_LINE_RE.search(block)
+    if line_match is None:
+        return ()
+    return tuple(
+        (entry.group("skill_id"), float(entry.group("score")))
+        for entry in _HINT_ENTRY_RE.finditer(line_match.group("entries"))
+    )
 
 
 def _parse_state(system: str) -> _ParsedState:
@@ -459,7 +676,7 @@ def _parse_state(system: str) -> _ParsedState:
     port_match = _RESOLVED_PORT_RE.search(block)
     period_match = _PERIOD_RE.search(block)
     compare_match = _COMPARE_PERIOD_RE.search(block)
-    hints_match = _HINTS_RE.search(block)
+    hint_entries = _parse_hint_entries(block)
     carried_customer_match = _CARRIED_CUSTOMER_RE.search(block)
     carried_port_match = _CARRIED_PORT_RE.search(block)
     return _ParsedState(
@@ -470,20 +687,23 @@ def _parse_state(system: str) -> _ParsedState:
         if compare_match
         else None,
         # Permissive when the line is absent altogether (no opinion to
-        # respect); refuses only when a line IS present and its best-scored
-        # entry names something other than the metric skill -- see the
-        # module docstring's "Task 3 CLOSURE".
+        # respect); refuses only when a line IS present and metric_query
+        # does NOT tie its best score -- see the module docstring's "Task 3
+        # CLOSURE" (rule) and "Task 5 CLOSURE" (tie-inclusive upgrade).
         hints_permit_dispatch=(
-            hints_match is None or hints_match.group("first_skill") == _METRIC_QUERY_SKILL_ID
+            not hint_entries or _hints_lead(hint_entries, _METRIC_QUERY_SKILL_ID)
         ),
-        # Task 4: the OPPOSITE polarity from hints_permit_dispatch above --
-        # this is an opt-IN signal (a hints line must be present AND
-        # actually lead research), not a permissive-when-absent one, since
-        # research dispatch has no OTHER required signal the way case (b)'s
-        # own period requirement gives metric_query -- see "Task 4 CLOSURE".
-        hints_lead_research=(
-            hints_match is not None and hints_match.group("first_skill") == _RESEARCH_SKILL_ID
-        ),
+        # Task 4 (tie-inclusive since Task 5): the OPPOSITE polarity from
+        # hints_permit_dispatch above -- this is an opt-IN signal (a hints
+        # line must be present AND actually lead/tie research), not a
+        # permissive-when-absent one, since research dispatch has no OTHER
+        # required signal the way case (b)'s own period requirement gives
+        # metric_query -- see "Task 4 CLOSURE".
+        hints_lead_research=_hints_lead(hint_entries, _RESEARCH_SKILL_ID),
+        # Task 5: the identical opt-in shape, one per brief skill -- see
+        # "Task 5 CLOSURE".
+        hints_lead_existing_brief=_hints_lead(hint_entries, _EXISTING_CUSTOMER_BRIEF_SKILL_ID),
+        hints_lead_new_prospect_brief=_hints_lead(hint_entries, _NEW_PROSPECT_BRIEF_SKILL_ID),
         carried_customer=carried_customer_match.group("value") if carried_customer_match else None,
         carried_port=carried_port_match.group("value") if carried_port_match else None,
     )
@@ -523,6 +743,27 @@ def _last_tool_use_name(messages: list[dict]) -> str | None:
                     name = tool_use.get("name")
                     return name if isinstance(name, str) else None
     return None
+
+
+def _last_tool_use_input(messages: list[dict]) -> dict:
+    """Task 5: the sibling read to :func:`_last_tool_use_name` -- the
+    ``input`` dict off the SAME most-recently-appended ``toolUse`` block,
+    or ``{}`` when there is none (or its ``input`` is not a dict). Needed
+    because :func:`_brief_summary`'s prospect branch has no state-block
+    line to read a subject from the way the existing branch reads
+    ``parsed_state.customer`` (a prospect is never resolved, D19's own
+    "text = subject" rule mirrored here) -- the ECHOED ``toolUse`` is the
+    only place the dispatched ``prospect_name`` still exists on this
+    second invoke.
+    """
+    for message in reversed(messages):
+        for block in reversed(message.get("content") or []):
+            if isinstance(block, dict) and "toolUse" in block:
+                tool_use = block["toolUse"]
+                if isinstance(tool_use, dict):
+                    input_ = tool_use.get("input")
+                    return input_ if isinstance(input_, dict) else {}
+    return {}
 
 
 def _last_tool_result_text(messages: list[dict]) -> str:
@@ -573,6 +814,17 @@ def _last_user_text(messages: list[dict]) -> str | None:
 def _mentions_top(messages: list[dict]) -> bool:
     text = _last_user_text(messages)
     return text is not None and _TOP_WORD_RE.search(text.casefold()) is not None
+
+
+def _mentions_brief_word(messages: list[dict]) -> bool:
+    """Task 5: whether the LAST user message says brief/report/profile/
+    overview -- the brief branch's own required signal, checked ALONGSIDE
+    ``hints_lead_existing_brief``/``hints_lead_new_prospect_brief`` rather
+    than folded into either boolean, so a test (and a reader) can exercise
+    each half of the gate independently. See the module docstring's "The
+    brief-word guard" for why this exists at all."""
+    text = _last_user_text(messages)
+    return text is not None and _BRIEF_WORD_RE.search(text.casefold()) is not None
 
 
 def _metric_query_call(parsed_state: _ParsedState, messages: list[dict]) -> LLMResponse:
@@ -662,6 +914,68 @@ def _research_summary(parsed_state: _ParsedState, messages: list[dict]) -> LLMRe
     count_match = _RESULTS_COUNT_RE.search(_last_tool_result_text(messages))
     count = int(count_match.group("n")) if count_match else 0
     text = f"Research summary for {subject} {_EM_DASH} {count} sources."
+    return LLMResponse(
+        text=text, tool_calls=(), stop_reason="end_turn", input_tokens=0, output_tokens=0
+    )
+
+
+def _existing_brief_call(parsed_state: _ParsedState) -> LLMResponse:
+    """Case (b3), Task 5, existing branch: build the one tool call for
+    ``customer_insight.existing_customer_brief``. ``parsed_state.customer``
+    is guaranteed non-``None`` by :meth:`DevDeterministicRouter.invoke`'s
+    own gate. Only ``customer`` is ever supplied -- ``recency_days`` is
+    left to the skill's own default (365), the same "minimal args, skill
+    defaults do the rest" discipline :func:`_metric_query_call`'s own
+    ``metrics`` default already follows.
+    """
+    call = ToolCall(
+        id=_TOOL_CALL_ID,
+        name=_EXISTING_CUSTOMER_BRIEF_SKILL_ID,
+        arguments={"customer": parsed_state.customer},
+    )
+    return LLMResponse(
+        text="", tool_calls=(call,), stop_reason="tool_use", input_tokens=0, output_tokens=0
+    )
+
+
+def _prospect_brief_call(messages: list[dict]) -> LLMResponse:
+    """Case (b3), Task 5, prospect branch: build the one tool call for
+    ``customer_insight.new_prospect_brief``. No customer/port gate here --
+    a prospect is BY DEFINITION not a certified dimension value, so there
+    is nothing for this router to resolve (D19's own "text = subject" rule,
+    mirrored here); the whole last user message becomes ``prospect_name``
+    verbatim, the same crude, no-extraction precedent :func:`_research_call`
+    already established for its own ``question`` field.
+    """
+    prospect_name = _last_user_text(messages) or ""
+    call = ToolCall(
+        id=_TOOL_CALL_ID,
+        name=_NEW_PROSPECT_BRIEF_SKILL_ID,
+        arguments={"prospect_name": prospect_name},
+    )
+    return LLMResponse(
+        text="", tool_calls=(call,), stop_reason="tool_use", input_tokens=0, output_tokens=0
+    )
+
+
+def _brief_summary(parsed_state: _ParsedState, messages: list[dict], skill_id: str) -> LLMResponse:
+    """Case (c3), Task 5: close a brief turn -- either branch, told apart
+    by ``skill_id`` (:meth:`DevDeterministicRouter.invoke`'s own
+    :func:`_last_tool_use_name` read). ``system`` is unchanged across a
+    turn's iterations (``loop.py``'s own "built ONCE per turn"), so the
+    existing branch's ``parsed_state.customer`` here is byte-identical to
+    what :func:`_existing_brief_call` read on the first invoke -- the same
+    reasoning :func:`_research_summary` already relies on. The prospect
+    branch has no such state-block line to re-read (a prospect is never
+    resolved), so it reads the SAME echoed ``toolUse`` input
+    :func:`_prospect_brief_call` built instead (:func:`_last_tool_use_input`).
+    """
+    if skill_id == _EXISTING_CUSTOMER_BRIEF_SKILL_ID:
+        subject = parsed_state.customer or _NO_ENTITY_LABEL
+    else:
+        prospect_name = _last_tool_use_input(messages).get("prospect_name")
+        subject = prospect_name or _NO_PROSPECT_SUBJECT_LABEL
+    text = f"Brief complete for {subject}."
     return LLMResponse(
         text=text, tool_calls=(), stop_reason="end_turn", input_tokens=0, output_tokens=0
     )

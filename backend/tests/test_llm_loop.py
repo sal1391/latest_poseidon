@@ -65,6 +65,10 @@ METRIC_QUERY = "data_qa.metric_query"
 # Task 4 (Phase 7): the second offline-runnable routing case's own expected
 # skill -- research.web_research, now registered and enabled.
 RESEARCH = "research.web_research"
+# Task 5 (Phase 8): the third offline-runnable routing case's own expected
+# skill -- customer_insight.existing_customer_brief, now registered and
+# enabled.
+EXISTING_CUSTOMER_BRIEF = "customer_insight.existing_customer_brief"
 REGISTRY = SkillRegistry.discover()
 ROUTING_CASES_PATH = Path(__file__).parent / "routing_cases.yml"
 
@@ -109,7 +113,21 @@ _BY_CUSTOMER = {
     },
     "MARGIN": {"Northstar Lines": 22.27, "Blue Anchor Marine": 22.19, "Crestline Freight": 20.98},
 }
-_TOTALS = {"GP": 835750.0, "VOLUME": 38000.0, "MARGIN": 21.99}
+_TOTALS = {
+    "GP": 835750.0,
+    "VOLUME": 38000.0,
+    "MARGIN": 21.99,
+    # Phase 8 Task 5: the three remaining certified metrics
+    # (fetch_metrics.SIX_METRICS) -- existing_brief_by_name's own
+    # customer_insight.existing_customer_brief dispatch requests all six in
+    # one run_metric_query call; the three above were enough for every
+    # data_qa.metric_query case (always a single explicit metric), but a
+    # brief's own fixed request would otherwise KeyError on whichever of
+    # these three it asks for first.
+    "NUM_WON": 42.0,
+    "NUM_INQUIRIES": 96.0,
+    "NUM_LOST": 18.0,
+}
 
 
 @dataclass
@@ -1348,33 +1366,40 @@ def test_every_routing_case_declares_user_expect_and_execution():
         assert "execution" in case, case["id"]
 
 
-def test_exactly_three_cases_are_live_only_and_each_names_its_owning_phase():
-    """Task 4 (Phase 7): pivot_to_research_with_carry moves from live_only
-    to offline (research.web_research is now registered and enabled), so
-    the live-only count drops from 4 to 3 and OFFLINE_CASES grows from 1
-    to 2 -- see the sibling test below."""
+def test_exactly_two_cases_are_live_only_and_each_names_its_owning_phase():
+    """Task 5 (Phase 8): existing_brief_by_name moves from live_only to
+    offline (customer_insight.existing_customer_brief is now registered and
+    enabled), so the live-only count drops from 3 to 2 and OFFLINE_CASES
+    grows from 2 to 3 -- see the sibling test below. (Task 4/Phase 7 made
+    the identical move for pivot_to_research_with_carry one case earlier.)
+    """
     live_only = [case for case in ROUTING_CASES if case["execution"].get("live_only")]
 
-    assert len(live_only) == 3
-    assert len(OFFLINE_CASES) == 2
+    assert len(live_only) == 2
+    assert len(OFFLINE_CASES) == 3
     for case in live_only:
         reason = case["execution"]["reason"]
         assert "Phase" in reason, case["id"]
 
 
-def test_the_offline_cases_are_metric_query_and_research_each_carrying_a_stub_script():
+def test_the_offline_cases_are_the_brief_metric_query_and_research_each_carrying_a_script():
     """OFFLINE_CASES preserves ROUTING_CASES' own order, which
     ``test_routing_cases_are_doc_03_section_6_verbatim_in_order`` already
-    pins to ``DOC_CASE_IDS`` -- so indexing ``[0]``/``[1]`` here is reading
-    a guaranteed fixed order, not assuming one."""
-    assert len(OFFLINE_CASES) == 2
+    pins to ``DOC_CASE_IDS`` -- so indexing ``[0]``/``[1]``/``[2]`` here is
+    reading a guaranteed fixed order, not assuming one."""
+    assert len(OFFLINE_CASES) == 3
 
-    metric_case = OFFLINE_CASES[0]
+    brief_case = OFFLINE_CASES[0]
+    assert brief_case["id"] == "existing_brief_by_name"
+    assert brief_case["expect"]["skill"] == EXISTING_CUSTOMER_BRIEF
+    assert len(brief_case["execution"]["stub_script"]) == 2
+
+    metric_case = OFFLINE_CASES[1]
     assert metric_case["id"] == "default_data_qa_breakdown"
     assert metric_case["expect"]["skill"] == METRIC_QUERY
     assert len(metric_case["execution"]["stub_script"]) == 2
 
-    research_case = OFFLINE_CASES[1]
+    research_case = OFFLINE_CASES[2]
     assert research_case["id"] == "pivot_to_research_with_carry"
     assert research_case["expect"]["skill"] == RESEARCH
     assert len(research_case["execution"]["stub_script"]) == 2

@@ -86,8 +86,9 @@ from the generator's config or hand-computed from ``profiles.yml``.
 """
 
 import os
+import re
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import httpx
@@ -529,6 +530,519 @@ async def test_scripted_four_turn_conversation_against_live_seeded_postgres():
         "port": "Rotterdam",
     }
     assert tool_5["status"] == "ok"
+
+
+# ===========================================================================
+# Phase 8 Task 5: the two D19 bubble-entry flow scripts -- entry phrase ->
+# subject turn (DETERMINISTIC brief dispatch) -> a normal routed pivot, over
+# the REAL HTTP surface against the seeded Postgres, own conversation/
+# turn-key ids per script (this is the SAME shared dev database Task 1's own
+# forward note warns about -- every row-inspection query below filters by
+# the turn ids THIS conversation's own SSE frames report).
+#
+# Judgment calls (both disclosed, both probe-verified against the REAL
+# pipeline and the REAL seeded pool before being pinned here -- the same
+# "probe first, pin what's real" discipline this file's own module
+# docstring already established for its first three judgment calls):
+#
+# 4. **The existing-customer brief's anchor is real wall-clock
+#    ``date.today()``, never the turn's own ``reference_date``.**
+#    ``existing_customer_brief/skill.py``'s own ``_today()`` reads
+#    ``date.today()`` directly (``Args`` carries no date field -- "a brief
+#    is always as of now"); D19's subject-turn dispatch never calls
+#    ``parse_turn`` at all (``orchestrator.py``'s own "D19 entry
+#    orchestration"), so ``execute_turn``'s ``reference_date`` argument
+#    (itself hardcoded to ``date.today()`` by ``live_chat.py``'s own
+#    ``send_message`` -- see this file's own judgment call 1) is never even
+#    read for this turn. A pg-marked test meant to stay green on every
+#    future run therefore cannot hardcode the metric grid's prior-year/YTD
+#    windows, ``fetch_top_ports``'s own recency window, or any metric VALUE
+#    that window governs (they shift daily) -- :func:`_brief_anchor_windows`
+#    below reproduces ``skill.py``'s own ``_today``/``_prior_year_window``/
+#    ``_ytd_window`` recipe so the test computes the SAME windows the code
+#    under test does, rather than guessing at them. Metric VALUES and the
+#    top-ports row count are asserted structurally (present, numeric,
+#    non-empty), never as exact figures, for the identical reason.
+# 5. **Script B's research pivot ends up querying about "Meridian
+#    Shipping," not the literal prospect name "Meridian Global
+#    Shipping."** Probed directly, surprising, and disclosed rather than
+#    routed around: the pivot text's own "on X" cue
+#    (``pipeline.py``'s customer-cue grammar) hands "Meridian Global
+#    Shipping" to the REAL customer resolver, which fuzzy-matches it
+#    (``token_set_ratio``, subset-tolerant) to the certified value
+#    "Meridian Shipping" -- an unrelated, real seeded customer that happens
+#    to share two of three words -- at confidence 1.0, auto-applying with
+#    no ambiguity issue at all. This is pre-existing ``customer_resolver.
+#    py`` behavior (Phase 4, untouched by this task), not a new Task 5
+#    bug, and it does not fail the pivot's own promise: ``research.
+#    web_research`` still dispatches ("routed... works" -- doc 08 P8's own
+#    words), it is simply the WRONG entity's name attached to the query
+#    text and the closing summary. Pinned here exactly as observed, not
+#    staged, matching this task's own "honest capture" instruction for
+#    Playwright extended to this automated script.
+# ===========================================================================
+
+
+def _brief_anchor_windows() -> tuple[date, tuple[date, date], tuple[date, date]]:
+    """Reproduces ``existing_customer_brief/skill.py``'s own ``_today``/
+    ``_prior_year_window``/``_ytd_window`` recipe -- see judgment call 4
+    above for why this test cannot hardcode either window."""
+    anchor = date.today()
+    prior = (date(anchor.year - 1, 1, 1), date(anchor.year, 1, 1))
+    ytd = (date(anchor.year, 1, 1), anchor)
+    return anchor, prior, ytd
+
+
+@pytest.mark.anyio
+async def test_existing_customer_brief_flow_scripted_against_live_seeded_postgres():
+    """doc 08 P8's own flow script A: the bubble entry ("Existing
+    customer") -> the subject turn ("Northstar Lines") -> a normal routed
+    pivot ("top GP customers for Port of Singapore in April 2026"), over
+    the real HTTP surface, then the run-log rows those three turns wrote.
+    """
+    from poseidon.api.app import create_app
+
+    app = create_app(_settings())
+    transport = httpx.ASGITransport(app=app)
+    conversation_id = str(uuid.uuid4())
+    anchor, prior_window, ytd_window = _brief_anchor_windows()
+    ports_window_start = anchor - timedelta(days=365)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        events_1 = await read_sse(
+            client, conversation_id, "start an existing-customer brief", str(uuid.uuid4())
+        )
+        events_2 = await read_sse(client, conversation_id, "Northstar Lines", str(uuid.uuid4()))
+        events_3 = await read_sse(
+            client,
+            conversation_id,
+            "top GP customers for Port of Singapore in April 2026",
+            str(uuid.uuid4()),
+        )
+
+    # ===================================================================
+    # Turn 1: the entry phrase -> mode prompt, clarify, no dispatch, no
+    # router (no tool frame, no token frame).
+    # ===================================================================
+    names_1 = [name for name, _data in events_1]
+    assert names_1 == ["accepted", "part", "done"]
+    payloads_1 = [data for _name, data in events_1]
+    turn_id_1 = payloads_1[0]["turn_id"]
+    assert payloads_1[1]["kind"] == "text"
+    assert payloads_1[1]["payload"] == {"markdown": "Which customer is this brief for?"}
+
+    # ===================================================================
+    # Turn 2: the subject turn -> DETERMINISTIC dispatch (registry.dispatch
+    # directly -- no router call, hence no token frame): metric_grid +
+    # table streamed immediately, then FIVE phase_sections (contextualize,
+    # the three research lens calls, strategize -- D19's own emit_part
+    # seam, REAL progressive display), then the artifact-or-skip proof.
+    # ===================================================================
+    names_2 = [name for name, _data in events_2]
+    assert names_2 == ["accepted", "tool"] + ["part"] * 7 + ["tool", "part", "done"]
+    assert "token" not in names_2
+    payloads_2 = [data for _name, data in events_2]
+    turn_id_2 = payloads_2[0]["turn_id"]
+
+    assert payloads_2[1]["tool"] == "customer_insight.existing_customer_brief"
+    assert payloads_2[1]["status"] == "start"
+
+    grid = payloads_2[2]
+    assert grid["kind"] == "metric_grid"
+    assert grid["payload"]["periods"] == {
+        "a": {"start": prior_window[0].isoformat(), "end": prior_window[1].isoformat()},
+        "b": {"start": ytd_window[0].isoformat(), "end": ytd_window[1].isoformat()},
+    }
+    metrics = grid["payload"]["metrics"]
+    assert [m["name"] for m in metrics] == [
+        "VOLUME",
+        "GP",
+        "MARGIN",
+        "NUM_WON",
+        "NUM_INQUIRIES",
+        "NUM_LOST",
+    ]
+    assert [m["friendly"] for m in metrics] == [
+        "Volume",
+        "Gross Profit",
+        "Margin",
+        "# Won",
+        "# Inquiries",
+        "# Lost",
+    ]
+    # Values are real, live-queried figures over a window that slides with
+    # wall-clock time (judgment call 4) -- asserted structurally, never as
+    # exact numbers.
+    for metric in metrics:
+        assert metric["a"] is None or isinstance(metric["a"], (int, float))
+        assert metric["b"] is None or isinstance(metric["b"], (int, float))
+
+    table = payloads_2[3]
+    assert table["kind"] == "table"
+    assert table["payload"]["columns"] == ["Port", "Gross Profit"]
+    assert len(table["payload"]["rows"]) >= 1
+    for row in table["payload"]["rows"]:
+        assert isinstance(row[0], str)
+        assert isinstance(row[1], (int, float))
+
+    phase_parts = payloads_2[4:9]
+    assert [p["payload"]["title"] for p in phase_parts] == [
+        "Context",
+        "Sustainability & ESG",
+        "Market Position",
+        "Strategic Profile",
+        "Strategy",
+    ]
+    stub_prefix = "Stub-mode synthesis " + _EM_DASH + " flip LLM_MODE=live for model narrative."
+    context_md = phase_parts[0]["payload"]["markdown"]
+    assert context_md.startswith(stub_prefix)
+    assert "Subject: Northstar Lines" in context_md
+    # The three research lens sections are FixtureResearchTool content --
+    # deterministic, offline, no live call -- so their real opening
+    # sentences are pinned exactly (verified against the actual fixture
+    # output before being written here, the same discipline this file's
+    # own module docstring establishes for every other pinned value).
+    assert phase_parts[1]["payload"]["markdown"].startswith(
+        "The fleet is actively piloting biofuel blends and has committed to a 2040 net-zero target"
+    )
+    assert phase_parts[2]["payload"]["markdown"].startswith(
+        "A mid-tier regional challenger gaining share in intra-Asia container trade"
+    )
+    assert phase_parts[3]["payload"]["markdown"].startswith(
+        "A charter-focused dry-bulk operator with steady growth and new contracts"
+    )
+    strategy_md = phase_parts[4]["payload"]["markdown"]
+    assert strategy_md.startswith(stub_prefix)
+    assert "Account Name: Northstar Lines" in strategy_md
+    assert "Current Services: [requires live synthesis]" in strategy_md
+
+    tool_done_2 = payloads_2[9]
+    assert tool_done_2["status"] == "done"
+    assert tool_done_2["tool"] == "customer_insight.existing_customer_brief"
+
+    proof_2 = payloads_2[10]
+    assert proof_2["kind"] == "proof"
+    lines_2 = proof_2["payload"]["lines"]
+    assert lines_2[0] == "Entity: SANDBOX.MCA.MARINE_SALES_PLANNING_V"
+    assert lines_2[1] == "Backend: synthetic"
+    assert lines_2[2] == "Customer: Northstar Lines"
+    assert lines_2[3] == f"Prior year: {prior_window[0].isoformat()}..{prior_window[1].isoformat()}"
+    assert lines_2[4] == f"YTD: {ytd_window[0].isoformat()}..{ytd_window[1].isoformat()}"
+    assert lines_2[5] == "Metrics: 6 requested"
+    assert lines_2[6] == "Customer: Northstar Lines"  # fetch_top_ports' own proof, independently
+    assert lines_2[7] == f"Window: {ports_window_start.isoformat()}..{anchor.isoformat()}"
+    assert re.fullmatch(r"Top ports: \d+ of requested 5", lines_2[8])
+    assert lines_2[9] == "Phases completed: contextualize, research, strategize"
+    assert lines_2[10] == "Phases failed: none"
+    assert lines_2[11] == "Transport: FixtureResearchTool"
+    # Artifact-or-skip (doc 08 P8's own words): execute_turn never wires a
+    # real ArtifactStore into SkillContext (context.artifacts is
+    # unconditionally None in BOTH the normal path and the D19 subject-turn
+    # path -- verified directly against orchestrator.py's own source), so
+    # every real turn through this HTTP surface shows the honest skip line,
+    # never a real PDF card -- the "or its honest skip" half of the plan's
+    # own Phase Gate wording is what always fires here.
+    assert lines_2[12] == "Artifact: skipped (no artifact store configured)"
+
+    assert payloads_2[11]["usage"] == {"input_tokens": 0, "output_tokens": 0}
+
+    # ===================================================================
+    # Turn 3: the pivot -> routed normally (a real router call: 2
+    # llm_calls), mode still carried from turn 1, byte-identical to this
+    # file's own flagship turn 1 (same text, same seeded pool).
+    # ===================================================================
+    names_3 = [name for name, _data in events_3]
+    assert names_3 == ["accepted", "tool", "tool", "part", "part", "token", "done"]
+    payloads_3 = [data for _name, data in events_3]
+    turn_id_3 = payloads_3[0]["turn_id"]
+
+    table_3 = payloads_3[3]
+    assert table_3["kind"] == "table"
+    # Byte-identical to this file's own flagship turn 1 (same text, same
+    # seeded pool, unaffected by mode="existing_customer" being carried --
+    # verified directly, twice, before being pinned here).
+    assert table_3["payload"] == {
+        "columns": ["Customer", "Gross Profit"],
+        "rows": [
+            ["Meridian Marine", 70119],
+            ["Meridian Maritime", 47958],
+            ["Meridian Shipmanagement", 38087],
+            ["Blue Anchor Marine", 30411],
+            ["Northstar Lines", 25325],
+        ],
+    }
+
+    proof_3 = payloads_3[4]
+    assert proof_3["payload"]["lines"] == [
+        "Entity: SANDBOX.MCA.MARINE_SALES_PLANNING_V",
+        "Backend: synthetic",
+        "Period: 2026-04-01..2026-05-01",
+        "Filters: LOC_NM IN (Singapore)",
+        "Group by: CUST_NM (top 5)",
+        "Rows: 5",
+    ]
+    token_3 = payloads_3[5]
+    assert (
+        token_3["text"] == "Certified answer for Singapore " + _EM_DASH + " 2026-04-01..2026-05-01."
+    )
+
+    turn_ids = [turn_id_1, turn_id_2, turn_id_3]
+    assert len(set(turn_ids)) == 3  # three distinct turn_run rows, one per turn
+
+    # ===================================================================
+    # Row inspection (own ids -- shared dev database, Task 1's own forward
+    # note): terminal statuses, and the D19 deterministic dispatch's own
+    # distinguishing signature -- turn 2 logs 1 tool_calls row and ZERO
+    # llm_calls rows (run_turn's own two-call loop never ran for it),
+    # contrasting turn 3's ordinary 2-llm_calls/1-tool_calls routed shape.
+    # ===================================================================
+    with ENGINE.begin() as conn:
+        turn_run_rows = (
+            conn.execute(
+                sqltext("SELECT id, status FROM turn_run WHERE id = ANY(:ids)"), {"ids": turn_ids}
+            )
+            .mappings()
+            .all()
+        )
+        llm_call_rows = (
+            conn.execute(
+                sqltext("SELECT turn_run_id FROM llm_calls WHERE turn_run_id = ANY(:ids)"),
+                {"ids": turn_ids},
+            )
+            .mappings()
+            .all()
+        )
+        tool_call_rows = (
+            conn.execute(
+                sqltext(
+                    "SELECT turn_run_id, seq, tool, args, status FROM tool_calls "
+                    "WHERE turn_run_id = ANY(:ids) ORDER BY turn_run_id, seq"
+                ),
+                {"ids": turn_ids},
+            )
+            .mappings()
+            .all()
+        )
+
+    turn_run_by_id = {str(row["id"]): row for row in turn_run_rows}
+    assert len(turn_run_by_id) == 3, "one turn_run row per scripted turn, no more, no fewer"
+    assert turn_run_by_id[turn_id_1]["status"] == "clarify"
+    assert turn_run_by_id[turn_id_2]["status"] == "ok"
+    assert turn_run_by_id[turn_id_3]["status"] == "ok"
+
+    llm_calls_by_turn: dict[str, list] = {}
+    for row in llm_call_rows:
+        llm_calls_by_turn.setdefault(str(row["turn_run_id"]), []).append(row)
+    assert turn_id_1 not in llm_calls_by_turn
+    assert turn_id_2 not in llm_calls_by_turn  # the deterministic dispatch's own signature
+    assert len(llm_calls_by_turn.get(turn_id_3, [])) == 2
+
+    tool_calls_by_turn = {str(row["turn_run_id"]): row for row in tool_call_rows}
+    assert turn_id_1 not in tool_calls_by_turn
+    tool_2 = tool_calls_by_turn[turn_id_2]
+    assert tool_2["seq"] == 1
+    assert tool_2["tool"] == "customer_insight.existing_customer_brief"
+    assert tool_2["args"] == {"customer": "Northstar Lines"}
+    assert tool_2["status"] == "ok"
+    tool_3 = tool_calls_by_turn[turn_id_3]
+    assert tool_3["tool"] == "data_qa.metric_query"
+    assert tool_3["status"] == "ok"
+
+
+@pytest.mark.anyio
+async def test_new_prospect_brief_flow_scripted_against_live_seeded_postgres():
+    """doc 08 P8's own flow script B: the bubble entry ("New prospect") ->
+    the subject turn ("Meridian Global Shipping", deliberately NOT a real
+    seeded customer -- proves no resolver on the prospect path) -> a
+    research pivot ("any relevant news on Meridian Global Shipping?"), over
+    the real HTTP surface. See this section's own judgment call 5 for the
+    pivot's real, disclosed behavior. Unlike script A, NOTHING in this
+    flow touches ``ctx.data`` (no internal-data tools exist for a prospect
+    -- ``new_prospect_brief/skill.py``'s own "NO INTERNAL DATA TOOLS"), so
+    every value below is fully deterministic -- no wall-clock dependency
+    at all -- and pinned exactly.
+    """
+    from poseidon.api.app import create_app
+
+    app = create_app(_settings())
+    transport = httpx.ASGITransport(app=app)
+    conversation_id = str(uuid.uuid4())
+    prospect_pivot = "any relevant news on Meridian Global Shipping?"
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        events_1 = await read_sse(
+            client, conversation_id, "start a new-prospect brief", str(uuid.uuid4())
+        )
+        events_2 = await read_sse(
+            client, conversation_id, "Meridian Global Shipping", str(uuid.uuid4())
+        )
+        events_3 = await read_sse(client, conversation_id, prospect_pivot, str(uuid.uuid4()))
+
+    # ===================================================================
+    # Turn 1: the entry phrase -> mode prompt, clarify, no dispatch.
+    # ===================================================================
+    names_1 = [name for name, _data in events_1]
+    assert names_1 == ["accepted", "part", "done"]
+    payloads_1 = [data for _name, data in events_1]
+    turn_id_1 = payloads_1[0]["turn_id"]
+    assert payloads_1[1]["payload"] == {"markdown": "What company should I research?"}
+
+    # ===================================================================
+    # Turn 2: the subject turn -> DETERMINISTIC dispatch, D10 order (research
+    # FIRST, then contextualize -- consuming research -- then strategize),
+    # visible directly in the part sequence: no resolver ran (the prospect
+    # name is not in the seeded CUST_NM pool at all), no metric_grid/table
+    # (no internal-data tools for a prospect).
+    # ===================================================================
+    names_2 = [name for name, _data in events_2]
+    assert names_2 == ["accepted", "tool"] + ["part"] * 4 + ["tool", "part", "done"]
+    assert "token" not in names_2
+    payloads_2 = [data for _name, data in events_2]
+    turn_id_2 = payloads_2[0]["turn_id"]
+
+    assert payloads_2[1]["tool"] == "customer_insight.new_prospect_brief"
+    assert payloads_2[1]["status"] == "start"
+
+    # Exactly 4 part frames total this turn (names_2's own pin, above) --
+    # no metric_grid/table at all: new_prospect_brief never touches
+    # ctx.data (no internal-data tools for a prospect).
+    phase_parts = payloads_2[2:6]
+    assert [p["payload"]["title"] for p in phase_parts] == [
+        "Operational Profile",
+        "Web Research",
+        "Context",
+        "Strategy",
+    ]
+    stub_prefix = "Stub-mode synthesis " + _EM_DASH + " flip LLM_MODE=live for model narrative."
+    context_md = phase_parts[2]["payload"]["markdown"]
+    assert context_md.startswith(stub_prefix)
+    assert "Subject: Meridian Global Shipping" in context_md
+    assert "Data block metrics: 0" in context_md  # no internal data -- honest digest
+    strategy_md = phase_parts[3]["payload"]["markdown"]
+    assert strategy_md.startswith(stub_prefix)
+    assert "Account Name: Meridian Global Shipping" in strategy_md
+    # The pinned prospect rule (strategize.subskill's own "CURRENT SERVICES"
+    # section): "no current services", never the existing-customer
+    # placeholder.
+    assert "Current Services: Prospect " + _EM_DASH + " no current services" in strategy_md
+
+    tool_done_2 = payloads_2[6]
+    assert tool_done_2["status"] == "done"
+    assert tool_done_2["tool"] == "customer_insight.new_prospect_brief"
+
+    proof_2 = payloads_2[7]
+    assert proof_2["kind"] == "proof"
+    assert proof_2["payload"]["lines"] == [
+        "Subject: Meridian Global Shipping",
+        "Phases completed: research, contextualize, strategize",
+        "Phases failed: none",
+        "Transport: FixtureResearchTool",
+        "Artifact: skipped (no artifact store configured)",
+    ]
+
+    assert payloads_2[8]["usage"] == {"input_tokens": 0, "output_tokens": 0}
+
+    # ===================================================================
+    # Turn 3: the research pivot -> routed normally. See judgment call 5:
+    # the pivot's own "on X" cue resolves "Meridian Global Shipping" to
+    # the certified value "Meridian Shipping" (fuzzy match, an unrelated
+    # real seeded customer) -- pinned exactly as observed.
+    # ===================================================================
+    names_3 = [name for name, _data in events_3]
+    # THREE part frames (text, table, proof) -- the same shape this file's
+    # own flagship turn 5 pins for its own research dispatch (a summary
+    # text part precedes the sources table, unlike a metric dispatch's own
+    # table-then-proof-only shape).
+    assert names_3 == ["accepted", "tool", "tool", "part", "part", "part", "token", "done"]
+    payloads_3 = [data for _name, data in events_3]
+    turn_id_3 = payloads_3[0]["turn_id"]
+
+    assert payloads_3[1]["tool"] == "research.web_research"
+
+    text_3 = payloads_3[3]
+    assert text_3["kind"] == "text"
+    assert text_3["payload"] == {
+        "markdown": (
+            "Recent coverage highlights growing biofuel bunkering capacity in "
+            "Singapore and regulatory pressure from IMO 2030 targets pushing "
+            "carriers toward lower-carbon marine fuels."
+        )
+    }
+
+    table_3 = payloads_3[4]
+    assert table_3["kind"] == "table"
+    assert table_3["payload"]["columns"] == ["Title", "Source", "Relevance"]
+    assert len(table_3["payload"]["rows"]) == 2
+
+    proof_3 = payloads_3[5]
+    assert proof_3["kind"] == "proof"
+    assert proof_3["payload"]["lines"] == [
+        "Query: " + prospect_pivot + " about Meridian Shipping Focus on relevance "
+        "to the marine fuels and shipping-services industry.",
+        "Transport: fixture",
+        "Results: 2",
+    ]
+    token_3 = payloads_3[6]
+    assert token_3["text"] == "Research summary for Meridian Shipping " + _EM_DASH + " 2 sources."
+
+    turn_ids = [turn_id_1, turn_id_2, turn_id_3]
+    assert len(set(turn_ids)) == 3
+
+    # ===================================================================
+    # Row inspection: the identical D19-vs-routed contrast script A's own
+    # row inspection proves, for the prospect brief instead.
+    # ===================================================================
+    with ENGINE.begin() as conn:
+        turn_run_rows = (
+            conn.execute(
+                sqltext("SELECT id, status FROM turn_run WHERE id = ANY(:ids)"), {"ids": turn_ids}
+            )
+            .mappings()
+            .all()
+        )
+        llm_call_rows = (
+            conn.execute(
+                sqltext("SELECT turn_run_id FROM llm_calls WHERE turn_run_id = ANY(:ids)"),
+                {"ids": turn_ids},
+            )
+            .mappings()
+            .all()
+        )
+        tool_call_rows = (
+            conn.execute(
+                sqltext(
+                    "SELECT turn_run_id, seq, tool, args, status FROM tool_calls "
+                    "WHERE turn_run_id = ANY(:ids) ORDER BY turn_run_id, seq"
+                ),
+                {"ids": turn_ids},
+            )
+            .mappings()
+            .all()
+        )
+
+    turn_run_by_id = {str(row["id"]): row for row in turn_run_rows}
+    assert len(turn_run_by_id) == 3
+    assert turn_run_by_id[turn_id_1]["status"] == "clarify"
+    assert turn_run_by_id[turn_id_2]["status"] == "ok"
+    assert turn_run_by_id[turn_id_3]["status"] == "ok"
+
+    llm_calls_by_turn: dict[str, list] = {}
+    for row in llm_call_rows:
+        llm_calls_by_turn.setdefault(str(row["turn_run_id"]), []).append(row)
+    assert turn_id_1 not in llm_calls_by_turn
+    assert turn_id_2 not in llm_calls_by_turn  # the deterministic dispatch's own signature
+    assert len(llm_calls_by_turn.get(turn_id_3, [])) == 2
+
+    tool_calls_by_turn = {str(row["turn_run_id"]): row for row in tool_call_rows}
+    assert turn_id_1 not in tool_calls_by_turn
+    tool_2 = tool_calls_by_turn[turn_id_2]
+    assert tool_2["seq"] == 1
+    assert tool_2["tool"] == "customer_insight.new_prospect_brief"
+    assert tool_2["args"] == {"prospect_name": "Meridian Global Shipping"}
+    assert tool_2["status"] == "ok"
+    tool_3 = tool_calls_by_turn[turn_id_3]
+    assert tool_3["tool"] == "research.web_research"
+    assert tool_3["status"] == "ok"
 
 
 def test_chat_e2e_scripted_module_file_is_ascii_on_disk():

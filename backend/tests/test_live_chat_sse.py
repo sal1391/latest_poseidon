@@ -498,8 +498,37 @@ async def test_post_conversations_returns_the_same_opener_shape_as_mock():
     assert opener["role"] == "assistant"
     kinds = [p["kind"] for p in opener["parts"]]
     assert kinds == ["text", "chips"]
-    ids = [o["id"] for o in opener["parts"][1]["payload"]["options"]]
+    options = opener["parts"][1]["payload"]["options"]
+    ids = [o["id"] for o in options]
     assert ids == ["existing_customer", "new_prospect"]
+
+
+@pytest.mark.anyio
+async def test_opener_flow_chips_carry_the_d19_pinned_entry_phrases_as_send_text():
+    """Phase 8 Task 5: the P6 send_text mechanism (ChipsPart.tsx's own
+    ``option.send_text ?? option.label``), now on the opener's flow chips
+    too -- clicking either one sends the EXACT pinned phrase
+    ``orchestrator.py``'s own D19 entry branch matches, casefolded-exact,
+    rather than the bare "Existing customer"/"New customer prospect"
+    labels a human reads on the button."""
+    app = _live_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.post("/api/conversations")
+
+    options = r.json()["opener"]["parts"][1]["payload"]["options"]
+    assert options == [
+        {
+            "id": "existing_customer",
+            "label": "Existing customer",
+            "send_text": "start an existing-customer brief",
+        },
+        {
+            "id": "new_prospect",
+            "label": "New customer prospect",
+            "send_text": "start a new-prospect brief",
+        },
+    ]
 
 
 @pytest.mark.anyio
