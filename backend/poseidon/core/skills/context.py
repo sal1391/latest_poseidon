@@ -4,7 +4,9 @@
 context (``llm``, ``tools``, ``user``, ``profile``, ``run``); each of those
 fields arrives with the phase that owns it rather than as a ``None``-typed
 placeholder, because a placeholder invites code that pretends the capability
-exists. Today a skill gets exactly four things:
+exists. ``tools`` arrived in Phase 7 Task 1 (named below); ``llm``,
+``user``, ``profile`` and ``run`` remain pending their own owning phases.
+Today a skill gets exactly five things:
 
 ``data``      the adapter seam of doc 04 — a :class:`DataClient`, never a
               connection, a cursor or SQL.
@@ -13,12 +15,25 @@ exists. Today a skill gets exactly four things:
 ``settings``  the validated environment contract.
 ``state``     the conversation slots the deterministic parsing pipeline
               (doc 02 §5, phase 4) fills in, carried across turns.
+``tools``     external tool servers (doc 02 §7) behind
+              :class:`~mcp.registry.ToolServerRegistry` — typed ``object``,
+              never the registry's own protocol, so this module needs no
+              ``mcp`` import at all (not even under ``TYPE_CHECKING``): the
+              dependency runs one way, ``mcp`` on ``core``, never back. A
+              skill reaching for one casts through the typed interface at
+              its own call site. Defaulted to ``None`` so every existing
+              ``SkillContext(...)`` call site (P3/P4/P6) keeps working
+              unchanged; real until Phase 7 Task 4 wires a registry through
+              ``api/app.py``.
 
 ``artifacts`` is annotated as a string under a ``TYPE_CHECKING`` guard on
 purpose, and permanently so: :mod:`poseidon.core.artifacts` (Task 4) imports
 ``ArtifactRef`` from this very module, so a real runtime import here would be
 circular. Dataclasses never evaluate their annotations, so the forward
-reference costs nothing at runtime.
+reference costs nothing at runtime. ``tools`` takes the plainer route of
+typing itself ``object`` instead, because unlike ``ArtifactRef`` there is no
+real cycle to dodge here — ``mcp.registry`` does not import this module —
+only a dependency DIRECTION worth keeping one-way on purpose.
 """
 
 from dataclasses import dataclass
@@ -83,3 +98,4 @@ class SkillContext:
     artifacts: "ArtifactStore | None"
     settings: Settings
     state: ConversationSlots = ConversationSlots()
+    tools: object | None = None

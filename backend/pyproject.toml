@@ -19,13 +19,14 @@ dependencies = [
   "markdown>=3.6",
   "rapidfuzz>=3.9",
   "jinja2>=3.1",
+  "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.6", "anyio>=4"]
+dev = ["pytest>=8", "ruff>=0.6", "anyio>=4"]
 
 [tool.setuptools.packages.find]
-include = ["poseidon*"]
+include = ["poseidon*", "mcp*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "poseidon/tasks"]
@@ -35,6 +36,7 @@ markers = [
   "minio: requires reachable MinIO (S3_ENDPOINT_URL)",
   "pdf: requires weasyprint native libs (run in container)",
   "router_live: live LLM provider tests requiring credentials",
+  "research_live: live Perplexity research tests requiring an API key",
 ]
 
 [tool.ruff]
