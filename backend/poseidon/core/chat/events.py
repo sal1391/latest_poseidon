@@ -181,6 +181,46 @@ handled, that id is finished, and popping (rather than leaving a stale zero
 behind) keeps this dict's size bounded by in-flight dispatches, never by the
 turn's total dispatch count.
 
+**Fix round 1 correction.** An earlier version of this section, and
+``core/chat/orchestrator.py``'s own wiring comment, characterized a
+hypothetical SECOND dispatch in one turn calling ``ctx.emit_part`` as a
+safe no-op -- "parts simply arrive at that dispatch's own ``tool_done`` as
+they always have." Reproduced and found FALSE. ``SkillContext`` is built
+ONCE per turn, so ``ctx.emit_part`` is the SAME closure (the one
+``part_emitter(1)`` returned) for EVERY dispatch of the turn, never a
+fresh one per ``tool_seq`` -- a second dispatch's skill that also calls it
+DOES push a real ``part`` frame to the wire (:meth:`push_part` runs first
+and cannot be undone), and only then raises ``KeyError`` on
+``self._streamed_counts[tool_seq] += 1`` -- the read half of that
+increment -- because ``tool_seq`` 1's own key was already popped when
+``tool_seq`` 1's ``tool_done`` fired, which always finishes before a
+LATER dispatch's skill function even starts running (``run_turn`` drives
+dispatches strictly sequentially). That ``KeyError`` propagates out of the
+skill's ``run()``; ``SkillRegistry.dispatch``'s own try/except catches it
+(its documented never-raises contract) and turns it into a structured
+``SkillResult(ok=False, error=problem(500, "skill failure", "KeyError:
+1"))`` -- so the second dispatch fails LOUDLY, with one already-streamed,
+orphaned ``part`` frame on the wire that no later successful ``tool_done``
+will ever explain, and -- if the model retries the identical skill call
+(loop.py's own one-shot self-correction) -- a repeat of the same
+deterministic ``KeyError``, ending the turn.
+
+This is judged the better of the two available designs, not merely an
+accepted defect: popping (this module's actual choice) fails loudly and
+is caught as ordinary structured content the model can see and the run
+log can record. The alternative -- never popping, just reading -- would
+instead let the stale entry silently accept the second dispatch's part as
+though it belonged to the first, mis-slicing (or duplicating) whatever
+THAT dispatch's own parts turn out to be at ITS ``tool_done`` -- a silent
+corruption strictly worse than a loud failure. The real constraint this
+failure mode names: supporting more than one progressively-streaming
+dispatch in a single turn needs ``ctx.emit_part`` REBOUND per dispatch
+(``sink.part_emitter(current_tool_seq)`` called again before each one),
+which only ``loop.py``'s own ``_dispatch_one`` is positioned to do --
+deliberately out of this phase's sanctioned edit (the one
+artifacts-forwarding line; see loop.py's own docstring). Not a gap this
+sink can close on its own.
+
 Synchronous by construction
 -------------------------------
 Every method here is a plain, synchronous function -- required, since
@@ -313,6 +353,12 @@ class SseEnvelopeSink:
         # 4, and every tool_seq no caller ever wired an emitter for) defaults
         # to zero, so `parts[0:]` is the full list -- byte-identical to this
         # method's pre-Phase-8 unconditional loop over every part.
+        # Popping here is also what makes a LATER call to the same tool_seq-1
+        # closure (a hypothetical second dispatch reusing today's one
+        # per-turn `ctx.emit_part`) fail loudly with KeyError instead of
+        # silently corrupting a finished dispatch's own count -- see the
+        # module docstring's own Fix round 1 correction for the full,
+        # reproduced failure mode and why that trade is the right one.
         n_streamed = self._streamed_counts.pop(tool_seq, 0)
         for part in payload["parts"][n_streamed:]:
             self.push_part(part["kind"], part["payload"])
@@ -344,6 +390,16 @@ class SseEnvelopeSink:
         docstring's "per-``tool_seq`` count is reset" paragraph for why that
         is documented, defensive behavior rather than a load-bearing one
         today.
+
+        **Fix round 1 correction:** calling the returned callable for a
+        ``tool_seq`` whose own ``tool_done`` has ALREADY fired -- the shape
+        a hypothetical second progressively-streaming dispatch in one turn
+        would take, reusing today's single per-turn ``ctx.emit_part`` --
+        raises ``KeyError`` rather than quietly doing nothing. Deliberately
+        loud, not a silent fallback: see the module docstring's own Fix
+        round 1 correction (under "Incremental part streaming") for the
+        reproduced failure mode and why that is the better of the two
+        available designs.
         """
         self._streamed_counts[tool_seq] = 0
 

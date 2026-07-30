@@ -327,14 +327,35 @@ def execute_turn(
         # correct for every emit_part consumer this plan actually ships: a
         # brief skill (Phase 8 Task 4) is always the ONLY tool call of its
         # turn, whether reached through D19's deterministic entry (Task 5)
-        # or a normal routed dispatch, so tool_seq is always 1 for it. A
-        # hypothetical future turn with a SECOND dispatch that also streams
-        # progressively would find tool_seq 2's `part_emitter` never called
-        # -- safe, not silently wrong: `events.py`'s own "no one streamed
-        # early" default (a zero count) makes that dispatch's parts arrive
-        # exactly as they always have, at `tool_done`, never lost or
-        # duplicated. Disclosed as a known scoping limit for a future task to
-        # revisit if a multi-dispatch, multi-emit_part turn is ever planned.
+        # or a normal routed dispatch, so tool_seq is always 1 for it.
+        #
+        # Fix round 1 correction: an earlier version of this comment
+        # claimed a hypothetical second dispatch that also tries
+        # `ctx.emit_part` would "simply not get early streaming ... safe,
+        # not silently wrong." That claim is FALSE, reproduced: `context`
+        # is built ONCE per turn, so `ctx.emit_part` is this SAME tool_seq-1
+        # closure for every dispatch, never a fresh one per tool_seq -- a
+        # second dispatch's skill that calls it DOES push a real part frame
+        # to the wire, then raises KeyError on the count increment, because
+        # tool_seq 1's own key was already popped when tool_seq 1's
+        # tool_done fired (which always completes before a later dispatch's
+        # skill function even starts). `SkillRegistry.dispatch`'s own
+        # try/except catches that KeyError into a structured
+        # `SkillResult(ok=False, ...)`, so the second dispatch fails
+        # LOUDLY -- with one already-streamed, orphaned part frame, and a
+        # likely-identical failure on the model's one self-correction retry
+        # -- never a silent, harmless no-op. See events.py's own module
+        # docstring ("Incremental part streaming", its own Fix round 1
+        # correction) for the full failure mode and why popping (loud
+        # failure) beats not popping (silent double-emission) regardless.
+        # The real fix -- rebinding `ctx.emit_part` per dispatch -- needs a
+        # loop.py change (`_dispatch_one` calling
+        # `sink.part_emitter(current_tool_seq)` again before each call),
+        # deliberately out of this phase's sanctioned edit (the one
+        # artifacts line). Until then: correct for every consumer this plan
+        # ships (a brief skill is always the sole dispatch of its turn), a
+        # real, sharp failure mode for a hypothetical second one -- not the
+        # harmless fallback earlier claimed.
         emit_part=sink.part_emitter(1),
     )
     router_version, router_hash = _router_prompt_provenance(
