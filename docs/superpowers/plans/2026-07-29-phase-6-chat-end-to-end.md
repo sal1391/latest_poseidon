@@ -181,7 +181,7 @@ The doc-08 validation, executed literally: scripted conversation over the LIVE p
 
 ## Phase Gate (human validation)
 
-1. `docker compose up` → open localhost:5173 → type the Singapore question → watch tool steps stream, table + proof render; "and for May?" carries; "gp for meridiann in april 2026" → chips; click a chip → resolves.
+1. `docker compose up` → open localhost:5173 → type the Singapore question → watch tool steps stream, table + proof render; "and for May 2026?" carries the customer/port and replaces the period; "same for Port of Rotterdam" replaces the port and carries the period; "gp for Meridiann in april 2026" (capital M — the customer-cue detector requires TitleCase names, exactly like a real name) → clarification chips; click a chip → resolves to that customer (the chip send carries a "for " cue). AMENDED post-T5 review: phrasing synced to the live-verified runbook script — doc-08's original literal texts were probe-proven to misbehave against the real pipeline (bare "and for May?" is wall-clock-dependent; lowercase "meridiann" never enters customer detection).
 2. `pytest tests/test_chat_e2e_scripted.py -m pg -v` → 4-turn script green incl. row inspection.
 3. `SELECT status, input_tokens, output_tokens FROM turn_run ORDER BY created_at` → the scripted turns visible, statuses ok/ok/ok/clarify.
 
