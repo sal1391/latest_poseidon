@@ -15,12 +15,18 @@ directly in ``sys.modules`` rather than importing real adapter/client code.
 This proves ``_build_research`` targets the correct transport-specific
 module by dotted path, independent of whatever real implementation (if
 any) exists on disk -- which is exactly why they did NOT need replacing
-now that Task 2's ``poseidon/mcp/perplexity/adapter.py`` has shipped for
-real (a prior draft of this docstring predicted they would be; disclosed
-in Task 2's report as a deliberate choice not to touch them, since a
-sys.modules-injected fake proves the SAME thing regardless of module
-existence, unlike the test named below).
-``poseidon/mcp/perplexity/mcp_client.py`` (Task 3) still does not exist.
+once Task 2's ``poseidon/mcp/perplexity/adapter.py`` and, since, Task 3's
+``poseidon/mcp/perplexity/mcp_client.py`` shipped for real (a prior draft
+of this docstring predicted they would be; disclosed in Task 2's report as
+a deliberate choice not to touch them, since a sys.modules-injected fake
+proves the SAME thing regardless of module existence, unlike the test
+named below). Both modules exist on disk now (corrected here, Task 3 fix
+round 1 -- this sentence previously, stalely, said ``mcp_client.py`` "does
+not exist"); ``test_mcp_transport_placeholder_wire_degrades_gracefully_end_to_end``
+(added the same round) is the complementary, non-injected proof that
+exercises a real import, real construction, and a real (placeholder-
+backed) ``.search()`` call together, which the two dotted-path proofs
+above cannot do without asserting the real constructor signature.
 
 Task 1's review (Important 1) flagged that ONE proof in this file was NOT
 independent of module existence:
@@ -222,6 +228,47 @@ def test_mcp_transport_resolves_mcp_perplexity_mcp_client(monkeypatch):
 
     assert registry.research is sentinel
     assert len(calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# ToolServerRegistry -- "mcp" end to end through the REAL placeholder wire
+# (Task 3 fix round 1, Important I2).
+# ---------------------------------------------------------------------------
+
+
+def test_mcp_transport_placeholder_wire_degrades_gracefully_end_to_end():
+    """CARRIED from Task 3's fix round 1 (Important I2): unlike the two
+    sys.modules-injection tests above, this performs a REAL import of
+    poseidon.mcp.perplexity.mcp_client, a REAL PerplexityMcpClient
+    construction, and a REAL (if placeholder-backed) .search() call --
+    proving the whole chain (Settings -> ToolServerRegistry ->
+    PerplexityMcpClient -> registry._mcp_wire_not_configured ->
+    search()'s wire-error degrade path) actually works TOGETHER, not just
+    that each piece works in isolation. Without this, a future signature
+    drift between registry.py's construction call and mcp_client.py's
+    real __init__ would go uncaught -- the sys.modules-injection tests
+    above use fakes that accept **kwargs unconditionally, so they cannot
+    catch a real mismatch; the "direct" branch has no analogous gap
+    because Task 2's live call already proved it end-to-end for real.
+
+    No monkeypatching here on purpose -- see the module docstring and
+    test_registry_construction_imports_nothing_until_research_is_accessed
+    below for why a real import coexists safely with that test's
+    sys.modules-clearing/meta_path-counting regardless of run order
+    (verified empirically, both orders, alongside test_perplexity_mcp_client.py
+    and test_perplexity_adapter.py).
+    """
+    registry = ToolServerRegistry(_settings(tool_transport_perplexity="mcp"))
+
+    result = registry.research.search(query="q", schema_name="web_research")
+
+    assert result == ResearchResult(
+        items=(),
+        raw_digest="0 results via mcp",
+        transport="mcp",
+        degraded=True,
+        degrade_reason="mcp wire error",
+    )
 
 
 class _ImportCountingFinder:

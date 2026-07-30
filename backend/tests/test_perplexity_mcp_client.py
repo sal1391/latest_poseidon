@@ -33,6 +33,7 @@ does not re-scan ``adapter.py``/``__init__.py``/fixtures/schemas, which
 covers.
 """
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -312,6 +313,30 @@ def test_search_degrades_on_a_malformed_envelope(envelope):
     )
 
 
+def test_search_finds_the_text_block_after_a_leading_non_text_block():
+    # Positive-path complement to the "no-text-typed-block" malformed case
+    # above (Task 3 fix round 1, Minor fold-in): a real MCP response can
+    # lead with a non-text block (an image, say) before the text block
+    # this client actually wants -- _unwrap_text_block's scan must find
+    # it and succeed, not bail out on the first non-text entry the way a
+    # bare content[0] index would.
+    content = _fixture("clean")["choices"][0]["message"]["content"]
+    envelope = {
+        "content": [
+            {"type": "image", "data": "irrelevant"},
+            {"type": "text", "text": content},
+        ]
+    }
+    wire = _FakeWire(response=envelope)
+    instance = PerplexityMcpClient(wire=wire)
+
+    result = instance.search(query="marine biofuel Singapore", schema_name="web_research")
+
+    assert result.degraded is False
+    assert result.transport == "mcp"
+    assert len(result.items) == 2
+
+
 def test_search_degrades_when_response_is_missing_the_items_key():
     # Not one of the brief's named fixtures -- a hand-built envelope
     # exercising validate_and_normalize's top-level gate end to end
@@ -419,17 +444,30 @@ def _mcp_result(fixture_name: str) -> ResearchResult:
     return instance.search(query="marine biofuel Singapore", schema_name="web_research")
 
 
-def _transport_invariant_fields(result: ResearchResult) -> tuple:
+def _transport_invariant_fields(result: ResearchResult) -> dict:
     """Every field a caller of ``ToolServerRegistry.research`` must be
-    able to treat as transport-agnostic -- excludes ``transport`` itself
-    (the field the contract explicitly allows to differ) AND
-    ``raw_digest``, which is NOT excluded by accident: it embeds the
-    transport's name as TEXT by design (``ResearchResult``'s own
+    able to treat as transport-agnostic -- excludes ``transport`` and
+    ``raw_digest`` BY NAME via ``dataclasses.asdict``, rather than a hand-
+    picked tuple of the OTHER fields (Task 3 fix round 1, Important I1:
+    a hand-picked allow-list of "the fields that must match" only equals
+    "every field except transport and raw_digest" by coincidence, for as
+    long as ``ResearchResult`` happens to have exactly five fields --
+    Task 4 adds ``summary`` per amendment 9a5ca1b, and a real divergence
+    in it between transports would have passed this test silently,
+    contradicting this very docstring's claim. Excluding by name instead
+    means any future field is covered automatically, with no edit needed
+    here when one is added.
+
+    ``raw_digest`` is excluded deliberately, not by oversight: it embeds
+    the transport's name as TEXT by design (``ResearchResult``'s own
     docstring: "a short count/transport summary"), so it is mechanically,
-    not incidentally, transport-specific. Asserted on separately, exactly,
-    in the test below instead of folded into this tuple.
+    not incidentally, transport-specific -- asserted on separately,
+    exactly, in the test below instead of folded in here.
     """
-    return (result.items, result.degraded, result.degrade_reason)
+    data = dataclasses.asdict(result)
+    del data["transport"]
+    del data["raw_digest"]
+    return data
 
 
 @pytest.mark.parametrize(
