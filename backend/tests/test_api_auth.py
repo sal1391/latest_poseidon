@@ -431,9 +431,10 @@ async def test_health_live_stays_open_under_auth0_mode_with_no_token():
 
 
 # ===========================================================================
-# The require-user + require-role guard: /api/skills, /api/dev/* (Global
-# Constraints' enforcement scope -- /api/conversations*/messages* are
-# deferred to Phase 10, per this task's own brief)
+# The require-user + require-role guard: /api/skills, /api/dev/*, and (per
+# the Controller's Round 0 correction -- these six routes exist TODAY in
+# live_chat.py, not only from Phase 10 on) every /api/conversations*/
+# /api/messages* route (Global Constraints' enforcement scope)
 # ===========================================================================
 
 
@@ -488,6 +489,122 @@ async def test_api_skills_is_open_by_default_in_disabled_mode():
         r = await client.get("/api/skills")
 
     assert r.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("POST", "/api/conversations"),
+        ("GET", "/api/conversations"),
+        ("GET", "/api/conversations/some-cid/messages"),
+        ("POST", "/api/conversations/some-cid/messages"),
+        ("POST", "/api/messages/some-mid/feedback"),
+        ("GET", "/api/messages/some-mid/feedback"),
+    ],
+)
+@pytest.mark.anyio
+async def test_all_six_conversation_and_message_routes_require_a_token_under_auth0_mode(
+    method, path
+):
+    """Controller's Round 0 correction: the plan's enforcement scope
+    ("guards /api/conversations*, /api/messages*, /api/skills, /api/dev/*")
+    applies to all six routes live_chat.py already serves TODAY, not only
+    from Phase 10 on -- every one of them 401s with no token."""
+    _key1, pub1 = generate_rsa_keypair()
+    app = _auth0_app(JwksTransport([jwk_for(pub1, "key-1")]), chat_mode="live")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.request(method, path)
+
+    assert r.status_code == 401
+    assert r.json()["title"] == "missing bearer token"
+
+
+@pytest.mark.anyio
+async def test_conversations_post_requires_a_token_under_auth0_mode():
+    """The exact pinned 401 body, on one representative conversations
+    route (the breadth test above only checks title, across all six)."""
+    _key1, pub1 = generate_rsa_keypair()
+    app = _auth0_app(JwksTransport([jwk_for(pub1, "key-1")]), chat_mode="live")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.post("/api/conversations")
+
+    assert r.status_code == 401
+    assert r.json() == {
+        "type": "about:blank",
+        "title": "missing bearer token",
+        "detail": "no Authorization header",
+        "status": 401,
+    }
+
+
+@pytest.mark.anyio
+async def test_conversations_post_403_when_token_lacks_the_sales_role():
+    key1, pub1 = generate_rsa_keypair()
+    app = _auth0_app(JwksTransport([jwk_for(pub1, "key-1")]), chat_mode="live")
+    token = mint_auth0_token(key1, "key-1", **{ROLES_CLAIM: []})
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.post("/api/conversations", headers={"Authorization": f"Bearer {token}"})
+
+    assert r.status_code == 403
+    assert r.json() == {
+        "type": "about:blank",
+        "title": "insufficient role",
+        "detail": "caller lacks required role 'Poseidon:Sales'",
+        "status": 403,
+    }
+
+
+@pytest.mark.anyio
+async def test_conversations_post_200_when_token_has_the_sales_role():
+    key1, pub1 = generate_rsa_keypair()
+    app = _auth0_app(JwksTransport([jwk_for(pub1, "key-1")]), chat_mode="live")
+    token = mint_auth0_token(key1, "key-1")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.post("/api/conversations", headers={"Authorization": f"Bearer {token}"})
+
+    assert r.status_code == 201
+
+
+@pytest.mark.anyio
+async def test_conversations_post_is_open_by_default_in_disabled_mode():
+    """Global Constraints: "guards default-open in disabled mode with the
+    fixed user" -- pinned explicitly on a conversations route too (the
+    Controller's Round 0 correction's own ask), not only /api/skills."""
+    app = _live_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.post("/api/conversations")
+
+    assert r.status_code == 201
+
+
+@pytest.mark.anyio
+async def test_chat_send_requires_a_token_before_rate_limiting_under_auth0_mode():
+    """Ordering (Controller's Round 0 correction): require_sales runs
+    BEFORE rate_limit_chat_send in this route's own dependencies list, so
+    an unauthenticated caller always gets 401 -- never a 429, which would
+    both leak rate-limit state to a caller who never authenticated at all
+    and contradict "require-user" gating everything downstream of it.
+    Proven with an aggressively low limit (1/minute): if the ordering were
+    reversed, at least one of these three unauthenticated attempts would
+    surface the token bucket's own state (200 then 429) instead of failing
+    the auth check first, every single time.
+    """
+    _key1, pub1 = generate_rsa_keypair()
+    app = _auth0_app(
+        JwksTransport([jwk_for(pub1, "key-1")]), chat_mode="live", rate_limit_chat_per_minute=1
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        for _ in range(3):
+            r = await client.post(
+                "/api/conversations/conv-order/messages", json={"text": FLAGSHIP_TEXT}
+            )
+            assert r.status_code == 401
 
 
 @pytest.mark.anyio

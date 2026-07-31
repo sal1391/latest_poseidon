@@ -500,23 +500,31 @@ class FeedbackBody(BaseModel):
     comment: str | None = None
 
 
-@router.post("/conversations", status_code=201)
+@router.post("/conversations", status_code=201, dependencies=[Depends(require_sales)])
 def create_conversation(request: Request) -> dict:
     """Same wire shape mock_chat.py's own ``create_conversation`` returns --
     see the module docstring's "Task 5 amendment: the live bootstrap
-    routes"."""
+    routes".
+
+    Phase 9 Task 2 (Global Constraints' enforcement scope, Controller's
+    Round 0 correction): gated by ``require_sales`` -- this route, and
+    every other ``/api/conversations*``/``/api/messages*`` route below,
+    exist TODAY (this is Task 4/5's own prototype surface, not a
+    Phase-10-only concern), so the enforcement scope applies to all of
+    them now, the same as ``/api/skills``/``/api/dev/*``.
+    """
     store: TranscriptStore = request.app.state.transcript_store
     conversation, opener = store.create_conversation()
     return {"conversation": conversation, "opener": opener}
 
 
-@router.get("/conversations")
+@router.get("/conversations", dependencies=[Depends(require_sales)])
 def list_conversations(request: Request) -> dict:
     store: TranscriptStore = request.app.state.transcript_store
     return {"conversations": store.list_conversations()}
 
 
-@router.get("/conversations/{cid}/messages")
+@router.get("/conversations/{cid}/messages", dependencies=[Depends(require_sales)])
 def get_messages(cid: str, request: Request) -> dict:
     store: TranscriptStore = request.app.state.transcript_store
     messages = store.get_messages(cid)
@@ -536,9 +544,8 @@ def list_skills(request: Request) -> list[dict[str, str]]:
     :class:`~poseidon.core.chat.events.SseEnvelopeSink` now emits).
 
     Phase 9 Task 2 (Global Constraints' enforcement scope): gated by
-    ``require_sales`` -- ``/api/conversations*``/``/api/messages*`` below
-    are NOT (deferred to Phase 10, per this task's own brief), so this is
-    the one route on this router already guarded.
+    ``require_sales`` -- as of the Controller's Round 0 correction, so is
+    every ``/api/conversations*``/``/api/messages*`` route on this router.
     """
     registry: SkillRegistry = request.app.state.skill_registry
     return [
@@ -551,19 +558,26 @@ def list_skills(request: Request) -> list[dict[str, str]]:
     ]
 
 
-@router.post("/conversations/{cid}/messages", dependencies=[Depends(rate_limit_chat_send)])
+@router.post(
+    "/conversations/{cid}/messages",
+    dependencies=[Depends(require_sales), Depends(rate_limit_chat_send)],
+)
 async def send_message(cid: str, body: SendBody, request: Request) -> StreamingResponse:
     """Drive one real chat turn through ``execute_turn`` and stream its SSE
     frames. See the module docstring for the thread+queue bridge, the
     app-state objects read off ``request.app.state`` below, the snowflake
     guard, and how each frame also gets folded into the transcript.
 
-    Phase 9 Task 2 (Global Constraints): gated by ``rate_limit_chat_send``
-    -- the chat-send token bucket, keyed by sub (fallback client IP), OFF
-    by default in ``disabled`` mode (``api/auth.py``'s own docstring). NOT
-    gated by ``require_sales`` yet -- this task's own brief defers the
-    role guard for this route (and for every ``/api/conversations*``/
-    ``/api/messages*`` route) to Phase 10.
+    Phase 9 Task 2 (Global Constraints, Controller's Round 0 correction):
+    gated by BOTH ``require_sales`` and ``rate_limit_chat_send``, in that
+    ORDER -- an unauthenticated/role-less caller must always get a 401/403
+    from ``require_sales`` first, never a 429 from the rate limiter, which
+    would both leak the token bucket's own state to a caller who never
+    even authenticated and let an unauthenticated caller consume/probe a
+    bucket keyed by their own client IP before being told to authenticate
+    at all. FastAPI resolves a route's ``dependencies=[...]`` list in the
+    order given, so this ordering is a direct, load-bearing property of
+    this list's literal element order, not an incidental one.
     """
     app_state = request.app.state
     settings = app_state.settings
@@ -710,7 +724,7 @@ def _snowflake_guard_response(
     )
 
 
-@router.post("/messages/{mid}/feedback", status_code=204)
+@router.post("/messages/{mid}/feedback", status_code=204, dependencies=[Depends(require_sales)])
 def upsert_feedback(mid: str, body: FeedbackBody, request: Request) -> None:
     if body.verdict not in ("up", "down"):
         raise HTTPException(422, detail="verdict must be up or down")
@@ -719,7 +733,7 @@ def upsert_feedback(mid: str, body: FeedbackBody, request: Request) -> None:
         raise HTTPException(404, detail="unknown message")
 
 
-@router.get("/messages/{mid}/feedback")
+@router.get("/messages/{mid}/feedback", dependencies=[Depends(require_sales)])
 def get_feedback(mid: str, request: Request) -> dict:
     store: TranscriptStore = request.app.state.transcript_store
     feedback = store.get_feedback(mid)
