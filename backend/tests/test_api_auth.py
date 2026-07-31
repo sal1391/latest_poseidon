@@ -29,6 +29,8 @@ same cross-test-module reuse already established for ``FakeDataClient``/
 ``RecordingWriter`` above.
 """
 
+import sys
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -732,6 +734,92 @@ async def test_chat_rate_limit_keys_independently_per_act_as_sub():
 
     assert r_alice_second.status_code == 429
     assert r_bob_first.status_code == 200
+
+
+def test_chat_rate_limiter_check_is_thread_safe_under_concurrent_callers():
+    """Global Constraints: "thread-safe". Reviewer's I-3: ``ChatRateLimiter``'s
+    lock (``api/auth.py``'s ``check()``) was correct by inspection but had
+    zero test coverage under real concurrency. This exercises it directly:
+    a bucket with EXACTLY one token (``per_minute=1``) is hit by many
+    threads simultaneously (synchronized through a ``threading.Barrier``,
+    never a sleep) -- without the lock's atomicity across the whole
+    read-refill-decrement sequence, more than one thread could observe "a
+    token is available" before either actually spends it (a classic
+    lost-update race), over-admitting more than the one caller the
+    configured limit allows.
+
+    Deterministic by construction, not by timing luck:
+
+    - A FRESH key per round means every round starts from a bucket
+      provably at exactly 1.0 tokens (never a stale, partially-refilled
+      one), so there is nothing to race against except the concurrent
+      calls themselves.
+    - ``per_minute=1`` refills at ~0.0167 tokens/second; one round (32
+      threads, a barrier release, 32 lock-guarded dict operations) runs in
+      microseconds -- many orders of magnitude below the ~60 real seconds
+      of elapsed time it would take this bucket to refill even one whole
+      token, so a slow/loaded machine can only make this test slower,
+      never make an extra grant look legitimate.
+    - ``sys.setswitchinterval`` is dropped to 10 microseconds for the
+      duration of this test only (restored in ``finally``, never leaked
+      into any other test in this process): CPython's GIL only forces a
+      thread switch roughly every ``sys.getswitchinterval()`` seconds
+      (default 5ms) absent I/O, and this bucket's whole read-modify-write
+      critical section normally completes in a few microseconds --
+      comfortably faster than the default interval. Verified empirically
+      (this task's own report) that a version of this exact test using
+      the DEFAULT switch interval sees zero lost-update violations even
+      with the lock removed entirely: the GIL happens to serialize the
+      short critical section anyway on this interpreter, which would make
+      that version of the test pass regardless of whether the lock
+      exists. Forcing far more frequent preemption is what makes this
+      version an honest, sensitive proof of the lock's necessity --
+      independently confirmed (same report) to reliably violate
+      "exactly one grant" in most rounds when the real lock is removed,
+      and to stay at zero violations across 100+ rounds with it in place.
+    """
+    old_interval = sys.getswitchinterval()
+    sys.setswitchinterval(0.00001)
+    try:
+        limiter = auth_module.ChatRateLimiter(per_minute=1)
+        thread_count = 32
+        for round_num in range(12):
+            key = f"concurrent-key-{round_num}"
+            granted = _run_one_concurrent_round(limiter, key, thread_count)
+            assert granted == 1, f"round {round_num}: expected exactly 1 grant, got {granted}"
+    finally:
+        sys.setswitchinterval(old_interval)
+
+
+def _run_one_concurrent_round(
+    limiter: "auth_module.ChatRateLimiter", key: str, thread_count: int
+) -> int:
+    """One round of ``test_chat_rate_limiter_check_is_thread_safe_under_
+    concurrent_callers``: ``thread_count`` threads all call ``limiter.
+    check(key)`` as close to simultaneously as a ``threading.Barrier`` can
+    arrange, returning how many were granted. A separate function (not a
+    closure built fresh inside that test's own ``for`` loop) so ``worker``
+    below closes over THIS call's fixed `barrier`/`results`/`key` locals,
+    never a loop variable that could be reassigned out from under it
+    (ruff B023) -- correctness here does not depend on that distinction
+    (each round's threads are fully joined before the next round would
+    reassign anything), but the separate-function shape makes that true
+    by construction rather than by careful sequencing a reader has to
+    verify.
+    """
+    barrier = threading.Barrier(thread_count)
+    results: list[float | None] = [None] * thread_count
+
+    def worker(index: int) -> None:
+        barrier.wait()
+        results[index] = limiter.check(key)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(thread_count)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return sum(1 for r in results if r is None)
 
 
 # ===========================================================================

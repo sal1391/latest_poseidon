@@ -27,10 +27,11 @@ left to the first provider that could exercise them (see core/identity.py's
   ``current_user`` is the ONE place that distinction turns into an
   HTTP-visible failure.
 - ``require_sales``: the require-user + require-role guard (Global
-  Constraints) Task 2 exports for ``/api/skills`` and ``/api/dev/*`` now,
-  and for Phase 10's real ``/api/conversations*``/``/api/messages*`` once
-  those exist -- composes ``current_user``'s 401 with its own 403 when the
-  resolved identity lacks ``Poseidon:Sales``.
+  Constraints) Task 2 exports for ``/api/skills``, ``/api/dev/*``, and
+  (Controller's Round 0 correction, cf401b1) every ``/api/conversations*``/
+  ``/api/messages*`` route ``live_chat.py`` already serves today --
+  composes ``current_user``'s 401 with its own 403 when the resolved
+  identity lacks ``Poseidon:Sales``.
 - ``AuthError`` -> RFC-7807: :func:`auth_error_response`, registered by
   ``api/app.py`` as the ``AuthError`` exception handler, is the ONE place
   that mapping happens, so every raiser (any provider's ``resolve``,
@@ -104,11 +105,13 @@ def current_user(request: Request) -> UserContext:
 
 def require_sales(user: UserContext = Depends(current_user)) -> UserContext:  # noqa: B008
     """The require-user + require-role dependency Global Constraints pins
-    for ``/api/skills``/``/api/dev/*`` (and, from Phase 10 on, the real
-    ``/api/conversations*``/``/api/messages*``): ``Depends(current_user)``
-    already supplies the require-USER half (401 for no/bad credential --
-    see that function's own docstring); this layers the require-ROLE half
-    (403) on top for the one role every gated route in this phase needs.
+    for ``/api/skills``, ``/api/dev/*``, and every ``/api/conversations*``/
+    ``/api/messages*`` route (``live_chat.py`` serves all six of those
+    today; guarded as of the Controller's Round 0 correction, cf401b1):
+    ``Depends(current_user)`` already supplies the require-USER half (401
+    for no/bad credential -- see that function's own docstring); this
+    layers the require-ROLE half (403) on top for the one role every
+    gated route in this phase needs.
 
     A route attaches this ONE dependency (``dependencies=[Depends(
     require_sales)]``, or for a whole router at once, ``include_router(...,
@@ -298,13 +301,24 @@ def rate_limit_chat_send(request: Request) -> None:
     default, so no existing dev/test flow is ever rate-limited by
     surprise).
 
-    Keyed by ``request.state.user.sub`` when identity resolved (every mode
-    today; ``auth0`` too, once the request got this far, since this route
-    carries no ``require_sales``/``current_user`` gate of its own yet --
-    Phase 10 attaches that separately), falling back to the caller's IP
-    (Global Constraints: "keyed by sub (fallback client IP)") for the one
-    case a sub is unavailable: an ``auth0``-mode request whose token failed
-    to resolve, hitting this UNGATED route directly.
+    CORRECTED (Controller's Round 0 correction, cf401b1): as of that
+    commit, ``live_chat.py``'s chat-send route lists
+    ``dependencies=[Depends(require_sales), Depends(rate_limit_chat_send)]``
+    -- ``require_sales`` ALWAYS runs first and short-circuits (401/403)
+    before this dependency is even invoked (FastAPI resolves a route's
+    ``dependencies=[...]`` as a plain, sequential, short-circuiting loop),
+    so by the time this function actually runs, ``request.state.user`` is
+    guaranteed set to a real, role-checked :class:`~poseidon.core.identity.
+    UserContext` -- an unauthenticated or role-less caller gets 401/403
+    from ``require_sales`` and never reaches the rate limiter at all, so a
+    429 can never mask an auth failure. Keyed by ``request.state.user.sub``
+    accordingly (Global Constraints: "keyed by sub"); the ``fallback
+    client IP`` branch below is defense-in-depth for a hypothetical future
+    caller of this same dependency on a route that does NOT carry
+    ``require_sales`` ahead of it (unreachable on the one route this
+    dependency is attached to today, per the guarantee just described, but
+    kept rather than removed so this function's own contract does not
+    silently assume every future caller replicates that ordering).
     """
     limiter = request.app.state.chat_rate_limiter
     if limiter is None:
