@@ -1,3 +1,4 @@
+import { requestWithAuth } from "./client";
 import type { SseEvent } from "./types";
 
 export function parseSseChunk(buffer: string): { events: SseEvent[]; rest: string } {
@@ -30,7 +31,12 @@ export async function streamTurn(
   onEvent: (e: SseEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const response = await fetch(`/api/conversations/${cid}/messages`, {
+  // Routed through the SAME shared request builder `api/client.ts`'s
+  // `apiFetch` uses (the P9 carryforward this task closes: a separate
+  // `fetch` call here used to mean the auth-header injector could add the
+  // header to every REST call and silently miss the one SSE call site --
+  // see client.test.ts's own "one shared builder" pin).
+  const response = await requestWithAuth(`/api/conversations/${cid}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text, client_turn_key: crypto.randomUUID() }),

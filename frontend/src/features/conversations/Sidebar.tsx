@@ -1,6 +1,8 @@
 import { useChatStore } from "../../state/chatStore";
+import { UserMenu } from "../auth/UserMenu";
 
-/** Brand, new-chat action and the conversation list (active row highlighted). */
+/** Brand, new-chat action, the conversation list (active row highlighted),
+ * and the user-menu slot (doc 01 section 3's ASCII layout) at the bottom. */
 export function Sidebar() {
   const conversations = useChatStore((s) => s.conversations);
   const activeId = useChatStore((s) => s.activeId);
@@ -36,6 +38,7 @@ export function Sidebar() {
           </button>
         ))}
       </nav>
+      <UserMenu />
     </aside>
   );
 }
