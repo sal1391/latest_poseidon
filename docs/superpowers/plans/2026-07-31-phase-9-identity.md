@@ -30,9 +30,9 @@
 backend/poseidon/core/identity.py            # UserContext + IdentityProvider protocol + DisabledProvider + resolve_provider()
 backend/poseidon/core/identity_auth0.py      # Auth0Provider (JWKS cache, kid rotation, claim validation)
 backend/poseidon/core/identity_spcs.py       # SpcsIngressProvider
-backend/poseidon/api/auth.py                 # FastAPI middleware/dependencies: current_user, require_sales, rate limiter
+backend/poseidon/api/auth.py                 # FastAPI middleware/dependencies: current_user, require_sales, rate limiter; GET /api/me (amended: landed here in T1, mounted unconditionally)
 backend/poseidon/api/app.py                  # middleware + CORS wiring (additive)
-backend/poseidon/api/live_chat.py            # user_sub from request.state.user; GET /api/me
+backend/poseidon/api/live_chat.py            # user_sub from request.state.user
 backend/poseidon/core/skills/context.py     # + user (additive, sanctioned)
 backend/poseidon/core/config.py              # + identity_mode, spcs_sales_users, rate_limit_chat_per_minute, cors_allow_origins
 backend/tests/test_identity_providers.py     # all three providers, unit level
