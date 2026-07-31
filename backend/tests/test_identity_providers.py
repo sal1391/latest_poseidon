@@ -23,6 +23,20 @@ re-derived, by ``test_api_auth.py``'s own HTTP-level Auth0 tests -- the
 same cross-test-module reuse discipline that file's own docstring already
 established for ``test_chat_orchestrator.py``'s ``FakeDataClient``/
 ``RecordingWriter``.
+
+Phase 9 Task 3 adds ``SpcsIngressProvider``'s own unit matrix below (same
+offline/provider-level discipline -- zero I/O of any kind, so no injectable
+transport is even needed this time): the deploy-mode boot gate, the
+``Sf-Context-Current-User`` header's ``sf|...`` sub mapping via the SAME
+:func:`~poseidon.core.identity.sanitize_username` helper the ``DisabledProvider``
+tests above already exercise, and the ``SPCS_SALES_USERS`` allowlist
+(member/non-member/wildcard/empty). ``resolve_provider``'s own matrix below
+gains the real ``spcs_ingress`` branch and retires the old "not implemented
+yet" placeholder test its own docstring promised to retire. The narrow
+HTTP-boundary slice (boot fail-fast through the real ``create_app``, ``GET
+/api/me``, ``/health/*`` staying open, the ``require_sales`` 403 for a
+non-allowlisted user) lives in ``test_api_auth.py`` instead, mirroring
+Task 2's own provider-unit-tests-here / HTTP-tests-there split.
 """
 
 import json
@@ -44,8 +58,10 @@ from poseidon.core.identity import (
     DisabledProvider,
     UserContext,
     resolve_provider,
+    sanitize_username,
 )
 from poseidon.core.identity_auth0 import ROLES_CLAIM, Auth0Provider
+from poseidon.core.identity_spcs import SpcsIngressProvider
 
 _PLACEHOLDER_DSN = "postgresql+psycopg://nobody:nope@127.0.0.1:1/void"
 
@@ -81,6 +97,18 @@ def _auth0_settings(**overrides) -> Settings:
         auth0_audience=AUTH0_TEST_AUDIENCE,
         auth0_client_id="test-client-id",
     )
+    defaults.update(overrides)
+    return _settings(**defaults)
+
+
+def _spcs_settings(**overrides) -> Settings:
+    """``_settings()`` plus the two fields ``identity_mode="spcs_ingress"``
+    needs to construct cleanly: ``deploy_mode="spcs"`` (the ONE deploy
+    target this header is ever trustworthy under) and a wildcard allowlist
+    (harmless default for tests that are not themselves about allowlist
+    membership -- overridden per test below where membership is the
+    point)."""
+    defaults: dict = dict(identity_mode="spcs_ingress", deploy_mode="spcs", spcs_sales_users="*")
     defaults.update(overrides)
     return _settings(**defaults)
 
@@ -527,6 +555,183 @@ def test_auth0_cached_kid_never_refetches(rsa_keys):
 
 
 # ===========================================================================
+# core/config.py -- Phase 9 Task 3's new Settings field: spcs_sales_users
+# ===========================================================================
+
+
+def test_spcs_sales_users_defaults_to_empty_list():
+    """The fail-closed default (core/config.py's own field comment): an
+    operator must explicitly configure this allowlist before ANY
+    spcs_ingress identity is granted Poseidon:Sales."""
+    assert _settings().spcs_sales_users == []
+
+
+def test_spcs_sales_users_accepts_a_comma_separated_string():
+    """The ergonomic shape for a plain .env/compose file -- the identical
+    parse ``cors_allow_origins`` already established (core/config.py's
+    ``split_spcs_sales_users`` validator)."""
+    settings = _settings(spcs_sales_users="alice,bob")
+    assert settings.spcs_sales_users == ["alice", "bob"]
+
+
+def test_spcs_sales_users_strips_whitespace_around_commas():
+    settings = _settings(spcs_sales_users=" alice , bob ")
+    assert settings.spcs_sales_users == ["alice", "bob"]
+
+
+def test_spcs_sales_users_accepts_the_wildcard_without_rejection():
+    """Unlike ``cors_allow_origins``, "*" is a real, meaningful member here
+    (Global Constraints: "* = everyone gets Poseidon:Sales") -- no
+    wildcard-rejecting validator applies to this field."""
+    settings = _settings(spcs_sales_users="*")
+    assert settings.spcs_sales_users == ["*"]
+
+
+def test_spcs_sales_users_accepts_a_list_literal_directly():
+    settings = _settings(spcs_sales_users=["alice", "bob"])
+    assert settings.spcs_sales_users == ["alice", "bob"]
+
+
+# ===========================================================================
+# SpcsIngressProvider -- Sf-Context-Current-User trusted ONLY under
+# deploy_mode="spcs" (Phase 9 Task 3, doc 05 section 2's "config choice,
+# recorded per environment")
+# ===========================================================================
+
+
+def test_sanitize_username_is_the_one_shared_rule_both_providers_call():
+    """Direct proof of the extracted helper itself (core/identity.py),
+    independent of which provider calls it -- DisabledProvider's own
+    act-as matrix above already exercises it indirectly; this pins the
+    function's own contract once, by name."""
+    assert sanitize_username("Alice") == "alice"
+    assert sanitize_username("not valid!") is None
+
+
+@pytest.mark.parametrize("deploy_mode", ["local", "ec2"])
+def test_spcs_provider_raises_at_construction_outside_spcs_deploy_mode(deploy_mode):
+    """Global Constraints: "spcs_ingress outside spcs deploy mode -> hard
+    boot error (fail-fast, pinned)". Sf-Context-Current-User is injected
+    by the Snowflake platform ingress edge and is otherwise just an
+    ordinary, caller-settable header -- trusting it under any other
+    deploy_mode would let any caller mint an arbitrary identity by simply
+    setting that header themselves. Raised from the CONSTRUCTOR (not
+    merely inside resolve()) so this fails at boot, the same call
+    resolve_provider makes once from api/app.py's create_app."""
+    with pytest.raises(RuntimeError) as exc_info:
+        SpcsIngressProvider(_spcs_settings(deploy_mode=deploy_mode))
+
+    assert str(exc_info.value) == (
+        "identity_mode=spcs_ingress requires deploy_mode='spcs', got "
+        f"{deploy_mode!r}; Sf-Context-Current-User is trustworthy "
+        "only behind the Snowflake platform ingress edge and must never be "
+        "trusted outside it"
+    )
+
+
+def test_spcs_provider_constructs_cleanly_under_spcs_deploy_mode():
+    SpcsIngressProvider(_spcs_settings())  # must not raise
+
+
+def test_spcs_header_resolves_to_sf_prefixed_sub():
+    user = SpcsIngressProvider(_spcs_settings()).resolve({"sf-context-current-user": "alice"})
+    assert user.sub == "sf|alice"
+
+
+def test_spcs_header_is_casefolded():
+    user = SpcsIngressProvider(_spcs_settings()).resolve({"sf-context-current-user": "ALICE"})
+    assert user.sub == "sf|alice"
+
+
+def test_spcs_email_and_name_are_not_fabricated():
+    """Judgment call (disclosed in this task's report): unlike
+    DisabledProvider's synthetic per-act-as email/name, SpcsIngressProvider
+    has no real claim source for either -- Sf-Context-Current-User carries
+    a bare username and nothing else -- so both stay None rather than
+    inventing values this provider cannot actually vouch for."""
+    user = SpcsIngressProvider(_spcs_settings()).resolve({"sf-context-current-user": "alice"})
+    assert user.email is None
+    assert user.name is None
+
+
+def test_spcs_missing_header_is_401():
+    err = _expect_auth_error(
+        SpcsIngressProvider(_spcs_settings()), {}, 401, "missing spcs identity header"
+    )
+    assert err.detail == "no valid Sf-Context-Current-User header"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",  # too short (min 1)
+        "a" * 65,  # too long (max 64)
+        "alice bob",  # space is not in [a-z0-9_-]
+        "alice!",  # punctuation
+        "alice.bob",  # dot
+        "alice/bob",  # slash
+        "  alice",  # leading whitespace
+        "alice\t",  # trailing tab
+    ],
+)
+def test_spcs_malformed_header_is_401_identically_to_missing(raw):
+    """This task's disclosed resolution of the brief's stated ambiguity: a
+    header that is PRESENT but fails the same [a-z0-9_-]{1,64} sanitize
+    rule DisabledProvider's own X-Dev-User act-as uses is a malformed
+    identity from a supposedly trusted edge -- treated exactly like the
+    header being absent (the SAME AuthError), never a silent fallback
+    (there is no default identity to fall back to in this mode -- unlike
+    DisabledProvider, whose whole point is "never block local dev")."""
+    provider = SpcsIngressProvider(_spcs_settings())
+    err = _expect_auth_error(
+        provider, {"sf-context-current-user": raw}, 401, "missing spcs identity header"
+    )
+    assert err.detail == "no valid Sf-Context-Current-User header"
+
+
+def test_spcs_allowlisted_user_gets_the_sales_role():
+    provider = SpcsIngressProvider(_spcs_settings(spcs_sales_users="alice,bob"))
+    user = provider.resolve({"sf-context-current-user": "alice"})
+    assert user.roles == ("Poseidon:Sales",)
+
+
+def test_spcs_non_allowlisted_user_gets_no_role():
+    """Global Constraints: "non-member -> authenticated UserContext
+    WITHOUT the role" -- the existing require_sales dependency (api/
+    auth.py) is what turns this into a 403; this provider never builds a
+    second role check of its own (proven end to end in test_api_auth.py)."""
+    provider = SpcsIngressProvider(_spcs_settings(spcs_sales_users="alice,bob"))
+    user = provider.resolve({"sf-context-current-user": "carol"})
+    assert user.roles == ()
+    assert user.sub == "sf|carol"
+
+
+def test_spcs_wildcard_allowlist_grants_everyone():
+    provider = SpcsIngressProvider(_spcs_settings(spcs_sales_users="*"))
+    user = provider.resolve({"sf-context-current-user": "anybody"})
+    assert user.roles == ("Poseidon:Sales",)
+
+
+def test_spcs_empty_allowlist_grants_no_one():
+    """The safe, fail-closed default (core/config.py's own
+    spcs_sales_users default is an empty list)."""
+    provider = SpcsIngressProvider(_spcs_settings(spcs_sales_users=[]))
+    user = provider.resolve({"sf-context-current-user": "alice"})
+    assert user.roles == ()
+
+
+def test_spcs_allowlist_membership_is_casefolded():
+    """Config entries and the header value are compared casefolded on
+    BOTH sides (disclosed judgment call): an operator typing "Alice" in
+    SPCS_SALES_USERS must still match the header's actual casing,
+    whatever it happens to be."""
+    provider = SpcsIngressProvider(_spcs_settings(spcs_sales_users="Alice"))
+    user = provider.resolve({"sf-context-current-user": "ALICE"})
+    assert user.roles == ("Poseidon:Sales",)
+    assert user.sub == "sf|alice"
+
+
+# ===========================================================================
 # resolve_provider -- mode selection, fail-fast on anything not implemented
 # ===========================================================================
 
@@ -551,30 +756,35 @@ def test_resolve_provider_auth0_mode_returns_an_auth0_provider():
     assert isinstance(provider, Auth0Provider)
 
 
-@pytest.mark.parametrize("mode", ["spcs_ingress"])
-def test_resolve_provider_fails_fast_for_modes_with_no_provider_yet(mode, monkeypatch):
-    """SpcsIngressProvider ships in Phase 9 Task 3 -- until then, selecting
-    this recognized-but-unimplemented mode must fail loudly at the SAME
-    call this task's own "disabled"/"auth0" branches succeed at, never
-    silently fall back to a different provider. auth0_domain/audience/
-    client_id are set so Settings' own validator does not raise first for
-    an unrelated reason (this test is about resolve_provider, not about
-    Settings' own auth0-fields-required check).
+def test_resolve_provider_spcs_ingress_mode_returns_a_spcs_provider():
+    """Phase 9 Task 3's own handoff: replaces the fail-fast stub Task 1/2
+    left for "spcs_ingress" with the real branch -- the LAST of the three
+    modes resolve_provider's own docstring names."""
+    provider = resolve_provider(_spcs_settings())
+    assert isinstance(provider, SpcsIngressProvider)
 
-    AMENDED (Phase 9 Task 2): this was parametrized over
-    ``["auth0", "spcs_ingress"]`` in Task 1 -- "auth0" is dropped now that
-    :func:`test_resolve_provider_auth0_mode_returns_an_auth0_provider`
-    above proves it resolves for real. Task 3 will similarly retire this
-    whole test once ``spcs_ingress`` ships.
-    """
-    settings = _settings(
-        identity_mode=mode,
-        auth0_domain="tenant.auth0.test",
-        auth0_audience="https://api.test",
-        auth0_client_id="client-id",
-    )
-    with pytest.raises(RuntimeError, match=mode):
-        resolve_provider(settings)
+
+def test_resolve_provider_spcs_ingress_fails_fast_outside_spcs_deploy_mode():
+    """The boot fail-fast, exercised through resolve_provider itself (the
+    SAME call api/app.py's create_app makes at boot) -- not only through
+    SpcsIngressProvider's own constructor test above."""
+    with pytest.raises(RuntimeError, match="deploy_mode='spcs'"):
+        resolve_provider(_spcs_settings(deploy_mode="local"))
+
+
+def test_resolve_provider_fails_fast_for_a_genuinely_unknown_mode():
+    """Defensive belt for Settings' own Literal suspenders (resolve_
+    provider's own docstring). Before Task 3, this SAME fail-fast branch
+    was reachable through a real, valid Settings(identity_mode=
+    "spcs_ingress") value (the now-retired test this one replaces); as of
+    Task 3, every Literal value a real Settings instance can actually
+    carry resolves to a real provider, so the branch is reachable only
+    through a non-Settings stand-in -- a plain object Settings' own type
+    system could never produce."""
+    from types import SimpleNamespace
+
+    with pytest.raises(RuntimeError, match="bogus"):
+        resolve_provider(SimpleNamespace(identity_mode="bogus"))
 
 
 # ===========================================================================
@@ -583,13 +793,16 @@ def test_resolve_provider_fails_fast_for_modes_with_no_provider_yet(mode, monkey
 
 
 def test_identity_module_files_are_ascii_on_disk():
-    """Phase 9 Task 2 adds ``identity_auth0.py`` -- wholly this task's own,
-    checked in full, like the other two."""
+    """Phase 9 Task 2 adds ``identity_auth0.py``; Task 3 adds
+    ``identity_spcs.py`` -- both wholly their own task's own, checked in
+    full, like ``identity.py`` itself."""
     from poseidon.core import identity_auth0 as identity_auth0_module
+    from poseidon.core import identity_spcs as identity_spcs_module
 
     paths = (
         Path(identity_module.__file__),
         Path(identity_auth0_module.__file__),
+        Path(identity_spcs_module.__file__),
         Path(__file__),
     )
     for path in paths:

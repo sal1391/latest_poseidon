@@ -146,6 +146,34 @@ _ACT_AS_HEADER = "x-dev-user"
 _ACT_AS_PATTERN = re.compile(r"[a-z0-9_-]{1,64}")
 
 
+def sanitize_username(raw: str) -> str | None:
+    """Casefold ``raw``, then require the WHOLE result to match
+    ``_ACT_AS_PATTERN`` above (1-64 characters of ``[a-z0-9_-]``,
+    ``fullmatch`` so a partial match like ``"alice!"``'s ``"alice"``
+    prefix is rejected wholesale, never truncated to it). Returns the
+    sanitized value, or ``None`` when it does not match.
+
+    The ONE sanitize rule this codebase applies to any operator/platform-
+    supplied username-shaped header value -- SHARED, not duplicated, by
+    every provider that reads one: :class:`DisabledProvider`'s own
+    ``X-Dev-User`` act-as header (Task 1 -- this two-line check used to be
+    inlined directly in its ``resolve``, before being extracted here) and,
+    as of Phase 9 Task 3, ``SpcsIngressProvider``'s ``Sf-Context-Current-
+    User`` header (``core/identity_spcs.py`` -- see that module's own
+    docstring, which cites this exact function by name). Deliberately
+    policy-free: it answers only "is this a well-formed username", never
+    "what happens if it is not" -- that differs per caller (
+    ``DisabledProvider`` falls back silently to its fixed default;
+    ``SpcsIngressProvider`` raises ``AuthError`` -- see each provider's
+    own docstring for why the identical malformed input means two
+    different things in two different trust contexts).
+    """
+    candidate = raw.casefold()
+    if _ACT_AS_PATTERN.fullmatch(candidate) is None:
+        return None
+    return candidate
+
+
 class DisabledProvider:
     """``identity_mode="disabled"`` -- the default, and the ONLY mode this
     task implements (Global Constraints: "every existing test/env boots
@@ -172,8 +200,8 @@ class DisabledProvider:
         raw = headers.get(_ACT_AS_HEADER)
         if raw is None:
             return DISABLED_DEFAULT_USER
-        candidate = raw.casefold()
-        if _ACT_AS_PATTERN.fullmatch(candidate) is None:
+        candidate = sanitize_username(raw)
+        if candidate is None:
             # Invalid -- pinned as "ignore the header", never a rejection;
             # the fixed default answers instead, identically to no header.
             return DISABLED_DEFAULT_USER
@@ -189,19 +217,40 @@ def resolve_provider(settings: Settings) -> IdentityProvider:
     """Select the :class:`IdentityProvider` named by ``settings.
     identity_mode``. Called once, at app construction (``api/app.py``'s
     ``create_app``) -- never lazily, on first request -- so a misconfigured
-    or not-yet-implemented mode fails at BOOT rather than serving even one
-    request under the wrong identity story.
+    mode fails at BOOT rather than serving even one request under the
+    wrong identity story.
 
-    ``"disabled"``/``"auth0"`` resolve today. ``"spcs_ingress"`` is a real
-    ``Settings.identity_mode`` value (the ``Literal`` already accepts all
-    three -- doc 05 section 2's full design), but its provider ships in
-    Phase 9 Task 3; selecting it before then hits the exact same fail-fast
-    branch a genuinely unrecognized string would (impossible to reach
-    through ``Settings`` alone, whose ``Literal`` already rejects anything
-    else at config-load time -- this is the defensive belt for that
-    already-enforced suspenders, doubling as the honest answer for a mode
-    this task has not implemented yet).
+    As of Phase 9 Task 3, every ``Settings.identity_mode`` the ``Literal``
+    accepts resolves to a real provider: ``"disabled"`` ->
+    :class:`DisabledProvider`, ``"auth0"`` -> ``Auth0Provider`` (Task 2,
+    ``core/identity_auth0.py``), ``"spcs_ingress"`` -> ``SpcsIngress
+    Provider`` (Task 3, ``core/identity_spcs.py``). The last of the three
+    can still fail this SAME call: its constructor raises ``RuntimeError``
+    when ``settings.deploy_mode != "spcs"`` (see that class's own
+    docstring) -- the ``Sf-Context-Current-User`` header it trusts is
+    injected by the Snowflake platform ingress edge and forgeable by
+    anyone reaching this app any other way, so selecting that mode outside
+    an actual SPCS deploy must fail exactly as loudly, at exactly this
+    boot-time call, as a genuinely unrecognized mode string does below.
+
+    Also prints one boot log line naming the resolved mode -- the same
+    ``print(..., flush=True)`` mechanism ``api/app.py``'s own
+    ``_build_tool_registry`` uses for its "research transport: ..." line,
+    so an operator reading boot logs can see which identity story a given
+    process is running under the same way they already see which research
+    transport it wired.
+
+    The final ``raise`` below is the defensive belt for ``Settings.
+    identity_mode``'s own ``Literal`` suspenders: unreachable through any
+    value a real ``Settings`` instance can actually carry now that all
+    three literal options resolve above, so a genuinely unknown mode can
+    only be exercised in tests via a non-``Settings`` stand-in (see
+    ``test_resolve_provider_fails_fast_for_a_genuinely_unknown_mode`` in
+    ``test_identity_providers.py``) -- kept rather than removed, since
+    ``Settings`` already enforcing this does not make this function's own
+    fail-fast contract any less real.
     """
+    print(f"identity mode: {settings.identity_mode}", flush=True)
     if settings.identity_mode == "disabled":
         return DisabledProvider()
     if settings.identity_mode == "auth0":
@@ -211,11 +260,16 @@ def resolve_provider(settings: Settings) -> IdentityProvider:
         # would try to import identity_auth0 before its own AuthError/
         # UserContext names exist yet for identity_auth0 to import back).
         # Deferring to call time -- long after both modules are fully
-        # loaded -- sidesteps that entirely. Phase 9 Task 3 will add the
-        # identical one-line branch + deferred import for spcs_ingress.
+        # loaded -- sidesteps that entirely.
         from poseidon.core.identity_auth0 import Auth0Provider
 
         return Auth0Provider(settings)
+    if settings.identity_mode == "spcs_ingress":
+        # Same deferred-import reason as the auth0 branch above:
+        # identity_spcs.py imports AuthError/UserContext FROM this module.
+        from poseidon.core.identity_spcs import SpcsIngressProvider
+
+        return SpcsIngressProvider(settings)
     raise RuntimeError(
         f"identity_mode={settings.identity_mode!r} has no IdentityProvider implemented yet"
     )
@@ -228,4 +282,5 @@ __all__ = [
     "IdentityProvider",
     "UserContext",
     "resolve_provider",
+    "sanitize_username",
 ]

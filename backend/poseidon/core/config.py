@@ -36,6 +36,24 @@ class Settings(BaseSettings):
     auth0_domain: str | None = None
     auth0_audience: str | None = None
     auth0_client_id: str | None = None
+    # Phase 9 Task 3 (doc 05 section 2, decision D22): spcs_ingress's own
+    # role allowlist -- the "config choice, recorded per environment" doc
+    # 05 section 2 calls for (the alternative it names but this task does
+    # NOT implement is a live Snowflake-role lookup at login). Comma-
+    # separated in a real .env/compose file -- the same ergonomic string
+    # shape cors_allow_origins already uses, split by this field's own
+    # split_spcs_sales_users validator below; a Python list literal (a
+    # test's direct keyword override) passes through unchanged. "*" is a
+    # real, meaningful member (Global Constraints: "* = everyone gets
+    # Poseidon:Sales"), so unlike cors_allow_origins there is no
+    # wildcard-rejecting validator for this field. Defaults to an empty
+    # list: the fail-closed choice -- an operator must explicitly name at
+    # least one user (or "*") before ANY spcs_ingress identity is granted
+    # Poseidon:Sales; core/identity_spcs.py's SpcsIngressProvider resolves
+    # an unconfigured allowlist as "authenticated, role-less" rather than
+    # a boot error, since an empty allowlist is a valid, if inert,
+    # environment, not a misconfiguration.
+    spcs_sales_users: list[str] = []
     llm_profile: Literal["bedrock", "cortex"] = "bedrock"
     llm_mode: Literal["stub", "live"] = "stub"
     # Phase 5 (doc 03 sections 1-2): LLM role routing. ``None`` defers to the
@@ -121,6 +139,24 @@ class Settings(BaseSettings):
                 "cors_allow_origins must not contain '*' -- this app always "
                 "sends credentials (api/app.py's CORSMiddleware wiring)"
             )
+        return v
+
+    @field_validator("spcs_sales_users", mode="before")
+    @classmethod
+    def split_spcs_sales_users(cls, v: object) -> object:
+        """The identical ergonomic string-to-list parse ``split_cors_
+        origins`` above already established for env vars (always plain
+        strings) -- kept as this field's OWN validator, matching this
+        file's one-validator-per-field convention, rather than extracting
+        a shared helper neither field asked for. Unlike CORS's origin
+        allowlist, "*" is a valid, meaningful member here (Global
+        Constraints: "* = everyone gets Poseidon:Sales" -- doc 05 section
+        2's "config choice, recorded per environment"), so there is no
+        wildcard-rejecting counterpart to ``no_wildcard_cors_origin``
+        above for this field.
+        """
+        if isinstance(v, str):
+            return [name.strip() for name in v.split(",") if name.strip()]
         return v
 
     @model_validator(mode="after")

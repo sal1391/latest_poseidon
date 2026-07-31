@@ -27,6 +27,14 @@ allowlist, including a preflight round trip. The JWKS-fixture helpers
 imported from ``test_identity_providers.py`` rather than re-derived -- the
 same cross-test-module reuse already established for ``FakeDataClient``/
 ``RecordingWriter`` above.
+
+Phase 9 Task 3 adds, at the very bottom: the narrow SPCS-ingress
+HTTP-boundary slice -- boot fail-fast through the real ``create_app``,
+``GET /api/me``, ``/health/*`` staying open, and the ``require_sales`` 403
+for a non-allowlisted user. Provider-level cases (allowlist membership,
+casefold, malformed-header-401) live in ``test_identity_providers.py``'s
+own ``SpcsIngressProvider`` matrix instead, the same provider-tests-there/
+HTTP-tests-here split Task 2 established above.
 """
 
 import sys
@@ -861,6 +869,119 @@ async def test_cors_preflight_rejects_a_disallowed_origin():
 
     assert r.status_code == 400
     assert "access-control-allow-origin" not in r.headers
+
+
+# ===========================================================================
+# SPCS ingress mode at the HTTP boundary: boot fail-fast through the real
+# create_app, GET /api/me, /health/* staying open, and the require_sales
+# 403 for a non-allowlisted user (Phase 9 Task 3). Provider-level cases
+# (allowlist membership, casefold, malformed-header-401) are already
+# covered by test_identity_providers.py -- only what changes AT the HTTP
+# boundary is re-proven here, mirroring the Auth0 section's own split
+# above. Zero injectable transport needed this time (unlike _auth0_app):
+# SpcsIngressProvider does no I/O of any kind.
+# ===========================================================================
+
+
+def _spcs_app(**overrides):
+    from poseidon.api.app import create_app
+
+    defaults: dict = dict(identity_mode="spcs_ingress", deploy_mode="spcs", spcs_sales_users="*")
+    defaults.update(overrides)
+    return create_app(_settings(**defaults))
+
+
+def test_create_app_fails_fast_for_spcs_ingress_outside_spcs_deploy_mode():
+    """The same boot-time RuntimeError test_identity_providers.py proves
+    directly against resolve_provider/SpcsIngressProvider, exercised here
+    through the real api/app.py wiring: create_app calls resolve_provider
+    at the very top of app construction, before any router is mounted or
+    any middleware installed -- proof the fail-fast genuinely blocks the
+    app from ever booting, not merely a provider-level contract nothing
+    else actually calls that way."""
+    from poseidon.api.app import create_app
+
+    with pytest.raises(RuntimeError, match="deploy_mode='spcs'"):
+        create_app(
+            _settings(identity_mode="spcs_ingress", deploy_mode="local", spcs_sales_users="*")
+        )
+
+
+@pytest.mark.anyio
+async def test_me_under_spcs_ingress_mode_with_a_valid_header_returns_the_claims():
+    app = _spcs_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.get("/api/me", headers={"Sf-Context-Current-User": "alice"})
+
+    assert r.status_code == 200
+    assert r.json() == {
+        "sub": "sf|alice",
+        "name": None,
+        "email": None,
+        "roles": ["Poseidon:Sales"],
+        "identity_mode": "spcs_ingress",
+    }
+
+
+@pytest.mark.anyio
+async def test_me_under_spcs_ingress_mode_with_no_header_is_401():
+    app = _spcs_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.get("/api/me")
+
+    assert r.status_code == 401
+    assert r.json() == {
+        "type": "about:blank",
+        "title": "missing spcs identity header",
+        "detail": "no valid Sf-Context-Current-User header",
+        "status": 401,
+    }
+
+
+@pytest.mark.anyio
+async def test_health_live_stays_open_under_spcs_ingress_mode_with_no_header():
+    """The identity middleware still runs for /health/* (Task 1's own
+    "cheap... paying this on every request" discipline, unchanged) and
+    records the AuthError -- but /health/live never depends on
+    current_user, so it is never asked, and the request succeeds."""
+    app = _spcs_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.get("/health/live")
+
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok"}
+
+
+@pytest.mark.anyio
+async def test_api_skills_403_for_a_non_allowlisted_spcs_user():
+    """Global Constraints: "non-member -> authenticated UserContext
+    WITHOUT the role" -- proven end to end: require_sales (api/auth.py),
+    not SpcsIngressProvider itself, is what turns this into a 403."""
+    app = _spcs_app(chat_mode="live", spcs_sales_users="someone-else")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.get("/api/skills", headers={"Sf-Context-Current-User": "alice"})
+
+    assert r.status_code == 403
+    assert r.json() == {
+        "type": "about:blank",
+        "title": "insufficient role",
+        "detail": "caller lacks required role 'Poseidon:Sales'",
+        "status": 403,
+    }
+
+
+@pytest.mark.anyio
+async def test_api_skills_200_for_an_allowlisted_spcs_user():
+    app = _spcs_app(chat_mode="live", spcs_sales_users="alice")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.get("/api/skills", headers={"Sf-Context-Current-User": "alice"})
+
+    assert r.status_code == 200
 
 
 # ===========================================================================
