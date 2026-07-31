@@ -22,7 +22,7 @@
 - ENVIRONMENT: withhold PERPLEXITY_API_KEY (env -u) on every suite run; zero live calls (Auth0 included — the JWKS fixture is local).
 - ASCII .py; frozen dataclasses; byte-pinned problem details; deterministic; docstrings explain WHY; ruff clean; conventional commits on `phase-3-8-overnight`; trailer `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
 - Baselines: 1389 offline / 43 pg / 41 frontend, all lint clean. The compose stack is up.
-- Do not modify P2-P8 core modules EXCEPT the sanctioned additive items: `SkillContext.user`; `core/config.py` Settings additions; `api/live_chat.py` + `api/app.py` middleware wiring + the `dev|local` replacement; `api/dev_runner.py` guard inclusion; frontend `api/client.ts`/`sse.ts` auth threading + the new auth feature dir.
+- Do not modify P2-P8 core modules EXCEPT the sanctioned additive items: `SkillContext.user`; `core/config.py` Settings additions; `api/live_chat.py` + `api/app.py` middleware wiring; `core/chat/orchestrator.py` for the `dev|local` replacement (amended: `DEV_USER_SUB` lives there — orchestrator.py:279 at BASE — not in live_chat.py as this line originally implied); `api/dev_runner.py` guard inclusion; frontend `api/client.ts`/`sse.ts` auth threading + the new auth feature dir.
 
 ## File Map
 
