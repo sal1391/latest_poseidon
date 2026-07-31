@@ -1,5 +1,20 @@
 # Morning Review — 2026-07-29 🔱
 
+## ⚡ THE SECOND RUN — "finish the rest of the application" (live progress log)
+
+*You authorized finishing everything; this block updates as phases complete. Same rules as the first run: everything on `phase-3-8-overnight`, nothing merged, nothing pushed, stub mode, zero un-disclosed external calls.*
+
+- **Phase 9 (identity providers):** IN PROGRESS — the three-provider seam (Auth0 JWKS / SPCS ingress / dev), threading real user identity into every run-log row and RLS-ready path. The live Auth0 login round-trip needs a dev tenant from you (pile item); everything else tests offline with local JWKS fixtures.
+- Phase 10 (chat history + RLS): queued.
+- Phase 11 (full observability): queued.
+- Phase 12 (feedback capture): queued.
+- Phase 13 (personalization): queued.
+- Phase 14 (SPCS prep — CortexProvider, parity, Dockerfile, spec, runbooks): queued; the actual Snowflake-side deploy + its gate need your account (pile).
+- Phase 15 (Snowflake data adapter + contract tests): queued; the live flip needs your account (pile).
+- Phase 16 (EC2 deploy scripts + runbooks): queued; the actual deploy needs your AWS (pile).
+- Phase 17 (retrieval thin slice, optional): queued last.
+
+
 *Everything that happened overnight, what needs your eyes, and the recommended order.*
 *(Live-updated through the night; the "as of" stamp at the bottom tells you where the run ended.)*
 
