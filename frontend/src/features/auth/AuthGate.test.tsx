@@ -173,3 +173,45 @@ test("an unreachable backend shows a retry-able connection error, not a blank sc
   expect(alert).toHaveTextContent(/can't reach the poseidon backend/i);
   expect(auth0ImportSpy).not.toHaveBeenCalled();
 });
+
+// Placed LAST in this file, deliberately: `auth0ImportSpy` is a
+// module-scope `vi.fn()` never reset between tests (module mock factories
+// run at most once per file, and this is the one test meant to actually
+// trigger it). Every test ABOVE this one asserts the spy was never
+// called; once this test legitimately fires it, that assertion could
+// never hold again for the rest of the file's run. Fix round 1 (review
+// finding I-1): none of the tests above drive a real 401 through
+// AuthGate's OWN dispatch with Auth0 configured -- Auth0Boundary.test.tsx
+// covers that component in isolation, bypassing AuthGate.tsx:58-61's
+// `readAuth0Config()` check entirely.
+test("a 401 with VITE_AUTH0_* configured dispatches into the Auth0 login gate through AuthGate's own boundary", async () => {
+  vi.stubEnv("VITE_AUTH0_DOMAIN", "test.auth0.local");
+  vi.stubEnv("VITE_AUTH0_CLIENT_ID", "test-client-id");
+  vi.stubEnv("VITE_AUTH0_AUDIENCE", "https://poseidon/api");
+  server.use(
+    meHandler(
+      {
+        type: "about:blank",
+        title: "missing bearer token",
+        detail: "no Authorization header",
+        status: 401,
+      },
+      401,
+    ),
+  );
+
+  render(
+    <AuthGate>
+      <div>Protected content</div>
+    </AuthGate>,
+  );
+
+  expect(await screen.findByRole("button", { name: /log in/i })).toBeInTheDocument();
+  expect(screen.queryByText(/identity misconfigured/i)).not.toBeInTheDocument();
+  expect(screen.queryByText("Protected content")).not.toBeInTheDocument();
+  // The complement of the lazy-import pin above: this is the one test in
+  // the file where the dynamic import is SUPPOSED to fire -- proving
+  // AuthGate's own dispatch (not just Auth0Boundary rendered directly,
+  // as Auth0Boundary.test.tsx does) is what reaches it.
+  expect(auth0ImportSpy).toHaveBeenCalled();
+});
