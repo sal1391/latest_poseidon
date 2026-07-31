@@ -44,7 +44,6 @@ from poseidon.core.chat import events, orchestrator
 from poseidon.core.chat.dev_router import DevDeterministicRouter
 from poseidon.core.chat.events import SseEnvelopeSink
 from poseidon.core.chat.orchestrator import (
-    DEV_USER_SUB,
     TurnOutcome,
     _repopulate_pass_through,
     execute_turn,
@@ -52,6 +51,7 @@ from poseidon.core.chat.orchestrator import (
 from poseidon.core.chat.state import ConversationStateStore
 from poseidon.core.config import Settings
 from poseidon.core.data.client import BreakdownResult, BreakdownRow, MetricResult, PeriodRange
+from poseidon.core.identity import DISABLED_DEFAULT_USER
 from poseidon.core.llm.prompts import DEFAULT_PROMPTS_DIR, PromptRegistry
 from poseidon.core.llm.roles import RoleClient
 from poseidon.core.llm.stub import StubProvider
@@ -672,6 +672,7 @@ def test_flagship_singapore_top_gp_frame_sequence_and_writer_rows(monkeypatch):
     sink = SseEnvelopeSink(turn_id="turn-1", message_id="msg-1", send=send, registry=REGISTRY)
 
     outcome = execute_turn(
+        user=DISABLED_DEFAULT_USER,
         conversation_id="conv-1",
         text="Top GP customers for Port of Singapore in April 2026",
         client_turn_key="ctk-1",
@@ -755,7 +756,7 @@ def test_flagship_singapore_top_gp_frame_sequence_and_writer_rows(monkeypatch):
     # --- writer rows: call-shape assertions per the doc 06 row contract ---
     assert len(writer.start_turn_calls) == 1
     start = writer.start_turn_calls[0]
-    assert start["user_sub"] == DEV_USER_SUB == "dev|local"
+    assert start["user_sub"] == DISABLED_DEFAULT_USER.sub == "dev|local"
     assert start["conversation_id"] == "conv-1"
     assert start["client_turn_key"] == "ctk-1"
     assert start["turn_index"] == 1
@@ -781,7 +782,7 @@ def test_flagship_singapore_top_gp_frame_sequence_and_writer_rows(monkeypatch):
     first_llm, second_llm = writer.append_llm_calls
     for row in (first_llm, second_llm):
         assert row["turn_run_id"] == "turn-1"
-        assert row["user_sub"] == DEV_USER_SUB
+        assert row["user_sub"] == DISABLED_DEFAULT_USER.sub
         # Final-review wave item 4 (I3): LLM_MODE=stub means
         # DevDeterministicRouter answered, not the CONFIGURED provider
         # ("bedrock", from LLM_PROFILE) RoleClient.resolve reports -- a live
@@ -876,6 +877,7 @@ def test_flagship_prompt_hash_matches_the_real_system_text_the_provider_saw(monk
     sink = SseEnvelopeSink(turn_id="t", message_id="m", send=send, registry=REGISTRY)
 
     execute_turn(
+        user=DISABLED_DEFAULT_USER,
         conversation_id="conv-hash",
         text="Top GP customers for Port of Singapore in April 2026",
         client_turn_key=None,
@@ -925,6 +927,7 @@ def test_llm_call_rows_record_provider_stub_under_llm_mode_stub_not_the_configur
     sink = SseEnvelopeSink(turn_id="t", message_id="m", send=lambda _f: None, registry=REGISTRY)
 
     execute_turn(
+        user=DISABLED_DEFAULT_USER,
         conversation_id="conv-provider",
         text="Top GP customers for Port of Singapore in April 2026",
         client_turn_key=None,
@@ -978,6 +981,7 @@ def test_carry_over_turn_period_replaced_port_carried_but_not_refiltered(monkeyp
     prompt_registry = PromptRegistry(DEFAULT_PROMPTS_DIR)
 
     execute_turn(
+        user=DISABLED_DEFAULT_USER,
         conversation_id="conv-carry",
         text="Top GP customers for Port of Singapore in April 2026",
         client_turn_key=None,
@@ -997,6 +1001,7 @@ def test_carry_over_turn_period_replaced_port_carried_but_not_refiltered(monkeyp
 
     frames2, send2 = _capturing_send()
     outcome2 = execute_turn(
+        user=DISABLED_DEFAULT_USER,
         conversation_id="conv-carry",
         text="and for May 2026?",
         client_turn_key=None,
@@ -1056,6 +1061,7 @@ def test_carry_over_turn_customer_carried_and_still_refiltered(monkeypatch):
     prompt_registry = PromptRegistry(DEFAULT_PROMPTS_DIR)
 
     execute_turn(
+        user=DISABLED_DEFAULT_USER,
         conversation_id="conv-cust-carry",
         text="gp for Northstar Lines in April 2026",
         client_turn_key=None,
@@ -1074,6 +1080,7 @@ def test_carry_over_turn_customer_carried_and_still_refiltered(monkeypatch):
     assert state.get("conv-cust-carry").customer == "Northstar Lines"
 
     execute_turn(
+        user=DISABLED_DEFAULT_USER,
         conversation_id="conv-cust-carry",
         text="and for May 2026?",
         client_turn_key=None,
@@ -1115,6 +1122,7 @@ def test_ambiguous_turn_produces_chips_and_text_parts_clarify_status_no_dispatch
     sink = SseEnvelopeSink(turn_id="t", message_id="m", send=send, registry=REGISTRY)
 
     outcome = execute_turn(
+        user=DISABLED_DEFAULT_USER,
         conversation_id="conv-amb",
         text="gp for Meridiann in April 2026",
         client_turn_key=None,
@@ -1230,6 +1238,7 @@ def test_error_turn_emits_error_event_and_finalizes_error_state_untouched(monkey
     sink = SseEnvelopeSink(turn_id="t", message_id="m", send=send, registry=REGISTRY)
 
     outcome = execute_turn(
+        user=DISABLED_DEFAULT_USER,
         conversation_id="conv-err",
         text="Top GP customers for Port of Singapore in April 2026",
         client_turn_key=None,
@@ -1307,6 +1316,7 @@ def test_retry_with_same_client_turn_key_short_circuits_with_duplicate_turn_erro
         turn_id="turn-A", message_id="msg-A", send=first_send, registry=REGISTRY
     )
     first_outcome = execute_turn(
+        user=DISABLED_DEFAULT_USER,
         conversation_id="conv-retry",
         text="Top GP customers for Port of Singapore in April 2026",
         client_turn_key="ctk-retry",
@@ -1333,6 +1343,7 @@ def test_retry_with_same_client_turn_key_short_circuits_with_duplicate_turn_erro
         turn_id="turn-B", message_id="msg-B", send=retry_send, registry=REGISTRY
     )
     retry_outcome = execute_turn(
+        user=DISABLED_DEFAULT_USER,
         conversation_id="conv-retry",
         text="Top GP customers for Port of Singapore in April 2026",
         client_turn_key="ctk-retry",
@@ -1391,6 +1402,7 @@ def test_writer_none_turn_works_identically_without_a_run_log(monkeypatch):
     sink = SseEnvelopeSink(turn_id="t", message_id="m", send=send, registry=REGISTRY)
 
     outcome = execute_turn(
+        user=DISABLED_DEFAULT_USER,
         conversation_id="conv-no-writer",
         text="Top GP customers for Port of Singapore in April 2026",
         client_turn_key=None,
@@ -1421,6 +1433,7 @@ def test_writer_none_ambiguous_turn_also_works(monkeypatch):
     prompt_registry = PromptRegistry(DEFAULT_PROMPTS_DIR)
 
     outcome = execute_turn(
+        user=DISABLED_DEFAULT_USER,
         conversation_id="conv-no-writer-amb",
         text="gp for Meridiann in April 2026",
         client_turn_key=None,
@@ -1551,6 +1564,7 @@ def test_pass_through_repopulation_failure_is_caught_logged_and_does_not_break_t
 
     with caplog.at_level(logging.ERROR, logger="poseidon.core.chat.orchestrator"):
         outcome = execute_turn(
+            user=DISABLED_DEFAULT_USER,
             conversation_id="conv-corrupt",
             text="Top GP customers for Port of Singapore in April 2026",
             client_turn_key=None,
@@ -1613,6 +1627,7 @@ def test_execute_turn_threads_tools_into_the_skill_context(monkeypatch):
     tools = ToolServerRegistry(settings, overrides={"research": FixtureResearchTool()})
 
     outcome = execute_turn(
+        user=DISABLED_DEFAULT_USER,
         conversation_id="conv-research-1",
         text="any relevant news on Northstar Lines I should be aware of?",
         client_turn_key="ctk-research-1",
@@ -1657,6 +1672,7 @@ def test_execute_turn_without_tools_still_completes_with_the_honest_degrade(monk
     )
 
     outcome = execute_turn(
+        user=DISABLED_DEFAULT_USER,
         conversation_id="conv-research-2",
         text="any relevant news on Northstar Lines I should be aware of?",
         client_turn_key="ctk-research-2",

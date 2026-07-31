@@ -1,12 +1,13 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from sqlalchemy import create_engine
 
-from poseidon.api import dev_runner, health, live_chat, mock_chat
+from poseidon.api import auth, dev_runner, health, live_chat, mock_chat
 from poseidon.core.artifacts import ArtifactStore
 from poseidon.core.chat.dev_router import DevDeterministicRouter
 from poseidon.core.chat.state import ConversationStateStore
 from poseidon.core.config import Settings, get_settings
 from poseidon.core.data.synthetic_client import SyntheticDataClient
+from poseidon.core.identity import resolve_provider
 from poseidon.core.llm.bedrock import BedrockProvider
 from poseidon.core.llm.prompts import DEFAULT_PROMPTS_DIR, PromptRegistry
 from poseidon.core.llm.roles import RoleClient
@@ -19,7 +20,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     """App factory. Run with: python -m uvicorn poseidon.api.app:create_app --factory"""
     app = FastAPI(title="Poseidon API", version="0.1.0")
     app.state.settings = settings or get_settings()
+
+    # Phase 9 Task 1 (doc 05 section 2, decision D22): resolved ONCE here,
+    # at boot, so a misconfigured or not-yet-implemented identity_mode
+    # fails fast before the app ever accepts a request -- see core/identity.
+    # py's own resolve_provider docstring. Every request's identity
+    # (request.state.user) is resolved against this ONE provider instance
+    # by the middleware installed right below.
+    app.state.identity_provider = resolve_provider(app.state.settings)
+    _install_identity_middleware(app)
+
     app.include_router(health.router)
+    # Phase 9 Task 1: GET /api/me -- mounted unconditionally, like health.
+    # router, not only under chat_mode="live". See api/auth.py's own module
+    # docstring for why identity discovery cannot be gated behind chat_mode.
+    app.include_router(auth.router)
 
     # Discovery walks and imports the whole poseidon.tasks tree (SkillRegistry.
     # discover's own fail-fast contract) -- built ONCE per app/process here,
@@ -73,6 +88,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         print(f"skills registered: {', '.join(app.state.skill_registry.skill_ids)}", flush=True)
         app.include_router(dev_runner.router)
     return app
+
+
+def _install_identity_middleware(app: FastAPI) -> None:
+    """Phase 9 Task 1 (doc 05 section 2, decision D22): resolve ``request.
+    state.user`` for EVERY request, before any route handler or dependency
+    runs -- the one seam everything below it (``live_chat.py``'s
+    ``user_sub``, the orchestrator's ``SkillContext.user``, ``GET /api/me``)
+    reads instead of ever touching an ``IdentityProvider`` or a raw header
+    itself (provider-blindness -- see ``core/identity.py``'s own module
+    docstring). Cheap in disabled mode: ``DisabledProvider.resolve`` is a
+    dict lookup plus a regex check, no I/O -- paying this on every request,
+    including ``/health/*``, is the honest cost of "one seam, no
+    exceptions" rather than a per-route opt-in that some path could
+    silently forget.
+
+    Headers are lowercased ONCE, here -- the one and only adapter between a
+    real ``Request`` and the plain ``Mapping[str, str]`` every
+    ``IdentityProvider.resolve`` accepts, so a provider module never needs
+    to import FastAPI/Starlette at all (``core/identity.py``'s own "providers
+    never import FastAPI" seam).
+
+    ``AuthError`` (a provider's typed failure -- see ``core/identity.py``)
+    is deliberately NOT caught here yet: ``DisabledProvider``, the only
+    provider this task ships, never raises it (an invalid ``X-Dev-User``
+    header is ignored, not rejected -- see that class's own docstring), so
+    there is no real raiser to prove a catch-and-map-to-401 branch against
+    yet. Phase 9 Task 2 adds that handling alongside the first provider
+    (``Auth0Provider``) that can actually raise it, together with the
+    pinned 401/403 problem shapes that catch would need to produce.
+    """
+
+    @app.middleware("http")
+    async def identity_middleware(request: Request, call_next):
+        provider = request.app.state.identity_provider
+        headers = {name.lower(): value for name, value in request.headers.items()}
+        request.state.user = provider.resolve(headers)
+        return await call_next(request)
 
 
 def _wire_live_chat(app: FastAPI) -> None:

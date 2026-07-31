@@ -5,9 +5,9 @@ context (``llm``, ``tools``, ``user``, ``profile``, ``run``); each of those
 fields arrives with the phase that owns it rather than as a ``None``-typed
 placeholder, because a placeholder invites code that pretends the capability
 exists. ``tools`` arrived in Phase 7 Task 1; ``llm`` and ``emit_part`` arrive
-in Phase 8 Task 1 (all three named below); ``user``, ``profile`` and ``run``
-remain pending their own owning phases. Today a skill gets exactly seven
-things:
+in Phase 8 Task 1; ``user`` arrives in Phase 9 Task 1 (all four named below);
+``profile`` and ``run`` remain pending their own owning phases. Today a
+skill gets exactly eight things:
 
 ``data``      the adapter seam of doc 04 — a :class:`DataClient`, never a
               connection, a cursor or SQL.
@@ -62,6 +62,23 @@ things:
               See ``core/chat/events.py``'s ``SseEnvelopeSink.part_emitter``
               for what a real caller wires it to, and
               ``core/chat/orchestrator.py`` for where that wiring happens.
+``user``      the resolved caller identity (Phase 9's ``IdentityProvider``
+              seam, doc 05 section 2) -- a
+              :class:`~poseidon.core.identity.UserContext`, typed ``object``
+              for the SAME reason ``tools``/``llm`` are: this class stays
+              free of importing ``core.identity`` even though, unlike those
+              two, no real import cycle would result -- consistency with
+              every other non-``data``/``settings``/``state`` seam on this
+              class beats making ``user`` the one exception typed
+              concretely. Defaulted to ``None`` so every pre-Phase-9
+              ``SkillContext(...)`` call site (this codebase's own test
+              suite builds many) keeps working unchanged; wired for real by
+              ``core/chat/orchestrator.py`` starting this task, which reads
+              the caller's own already-resolved ``UserContext`` and passes
+              it through verbatim -- never examined here any more than
+              ``tools``/``llm`` are. No skill reads ``ctx.user`` yet; a
+              future one casts through the typed interface at its own call
+              site, same as ``tools``.
 
 ``artifacts`` is annotated as a string under a ``TYPE_CHECKING`` guard on
 purpose, and permanently so: :mod:`poseidon.core.artifacts` (Task 4) imports
@@ -138,3 +155,4 @@ class SkillContext:
     tools: object | None = None
     llm: object | None = None
     emit_part: object | None = None
+    user: object | None = None

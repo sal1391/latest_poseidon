@@ -60,6 +60,7 @@ from poseidon.core.chat.orchestrator import execute_turn
 from poseidon.core.chat.state import ConversationStateStore
 from poseidon.core.config import Settings
 from poseidon.core.data.client import BreakdownResult, BreakdownRow, MetricResult, PeriodRange
+from poseidon.core.identity import DISABLED_DEFAULT_USER
 from poseidon.core.llm.prompts import DEFAULT_PROMPTS_DIR, PromptRegistry
 from poseidon.core.llm.roles import RoleClient
 from poseidon.core.skills.context import ConversationSlots
@@ -134,9 +135,11 @@ def _run(
     client_turn_key: str | None = None,
     data: object | None = None,
     role_client: RoleClient | None = None,
+    user=DISABLED_DEFAULT_USER,
 ):
     return execute_turn(
         conversation_id=conversation_id,
+        user=user,
         text=text,
         client_turn_key=client_turn_key,
         settings=settings,

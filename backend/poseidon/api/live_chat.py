@@ -589,6 +589,12 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
         try:
             execute_turn(
                 conversation_id=cid,
+                # Phase 9 Task 1: request.state.user is set by app.py's
+                # identity middleware for EVERY request, ahead of this
+                # handler ever running -- see core/identity.py's own module
+                # docstring for the seam. Replaces the old fixed
+                # DEV_USER_SUB constant orchestrator.py used to hardcode.
+                user=request.state.user,
                 text=body.text,
                 client_turn_key=body.client_turn_key,
                 settings=settings,

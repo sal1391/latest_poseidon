@@ -55,6 +55,7 @@ from poseidon.core.chat.orchestrator import execute_turn
 from poseidon.core.chat.state import ConversationStateStore
 from poseidon.core.config import Settings
 from poseidon.core.data.client import PeriodRange
+from poseidon.core.identity import DISABLED_DEFAULT_USER, UserContext
 from poseidon.core.llm.loop import RecordingSink, run_turn
 from poseidon.core.llm.prompts import DEFAULT_PROMPTS_DIR, PromptRegistry
 from poseidon.core.llm.roles import RoleClient
@@ -675,6 +676,7 @@ def test_execute_turn_wires_emit_part_so_a_fake_skill_streams_before_its_own_too
     sink = SseEnvelopeSink(turn_id="t", message_id="m", send=send, registry=registry)
 
     outcome = execute_turn(
+        user=DISABLED_DEFAULT_USER,
         conversation_id="conv-emit-part",
         text="run the fake skill",
         client_turn_key=None,
@@ -722,6 +724,7 @@ def test_execute_turn_wires_llm_to_the_same_role_client_the_turn_itself_uses(mon
     sink = SseEnvelopeSink(turn_id="t", message_id="m", send=lambda _f: None, registry=registry)
 
     outcome = execute_turn(
+        user=DISABLED_DEFAULT_USER,
         conversation_id="conv-llm-wire",
         text="run the fake skill",
         client_turn_key=None,
@@ -741,6 +744,53 @@ def test_execute_turn_wires_llm_to_the_same_role_client_the_turn_itself_uses(mon
     assert captured[0].llm is role_client
 
 
+def test_execute_turn_wires_user_to_the_skill_context(monkeypatch):
+    """Phase 9 Task 1's own contract pin ("SkillContext.user wired in the
+    orchestrator ctx construction"), proven the identical way the ``llm``
+    wiring immediately above is: by identity, from inside a fake skill's
+    real dispatch, not merely asserted about the construction site in
+    isolation. Distinct from ``test_api_auth.py``'s own end-to-end proof
+    (X-Dev-User -> the writer's ``user_sub``): that proof never inspects
+    ``SkillContext`` itself, since the run-log writer double records
+    kwargs, not the context object a dispatch actually received."""
+    settings = _settings(monkeypatch, LLM_MODE="stub", LLM_PROFILE="bedrock")
+    captured: list[SkillContext] = []
+    act_as_user = UserContext(
+        sub="dev|alice", email="alice@local", name="alice", roles=("Poseidon:Sales",)
+    )
+
+    def _run(ctx: SkillContext, _args: _NoArgs) -> SkillResult:
+        captured.append(ctx)
+        return SkillResult(ok=True, parts=[])
+
+    registry = _registry_with(_run)
+    provider = StubProvider(
+        [_tool_use(ToolCall(id="c1", name=FAKE_SKILL, arguments={})), _end_turn("done")]
+    )
+    role_client = RoleClient(settings, providers={"stub": provider})
+    sink = SseEnvelopeSink(turn_id="t", message_id="m", send=lambda _f: None, registry=registry)
+
+    outcome = execute_turn(
+        user=act_as_user,
+        conversation_id="conv-user-wire",
+        text="run the fake skill",
+        client_turn_key=None,
+        settings=settings,
+        registry=registry,
+        data=_ParseOnlyDataClient(),
+        state=ConversationStateStore(),
+        writer=None,
+        role_client=role_client,
+        prompt_registry=PromptRegistry(DEFAULT_PROMPTS_DIR),
+        sink=sink,
+        reference_date=REFERENCE_DATE,
+    )
+
+    assert outcome.status == "ok"
+    assert len(captured) == 1
+    assert captured[0].user is act_as_user
+
+
 def test_execute_turn_without_a_dispatch_still_wires_emit_part_harmlessly(monkeypatch):
     """A turn with no tool call at all (a plain conversational reply) still
     builds its ``SkillContext`` with ``emit_part=sink.part_emitter(1)`` --
@@ -755,6 +805,7 @@ def test_execute_turn_without_a_dispatch_still_wires_emit_part_harmlessly(monkey
     sink = SseEnvelopeSink(turn_id="t", message_id="m", send=send, registry=SkillRegistry())
 
     outcome = execute_turn(
+        user=DISABLED_DEFAULT_USER,
         conversation_id="conv-no-dispatch",
         text="just say hello",
         client_turn_key=None,
@@ -848,6 +899,7 @@ def test_part_emitter_on_a_self_correction_retry_does_not_orphan_or_keyerror(set
     sink = SseEnvelopeSink(turn_id="t", message_id="m", send=send, registry=registry)
 
     outcome = execute_turn(
+        user=DISABLED_DEFAULT_USER,
         conversation_id="conv-retry-emit",
         text="run the fake skill",
         client_turn_key=None,

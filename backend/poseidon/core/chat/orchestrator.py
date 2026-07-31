@@ -225,12 +225,24 @@ independently, confirming it matches what this module computed
 (``test_flagship_prompt_hash_matches_the_real_system_text_the_provider_
 saw``) -- if the two recipes ever drift, that test fails first.
 
-Identity (doc 08's Phase 9 note)
-------------------------------------
-``DEV_USER_SUB`` is the plan's own fixed dev constant, "everywhere a
-user_sub is required" until Phase 9 wires a real IdentityProvider. Every
-writer call in this module uses it; nothing else in the pinned
-``execute_turn`` signature carries an identity of its own to use instead.
+Identity (Phase 9 Task 1: real, no longer a placeholder)
+----------------------------------------------------------------
+This module used to hardcode ``DEV_USER_SUB = "dev|local"``, "everywhere a
+user_sub is required" (the plan's own words), until Phase 9 wired a real
+IdentityProvider -- that placeholder is gone. ``execute_turn`` now takes a
+required ``user: UserContext`` (``poseidon.core.identity``), resolved
+upstream by ``api/app.py``'s identity middleware from the actual request
+(``api/live_chat.py`` reads ``request.state.user`` and passes it straight
+through) and threaded into every writer call's ``user_sub`` (``user.sub``)
+and into ``SkillContext.user`` verbatim. The disabled-mode DEFAULT identity
+is still the fixed ``UserContext("dev|local", ...)`` (now ``core.identity.
+DISABLED_DEFAULT_USER``) -- so every existing row/test that pinned
+``"dev|local"`` stays coherent -- but it now arrives THROUGH the seam
+(``DisabledProvider``), not as a constant this module reaches for directly.
+See ``core/identity.py``'s own module docstring for the full provider-
+blindness contract (doc 05 section 2, decision D22): this module never
+branches on identity_mode or imports a provider -- it only ever sees the
+one ``UserContext`` the middleware already resolved.
 """
 
 import dataclasses
@@ -243,6 +255,7 @@ from poseidon.core.chat.events import SseEnvelopeSink
 from poseidon.core.chat.state import ConversationStateStore
 from poseidon.core.config import Settings
 from poseidon.core.data.client import DataClient
+from poseidon.core.identity import UserContext
 from poseidon.core.llm.loop import (
     ROUTER_GUARDRAIL_ENTITY,
     ToolRecord,
@@ -272,11 +285,6 @@ from poseidon.core.skills.registry import SkillRegistry
 from poseidon.core.skills.result import problem
 
 logger = logging.getLogger(__name__)
-
-# The plan's own fixed identity constant (Global Constraints: "the fixed dev
-# user sub `dev|local` everywhere a user_sub is required") -- Phase 9
-# replaces this with the real IdentityProvider seam.
-DEV_USER_SUB = "dev|local"
 
 # doc 06's `turn_run.answer_summary` / this turn's clarify text -- "capped".
 _ANSWER_SUMMARY_CAP = 500
@@ -379,6 +387,7 @@ class TurnOutcome:
 def execute_turn(
     *,
     conversation_id: str,
+    user: UserContext,
     text: str,
     client_turn_key: str | None,
     settings: Settings,
@@ -422,6 +431,19 @@ def execute_turn(
     implies). Neither is examined here any more than ``tools`` is -- a
     skill that never reads ``ctx.llm``/``ctx.emit_part`` is unaffected
     either way.
+
+    ``user`` (Phase 9 Task 1) is the resolved caller identity -- a
+    :class:`~poseidon.core.identity.UserContext` the HTTP layer already
+    resolved from the request (``api/app.py``'s identity middleware)
+    before this function was ever called. REQUIRED, not defaulted, unlike
+    ``tools``/``llm``/``emit_part`` above: every turn needs SOME identity
+    to log against, and there is no honest default this function could
+    invent on its own (the disabled-mode fixed default is a choice the
+    IdentityProvider seam makes, upstream of here, not this function's to
+    fabricate). Threaded into every ``writer.start_turn``/``append_llm_
+    call``/``append_tool_call`` call below via ``user.sub`` -- replacing
+    the old fixed ``DEV_USER_SUB`` constant -- and into ``SkillContext.
+    user`` verbatim, unexamined here any more than ``tools`` is.
     """
     prior_slots = state.get(conversation_id)
 
@@ -434,6 +456,7 @@ def execute_turn(
             entry_mode=entry_mode,
             text=text,
             conversation_id=conversation_id,
+            user=user,
             client_turn_key=client_turn_key,
             prior_slots=prior_slots,
             state=state,
@@ -448,6 +471,7 @@ def execute_turn(
         return _finish_subject_turn(
             text=text,
             conversation_id=conversation_id,
+            user=user,
             client_turn_key=client_turn_key,
             prior_slots=prior_slots,
             settings=settings,
@@ -463,6 +487,7 @@ def execute_turn(
     parsed = parse_turn(text, prior_slots, reference_date, data)
     turn_index, turn_run_id, retry_outcome = _begin_turn(
         conversation_id=conversation_id,
+        user=user,
         text=text,
         client_turn_key=client_turn_key,
         mode=parsed.slots.mode,
@@ -497,6 +522,7 @@ def execute_turn(
         settings=settings,
         state=parsed.slots,
         tools=tools,
+        user=user,
         # Phase 8 Task 1: `llm` is simply THIS turn's own role_client -- a
         # subskill calling `ctx.llm.invoke(role=..., ...)` reaches the exact
         # same RoleClient `run_turn` below uses for routing, never a second,
@@ -610,6 +636,7 @@ def execute_turn(
         _append_records(
             writer=writer,
             turn_run_id=turn_run_id,
+            user=user,
             turn_result=turn_result,
             router_version=router_version,
             router_hash=router_hash,
@@ -727,6 +754,7 @@ def _finish_clarify(
 def _begin_turn(
     *,
     conversation_id: str,
+    user: UserContext,
     text: str,
     client_turn_key: str | None,
     mode: str,
@@ -759,7 +787,7 @@ def _begin_turn(
     handle = None
     if writer is not None:
         handle = writer.start_turn(
-            user_sub=DEV_USER_SUB,
+            user_sub=user.sub,
             conversation_id=conversation_id,
             client_turn_key=client_turn_key,
             turn_index=turn_index,
@@ -798,6 +826,7 @@ def _finish_entry(
     entry_mode: str,
     text: str,
     conversation_id: str,
+    user: UserContext,
     client_turn_key: str | None,
     prior_slots: ConversationSlots,
     state: ConversationStateStore,
@@ -812,6 +841,7 @@ def _finish_entry(
     new_slots = dataclasses.replace(prior_slots, mode=entry_mode)
     turn_index, turn_run_id, retry_outcome = _begin_turn(
         conversation_id=conversation_id,
+        user=user,
         text=text,
         client_turn_key=client_turn_key,
         mode=entry_mode,
@@ -852,6 +882,7 @@ def _finish_subject_turn(
     *,
     text: str,
     conversation_id: str,
+    user: UserContext,
     client_turn_key: str | None,
     prior_slots: ConversationSlots,
     settings: Settings,
@@ -870,6 +901,7 @@ def _finish_subject_turn(
     mode = prior_slots.mode
     turn_index, turn_run_id, retry_outcome = _begin_turn(
         conversation_id=conversation_id,
+        user=user,
         text=text,
         client_turn_key=client_turn_key,
         mode=mode,
@@ -907,6 +939,7 @@ def _finish_subject_turn(
         settings=settings,
         state=prior_slots,
         tools=tools,
+        user=user,
         llm=role_client,
         # tool_seq 1 -- the SAME "this turn's only dispatch" reasoning
         # execute_turn's own SkillContext construction documents at length
@@ -962,6 +995,7 @@ def _finish_subject_turn(
             _append_records(
                 writer=writer,
                 turn_run_id=turn_run_id,
+                user=user,
                 turn_result=fake_turn_result,
                 router_version="",
                 router_hash="",
@@ -991,6 +1025,7 @@ def _finish_subject_turn(
         _append_records(
             writer=writer,
             turn_run_id=turn_run_id,
+            user=user,
             turn_result=fake_turn_result,
             router_version="",
             router_hash="",
@@ -1165,6 +1200,7 @@ def _append_records(
     *,
     writer: RunLogWriter,
     turn_run_id: str,
+    user: UserContext,
     turn_result,
     router_version: str,
     router_hash: str,
@@ -1188,7 +1224,7 @@ def _append_records(
     for record in turn_result.llm_records:
         writer.append_llm_call(
             turn_run_id=turn_run_id,
-            user_sub=DEV_USER_SUB,
+            user_sub=user.sub,
             seq=record.call_seq,
             provider=("stub" if settings.llm_mode == "stub" else record.provider),
             model_id=record.model,
@@ -1206,7 +1242,7 @@ def _append_records(
     for record in turn_result.tool_records:
         writer.append_tool_call(
             turn_run_id=turn_run_id,
-            user_sub=DEV_USER_SUB,
+            user_sub=user.sub,
             seq=record.tool_seq,
             tool=record.skill_id,
             server=None,
@@ -1314,7 +1350,6 @@ def _json_safe(value):
 
 
 __all__ = [
-    "DEV_USER_SUB",
     "ENTRY_PHRASE_EXISTING",
     "ENTRY_PHRASE_PROSPECT",
     "TurnOutcome",

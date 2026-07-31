@@ -77,6 +77,10 @@ def _build_ctx(request: Request) -> SkillContext | SkillResult:
         artifacts=request.app.state.artifact_store,
         settings=settings,
         state=ConversationSlots(),
+        # Phase 9 Task 1: request.state.user is set by app.py's identity
+        # middleware for EVERY request, this dev-only route included -- see
+        # core/identity.py's own module docstring for the seam.
+        user=request.state.user,
     )
 
 
