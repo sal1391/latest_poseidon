@@ -11,11 +11,30 @@ prove ``DisabledProvider``'s own contract. The end-to-end threading proof
 (a real request, through the real middleware, into a run-log writer
 double's ``user_sub``) lives in ``test_api_auth.py`` instead -- this file
 is the provider unit matrix underneath it.
+
+Phase 9 Task 2 adds ``Auth0Provider``'s own unit matrix below (still
+offline/provider-level, same discipline): a local RSA keypair + an
+injectable ``httpx`` transport stand in for the tenant's real JWKS endpoint
+(Global Constraints: "ZERO live/network calls... the JWKS fixture is
+local"). The JWKS-fixture helpers (:func:`generate_rsa_keypair`,
+:func:`jwk_for`, :func:`mint_auth0_token`, :class:`JwksTransport`,
+:data:`AUTH0_TEST_DOMAIN`/:data:`AUTH0_TEST_AUDIENCE`) are reused, not
+re-derived, by ``test_api_auth.py``'s own HTTP-level Auth0 tests -- the
+same cross-test-module reuse discipline that file's own docstring already
+established for ``test_chat_orchestrator.py``'s ``FakeDataClient``/
+``RecordingWriter``.
 """
 
+import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import httpx
+import jwt
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from jwt.algorithms import RSAAlgorithm
 
 from poseidon.core import identity as identity_module
 from poseidon.core.config import Settings
@@ -26,8 +45,15 @@ from poseidon.core.identity import (
     UserContext,
     resolve_provider,
 )
+from poseidon.core.identity_auth0 import ROLES_CLAIM, Auth0Provider
 
 _PLACEHOLDER_DSN = "postgresql+psycopg://nobody:nope@127.0.0.1:1/void"
+
+# Global Constraints: iss = https://{AUTH0_DOMAIN}/ ; aud = AUTH0_AUDIENCE.
+# Fake, offline-only values -- no real tenant is ever contacted.
+AUTH0_TEST_DOMAIN = "tenant.auth0.test"
+AUTH0_TEST_AUDIENCE = "https://poseidon.test/api"
+AUTH0_TEST_ISSUER = f"https://{AUTH0_TEST_DOMAIN}/"
 
 
 def _settings(**overrides) -> Settings:
@@ -40,6 +66,112 @@ def _settings(**overrides) -> Settings:
     )
     defaults.update(overrides)
     return Settings(**defaults)
+
+
+def _auth0_settings(**overrides) -> Settings:
+    """``_settings()`` plus the three ``auth0_*`` fields ``identity_mode=
+    "auth0"`` requires (``core/config.py``'s own ``auth0_fields_required_
+    in_auth0_mode`` validator) -- ``auth0_client_id`` is a real value only
+    because Settings demands SOME non-blank string; ``Auth0Provider``
+    itself never reads it (see ``core/identity_auth0.py``'s own module
+    docstring: JWKS verification needs only domain + audience)."""
+    defaults: dict = dict(
+        identity_mode="auth0",
+        auth0_domain=AUTH0_TEST_DOMAIN,
+        auth0_audience=AUTH0_TEST_AUDIENCE,
+        auth0_client_id="test-client-id",
+    )
+    defaults.update(overrides)
+    return _settings(**defaults)
+
+
+def generate_rsa_keypair():
+    """A fresh 2048-bit RSA keypair -- ``cryptography`` arrives transitively
+    via ``PyJWT[crypto]`` (Global Constraints), no separate dependency
+    needed. Reused by ``test_api_auth.py``'s HTTP-level Auth0 tests."""
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return private_key, private_key.public_key()
+
+
+def _private_pem(private_key) -> bytes:
+    return private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+
+def jwk_for(public_key, kid: str) -> dict:
+    """One JWKS ``keys[]`` entry for ``public_key`` -- ``RSAAlgorithm.
+    to_jwk`` supplies ``kty``/``n``/``e``; ``kid``/``use``/``alg`` are added
+    here, matching the shape a real Auth0 JWKS document carries."""
+    jwk = json.loads(RSAAlgorithm.to_jwk(public_key))
+    jwk.update(kid=kid, use="sig", alg="RS256")
+    return jwk
+
+
+class JwksTransport(httpx.BaseTransport):
+    """The injectable httpx transport Global Constraints calls for ("the
+    JWKS fixture is local... injectable httpx transport"): serves
+    ``{"keys": self.keys}`` at whatever URL ``Auth0Provider`` asks for
+    (Auth0's own JWKS path is the only one it ever requests), with zero
+    real network I/O. ``self.keys`` is a plain mutable list a test can
+    append to mid-test (see the kid-rotation tests below) to prove a
+    provider's cache picks up a tenant-side JWKS change on its next fetch.
+    ``request_count`` lets a test assert exactly how many fetches happened
+    -- the "refetch ONCE on unknown kid" contract is a claim about COUNT,
+    not merely "it eventually worked".
+    """
+
+    def __init__(self, keys: list[dict]) -> None:
+        self.keys = keys
+        self.request_count = 0
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        self.request_count += 1
+        return httpx.Response(200, json={"keys": self.keys})
+
+
+def mint_auth0_token(private_key, kid: str, **claim_overrides) -> str:
+    """A signed RS256 JWT with a realistic Auth0-shaped claim set (valid
+    iss/aud/exp/nbf/roles by default -- override any of them per test to
+    build the exact malformed/expired/wrong-... variant that test needs).
+    """
+    now = datetime.now(UTC)
+    claims: dict = {
+        "sub": "user123",
+        "email": "alice@example.com",
+        "name": "Alice",
+        "iss": AUTH0_TEST_ISSUER,
+        "aud": AUTH0_TEST_AUDIENCE,
+        "iat": now,
+        "exp": now + timedelta(hours=1),
+        ROLES_CLAIM: ["Poseidon:Sales"],
+    }
+    claims.update(claim_overrides)
+    return jwt.encode(claims, _private_pem(private_key), algorithm="RS256", headers={"kid": kid})
+
+
+def _auth0_provider(transport: httpx.BaseTransport, **settings_overrides) -> Auth0Provider:
+    return Auth0Provider(_auth0_settings(**settings_overrides), transport=transport)
+
+
+def _expect_auth_error(provider, headers, status: int, title: str) -> AuthError:
+    with pytest.raises(AuthError) as exc_info:
+        provider.resolve(headers)
+    assert exc_info.value.status == status
+    assert exc_info.value.title == title
+    return exc_info.value
+
+
+@pytest.fixture
+def rsa_keys():
+    """Two independent RSA keypairs: key1 (published in the served JWKS
+    throughout), key2 (NOT published -- used to mint a bad-signature token,
+    or to simulate a legitimately rotated-in key the tenant adds later)."""
+    key1, pub1 = generate_rsa_keypair()
+    key2, pub2 = generate_rsa_keypair()
+    return key1, pub1, key2, pub2
 
 
 # ===========================================================================
@@ -176,6 +308,225 @@ def test_act_as_invalid_values_fall_back_to_the_fixed_default(raw):
 
 
 # ===========================================================================
+# Auth0Provider -- valid token, prefixed sub, role-less tokens (Phase 9
+# Task 2, offline against the local JWKS fixture -- see JwksTransport)
+# ===========================================================================
+
+
+def test_auth0_valid_token_resolves_to_a_prefixed_user_context(rsa_keys):
+    key1, pub1, _key2, _pub2 = rsa_keys
+    provider = _auth0_provider(JwksTransport([jwk_for(pub1, "key-1")]))
+
+    user = provider.resolve({"authorization": f"Bearer {mint_auth0_token(key1, 'key-1')}"})
+
+    assert user == UserContext(
+        sub="auth0|user123",
+        email="alice@example.com",
+        name="Alice",
+        roles=("Poseidon:Sales",),
+    )
+
+
+def test_auth0_sub_is_always_auth0_prefixed_even_if_already_prefixed(rsa_keys):
+    """Judgment call (disclosed in this task's report): unconditional, like
+    ``DisabledProvider``'s own ``f"dev|{x}"`` -- even a raw ``sub`` that
+    already looks provider-prefixed (Auth0's default database connection's
+    own convention) gets a SECOND ``auth0|`` layered on. A double prefix
+    for that one connection type is the accepted cosmetic cost of a
+    guarantee that holds for every OTHER connection type too (google-
+    oauth2, samlp, enterprise SSO, ...), none of which are guaranteed to
+    start with the literal string "auth0|" on their own."""
+    key1, pub1, _key2, _pub2 = rsa_keys
+    provider = _auth0_provider(JwksTransport([jwk_for(pub1, "key-1")]))
+    token = mint_auth0_token(key1, "key-1", sub="auth0|already-prefixed")
+
+    user = provider.resolve({"authorization": f"Bearer {token}"})
+
+    assert user.sub == "auth0|auth0|already-prefixed"
+
+
+def test_auth0_role_less_token_resolves_with_empty_roles(rsa_keys):
+    """A role-LESS token is not itself an auth failure -- identity and
+    authorization are different questions (module docstring). The 403 for
+    "valid token, no Poseidon:Sales" is enforced separately, by
+    ``api/auth.py``'s ``require_sales`` -- see test_api_auth.py."""
+    key1, pub1, _key2, _pub2 = rsa_keys
+    provider = _auth0_provider(JwksTransport([jwk_for(pub1, "key-1")]))
+    token = mint_auth0_token(key1, "key-1", **{ROLES_CLAIM: []})
+
+    user = provider.resolve({"authorization": f"Bearer {token}"})
+
+    assert user.roles == ()
+
+
+def test_auth0_missing_roles_claim_resolves_with_empty_roles(rsa_keys):
+    """Distinct from the empty-list case above: the claim is ABSENT
+    entirely (a token minted with no roles claim key at all), not merely
+    empty -- both must resolve identically, never raise."""
+    key1, pub1, _key2, _pub2 = rsa_keys
+    provider = _auth0_provider(JwksTransport([jwk_for(pub1, "key-1")]))
+    now = datetime.now(UTC)
+    claims = {
+        "sub": "user123",
+        "iss": AUTH0_TEST_ISSUER,
+        "aud": AUTH0_TEST_AUDIENCE,
+        "iat": now,
+        "exp": now + timedelta(hours=1),
+    }
+    token = jwt.encode(claims, _private_pem(key1), algorithm="RS256", headers={"kid": "key-1"})
+
+    user = provider.resolve({"authorization": f"Bearer {token}"})
+
+    assert user.roles == ()
+
+
+# ===========================================================================
+# Auth0Provider -- the pinned 401 failure matrix (Global Constraints:
+# "missing/malformed header, bad signature, expired, wrong iss/aud, future
+# nbf")
+# ===========================================================================
+
+
+def test_auth0_missing_authorization_header_is_401(rsa_keys):
+    _key1, pub1, _key2, _pub2 = rsa_keys
+    provider = _auth0_provider(JwksTransport([jwk_for(pub1, "key-1")]))
+
+    err = _expect_auth_error(provider, {}, 401, "missing bearer token")
+
+    assert err.detail == "no Authorization header"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",  # header present but empty
+        "Token abc",  # not the Bearer scheme
+        "bearer abc",  # lowercase scheme (case-sensitive, disclosed)
+        "Bearer",  # scheme with no token at all
+        "Bearer   ",  # scheme plus only whitespace
+        "Bearer not-a-jwt-at-all",  # not a structurally valid JWT
+    ],
+)
+def test_auth0_malformed_authorization_header_variants(rsa_keys, raw):
+    _key1, pub1, _key2, _pub2 = rsa_keys
+    provider = _auth0_provider(JwksTransport([jwk_for(pub1, "key-1")]))
+
+    _expect_auth_error(provider, {"authorization": raw}, 401, "malformed authorization header")
+
+
+def test_auth0_expired_token_is_401(rsa_keys):
+    key1, pub1, _key2, _pub2 = rsa_keys
+    provider = _auth0_provider(JwksTransport([jwk_for(pub1, "key-1")]))
+    now = datetime.now(UTC)
+    token = mint_auth0_token(key1, "key-1", exp=now - timedelta(minutes=1))
+
+    err = _expect_auth_error(provider, {"authorization": f"Bearer {token}"}, 401, "token expired")
+
+    assert err.detail == "the token's exp claim is in the past"
+
+
+def test_auth0_future_nbf_is_401(rsa_keys):
+    key1, pub1, _key2, _pub2 = rsa_keys
+    provider = _auth0_provider(JwksTransport([jwk_for(pub1, "key-1")]))
+    now = datetime.now(UTC)
+    token = mint_auth0_token(key1, "key-1", nbf=now + timedelta(minutes=5))
+
+    err = _expect_auth_error(
+        provider, {"authorization": f"Bearer {token}"}, 401, "token not yet valid"
+    )
+
+    assert err.detail == "the token's nbf claim is in the future"
+
+
+def test_auth0_wrong_audience_is_401(rsa_keys):
+    key1, pub1, _key2, _pub2 = rsa_keys
+    provider = _auth0_provider(JwksTransport([jwk_for(pub1, "key-1")]))
+    token = mint_auth0_token(key1, "key-1", aud="https://someone-else.test/api")
+
+    _expect_auth_error(provider, {"authorization": f"Bearer {token}"}, 401, "invalid audience")
+
+
+def test_auth0_wrong_issuer_is_401(rsa_keys):
+    key1, pub1, _key2, _pub2 = rsa_keys
+    provider = _auth0_provider(JwksTransport([jwk_for(pub1, "key-1")]))
+    token = mint_auth0_token(key1, "key-1", iss="https://not-the-tenant.auth0.test/")
+
+    _expect_auth_error(provider, {"authorization": f"Bearer {token}"}, 401, "invalid issuer")
+
+
+def test_auth0_bad_signature_via_second_key_is_401(rsa_keys):
+    """The header names a REAL, published kid ("key-1"), but the token was
+    actually signed with key-2's private key -- proves verification is
+    real RS256 math against the published public key, not merely a kid
+    lookup that happens to find something."""
+    key1, pub1, key2, _pub2 = rsa_keys
+    provider = _auth0_provider(JwksTransport([jwk_for(pub1, "key-1")]))
+    token = mint_auth0_token(key2, "key-1")
+
+    _expect_auth_error(
+        provider, {"authorization": f"Bearer {token}"}, 401, "invalid token signature"
+    )
+
+
+# ===========================================================================
+# Auth0Provider -- JWKS caching: refetch ONCE on an unknown/rotated kid,
+# never refetch for an already-cached one (Global Constraints)
+# ===========================================================================
+
+
+def test_auth0_unknown_kid_refetches_once_then_401(rsa_keys):
+    key1, pub1, _key2, _pub2 = rsa_keys
+    transport = JwksTransport([jwk_for(pub1, "key-1")])
+    provider = _auth0_provider(transport)
+    # Warm the cache first with a legitimate, known kid.
+    provider.resolve({"authorization": f"Bearer {mint_auth0_token(key1, 'key-1')}"})
+    assert transport.request_count == 1
+
+    token = mint_auth0_token(key1, "totally-unknown-kid")
+    err = _expect_auth_error(
+        provider, {"authorization": f"Bearer {token}"}, 401, "unknown signing key"
+    )
+
+    assert "totally-unknown-kid" in err.detail
+    # Exactly one ADDITIONAL fetch for the unknown kid -- never a second
+    # retry against a kid this same resolution attempt already refetched
+    # for and still did not find.
+    assert transport.request_count == 2
+
+
+def test_auth0_kid_rotation_refetches_once_and_succeeds(rsa_keys):
+    """The positive mirror of the unknown-kid test above: a LEGITIMATE key
+    the tenant rotates in after the provider's cache was already warm
+    still verifies, via the exact same one-refetch mechanism -- rotation
+    must not require restarting the process."""
+    key1, pub1, key2, pub2 = rsa_keys
+    transport = JwksTransport([jwk_for(pub1, "key-1")])
+    provider = _auth0_provider(transport)
+    provider.resolve({"authorization": f"Bearer {mint_auth0_token(key1, 'key-1')}"})
+    assert transport.request_count == 1
+
+    transport.keys.append(jwk_for(pub2, "key-2"))
+    token = mint_auth0_token(key2, "key-2")
+
+    user = provider.resolve({"authorization": f"Bearer {token}"})
+
+    assert user.sub == "auth0|user123"
+    assert transport.request_count == 2
+
+
+def test_auth0_cached_kid_never_refetches(rsa_keys):
+    key1, pub1, _key2, _pub2 = rsa_keys
+    transport = JwksTransport([jwk_for(pub1, "key-1")])
+    provider = _auth0_provider(transport)
+    provider.resolve({"authorization": f"Bearer {mint_auth0_token(key1, 'key-1')}"})
+    assert transport.request_count == 1
+
+    provider.resolve({"authorization": f"Bearer {mint_auth0_token(key1, 'key-1')}"})
+
+    assert transport.request_count == 1
+
+
+# ===========================================================================
 # resolve_provider -- mode selection, fail-fast on anything not implemented
 # ===========================================================================
 
@@ -192,15 +543,30 @@ def test_resolve_provider_defaults_to_disabled_when_unset():
     assert isinstance(provider, DisabledProvider)
 
 
-@pytest.mark.parametrize("mode", ["auth0", "spcs_ingress"])
+def test_resolve_provider_auth0_mode_returns_an_auth0_provider():
+    """Phase 9 Task 2's own handoff: replaces the fail-fast stub Task 1
+    left for "auth0" with the real branch. ``spcs_ingress`` still fails
+    fast below -- that provider ships in Task 3."""
+    provider = resolve_provider(_auth0_settings())
+    assert isinstance(provider, Auth0Provider)
+
+
+@pytest.mark.parametrize("mode", ["spcs_ingress"])
 def test_resolve_provider_fails_fast_for_modes_with_no_provider_yet(mode, monkeypatch):
-    """Auth0Provider/SpcsIngressProvider ship in Phase 9 Tasks 2/3 -- until
-    then, selecting either recognized-but-unimplemented mode must fail
-    loudly at the SAME call this task's own "disabled" branch succeeds at,
-    never silently fall back to the disabled provider. auth0_domain/
-    audience/client_id are set so Settings' own validator does not raise
-    first for an unrelated reason (this test is about resolve_provider,
-    not about Settings' own auth0-fields-required check)."""
+    """SpcsIngressProvider ships in Phase 9 Task 3 -- until then, selecting
+    this recognized-but-unimplemented mode must fail loudly at the SAME
+    call this task's own "disabled"/"auth0" branches succeed at, never
+    silently fall back to a different provider. auth0_domain/audience/
+    client_id are set so Settings' own validator does not raise first for
+    an unrelated reason (this test is about resolve_provider, not about
+    Settings' own auth0-fields-required check).
+
+    AMENDED (Phase 9 Task 2): this was parametrized over
+    ``["auth0", "spcs_ingress"]`` in Task 1 -- "auth0" is dropped now that
+    :func:`test_resolve_provider_auth0_mode_returns_an_auth0_provider`
+    above proves it resolves for real. Task 3 will similarly retire this
+    whole test once ``spcs_ingress`` ships.
+    """
     settings = _settings(
         identity_mode=mode,
         auth0_domain="tenant.auth0.test",
@@ -217,7 +583,15 @@ def test_resolve_provider_fails_fast_for_modes_with_no_provider_yet(mode, monkey
 
 
 def test_identity_module_files_are_ascii_on_disk():
-    paths = (Path(identity_module.__file__), Path(__file__))
+    """Phase 9 Task 2 adds ``identity_auth0.py`` -- wholly this task's own,
+    checked in full, like the other two."""
+    from poseidon.core import identity_auth0 as identity_auth0_module
+
+    paths = (
+        Path(identity_module.__file__),
+        Path(identity_auth0_module.__file__),
+        Path(__file__),
+    )
     for path in paths:
         offending = sorted({byte for byte in path.read_bytes() if byte > 0x7F})
         assert not offending, f"{path.name} holds non-ASCII bytes: {offending}"

@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine
 
 from poseidon.api import auth, dev_runner, health, live_chat, mock_chat
@@ -7,7 +8,7 @@ from poseidon.core.chat.dev_router import DevDeterministicRouter
 from poseidon.core.chat.state import ConversationStateStore
 from poseidon.core.config import Settings, get_settings
 from poseidon.core.data.synthetic_client import SyntheticDataClient
-from poseidon.core.identity import resolve_provider
+from poseidon.core.identity import AuthError, resolve_provider
 from poseidon.core.llm.bedrock import BedrockProvider
 from poseidon.core.llm.prompts import DEFAULT_PROMPTS_DIR, PromptRegistry
 from poseidon.core.llm.roles import RoleClient
@@ -29,6 +30,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # by the middleware installed right below.
     app.state.identity_provider = resolve_provider(app.state.settings)
     _install_identity_middleware(app)
+
+    # Phase 9 Task 2 (Global Constraints): registered here so every
+    # AuthError (a provider's resolve, via current_user; require_sales's
+    # own 403) and every RateLimitExceeded (the chat-send rate limiter)
+    # renders the SAME pinned RFC-7807 body, from the ONE place either
+    # mapping happens (api/auth.py's own auth_error_response/
+    # rate_limit_exceeded_response -- see that module's docstring).
+    app.add_exception_handler(AuthError, auth.auth_error_response)
+    app.add_exception_handler(auth.RateLimitExceeded, auth.rate_limit_exceeded_response)
+
+    # CORS (Global Constraints: explicit allowlist, never * with
+    # credentials -- core/config.py's own cors_allow_origins validator
+    # already refuses "*" at boot). Added AFTER the identity middleware
+    # above so it wraps OUTERMOST (Starlette applies user middleware in
+    # LAST-added-is-outermost order): a preflight OPTIONS request is
+    # answered here directly, before the identity middleware ever runs,
+    # and every response this app produces -- including a 401/403/429 from
+    # deep inside a route's own dependency resolution -- still passes back
+    # through this layer and picks up the right CORS headers on the way
+    # out. allow_methods/allow_headers stay wildcarded: Starlette's own
+    # CORSMiddleware expands "*" methods to the concrete method list and,
+    # for headers, mirrors back the caller's actual requested headers
+    # rather than ever sending a literal "*" -- neither is the "* origin
+    # with credentials" anti-pattern the allowlist above exists to forbid
+    # (verified by reading CORSMiddleware's own source).
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=app.state.settings.cors_allow_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     app.include_router(health.router)
     # Phase 9 Task 1: GET /api/me -- mounted unconditionally, like health.
@@ -86,7 +119,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # and never reach `docker compose logs` at all (unlike a short-lived
         # `python -m ...` startup step, which flushes for free at exit).
         print(f"skills registered: {', '.join(app.state.skill_registry.skill_ids)}", flush=True)
-        app.include_router(dev_runner.router)
+        # Phase 9 Task 2 (Global Constraints' enforcement scope): every
+        # /api/dev/* route requires Poseidon:Sales. Guarded at inclusion
+        # time, for the whole router at once, rather than editing
+        # dev_runner.py itself -- FastAPI applies an include_router(...,
+        # dependencies=...) to every route already registered on that
+        # router, so this is the one place Phase 10 will mirror for its
+        # own new conversations/messages router (this task's own brief:
+        # "export the dependency cleanly so Phase 10 can attach it").
+        app.include_router(dev_runner.router, dependencies=[Depends(auth.require_sales)])
     return app
 
 
@@ -110,20 +151,28 @@ def _install_identity_middleware(app: FastAPI) -> None:
     never import FastAPI" seam).
 
     ``AuthError`` (a provider's typed failure -- see ``core/identity.py``)
-    is deliberately NOT caught here yet: ``DisabledProvider``, the only
-    provider this task ships, never raises it (an invalid ``X-Dev-User``
-    header is ignored, not rejected -- see that class's own docstring), so
-    there is no real raiser to prove a catch-and-map-to-401 branch against
-    yet. Phase 9 Task 2 adds that handling alongside the first provider
-    (``Auth0Provider``) that can actually raise it, together with the
-    pinned 401/403 problem shapes that catch would need to produce.
+    is caught HERE (Phase 9 Task 2, alongside ``Auth0Provider``, the first
+    provider that can actually raise it) and recorded on ``request.state.
+    auth_error`` rather than re-raised immediately: re-raising from the
+    middleware would fail the WHOLE request before any route even ran,
+    which would break "``/health/*`` stays open" (Global Constraints) the
+    moment ``auth0`` mode saw a health-check request with no bearer token
+    -- the common case for any load balancer/orchestrator probe. Instead,
+    the request proceeds normally (``call_next`` still runs); only a route
+    that actually DEPENDS on identity (``api/auth.py``'s ``current_user``/
+    ``require_sales``) reads ``request.state.auth_error`` back and turns it
+    into the pinned 401/403 response -- see ``current_user``'s own
+    docstring for the three-way branch that implements this.
     """
 
     @app.middleware("http")
     async def identity_middleware(request: Request, call_next):
         provider = request.app.state.identity_provider
         headers = {name.lower(): value for name, value in request.headers.items()}
-        request.state.user = provider.resolve(headers)
+        try:
+            request.state.user = provider.resolve(headers)
+        except AuthError as exc:
+            request.state.auth_error = exc
         return await call_next(request)
 
 
@@ -174,7 +223,23 @@ def _wire_live_chat(app: FastAPI) -> None:
     app.state.data_client = SyntheticDataClient(settings.database_url)
     app.state.run_log_writer = _build_run_log_writer(settings)
     app.state.tool_registry = _build_tool_registry(settings)
+    app.state.chat_rate_limiter = _build_chat_rate_limiter(settings)
     app.include_router(live_chat.router)
+
+
+def _build_chat_rate_limiter(settings: Settings) -> auth.ChatRateLimiter | None:
+    """Phase 9 Task 2 (Global Constraints): ``None`` when the resolved
+    limit is 0 ("off" -- ``disabled`` mode, by default) rather than a
+    ``ChatRateLimiter`` built with zero capacity, which would reject every
+    request forever instead of none -- see that class's own docstring for
+    why "off" is a distinct code path. ``live_chat.py``'s own chat-send
+    route reads this back via ``api/auth.py``'s ``rate_limit_chat_send``
+    dependency.
+    """
+    limit = settings.effective_rate_limit_chat_per_minute
+    if limit <= 0:
+        return None
+    return auth.ChatRateLimiter(limit)
 
 
 def _build_run_log_writer(settings: Settings) -> RunLogWriter | None:

@@ -192,18 +192,30 @@ def resolve_provider(settings: Settings) -> IdentityProvider:
     or not-yet-implemented mode fails at BOOT rather than serving even one
     request under the wrong identity story.
 
-    Only ``"disabled"`` resolves today. ``"auth0"``/``"spcs_ingress"`` are
-    real ``Settings.identity_mode`` values (the ``Literal`` already accepts
-    all three -- doc 05 section 2's full design), but their providers ship
-    in Phase 9 Tasks 2/3; selecting either one before then hits the exact
-    same fail-fast branch a genuinely unrecognized string would (impossible
-    to reach through ``Settings`` alone, whose ``Literal`` already rejects
-    anything else at config-load time -- this is the defensive belt for
-    that already-enforced suspenders, doubling as the honest answer for a
-    mode this task has not implemented yet).
+    ``"disabled"``/``"auth0"`` resolve today. ``"spcs_ingress"`` is a real
+    ``Settings.identity_mode`` value (the ``Literal`` already accepts all
+    three -- doc 05 section 2's full design), but its provider ships in
+    Phase 9 Task 3; selecting it before then hits the exact same fail-fast
+    branch a genuinely unrecognized string would (impossible to reach
+    through ``Settings`` alone, whose ``Literal`` already rejects anything
+    else at config-load time -- this is the defensive belt for that
+    already-enforced suspenders, doubling as the honest answer for a mode
+    this task has not implemented yet).
     """
     if settings.identity_mode == "disabled":
         return DisabledProvider()
+    if settings.identity_mode == "auth0":
+        # Imported here, not at module level: identity_auth0.py itself
+        # imports AuthError/UserContext FROM this module, so a top-level
+        # import here would be a genuine circular import (this module
+        # would try to import identity_auth0 before its own AuthError/
+        # UserContext names exist yet for identity_auth0 to import back).
+        # Deferring to call time -- long after both modules are fully
+        # loaded -- sidesteps that entirely. Phase 9 Task 3 will add the
+        # identical one-line branch + deferred import for spcs_ingress.
+        from poseidon.core.identity_auth0 import Auth0Provider
+
+        return Auth0Provider(settings)
     raise RuntimeError(
         f"identity_mode={settings.identity_mode!r} has no IdentityProvider implemented yet"
     )

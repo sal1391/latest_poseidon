@@ -63,12 +63,64 @@ class Settings(BaseSettings):
     # demo (mock_chat.py) with zero config changes; an operator opts into the
     # real execute_turn pipeline (live_chat.py) by setting CHAT_MODE=live.
     chat_mode: Literal["mock", "live"] = "mock"
+    # Phase 9 Task 2 (doc 05 section 2): the chat-send POST's token-bucket
+    # rate limit, keyed by sub (api/auth.py's ChatRateLimiter). ``None``
+    # (the unset default) resolves MODE-DEPENDENTLY -- see
+    # effective_rate_limit_chat_per_minute below -- rather than a plain
+    # numeric default, so "0 = off, and OFF in disabled mode by default"
+    # (Global Constraints) can hold at once: 0 in identity_mode="disabled"
+    # (no existing dev/test flow is ever rate-limited by surprise), 30 in
+    # every other mode. An operator's EXPLICIT override -- including 0,
+    # which always means off -- is honored in every mode, not only auth0/
+    # spcs_ingress: a judgment call (disclosed in this task's report)
+    # favoring one flexible mechanism over a rigid "disabled mode never
+    # rate-limits, full stop" rule that would make local rate-limit testing
+    # impossible.
+    rate_limit_chat_per_minute: int | None = None
+    # Phase 9 Task 2: explicit CORS allowlist. Defaults to the Vite dev
+    # origin so localhost:5173 keeps working with zero configuration.
+    cors_allow_origins: list[str] = ["http://localhost:5173"]
 
     @field_validator("database_url", "s3_bucket")
     @classmethod
     def not_blank(cls, v: str) -> str:
         if not v.strip():
             raise ValueError("must not be blank")
+        return v
+
+    @field_validator("cors_allow_origins", mode="before")
+    @classmethod
+    def split_cors_origins(cls, v: object) -> object:
+        """Env vars (and dotenv values) are always plain strings -- a
+        comma-separated ``CORS_ALLOW_ORIGINS=http://a,http://b`` is the
+        ergonomic shape for a real ``.env``/compose file, far simpler to
+        author than a JSON array literal. A value that is already a list
+        (this field's own Python-literal default, or a direct keyword
+        override from a test) passes through unchanged.
+        """
+        if isinstance(v, str):
+            return [origin.strip() for origin in v.split(",") if origin.strip()]
+        return v
+
+    @field_validator("cors_allow_origins")
+    @classmethod
+    def no_wildcard_cors_origin(cls, v: list[str]) -> list[str]:
+        """Global Constraints: "never * with credentials". Starlette's own
+        CORSMiddleware technically works around a literal "*" origin by
+        reflecting the caller's actual Origin header back when
+        allow_credentials is True (verified by reading its source) --
+        which defeats the allowlist's whole purpose (ANY origin is then
+        treated as allowed) even though it avoids the literal browser-side
+        "*"-plus-credentials rejection. Rejected here, at boot, rather than
+        trusted to never be misconfigured later -- the same fail-fast
+        discipline this file's own docstring pins for every other
+        malformed value.
+        """
+        if "*" in v:
+            raise ValueError(
+                "cors_allow_origins must not contain '*' -- this app always "
+                "sends credentials (api/app.py's CORSMiddleware wiring)"
+            )
         return v
 
     @model_validator(mode="after")
@@ -82,6 +134,17 @@ class Settings(BaseSettings):
             if missing:
                 raise ValueError(f"identity_mode=auth0 requires: {', '.join(missing)}")
         return self
+
+    @property
+    def effective_rate_limit_chat_per_minute(self) -> int:
+        """Resolves ``rate_limit_chat_per_minute``'s mode-dependent default
+        -- see that field's own comment for the judgment call this method
+        implements. An explicit value (including 0) always wins; ``None``
+        (unset) resolves to 0 in ``disabled`` mode, 30 otherwise.
+        """
+        if self.rate_limit_chat_per_minute is not None:
+            return self.rate_limit_chat_per_minute
+        return 0 if self.identity_mode == "disabled" else 30
 
 
 @lru_cache
