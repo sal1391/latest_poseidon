@@ -68,7 +68,10 @@ from poseidon.core.identity import AuthError, UserContext
 ROLES_CLAIM = "https://wfscorp.com/custom-claims.roles"
 
 _AUTHORIZATION_HEADER = "authorization"
-_BEARER_PREFIX = "Bearer "
+# M-5 / T2-M2 (phase 9 final review): compared casefolded against the
+# request's own scheme token in _extract_bearer_token -- see that method's
+# own comment for RFC 9110 section 11.1's case-insensitivity rule.
+_BEARER_SCHEME = "bearer"
 # One shared title+detail for every "the credential itself is not usable"
 # case EXCEPT "missing entirely" (its own, more specific pinned case, per
 # Global Constraints' "missing/malformed header" two-bucket split): no
@@ -101,8 +104,14 @@ class Auth0Provider:
     def resolve(self, headers: Mapping[str, str]) -> UserContext:
         """Resolve one request's identity from its ``Authorization: Bearer
         <jwt>`` header. See the module docstring for the full pinned
-        failure matrix; every failure raises :class:`AuthError` -- never a
-        bare exception FastAPI would turn into an opaque 500.
+        failure matrix; every PINNED failure case raises :class:`AuthError`.
+        A transport/provider fault this matrix does not pin (the JWKS
+        endpoint unreachable or 5xx, a non-RSA key colliding with a
+        requested ``kid`` -- phase 9 final review, M-10) can still escape
+        this method as a plain ``httpx``/``jwt`` exception; ``api/app.py``'s
+        identity middleware is the layer that contains ANY such exception
+        (I-1) rather than this method itself, so it never reaches FastAPI's
+        own generic handler as a bare 500.
         """
         token = self._extract_bearer_token(headers)
         try:
@@ -114,9 +123,21 @@ class Auth0Provider:
             raise AuthError(401, "malformed authorization header", _MALFORMED_DETAIL)
         public_key = self._public_key_for_kid(kid)
         claims = self._decode(token, public_key)
+        # I-1 (phase 9 final review): PyJWT does not require a `sub` claim
+        # to exist -- claims['sub'] used to raise a bare KeyError for a
+        # validly-signed token that simply omits it, escaping as an opaque
+        # 500 instead of the pinned AuthError every other failure here
+        # raises. `sub` is the ONE claim this codebase treats as required
+        # (see UserContext's own docstring: every mode's sub is globally
+        # load-bearing), so its absence is itself an invalid token, not a
+        # transport/provider fault -- fixed here, at the root cause, rather
+        # than left to I-1's generic middleware containment.
+        sub = claims.get("sub")
+        if not sub:
+            raise AuthError(401, "invalid token", "token has no sub claim")
         roles = tuple(claims.get(ROLES_CLAIM, ()))
         return UserContext(
-            sub=f"auth0|{claims['sub']}",
+            sub=f"auth0|{sub}",
             email=claims.get("email"),
             name=claims.get("name"),
             roles=roles,
@@ -126,9 +147,14 @@ class Auth0Provider:
         raw = headers.get(_AUTHORIZATION_HEADER)
         if raw is None:
             raise AuthError(401, "missing bearer token", "no Authorization header")
-        if not raw.startswith(_BEARER_PREFIX):
+        scheme, _, rest = raw.partition(" ")
+        # M-5 / T2-M2 (phase 9 final review, RFC 9110 section 11.1): the
+        # auth-scheme token is case-insensitive -- "bearer"/"Bearer"/
+        # "BEARER" all name the identical scheme. Only the SCHEME name is
+        # casefolded; the credential itself (`rest`) never is.
+        if scheme.casefold() != _BEARER_SCHEME:
             raise AuthError(401, "malformed authorization header", _MALFORMED_DETAIL)
-        token = raw[len(_BEARER_PREFIX) :].strip()
+        token = rest.strip()
         if not token:
             raise AuthError(401, "malformed authorization header", _MALFORMED_DETAIL)
         return token

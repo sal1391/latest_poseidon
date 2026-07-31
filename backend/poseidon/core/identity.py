@@ -20,11 +20,14 @@ a plain ``Mapping[str, str]`` -- a header bag with LOWERCASE keys, never a
 ``starlette.requests.Request`` -- so this whole module (and every provider
 that will ever implement this protocol: ``Auth0Provider``/
 ``SpcsIngressProvider``, Phase 9 Tasks 2/3) stays free of any web-framework
-import. ``api/auth.py``'s identity middleware is the ONE adapter: it
-lowercases a real request's headers (``{k.lower(): v for k, v in request.
-headers.items()}``) and calls ``provider.resolve(headers)``, storing the
-result on ``request.state.user`` for every downstream dependency/handler to
-read back. A unit test exercises a provider directly with a plain dict
+import. ``api/app.py``'s ``_install_identity_middleware`` is the ONE
+adapter (fixed, phase 9 final review M-9 -- this used to misname it
+``api/auth.py``'s identity middleware; ``api/auth.py`` has no middleware
+of its own). It lowercases a real request's headers (``{k.lower(): v for
+k, v in request.headers.items()}``) and calls ``provider.resolve(headers)``,
+storing the result on ``request.state.user`` for every downstream
+dependency/handler to read back. A unit test exercises a provider directly
+with a plain dict
 built the same way -- no ASGI app, no ``Request`` construction, needed (see
 ``test_identity_providers.py``).
 
@@ -252,6 +255,22 @@ def resolve_provider(settings: Settings) -> IdentityProvider:
     """
     print(f"identity mode: {settings.identity_mode}", flush=True)
     if settings.identity_mode == "disabled":
+        if settings.deploy_mode != "local":
+            # M-2 (phase 9 final review): disabled is the ONLY mode with no
+            # boot-time gate at all -- SpcsIngressProvider's own
+            # constructor hard-fails the symmetric spcs_ingress-outside-
+            # spcs mistake, but forgetting IDENTITY_MODE on a real deploy
+            # used to boot silently wide open, logged identically to the
+            # intentional local case. Never a boot failure: disabled is a
+            # legitimate choice on a throwaway EC2 box (see this
+            # function's own docstring) -- this is visibility, not a gate.
+            print(
+                f"WARNING: identity_mode=disabled outside deploy_mode='local' "
+                f"(deploy_mode={settings.deploy_mode!r}); every request resolves "
+                "to the fixed dev identity with no real authentication -- confirm "
+                "this is really what this deploy wants",
+                flush=True,
+            )
         return DisabledProvider()
     if settings.identity_mode == "auth0":
         # Imported here, not at module level: identity_auth0.py itself

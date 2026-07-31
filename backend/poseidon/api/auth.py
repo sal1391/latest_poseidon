@@ -295,11 +295,16 @@ def rate_limit_chat_send(request: Request) -> None:
     "Mock-chat router (test-only) untouched").
 
     No-ops (returns ``None``, allowing the request through) whenever
-    ``app.state.chat_rate_limiter`` is ``None`` -- limit 0/off, or the
-    mode-dependent default resolving to 0 (``core/config.py``'s
+    ``app.state.chat_rate_limiter`` is ``None`` OR UNSET ENTIRELY -- limit
+    0/off, the mode-dependent default resolving to 0 (``core/config.py``'s
     ``effective_rate_limit_chat_per_minute`` -- ``disabled`` mode, by
     default, so no existing dev/test flow is ever rate-limited by
-    surprise).
+    surprise), or a mock-mode app, which never runs ``_wire_live_chat`` at
+    all and so never sets this attribute in the first place (M-6, phase 9
+    final review): a bare ``request.app.state.chat_rate_limiter`` access
+    would raise ``AttributeError`` instead of no-opping the moment ANY
+    mock-mode-reachable route ever attaches this dependency --
+    ``getattr(..., None)`` defuses that landmine for good.
 
     CORRECTED (Controller's Round 0 correction, cf401b1): as of that
     commit, ``live_chat.py``'s chat-send route lists
@@ -320,7 +325,7 @@ def rate_limit_chat_send(request: Request) -> None:
     kept rather than removed so this function's own contract does not
     silently assume every future caller replicates that ordering).
     """
-    limiter = request.app.state.chat_rate_limiter
+    limiter = getattr(request.app.state, "chat_rate_limiter", None)
     if limiter is None:
         return
     user = getattr(request.state, "user", None)

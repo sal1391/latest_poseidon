@@ -87,7 +87,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # via CHAT_MODE=live -- byte-identical to every Phase 1-5 behavior
         # (mock_chat.py's own module docstring). The two routers are never
         # mounted together.
-        app.include_router(mock_chat.router)
+        #
+        # Phase 9 final-review fix wave (I-2): guarded by require_sales the
+        # SAME way dev_runner.router already is below -- mock_chat.py
+        # itself stays untouched (its own "test-only" plan constraint).
+        # Before this fix, NOTHING stopped this router from being mounted
+        # wide open under a non-disabled identity_mode: auth0/spcs_ingress
+        # both default to chat_mode="mock" too, unless an operator sets
+        # CHAT_MODE=live, so an auth0 deploy that forgot that one env var
+        # served six unauthenticated /api/conversations*//api/messages*
+        # routes. In disabled mode -- every existing test/env --
+        # DISABLED_DEFAULT_USER already carries Poseidon:Sales, so this
+        # guard is a no-op there: every existing mock test keeps passing
+        # unchanged (tests/test_mock_chat.py's own `app` fixture builds
+        # default, disabled-mode Settings).
+        app.include_router(mock_chat.router, dependencies=[Depends(auth.require_sales)])
 
     if app.state.settings.deploy_mode == "local":
         # The dev skill runner is a local-only surface (poseidon.api.dev_runner's
@@ -131,6 +145,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     return app
 
 
+# Phase 9 final-review fix wave (I-4): header names this app treats as
+# identity-bearing -- see _install_identity_middleware's own docstring for
+# why a duplicate occurrence of either is rejected before the lowercase
+# mapping collapse, and why X-Dev-User is deliberately excluded.
+_IDENTITY_BEARING_HEADERS = ("authorization", "sf-context-current-user")
+_DUPLICATE_HEADER_TITLE = "duplicate identity header"
+
+# Phase 9 final-review fix wave (I-1): the ONE generic problem body a
+# caller ever sees for a provider failure that is not a pinned AuthError --
+# see _install_identity_middleware's own docstring for the full
+# containment contract these two constants render.
+_IDENTITY_UNAVAILABLE_TITLE = "identity_unavailable"
+_IDENTITY_UNAVAILABLE_DETAIL = "the identity provider failed unexpectedly; try again shortly"
+
+
+def _first_duplicate_identity_header(request: Request) -> str | None:
+    """The first header name in :data:`_IDENTITY_BEARING_HEADERS` that
+    ``request.headers.getlist`` finds more than once on this request, or
+    ``None`` if none repeat. ``Headers.getlist`` matches names case-
+    insensitively (Starlette's own implementation), the same case-
+    insensitivity every provider's own header lookup already relies on, so
+    ``sf-context-current-user`` and ``Sf-Context-Current-User`` (or any
+    other casing) count as the SAME header.
+    """
+    for name in _IDENTITY_BEARING_HEADERS:
+        if len(request.headers.getlist(name)) > 1:
+            return name
+    return None
+
+
 def _install_identity_middleware(app: FastAPI) -> None:
     """Phase 9 Task 1 (doc 05 section 2, decision D22): resolve ``request.
     state.user`` for EVERY request, before any route handler or dependency
@@ -163,16 +207,77 @@ def _install_identity_middleware(app: FastAPI) -> None:
     ``require_sales``) reads ``request.state.auth_error`` back and turns it
     into the pinned 401/403 response -- see ``current_user``'s own
     docstring for the three-way branch that implements this.
+
+    Phase 9 final-review fix wave adds two more seams to this SAME one
+    adapter, both BEFORE ``provider.resolve`` is ever called with a
+    collapsed header mapping:
+
+    - **I-4 (duplicate identity-bearing headers).** ``request.headers`` is
+      a multidict; the naive ``{name.lower(): value for name, value in
+      request.headers.items()}`` collapse below keeps only the LAST
+      occurrence of a repeated header name. For ``Authorization``/
+      ``Sf-Context-Current-User`` specifically, "last one wins" is a trust
+      hazard, not a cosmetic ambiguity: if a caller can append a second
+      occurrence of a header a trusted edge (the SPCS ingress) is assumed
+      to set exactly once, they can override the platform's own value with
+      their own. Checked via ``Headers.getlist`` (case-insensitive,
+      matching every provider's own header lookup) before the collapse
+      even runs -- more than one occurrence of either name records the
+      SAME kind of ``AuthError`` a bad credential would (401), never a
+      500, and ``provider.resolve`` never even sees the ambiguous mapping.
+      ``X-Dev-User`` is deliberately NOT included: ``DisabledProvider``'s
+      whole design point is "never block local dev, ever" (its own
+      docstring), and it is not a platform trust boundary the way the
+      other two headers are (disclosed judgment call, this task's own wave
+      report) -- and ``Authorization`` is included even though the
+      review's own I-4 finding only named ``Sf-Context-Current-User``:
+      no legitimate client ever sends two, and the same last-one-wins
+      ambiguity applies regardless of which header carries it (also
+      disclosed there).
+    - **I-1 (provider failures beyond AuthError).** ``Auth0Provider.
+      resolve`` (or any future provider) can raise something that is NOT
+      an ``AuthError`` -- a JWKS fetch that times out or 5xxs, a JWK whose
+      ``kty`` is not RSA colliding with a requested ``kid`` (M-10), or any
+      other bug. Before this fix, any such exception escaped this
+      middleware entirely and became an opaque 500 on EVERY route,
+      including ``/health/*`` -- breaking this very function's own
+      "``/health/*`` stays open" promise the moment a credential was
+      merely unverifiable rather than absent. Caught the same way
+      ``AuthError`` already is (recorded, never re-raised here), logged
+      server-side for operator visibility, and surfaced -- only to a route
+      that actually asks -- as the SAME pinned, generic 401 problem
+      (``identity_unavailable``) regardless of which underlying exception
+      caused it: the caller-actionable answer ("try again; if this
+      persists, it is not your credential") is identical either way, and a
+      provider staying FastAPI-free (``core/identity.py``'s own seam) means
+      this containment has to live here, not in the provider.
     """
 
     @app.middleware("http")
     async def identity_middleware(request: Request, call_next):
         provider = request.app.state.identity_provider
+        duplicate = _first_duplicate_identity_header(request)
+        if duplicate is not None:
+            request.state.auth_error = AuthError(
+                401,
+                _DUPLICATE_HEADER_TITLE,
+                f"request carried more than one {duplicate!r} header",
+            )
+            return await call_next(request)
         headers = {name.lower(): value for name, value in request.headers.items()}
         try:
             request.state.user = provider.resolve(headers)
         except AuthError as exc:
             request.state.auth_error = exc
+        except Exception as exc:  # noqa: BLE001 - I-1: contain ANY provider failure, never a bare 500
+            print(
+                f"WARNING: identity provider raised {type(exc).__name__}: {exc} -- "
+                "resolving this request to a generic 401 instead of a bare 500",
+                flush=True,
+            )
+            request.state.auth_error = AuthError(
+                401, _IDENTITY_UNAVAILABLE_TITLE, _IDENTITY_UNAVAILABLE_DETAIL
+            )
         return await call_next(request)
 
 

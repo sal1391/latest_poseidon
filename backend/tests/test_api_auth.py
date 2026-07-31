@@ -55,10 +55,14 @@ from tests.test_chat_orchestrator import FakeDataClient, RecordingWriter
 from tests.test_identity_providers import (
     AUTH0_TEST_AUDIENCE,
     AUTH0_TEST_DOMAIN,
+    FailingJwksTransport,
     JwksTransport,
+    UnreachableJwksTransport,
     generate_rsa_keypair,
     jwk_for,
     mint_auth0_token,
+    mint_auth0_token_without_sub_claim,
+    oct_jwk_for,
 )
 
 _PLACEHOLDER_DSN = "postgresql+psycopg://nobody:nope@127.0.0.1:1/void"
@@ -982,6 +986,349 @@ async def test_api_skills_200_for_an_allowlisted_spcs_user():
         r = await client.get("/api/skills", headers={"Sf-Context-Current-User": "alice"})
 
     assert r.status_code == 200
+
+
+# ===========================================================================
+# Phase 9 final-review fix wave (2026-07-31): I-1 (provider-failure
+# containment), I-2 (mock-router guard), I-3 (route-classification sweep),
+# I-4 (duplicate identity-header rejection), M-6 (rate-limit-chat-send
+# no-op). See .superpowers/sdd/2026-07-31-phase-9-identity/final-review.md.
+# ===========================================================================
+
+# I-1: a provider failure that is NOT a pinned AuthError must never surface
+# as a bare 500 -- on /api/me it becomes the SAME 401-family RFC-7807 body
+# regardless of which underlying exception caused it (the generic,
+# byte-pinned "identity_unavailable" problem); on /health/live it must not
+# even be visible, since that route never asks for identity at all. Four
+# cases per the review's own table, each proven at both endpoints.
+#
+# raise_app_exceptions=False (matching the review's own verification
+# methodology) so a REGRESSION of this fix shows up as a clean assertion
+# failure ("500 != 401") rather than an opaque pytest ERROR with a raw
+# traceback -- harmless today, since post-fix no exception ever reaches the
+# transport layer either way.
+
+
+@pytest.mark.anyio
+async def test_me_returns_generic_401_when_jwks_is_unreachable():
+    key1, _pub1 = generate_rsa_keypair()
+    app = _auth0_app(UnreachableJwksTransport())
+    token = mint_auth0_token(key1, "key-1")
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.get("/api/me", headers={"Authorization": f"Bearer {token}"})
+
+    assert r.status_code == 401
+    assert r.json() == {
+        "type": "about:blank",
+        "title": "identity_unavailable",
+        "detail": "the identity provider failed unexpectedly; try again shortly",
+        "status": 401,
+    }
+
+
+@pytest.mark.anyio
+async def test_health_live_stays_open_when_jwks_is_unreachable():
+    key1, _pub1 = generate_rsa_keypair()
+    app = _auth0_app(UnreachableJwksTransport())
+    token = mint_auth0_token(key1, "key-1")
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.get("/health/live", headers={"Authorization": f"Bearer {token}"})
+
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok"}
+
+
+@pytest.mark.anyio
+async def test_me_returns_generic_401_when_jwks_returns_a_5xx():
+    key1, _pub1 = generate_rsa_keypair()
+    app = _auth0_app(FailingJwksTransport(500))
+    token = mint_auth0_token(key1, "key-1")
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.get("/api/me", headers={"Authorization": f"Bearer {token}"})
+
+    assert r.status_code == 401
+    assert r.json() == {
+        "type": "about:blank",
+        "title": "identity_unavailable",
+        "detail": "the identity provider failed unexpectedly; try again shortly",
+        "status": 401,
+    }
+
+
+@pytest.mark.anyio
+async def test_health_live_stays_open_when_jwks_returns_a_5xx():
+    key1, _pub1 = generate_rsa_keypair()
+    app = _auth0_app(FailingJwksTransport(500))
+    token = mint_auth0_token(key1, "key-1")
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.get("/health/live", headers={"Authorization": f"Bearer {token}"})
+
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok"}
+
+
+@pytest.mark.anyio
+async def test_me_is_401_when_a_valid_signature_token_has_no_sub_claim():
+    """The ONE exception to the generic "identity_unavailable" body among
+    these four cases: Auth0Provider.resolve now reads `sub` defensively
+    and raises its OWN pinned AuthError ("invalid token") directly, rather
+    than ever reaching the generic containment path -- a root-cause fix,
+    not containment. Uses mint_auth0_token_without_sub_claim (NOT
+    mint_auth0_token(..., sub=None): PyJWT itself already rejects a
+    PRESENT-but-non-string sub before this fix's own check ever runs, so
+    that shortcut would silently test the wrong thing -- see that
+    helper's own docstring in test_identity_providers.py)."""
+    key1, pub1 = generate_rsa_keypair()
+    app = _auth0_app(JwksTransport([jwk_for(pub1, "key-1")]))
+    token = mint_auth0_token_without_sub_claim(key1, "key-1")
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.get("/api/me", headers={"Authorization": f"Bearer {token}"})
+
+    assert r.status_code == 401
+    assert r.json()["title"] == "invalid token"
+
+
+@pytest.mark.anyio
+async def test_health_live_stays_open_when_a_valid_signature_token_has_no_sub_claim():
+    key1, pub1 = generate_rsa_keypair()
+    app = _auth0_app(JwksTransport([jwk_for(pub1, "key-1")]))
+    token = mint_auth0_token_without_sub_claim(key1, "key-1")
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.get("/health/live", headers={"Authorization": f"Bearer {token}"})
+
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok"}
+
+
+@pytest.mark.anyio
+async def test_me_returns_generic_401_when_a_non_rsa_jwk_collides_with_the_requested_kid():
+    """M-10: _public_key_for_kid hands ANY kid-matching JWK to
+    RSAAlgorithm.from_jwk without checking kty/use/alg first -- a non-RSA
+    key sharing a kid with the token's own header raises
+    jwt.exceptions.InvalidKeyError, uncaught by Auth0Provider itself (see
+    identity_auth0.py's own resolve() docstring: this is a transport/config
+    fault the pinned failure matrix does not name, not a credential problem
+    this provider classifies). Contained by the SAME generic I-1 middleware
+    path as JWKS-unreachable/5xx above."""
+    key1, _pub1 = generate_rsa_keypair()
+    app = _auth0_app(JwksTransport([oct_jwk_for("key-1")]))
+    token = mint_auth0_token(key1, "key-1")
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.get("/api/me", headers={"Authorization": f"Bearer {token}"})
+
+    assert r.status_code == 401
+    assert r.json() == {
+        "type": "about:blank",
+        "title": "identity_unavailable",
+        "detail": "the identity provider failed unexpectedly; try again shortly",
+        "status": 401,
+    }
+
+
+@pytest.mark.anyio
+async def test_health_live_stays_open_when_a_non_rsa_jwk_collides_with_the_requested_kid():
+    key1, _pub1 = generate_rsa_keypair()
+    app = _auth0_app(JwksTransport([oct_jwk_for("key-1")]))
+    token = mint_auth0_token(key1, "key-1")
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.get("/health/live", headers={"Authorization": f"Bearer {token}"})
+
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok"}
+
+
+# I-2: chat_mode defaults to "mock" REGARDLESS of identity_mode -- an
+# auth0 deploy that forgets CHAT_MODE=live must not leave mock_chat.
+# router's six routes open.
+
+
+@pytest.mark.anyio
+async def test_conversations_post_requires_a_token_under_auth0_mode_with_default_mock_chat():
+    """chat_mode is left at its "mock" default here -- unlike every other
+    Auth0-section test above, which passes chat_mode="live" to reach
+    live_chat.py instead."""
+    _key1, pub1 = generate_rsa_keypair()
+    app = _auth0_app(JwksTransport([jwk_for(pub1, "key-1")]))
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.post("/api/conversations")
+
+    assert r.status_code == 401
+
+
+# I-4: a dict comprehension over Headers.items() keeps only the LAST
+# occurrence of a repeated header name -- verified (this task's own wave
+# report) that a caller who appends a SECOND Sf-Context-Current-User header
+# can override whichever identity the SPCS platform edge actually attached,
+# entirely undetected, as long as their value sorts last. Rejected outright
+# now, before any provider ever sees a collapsed mapping.
+
+
+@pytest.mark.anyio
+async def test_duplicate_sf_context_current_user_headers_is_401_not_last_wins():
+    app = _spcs_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.get(
+            "/api/me",
+            headers=[
+                ("Sf-Context-Current-User", "platform_alice"),
+                ("Sf-Context-Current-User", "forged_mallory"),
+            ],
+        )
+
+    assert r.status_code == 401
+    assert r.json()["title"] == "duplicate identity header"
+
+
+@pytest.mark.anyio
+async def test_health_live_stays_open_with_duplicate_identity_headers():
+    app = _spcs_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.get(
+            "/health/live",
+            headers=[
+                ("Sf-Context-Current-User", "platform_alice"),
+                ("Sf-Context-Current-User", "forged_mallory"),
+            ],
+        )
+
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok"}
+
+
+@pytest.mark.anyio
+async def test_duplicate_authorization_headers_is_401():
+    """Disclosed judgment call (this task's own wave report): the review's
+    I-4 finding is specifically about Sf-Context-Current-User's platform-
+    trust assumption, but the identical last-one-wins collapse applies to
+    Authorization too -- no legitimate client ever sends two, so this task
+    applies the same rejection to both headers in the ONE adapter rather
+    than special-casing just one. The values need not be well-formed
+    tokens: rejection happens before either is ever inspected."""
+    app = _auth0_app(JwksTransport([]))
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.get(
+            "/api/me",
+            headers=[("Authorization", "Bearer aaa"), ("Authorization", "Bearer bbb")],
+        )
+
+    assert r.status_code == 401
+    assert r.json()["title"] == "duplicate identity header"
+
+
+# M-6: app.state.chat_rate_limiter is only ever SET by _wire_live_chat
+# (chat_mode="live") -- a mock-mode app's app.state never gets the
+# attribute at all (not even None).
+
+
+def test_rate_limit_chat_send_no_ops_when_the_limiter_attribute_is_entirely_unset():
+    """A bare attribute access here would raise AttributeError instead of
+    no-opping the moment ANY mock-mode-reachable route ever attaches this
+    dependency -- proven directly against a real mock-mode app.state, no
+    live wiring involved."""
+    app = _mock_app()
+    assert not hasattr(app.state, "chat_rate_limiter")
+    request = Request(scope={"type": "http", "headers": [], "app": app})
+
+    auth_module.rate_limit_chat_send(request)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# I-3: the route-classification sweep. Permanent replacement for a
+# hand-maintained guard list's own blind spot (see
+# test_all_six_conversation_and_message_routes_require_a_token_under_auth0_
+# mode above, which names six routes explicitly and would stay green
+# whether or not a SEVENTH one ever lost its guard -- exactly what happened
+# once already, Controller's Round 0 correction, cf401b1). This walks the
+# app itself and demands every /api/* route account for its own guard,
+# rather than trusting a list a future PR has to remember to update.
+# ---------------------------------------------------------------------------
+
+
+def _iter_api_route_contexts(app):
+    """Yield one _EffectiveRouteContext per route this app actually serves,
+    across every mounted router, regardless of how deeply include_router
+    nested it. Verified by direct introspection (this task's own wave
+    report) against the installed FastAPI 0.140.13: include_router wraps
+    each included APIRouter in a private fastapi.routing._IncludedRouter
+    rather than flattening its routes onto app.routes directly, so a naive
+    `for route in app.routes` sees FOUR routes total (openapi.json/docs/
+    docs-oauth2-redirect/redoc -- FastAPI's own built-ins) and silently
+    misses every single /api/* or /health/* route this app serves, which
+    would make a sweep like this one vacuously pass no matter what it was
+    supposed to catch. Confirmed the review's own named mechanism,
+    effective_candidates()/effective_route_contexts(), is real on this
+    install (fastapi/routing.py's own _IncludedRouter class) and is what
+    actually surfaces every route recursively, however many routers deep."""
+    from fastapi.routing import _IncludedRouter
+
+    for route in app.routes:
+        if isinstance(route, _IncludedRouter):
+            yield from route.effective_route_contexts()
+
+
+def _dependant_calls(dependant) -> set:
+    """Flattens one route's complete dependency graph -- the endpoint
+    itself plus EVERY dependency FastAPI will actually resolve to serve it,
+    recursively -- regardless of whether a guard was attached via
+    include_router(..., dependencies=[...]) (dev_runner.router,
+    mock_chat.router as of I-2), a route's own dependencies=[...] kwarg
+    (live_chat.py), or a nested Depends() inside another dependency's own
+    signature (require_sales's own Depends(current_user)): all three
+    shapes land in this SAME nested structure at request-resolution time,
+    so walking it is a direct check of what FastAPI will really invoke, not
+    a parallel guess at it."""
+    calls: set = set()
+    if dependant is None:
+        return calls
+    call = getattr(dependant, "call", None)
+    if call is not None:
+        calls.add(call)
+    for sub in getattr(dependant, "dependencies", None) or []:
+        calls |= _dependant_calls(sub)
+    return calls
+
+
+@pytest.mark.parametrize(
+    "build_app",
+    [lambda: _mock_app(deploy_mode="local"), lambda: _live_app(deploy_mode="local")],
+    ids=["chat_mode=mock", "chat_mode=live"],
+)
+def test_every_api_route_is_either_api_me_or_guarded_by_require_sales(build_app):
+    """I-3. deploy_mode="local" in BOTH cases so dev_runner.router is
+    mounted alongside whichever chat router the case is actually about --
+    between the two parametrized cases, every router this codebase mounts
+    (health, auth, mock_chat OR live_chat, dev_runner) gets swept at least
+    once. The one open-by-design bucket is GET /api/me; identity_mode stays
+    "disabled" for every route otherwise (irrelevant here: this test is
+    entirely about STRUCTURE -- which dependency graph a route carries --
+    never about a mode's actual runtime behavior)."""
+    app = build_app()
+    unclassified = []
+    for ctx in _iter_api_route_contexts(app):
+        if not ctx.path.startswith("/api/"):
+            continue
+        if ctx.path == "/api/me":
+            continue
+        if auth_module.require_sales in _dependant_calls(ctx.dependant):
+            continue
+        unclassified.append(f"{sorted(ctx.methods or [])} {ctx.path}")
+
+    assert not unclassified, (
+        "route(s) under /api/* are neither GET /api/me nor guarded by "
+        f"require_sales: {unclassified}"
+    )
 
 
 # ===========================================================================

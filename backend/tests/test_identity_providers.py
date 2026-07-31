@@ -160,6 +160,47 @@ class JwksTransport(httpx.BaseTransport):
         return httpx.Response(200, json={"keys": self.keys})
 
 
+class UnreachableJwksTransport(httpx.BaseTransport):
+    """Phase 9 final-review fix wave (I-1): simulates the tenant's JWKS
+    endpoint being completely unreachable (a network blip, DNS failure,
+    ...) -- raises ``httpx.ConnectError``, the SAME exception class a real
+    ``Auth0Provider`` using its default (non-test) transport would see
+    against a host that refuses the connection. Reused by
+    ``test_api_auth.py``'s own HTTP-boundary proof of this exact case, the
+    same cross-test-module reuse discipline ``JwksTransport`` above already
+    established."""
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("simulated JWKS endpoint unreachable", request=request)
+
+
+class FailingJwksTransport(httpx.BaseTransport):
+    """Phase 9 final-review fix wave (I-1): simulates the tenant's JWKS
+    endpoint being reachable but answering with a server error (a bad
+    tenant-side deploy, a transient 5xx during Auth0's own maintenance,
+    ...) -- triggers ``response.raise_for_status()``'s
+    ``httpx.HTTPStatusError``. Reused by ``test_api_auth.py`` like
+    :class:`UnreachableJwksTransport` above."""
+
+    def __init__(self, status_code: int = 500) -> None:
+        self.status_code = status_code
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        return httpx.Response(self.status_code, request=request, json={"error": "boom"})
+
+
+def oct_jwk_for(kid: str) -> dict:
+    """A non-RSA (symmetric) JWKS ``keys[]`` entry sharing ``kid`` with an
+    RSA-signed test token -- M-10 (phase 9 final review): ``Auth0Provider.
+    _public_key_for_kid`` hands ANY ``kid``-matching JWK to ``RSAAlgorithm.
+    from_jwk`` without checking ``kty``/``use``/``alg`` first, so a
+    colliding, non-RSA key must not crash the request (contained by I-1's
+    middleware fix -- see ``test_api_auth.py``'s own HTTP-boundary proof).
+    The actual key material is irrelevant -- resolution never gets far
+    enough to use it -- so a fixed, obviously-fake ``k`` is fine."""
+    return {"kty": "oct", "k": "c2VjcmV0", "kid": kid, "use": "sig", "alg": "HS256"}
+
+
 def mint_auth0_token(private_key, kid: str, **claim_overrides) -> str:
     """A signed RS256 JWT with a realistic Auth0-shaped claim set (valid
     iss/aud/exp/nbf/roles by default -- override any of them per test to
@@ -168,6 +209,33 @@ def mint_auth0_token(private_key, kid: str, **claim_overrides) -> str:
     now = datetime.now(UTC)
     claims: dict = {
         "sub": "user123",
+        "email": "alice@example.com",
+        "name": "Alice",
+        "iss": AUTH0_TEST_ISSUER,
+        "aud": AUTH0_TEST_AUDIENCE,
+        "iat": now,
+        "exp": now + timedelta(hours=1),
+        ROLES_CLAIM: ["Poseidon:Sales"],
+    }
+    claims.update(claim_overrides)
+    return jwt.encode(claims, _private_pem(private_key), algorithm="RS256", headers={"kid": kid})
+
+
+def mint_auth0_token_without_sub_claim(private_key, kid: str, **claim_overrides) -> str:
+    """The same realistic Auth0-shaped claim set :func:`mint_auth0_token`
+    mints, EXCEPT ``sub`` is never added at all -- I-1 (phase 9 final
+    review): PyJWT's own ``jwt.decode`` already rejects a PRESENT-but-
+    wrong-type ``sub`` on its own (``InvalidSubjectError``, caught by
+    ``Auth0Provider._decode``'s existing catch-all), so a keyword override
+    like ``sub=None`` on :func:`mint_auth0_token` never reaches the
+    defensive ``claims.get("sub")`` check ``resolve`` adds -- it has to be
+    genuinely ABSENT, which only omitting the key entirely (not merely
+    falsy-ing its value) proves. Reused by ``test_api_auth.py``'s own
+    HTTP-boundary proof of this exact case, the same cross-test-module
+    reuse discipline every other JWKS-fixture helper here already
+    established."""
+    now = datetime.now(UTC)
+    claims: dict = {
         "email": "alice@example.com",
         "name": "Alice",
         "iss": AUTH0_TEST_ISSUER,
@@ -429,7 +497,12 @@ def test_auth0_missing_authorization_header_is_401(rsa_keys):
     [
         "",  # header present but empty
         "Token abc",  # not the Bearer scheme
-        "bearer abc",  # lowercase scheme (case-sensitive, disclosed)
+        # lowercase scheme -- accepted as a scheme match since M-5 (phase 9
+        # final review, RFC 9110 section 11.1), but "abc" is still not a
+        # structurally valid JWT, so this row stays malformed either way;
+        # see test_auth0_bearer_scheme_is_case_insensitive below for the
+        # case that actually proves case-insensitivity with a real token.
+        "bearer abc",
         "Bearer",  # scheme with no token at all
         "Bearer   ",  # scheme plus only whitespace
         "Bearer not-a-jwt-at-all",  # not a structurally valid JWT
@@ -440,6 +513,23 @@ def test_auth0_malformed_authorization_header_variants(rsa_keys, raw):
     provider = _auth0_provider(JwksTransport([jwk_for(pub1, "key-1")]))
 
     _expect_auth_error(provider, {"authorization": raw}, 401, "malformed authorization header")
+
+
+def test_auth0_bearer_scheme_is_case_insensitive(rsa_keys):
+    """M-5 / T2-M2 (phase 9 final review, RFC 9110 section 11.1): the
+    auth-scheme token is case-insensitive -- "bearer", "Bearer", "BEARER"
+    all name the identical scheme. No shipped client sends anything but
+    the canonical "Bearer" (the Auth0 SDK's own convention), which is why
+    T2 originally deferred this; folded into the final-review fix wave
+    since it is one line plus one test. The credential itself is never
+    casefolded -- only the scheme name gets this treatment."""
+    key1, pub1, _key2, _pub2 = rsa_keys
+    provider = _auth0_provider(JwksTransport([jwk_for(pub1, "key-1")]))
+    token = mint_auth0_token(key1, "key-1")
+
+    user = provider.resolve({"authorization": f"bearer {token}"})
+
+    assert user.sub == "auth0|user123"
 
 
 def test_auth0_expired_token_is_401(rsa_keys):
@@ -494,6 +584,26 @@ def test_auth0_bad_signature_via_second_key_is_401(rsa_keys):
     _expect_auth_error(
         provider, {"authorization": f"Bearer {token}"}, 401, "invalid token signature"
     )
+
+
+def test_auth0_token_with_no_sub_claim_is_401(rsa_keys):
+    """I-1 (phase 9 final review): ``Auth0Provider.resolve`` used to read
+    ``claims['sub']`` unconditionally -- PyJWT does not require a ``sub``
+    claim to exist, so a validly-signed token that simply omits it raised a
+    bare ``KeyError`` instead of the pinned :class:`AuthError` every other
+    case in this matrix already raises, escaping as an opaque 500 at the
+    HTTP boundary (see ``test_api_auth.py``'s own HTTP-level proof of this
+    exact case). Fixed to read ``claims.get("sub")`` defensively. Uses
+    :func:`mint_auth0_token_without_sub_claim` (see its own docstring for
+    why an omitted key, not merely a falsy value, is what this case
+    needs) so ``sub`` is genuinely ABSENT."""
+    key1, pub1, _key2, _pub2 = rsa_keys
+    provider = _auth0_provider(JwksTransport([jwk_for(pub1, "key-1")]))
+    token = mint_auth0_token_without_sub_claim(key1, "key-1")
+
+    err = _expect_auth_error(provider, {"authorization": f"Bearer {token}"}, 401, "invalid token")
+
+    assert err.detail == "token has no sub claim"
 
 
 # ===========================================================================
@@ -739,6 +849,31 @@ def test_spcs_allowlist_membership_is_casefolded():
 def test_resolve_provider_disabled_mode_returns_a_disabled_provider():
     provider = resolve_provider(_settings(identity_mode="disabled"))
     assert isinstance(provider, DisabledProvider)
+
+
+def test_disabled_mode_boots_quietly_under_local_deploy_mode(capsys):
+    """M-2 (phase 9 final review): the common, intentional case -- every
+    existing test/env -- must stay quiet (no WARNING line) even though the
+    new check below now runs on every ``disabled``-mode boot."""
+    resolve_provider(_settings(identity_mode="disabled", deploy_mode="local"))
+    assert "WARNING" not in capsys.readouterr().out
+
+
+def test_disabled_mode_boot_warns_outside_local_deploy_mode(capsys):
+    """M-2: ``identity_mode="disabled"`` boots in ANY ``deploy_mode``,
+    correctly -- an operator may legitimately want it on a throwaway EC2
+    box (see this function's own docstring) -- but forgetting
+    ``IDENTITY_MODE`` on a real deploy used to produce only the same
+    one-line ``"identity mode: disabled"`` boot log as the intentional
+    case, with no way to tell them apart. A loud ``WARNING`` line closes
+    that asymmetry without failing boot -- unlike ``SpcsIngressProvider``'s
+    own hard error for the symmetric ``spcs_ingress``-outside-``spcs``
+    mistake, which genuinely cannot be a legitimate configuration."""
+    resolve_provider(_settings(identity_mode="disabled", deploy_mode="ec2"))
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "disabled" in out
+    assert "ec2" in out
 
 
 def test_resolve_provider_defaults_to_disabled_when_unset():
