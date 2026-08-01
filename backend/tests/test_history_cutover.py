@@ -693,16 +693,53 @@ async def test_mid_turn_crash_persists_the_partial_assistant_row_and_marks_turn_
 
 @pytest.mark.pg
 @pytest.mark.anyio
-async def test_normal_turn_persists_exactly_one_assistant_row_never_a_duplicate(pg_database_url):
-    """I-3's own "double-write must be impossible" pin: the terminal-frame
-    persist (``send``'s own ``"error"`` branch / ``_finalize_turn``) and
-    the ``finally`` safety net (``_persist_once``) must never BOTH write --
-    a genuine second ``INSERT`` against the same, already-minted
-    ``message_id`` would violate ``messages``' own primary key outright, so
-    if the idempotency guard ever failed this test would not merely
-    over-count, it would 500. Proven on the ordinary success path (no
-    crash, no guard) -- the path every OTHER test in this suite already
-    exercises without ever counting rows, made explicit here."""
+async def test_normal_turn_calls_write_assistant_message_exactly_once(pg_database_url, monkeypatch):
+    """I-3's own "double-write must be impossible" pin -- corrected after
+    re-review (``task-3-rereview.md``'s own "New finding"): the ORIGINAL
+    version of this test asserted a DB-level row-count property and its
+    docstring claimed a removed ``persisted_holder`` guard "would 500" --
+    traced and found FALSE, with no RED evidence ever captured for it.
+
+    The TRUE layering, traced through the actual exception-handling chain:
+    ``_persist_assistant_message`` (unchanged by this fix round) wraps its
+    write in a broad ``except Exception: logger.error(...)`` that never
+    re-raises; ``UserHistory.write_assistant_message``'s own ``INSERT`` has
+    no ``ON CONFLICT`` clause, and ``messages.id`` is a real
+    ``primary_key=True`` column (migration ``0004``), so a genuine SECOND
+    ``INSERT`` against the same, already-minted ``message_id`` DOES raise
+    ``IntegrityError`` -- but that exception is swallowed exactly where
+    described above, never reaching the client and never touching the row
+    count (Postgres's own primary key already guarantees at most one row
+    exists, guard or no guard). So: **Postgres's primary key is the hard
+    backstop against a duplicate ROW; the ``persisted_holder`` flag is what
+    prevents the duplicate WRITE ATTEMPT in the first place** -- skipping a
+    wasted round trip and a spurious ERROR-level log entry on every normal
+    turn's ``finally`` safety-net call, not preventing a row or a 500 that
+    the flag was never actually the thing standing between the app and.
+
+    This version discriminates at the layer the flag actually governs,
+    using the identical white-box technique already built for
+    :func:`test_terminal_frame_is_queued_only_after_the_assistant_row_is_persisted`:
+    ``UserHistory.write_assistant_message`` is wrapped to COUNT real calls
+    (delegating to the real implementation, never a stand-in), and the
+    assertion is on that count -- exactly one -- never on the row count a
+    different, pre-existing mechanism already guarantees independent of
+    this fix round's own code. The row-count assertion is KEPT below as
+    the backstop invariant (shipped behavior is still exactly what a real
+    user sees), just no longer the claim being pinned as the flag's own
+    proof.
+    """
+    from poseidon.core.chat.history import UserHistory
+
+    call_count: list[int] = []
+    real_write = UserHistory.write_assistant_message
+
+    def counting_write(self, cid, message, turn_id):
+        call_count.append(1)
+        return real_write(self, cid, message, turn_id)
+
+    monkeypatch.setattr(UserHistory, "write_assistant_message", counting_write)
+
     headers = _headers(_dev_user("alice"))
     app = _app(pg_database_url)
     transport = httpx.ASGITransport(app=app)
@@ -714,10 +751,19 @@ async def test_normal_turn_persists_exactly_one_assistant_row_never_a_duplicate(
 
         messages = await client.get(f"/api/conversations/{cid}/messages", headers=headers)
 
+    # The flag-governed property: exactly ONE real write ATTEMPT for this
+    # turn's own assistant message -- the terminal-frame call site
+    # (_finalize_turn, for an ordinary "done" turn) succeeds and the
+    # `finally` safety net's own call is skipped, never both firing.
+    assert len(call_count) == 1
+
+    # Backstop invariant, unaffected by the flag either way (see the
+    # tracing above): shipped behavior still shows exactly one persisted
+    # assistant row for this turn, plus the opener from create -- kept so
+    # this test still proves what a real user actually sees, even though
+    # it is no longer what discriminates the flag's own behavior.
     items = messages.json()["items"]
     assistant_ids = [m["id"] for m in items if m["role"] == "assistant"]
-    # opener (from create) + this turn's own answer -- two DISTINCT
-    # assistant rows, neither one duplicated.
     assert len(assistant_ids) == 2
     assert len(set(assistant_ids)) == 2
 
