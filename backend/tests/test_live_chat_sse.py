@@ -95,6 +95,22 @@ def pg_database_url() -> str:
     return dsn
 
 
+def _json_lines(text: str) -> list[dict]:
+    """Phase 11 Task 2: every line of ``text`` that parses as JSON, in
+    order -- skips any that does not. ``_build_tool_registry``'s
+    "research transport: ..." boot line now goes out through
+    ``core/obs.py`` as JSON (no bare ``print`` left), so the two capsys-
+    based tests below parse structured fields instead of grepping raw
+    text; a defensive skip on a non-JSON line costs nothing."""
+    records = []
+    for line in text.splitlines():
+        try:
+            records.append(json.loads(line))
+        except ValueError:
+            continue
+    return records
+
+
 async def _create_conversation(client: httpx.AsyncClient) -> str:
     """A real conversation id via ``POST /api/conversations`` -- every
     adapted test in this file that used to dispatch against an ad hoc
@@ -252,13 +268,24 @@ def test_stub_llm_mode_installs_a_fixture_research_tool(capsys):
     ()``'s own default) installs a ``FixtureResearchTool`` override --
     never a live transport, no matter what ``PERPLEXITY_API_KEY`` happens
     to be set in the ambient environment (key PRESENCE is the wrong gate --
-    see ``app.py``'s own ``_build_tool_registry`` docstring)."""
+    see ``app.py``'s own ``_build_tool_registry`` docstring).
+
+    Phase 11 Task 2 adaptation (disclosed): the boot line is now one JSON
+    line through ``core/obs.py``, not a bare ``print`` -- adapted from a
+    raw substring check against captured stdout text to a structural
+    assertion over the parsed record's ``event``/``context`` fields. The
+    pinned label text (``"fixture (llm_mode=stub)"``) survives verbatim as
+    ``context["transport"]``.
+    """
     app = _live_app()
 
     result = app.state.tool_registry.research.search(query="q", schema_name="web_research")
 
     assert result.transport == "fixture"
-    assert "research transport: fixture (llm_mode=stub)" in capsys.readouterr().out
+    records = _json_lines(capsys.readouterr().out)
+    transport_lines = [r for r in records if r["event"] == "research_transport_resolved"]
+    assert len(transport_lines) == 1
+    assert transport_lines[0]["context"]["transport"] == "fixture (llm_mode=stub)"
 
 
 def test_live_llm_mode_resolves_the_configured_perplexity_transport(capsys):
@@ -267,13 +294,21 @@ def test_live_llm_mode_resolves_the_configured_perplexity_transport(capsys):
     ``TOOL_TRANSPORT_PERPLEXITY`` (default ``"direct"``) -- proven WITHOUT
     ever firing a live call: only the CONSTRUCTED adapter's type is
     checked, never ``.search()`` (``PerplexityDirectAdapter``'s own lazy-
-    client contract already proves construction alone touches no network)."""
+    client contract already proves construction alone touches no network).
+
+    Phase 11 Task 2 adaptation (disclosed): same shape as the stub-mode
+    test above -- the pinned label text (``"direct (llm_mode=live)"``)
+    survives verbatim as ``context["transport"]`` on the parsed JSON line.
+    """
     from poseidon.mcp.perplexity.adapter import PerplexityDirectAdapter
 
     app = _live_app(llm_mode="live")
 
     assert isinstance(app.state.tool_registry.research, PerplexityDirectAdapter)
-    assert "research transport: direct (llm_mode=live)" in capsys.readouterr().out
+    records = _json_lines(capsys.readouterr().out)
+    transport_lines = [r for r in records if r["event"] == "research_transport_resolved"]
+    assert len(transport_lines) == 1
+    assert transport_lines[0]["context"]["transport"] == "direct (llm_mode=live)"
 
 
 def test_live_mode_local_deploy_discovers_the_skill_registry_exactly_once(monkeypatch):

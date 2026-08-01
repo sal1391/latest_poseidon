@@ -295,6 +295,22 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["chat-live"])
 
+# Phase 11 Task 2 (plan carryforward): every SSE response this router
+# returns -- both the real event_stream() below and the throwaway
+# snowflake-guard stream -- shares this SAME header set, so it is named
+# once here rather than duplicated at each StreamingResponse(...) call
+# site. `X-Accel-Buffering: no` tells an nginx (or nginx-compatible)
+# reverse proxy sitting in front of this app to never buffer this
+# response: nginx's default proxy buffering holds a streamed body until it
+# accumulates a full buffer (or the upstream closes), which would turn a
+# live, incremental SSE stream into one large delayed chunk delivered all
+# at once -- silently defeating progressive streaming for any deploy that
+# happens to sit behind such a proxy, with no error or symptom at this
+# application layer to point at the cause. A proxy that does not honor
+# this header (or is not nginx-based at all) simply ignores it -- there is
+# no downside to always sending it.
+_SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
 # Sentinel put onto the frame queue once the worker thread's turn is over
 # (success or failure alike) -- distinguishable from any real SSE frame
 # (always a non-empty str), so the async generator knows when to stop
@@ -885,9 +901,7 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
                     break
                 yield frame
 
-    return StreamingResponse(
-        event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"}
-    )
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 def _snowflake_guard_response(
@@ -914,9 +928,7 @@ def _snowflake_guard_response(
             )
         },
     )
-    return StreamingResponse(
-        iter(frames), media_type="text/event-stream", headers={"Cache-Control": "no-cache"}
-    )
+    return StreamingResponse(iter(frames), media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @router.post("/messages/{mid}/feedback", status_code=204, dependencies=[Depends(require_sales)])

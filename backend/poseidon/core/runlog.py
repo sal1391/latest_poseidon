@@ -84,6 +84,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
 from poseidon.core.db import rls_transaction
+from poseidon.core.obs import trace_id_var
 
 logger = logging.getLogger(__name__)
 
@@ -233,10 +234,38 @@ class RunLogWriter:
         test in this module except the one pinning this parameter -- keeps
         minting one internally, unchanged.
 
+        **Phase 11 Task 2: trace stamping, via THIS writer, not the
+        caller.** Doc 06 section 3 pins ``turn_run.trace_id`` to "the
+        request's id". ``core/chat/orchestrator.py``'s own ``_begin_turn``
+        -- the one call site that reaches this method for every real chat
+        turn -- passes ``trace_id=None`` explicitly (Phase 11 Task 1's own
+        writer-argument threading; unchanged by this task, which is
+        sanctioned to add span() wrappers to that module, not to touch its
+        call sites -- see this task's own report for the full disclosure).
+        Rather than push a second edit into a file this task may not
+        otherwise touch, this method itself falls back to ``obs.
+        trace_id_var`` -- the SAME contextvar ``api/app.py``'s trace
+        middleware sets for the entire lifetime of the request -- whenever
+        ``trace_id`` arrives as ``None``, which covers both "the caller
+        never mentioned trace_id" and "the caller passed None explicitly"
+        identically (Python cannot tell the two apart at the call site
+        either way, and there is no reason a caller would ever want a
+        SILENT ``None`` over the request's own ambient id when one is
+        available). Falling back to ``trace_id_var.get()`` is a no-op
+        (stays ``None``) for every call made outside an HTTP request --
+        this module's own offline tests, the pinned ``test_start_turn_
+        defaults_kind_to_chat_turn_and_trace_id_to_none`` included, since
+        nothing in that context ever set the contextvar. An EXPLICIT
+        ``trace_id`` argument (this module's own test suite pins one, e.g.
+        ``"trace-1"``) always wins over the contextvar -- the fallback only
+        ever fills a genuine gap, never overrides a caller who supplied a
+        real value.
+
         Returns ``None`` on any failure -- see the module docstring.
         """
         try:
             new_id = turn_run_id if turn_run_id is not None else str(uuid.uuid4())
+            resolved_trace_id = trace_id if trace_id is not None else trace_id_var.get()
             params = {
                 "id": new_id,
                 "kind": kind,
@@ -247,7 +276,7 @@ class RunLogWriter:
                 "question": question,
                 "mode": mode,
                 "parsed": json.dumps(parsed),
-                "trace_id": trace_id,
+                "trace_id": resolved_trace_id,
             }
             with rls_transaction(self._engine, user_sub, app_role=self._app_role) as conn:
                 row = conn.execute(_START_TURN_SQL, params).first()

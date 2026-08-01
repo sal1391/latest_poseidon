@@ -62,6 +62,7 @@ from poseidon.core.identity import (
 )
 from poseidon.core.identity_auth0 import ROLES_CLAIM, Auth0Provider
 from poseidon.core.identity_spcs import SpcsIngressProvider
+from poseidon.core.obs import configure_json_logging
 
 _PLACEHOLDER_DSN = "postgresql+psycopg://nobody:nope@127.0.0.1:1/void"
 
@@ -82,6 +83,23 @@ def _settings(**overrides) -> Settings:
     )
     defaults.update(overrides)
     return Settings(**defaults)
+
+
+def _json_lines(text: str) -> list[dict]:
+    """Phase 11 Task 2: every line of ``text`` that parses as JSON, in
+    order -- skips any that does not. ``resolve_provider``'s boot line(s)
+    now go out through ``core/obs.py`` as JSON (no bare ``print`` left),
+    so the two capsys-based tests below parse structured fields instead of
+    grepping raw text; a defensive skip on a non-JSON line costs nothing
+    and keeps this helper usable even if stray plain output is ever mixed
+    in."""
+    records = []
+    for line in text.splitlines():
+        try:
+            records.append(json.loads(line))
+        except ValueError:
+            continue
+    return records
 
 
 def _auth0_settings(**overrides) -> Settings:
@@ -853,10 +871,27 @@ def test_resolve_provider_disabled_mode_returns_a_disabled_provider():
 
 def test_disabled_mode_boots_quietly_under_local_deploy_mode(capsys):
     """M-2 (phase 9 final review): the common, intentional case -- every
-    existing test/env -- must stay quiet (no WARNING line) even though the
-    new check below now runs on every ``disabled``-mode boot."""
+    existing test/env -- must stay quiet (no WARNING-level line) even
+    though the new check below now runs on every ``disabled``-mode boot.
+
+    Phase 11 Task 2 adaptation (disclosed): the boot line is now one JSON
+    line through ``core/obs.py``, not a bare ``print`` -- adapted from a
+    raw ``"WARNING" not in capsys...out`` substring check to the
+    structurally equivalent assertion over parsed records: no JSON line
+    this call emitted carries ``level == "WARNING"``. Content-preserving:
+    the same intentional-vs-misconfigured distinction, read off a
+    structured field instead of grepped text. ``configure_json_logging()``
+    is called explicitly here (idempotent, safe even if ``create_app()``
+    already ran elsewhere this session) because this file calls
+    ``resolve_provider`` directly, never through a real app boot -- see
+    this module's own docstring, "Everything here is OFFLINE and
+    provider-level".
+    """
+    configure_json_logging()
     resolve_provider(_settings(identity_mode="disabled", deploy_mode="local"))
-    assert "WARNING" not in capsys.readouterr().out
+    records = _json_lines(capsys.readouterr().out)
+    assert records, "expected at least the identity_mode_resolved boot line"
+    assert all(record["level"] != "WARNING" for record in records)
 
 
 def test_disabled_mode_boot_warns_outside_local_deploy_mode(capsys):
@@ -868,12 +903,24 @@ def test_disabled_mode_boot_warns_outside_local_deploy_mode(capsys):
     case, with no way to tell them apart. A loud ``WARNING`` line closes
     that asymmetry without failing boot -- unlike ``SpcsIngressProvider``'s
     own hard error for the symmetric ``spcs_ingress``-outside-``spcs``
-    mistake, which genuinely cannot be a legitimate configuration."""
+    mistake, which genuinely cannot be a legitimate configuration.
+
+    Phase 11 Task 2 adaptation (disclosed): the three raw substring checks
+    (``"WARNING"``/``"disabled"``/``"ec2"`` in captured stdout text) become
+    the same three pieces of PINNED CONTENT, read structurally off the
+    JSON warning line's ``level``/``context`` fields instead of grepped --
+    the content survives verbatim, only the shape of the assertion
+    changed. ``configure_json_logging()`` is called explicitly for the
+    same reason the sibling test above calls it.
+    """
+    configure_json_logging()
     resolve_provider(_settings(identity_mode="disabled", deploy_mode="ec2"))
-    out = capsys.readouterr().out
-    assert "WARNING" in out
-    assert "disabled" in out
-    assert "ec2" in out
+    records = _json_lines(capsys.readouterr().out)
+    warnings = [record for record in records if record["level"] == "WARNING"]
+    assert len(warnings) == 1
+    warning = warnings[0]
+    assert warning["context"]["identity_mode"] == "disabled"
+    assert warning["context"]["deploy_mode"] == "ec2"
 
 
 def test_resolve_provider_defaults_to_disabled_when_unset():

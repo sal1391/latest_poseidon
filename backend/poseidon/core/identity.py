@@ -57,6 +57,9 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from poseidon.core.config import Settings
+from poseidon.core.obs import get_logger
+
+_logger = get_logger("identity")
 
 
 @dataclass(frozen=True)
@@ -236,12 +239,20 @@ def resolve_provider(settings: Settings) -> IdentityProvider:
     an actual SPCS deploy must fail exactly as loudly, at exactly this
     boot-time call, as a genuinely unrecognized mode string does below.
 
-    Also prints one boot log line naming the resolved mode -- the same
-    ``print(..., flush=True)`` mechanism ``api/app.py``'s own
-    ``_build_tool_registry`` uses for its "research transport: ..." line,
-    so an operator reading boot logs can see which identity story a given
-    process is running under the same way they already see which research
-    transport it wired.
+    Also logs one boot line naming the resolved mode -- Phase 11 Task 2:
+    formerly a bare ``print(f"identity mode: {settings.identity_mode}",
+    flush=True)``, now one structured JSON line through ``core/obs.py``,
+    the SAME seam ``api/app.py``'s own ``_build_tool_registry`` uses for
+    its "research transport: ..." line, so an operator reading
+    ``docker compose logs`` sees which identity story a given process is
+    running under the same way they already see which research transport
+    it wired -- both now JSON, neither a bare print. ``settings.
+    identity_mode`` itself is content-preserved verbatim as ``context[
+    "identity_mode"]`` (the pinned value every existing test in this
+    codebase already asserts on, e.g. ``"disabled"``), so
+    ``test_identity_providers.py``'s own pinned boot-line tests adapt to
+    read it from there instead of scanning raw stdout text (disclosed in
+    this task's own report).
 
     The final ``raise`` below is the defensive belt for ``Settings.
     identity_mode``'s own ``Literal`` suspenders: unreachable through any
@@ -253,7 +264,7 @@ def resolve_provider(settings: Settings) -> IdentityProvider:
     ``Settings`` already enforcing this does not make this function's own
     fail-fast contract any less real.
     """
-    print(f"identity mode: {settings.identity_mode}", flush=True)
+    _logger.info("identity_mode_resolved", identity_mode=settings.identity_mode)
     if settings.identity_mode == "disabled":
         if settings.deploy_mode != "local":
             # M-2 (phase 9 final review): disabled is the ONLY mode with no
@@ -264,12 +275,10 @@ def resolve_provider(settings: Settings) -> IdentityProvider:
             # intentional local case. Never a boot failure: disabled is a
             # legitimate choice on a throwaway EC2 box (see this
             # function's own docstring) -- this is visibility, not a gate.
-            print(
-                f"WARNING: identity_mode=disabled outside deploy_mode='local' "
-                f"(deploy_mode={settings.deploy_mode!r}); every request resolves "
-                "to the fixed dev identity with no real authentication -- confirm "
-                "this is really what this deploy wants",
-                flush=True,
+            _logger.warning(
+                "identity_mode_disabled_outside_local",
+                identity_mode=settings.identity_mode,
+                deploy_mode=settings.deploy_mode,
             )
         return DisabledProvider()
     if settings.identity_mode == "auth0":

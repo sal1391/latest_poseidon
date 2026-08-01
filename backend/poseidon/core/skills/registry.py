@@ -47,6 +47,8 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ValidationError
 
+from poseidon.core.obs import span
+
 from .context import SkillContext
 from .result import SkillResult, problem
 
@@ -187,7 +189,13 @@ class SkillRegistry:
                 ),
             )
         try:
-            result = skill.fn(ctx, args)
+            # Phase 11 Task 2 (doc 06 section 3): a pure span() wrapper
+            # around this EXISTING call -- zero logic change; the
+            # try/except below still catches anything skill.fn raises
+            # exactly as before, since span()'s own finally only logs and
+            # never swallows an exception.
+            with span(f"skill:{skill_id}"):
+                result = skill.fn(ctx, args)
         except Exception as exc:  # a skill bug is a structured failure, not a crash
             return SkillResult(
                 ok=False,

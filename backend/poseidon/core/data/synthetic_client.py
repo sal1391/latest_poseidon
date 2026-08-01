@@ -42,6 +42,8 @@ from datetime import date
 
 import psycopg
 
+from poseidon.core.obs import span
+
 from . import query_builder as qb
 from .client import BreakdownResult, BreakdownRow, MetricResult, PeriodRange
 from .specs import BreakdownQuerySpec, MetricQuerySpec
@@ -112,11 +114,21 @@ class SyntheticDataClient:
         ``%`` in the SQL as a placeholder. The builder's parameterless
         statements (period range) have no ``%`` today, but passing ``None``
         keeps that from becoming a latent trap.
+
+        Phase 11 Task 2 (doc 06 section 3): wrapped in a single ``db:query``
+        span -- a pure wrapper around this method's EXISTING body (connect,
+        execute, fetch), zero logic change. This is the one place every
+        public method on this class funnels its actual query through, so
+        wrapping here (once) covers all four -- ``list_dimension_values``,
+        ``available_periods``, ``run_metric_query``, ``run_breakdown_query``
+        -- rather than four separate, identically-named spans at each call
+        site.
         """
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, params or None)
-                return cur.fetchall() if limit is None else cur.fetchmany(limit)
+        with span("db:query"):
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params or None)
+                    return cur.fetchall() if limit is None else cur.fetchmany(limit)
 
     # -- DataClient -------------------------------------------------------
 

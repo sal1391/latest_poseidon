@@ -108,6 +108,7 @@ from typing import Any
 
 import httpx
 
+from poseidon.core.obs import span
 from poseidon.mcp.registry import ResearchResult
 
 # The marine-lens system line every request carries, verbatim per the Task 2
@@ -355,7 +356,16 @@ class PerplexityDirectAdapter:
         }
         client = self._client_or_build()
         try:
-            response = client.post(_API_URL, json=payload, headers=headers, timeout=self._timeout_s)
+            # Phase 11 Task 2 (doc 06 section 3): a pure span() wrapper
+            # around this EXISTING call -- zero logic change. httpx.
+            # TimeoutException still propagates out of the `with` block
+            # (span()'s own finally only logs the duration; it never
+            # swallows an exception) to the SAME except clause below,
+            # unchanged.
+            with span("ext:perplexity", schema_name=schema_name):
+                response = client.post(
+                    _API_URL, json=payload, headers=headers, timeout=self._timeout_s
+                )
         except httpx.TimeoutException:
             return _degrade(_REASON_TIMEOUT)
 

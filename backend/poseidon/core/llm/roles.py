@@ -30,6 +30,7 @@ import yaml
 
 from poseidon.core.config import Settings
 from poseidon.core.llm.types import LLMResponse
+from poseidon.core.obs import span
 
 # core/llm/roles.py -> core/llm -> core -> poseidon: config/ hangs directly
 # off the poseidon package (a sibling of core/, api/, tasks/), not nested
@@ -239,10 +240,16 @@ class RoleClient:
                 f"no provider registered for key {provider_key!r} (llm_mode={mode!r}) "
                 f"{_EM_DASH} registered: {sorted(self._providers)}"
             ) from None
-        return provider.invoke(
-            system=system,
-            messages=messages,
-            tools=tools,
-            model=config.model,
-            params=config.params,
-        )
+        # Phase 11 Task 2 (doc 06 section 3): a pure span() wrapper around
+        # this EXISTING call -- zero logic change; the `return` still hands
+        # back exactly what provider.invoke produces (or lets its exception
+        # propagate unchanged), since a `with` block's own exit runs before
+        # a `return` inside it actually completes either way.
+        with span(f"llm:{role}"):
+            return provider.invoke(
+                system=system,
+                messages=messages,
+                tools=tools,
+                model=config.model,
+                params=config.params,
+            )

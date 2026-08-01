@@ -12,6 +12,7 @@ from poseidon.core.identity import AuthError, resolve_provider
 from poseidon.core.llm.bedrock import BedrockProvider
 from poseidon.core.llm.prompts import DEFAULT_PROMPTS_DIR, PromptRegistry
 from poseidon.core.llm.roles import RoleClient
+from poseidon.core.obs import configure_json_logging, get_logger, new_trace_id, trace_id_var
 from poseidon.core.runlog import RunLogWriter
 from poseidon.core.skills.registry import SkillRegistry
 from poseidon.mcp.registry import ToolServerRegistry
@@ -19,6 +20,14 @@ from poseidon.mcp.registry import ToolServerRegistry
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     """App factory. Run with: python -m uvicorn poseidon.api.app:create_app --factory"""
+    # Phase 11 Task 2 (doc 06 section 3): configured BEFORE anything else in
+    # this function runs, so even the very first boot-time log call this
+    # process makes (resolve_provider's own "identity mode: ..." line, two
+    # statements below) already goes out as one JSON line. Idempotent (see
+    # obs.py's own docstring) -- calling this once per create_app() call
+    # (once per app/process in production; once per test in this suite) is
+    # cheap and never double-registers a handler.
+    configure_json_logging()
     app = FastAPI(title="Poseidon API", version="0.1.0")
     app.state.settings = settings or get_settings()
 
@@ -62,6 +71,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Phase 11 Task 2 (doc 06 section 3): installed LAST among this
+    # function's app.add_middleware()/@app.middleware("http") calls, so it
+    # is the OUTERMOST layer in the chain (Starlette's own last-added-is-
+    # outermost order -- see _install_identity_middleware's own docstring,
+    # which documents the identical rule for CORS-over-identity). Being
+    # outermost means its pre-call_next code -- minting the trace id and
+    # setting the contextvar -- runs BEFORE the CORS preflight short-
+    # circuit and before identity middleware's own per-request logic, so
+    # EVERY response this app ever returns (a 2xx from a route, a 401/403
+    # from identity, a 429 from the rate limiter, or a CORS preflight
+    # answered before any route runs) carries the same X-Trace-Id header,
+    # and anything logged anywhere further in is attributed to that same id.
+    _install_trace_middleware(app)
 
     app.include_router(health.router)
     # Phase 9 Task 1: GET /api/me -- mounted unconditionally, like health.
@@ -173,6 +196,37 @@ def _first_duplicate_identity_header(request: Request) -> str | None:
         if len(request.headers.getlist(name)) > 1:
             return name
     return None
+
+
+def _install_trace_middleware(app: FastAPI) -> None:
+    """Phase 11 Task 2 (doc 06 section 3): one ``trace_id`` per HTTP
+    request, minted here and stamped into ``obs.trace_id_var`` for the
+    ENTIRE lifetime of the request. See :func:`create_app`'s own call site
+    comment for why this is installed LAST (making it the OUTERMOST
+    middleware) and ``core/obs.py``'s own module docstring ("Propagation,
+    not threading") for how a value set here stays visible to a
+    ``get_logger(...)``/``span(...)`` call made from a worker thread this
+    request later spawns (``anyio.to_thread.run_sync`), with no explicit
+    parameter threaded through any function signature in between.
+
+    The contextvar is reset in a ``finally``, not left dangling: without
+    the reset, a value set for THIS request's context would look, to
+    anything reusing the same underlying context after the request ends,
+    like it was still "this request" -- resetting is what makes the
+    contextvar safe to reuse across the process's entire request lifetime,
+    request after request.
+    """
+
+    @app.middleware("http")
+    async def trace_middleware(request: Request, call_next):
+        trace_id = new_trace_id()
+        token = trace_id_var.set(trace_id)
+        try:
+            response = await call_next(request)
+        finally:
+            trace_id_var.reset(token)
+        response.headers["X-Trace-Id"] = trace_id
+        return response
 
 
 def _install_identity_middleware(app: FastAPI) -> None:
@@ -452,6 +506,16 @@ def _build_tool_registry(settings: Settings) -> ToolServerRegistry:
     a resolved instance, for exactly that reason -- reading ``.research``
     here just to log it would defeat the laziness this function otherwise
     preserves.
+
+    **Phase 11 Task 2 (doc 06 section 3):** this used to be a bare
+    ``print(f"research transport: {label}", flush=True)``; it is now one
+    structured JSON line through ``core/obs.py`` -- ``label`` (the exact
+    pinned text every existing test in this codebase already asserts on,
+    e.g. ``"fixture (llm_mode=stub)"``) is content-preserved verbatim as
+    ``context["transport"]`` rather than dropped, so
+    ``test_live_chat_sse.py``'s own pinned boot-line tests adapt to read it
+    from there instead of scanning raw stdout text (disclosed in this
+    task's own report).
     """
     if settings.llm_mode == "stub":
         from poseidon.mcp.perplexity.fixture_tool import FixtureResearchTool
@@ -461,5 +525,5 @@ def _build_tool_registry(settings: Settings) -> ToolServerRegistry:
     else:
         overrides = None
         label = f"{settings.tool_transport_perplexity} (llm_mode=live)"
-    print(f"research transport: {label}", flush=True)
+    get_logger("app").info("research_transport_resolved", transport=label)
     return ToolServerRegistry(settings, overrides=overrides)

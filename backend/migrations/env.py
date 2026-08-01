@@ -12,6 +12,25 @@ config = context.config
 # schema is current before the seed loader and uvicorn run.
 # `disable_existing_loggers=False` keeps this from muting a host process's
 # own logging when migrations are driven in-process.
+#
+# Phase 11 Task 2 (doc 06 section 3, the parked "alembic env.py logging"
+# carryforward) -- VERIFIED, not changed: this app's own JSON logging
+# regime (core/obs.py) and alembic's own plain-text logging never mix,
+# because they never run in the same process. `infra/docker-compose.yml`'s
+# backend command runs `python -m alembic upgrade head` as its own,
+# separate `python -m` invocation, BEFORE `python -m uvicorn poseidon.api.
+# app:create_app` ever starts (and therefore before create_app's own
+# obs.configure_json_logging() call ever runs) -- alembic.ini's own
+# [handler_console] already targets `sys.stderr` (`args = (sys.stderr,)`,
+# the standard alembic template default, unchanged by this codebase), and
+# a real run confirms every "Running upgrade ..." line lands on stderr,
+# none on stdout (checked directly: `python -m alembic upgrade head`
+# against a throwaway sqlite DB, stdout empty, stderr carrying every
+# `INFO [alembic.runtime.migration] ...` line -- see this task's own
+# report). `docker compose logs backend` interleaves a container's stdout
+# and stderr together regardless, so alembic's own format keeps reaching
+# container logs exactly as before; nothing here needed to change for that
+# to remain true.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 

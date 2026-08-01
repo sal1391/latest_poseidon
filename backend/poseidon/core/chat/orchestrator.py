@@ -278,6 +278,7 @@ from poseidon.core.llm.prompts import (
     skill_lines_block,
 )
 from poseidon.core.llm.roles import RoleClient
+from poseidon.core.obs import span
 from poseidon.core.ontology.loader import get_ontology
 from poseidon.core.parsing import customer_resolver
 from poseidon.core.parsing.pipeline import DEFAULT_ENTITY, parse_turn
@@ -487,7 +488,13 @@ def execute_turn(
             tools=tools,
         )
 
-    parsed = parse_turn(text, prior_slots, reference_date, data)
+    # Phase 11 Task 2 (doc 06 section 3): a pure span() wrapper around this
+    # EXISTING call -- zero logic change, no re-timing (parse_turn's own
+    # return value/behavior is untouched) -- see core/obs.py's own
+    # docstring for why this is the one sanctioned touch this task makes to
+    # this file's own call sites.
+    with span("parse"):
+        parsed = parse_turn(text, prior_slots, reference_date, data)
     turn_index, turn_run_id, retry_outcome = _begin_turn(
         conversation_id=conversation_id,
         user=user,
@@ -607,18 +614,26 @@ def execute_turn(
     )
 
     window = [{"role": "user", "content": [{"text": text}]}]
-    turn_result = run_turn(
-        role_client=role_client,
-        registry=registry,
-        context=context,
-        prompt_registry=prompt_registry,
-        user_instruction=_USER_INSTRUCTION,
-        memory_doc=_MEMORY_DOC,
-        parsed=parsed,
-        window=window,
-        sink=sink,
-        max_iterations=settings.agent_max_iterations,
-    )
+    # Phase 11 Task 2: a pure span() wrapper around this EXISTING call --
+    # same rationale as the "parse" span above. turn_id is threaded as an
+    # ordinary named context field (not the JSON envelope's own top-level
+    # turn_id key, which stays null in this task -- see obs.py's module
+    # docstring) purely because sink.turn_id already happens to be in scope
+    # here, for free, and is genuinely useful for correlating a span line
+    # back to one turn.
+    with span("route", turn_id=sink.turn_id):
+        turn_result = run_turn(
+            role_client=role_client,
+            registry=registry,
+            context=context,
+            prompt_registry=prompt_registry,
+            user_instruction=_USER_INSTRUCTION,
+            memory_doc=_MEMORY_DOC,
+            parsed=parsed,
+            window=window,
+            sink=sink,
+            max_iterations=settings.agent_max_iterations,
+        )
 
     usage = {
         "input_tokens": sum(record.input_tokens for record in turn_result.llm_records),
