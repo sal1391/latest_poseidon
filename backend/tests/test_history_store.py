@@ -762,6 +762,135 @@ def test_read_state_returns_empty_dict_for_an_invisible_conversation(history_sto
 
 
 # ===========================================================================
+# pg: delete_conversation -- Fix round 1 (task-1-review.md, Important
+# finding 1). This method (Phase 11 Task 1) shipped with zero DIRECT test
+# coverage: every exercise before this fix round went through api/
+# live_chat.py's DELETE route (test_runlog_rls.py), which calls its own
+# inline DELETE statement, never UserHistory.delete_conversation itself
+# (see that method's own docstring for why the route can't call it -- it
+# needs to share ONE transaction with redact_turns_for_conversation, and
+# this method's own rls_transaction is self-contained). The four cases
+# below are store-level, direct, and independent of the route entirely.
+#
+# Both row-bearing tests read `conversations`/`messages` through a bare
+# `pg_engine.connect()` (the table owner, RLS-exempt only by FORCE's own
+# absence of effect on an owner without FORCE -- migration 0004 DOES force
+# RLS, but this dev DSN role is also a cluster superuser, which
+# unconditionally bypasses RLS regardless of FORCE; see core/db.py's module
+# docstring) rather than through the store's own read methods, so a false
+# "nothing here" from get_messages/read_state (which could, in principle,
+# have its own bug) can never be mistaken for proof the ROW was deleted.
+#
+# Sensitivity check (mutation testing, captured here rather than asserted):
+# these tests are GREEN against the already-shipped, already-reviewed
+# implementation -- there is no missing feature to be RED against. To prove
+# they actually discriminate rather than passing regardless of what the
+# method does, `delete_conversation`'s own `return result.rowcount > 0` was
+# temporarily inverted to `return result.rowcount == 0` and this file was
+# re-run: all four scenarios below failed (own-cid: `assert deleted is
+# True` failed, actual value False; another-user's-cid and both absent/
+# malformed cases: `assert ... is False` failed, actual value True;
+# idempotence: the FIRST call's own `is True` assertion failed first). The
+# row-survival assertions (conversation/message rows present or absent)
+# were UNCHANGED by this specific mutation, since it only touches the
+# Python-level return value, never the DELETE statement itself or its RLS
+# scoping -- those assertions are validated by construction instead: they
+# read real database state through a connection independent of the method
+# under test, so a bug in the DELETE's own WHERE clause or a lost RLS
+# predicate would show up directly as a wrong row count, not merely as a
+# wrong boolean. The mutation was reverted immediately after this check;
+# see task-1-report.md's "Fix round 1" section for the full transcript.
+# ===========================================================================
+
+
+@pytest.mark.pg
+def test_delete_conversation_own_visible_cid_returns_true_and_cascades_messages(
+    history_store, pg_engine
+):
+    """True; the conversation row is gone; ON DELETE CASCADE (migration
+    0004) takes its messages with it -- asserted directly against BOTH
+    tables. ``read_state``'s own "absent id" contract is the observable
+    proof that state disappears WITH the row (state lives in
+    ``conversations.state``, not a separate table with a delete step of
+    its own)."""
+    user_history = history_store.for_user(_fresh_user_sub())
+    conversation, _opener = user_history.create_conversation()
+    cid = conversation["id"]
+    user_history.append_user_message(cid, str(uuid7()), "hello", None)
+    user_history.write_state(cid, {"slots": {"mode": "existing"}, "brief_done": True})
+
+    deleted = user_history.delete_conversation(cid)
+
+    assert deleted is True
+    with pg_engine.connect() as conn:
+        conversation_row = conn.execute(
+            text("SELECT 1 FROM conversations WHERE id = :id"), {"id": cid}
+        ).first()
+        message_rows = conn.execute(
+            text("SELECT 1 FROM messages WHERE conversation_id = :id"), {"id": cid}
+        ).all()
+    assert conversation_row is None
+    assert message_rows == []
+    assert user_history.read_state(cid) == {}
+
+
+@pytest.mark.pg
+def test_delete_conversation_another_users_cid_returns_false_and_leaves_rows_intact(
+    history_store, pg_engine
+):
+    owner_history = history_store.for_user(_fresh_user_sub())
+    other_history = history_store.for_user(_fresh_user_sub())
+    conversation, _opener = owner_history.create_conversation()
+    cid = conversation["id"]
+
+    deleted = other_history.delete_conversation(cid)
+
+    assert deleted is False
+    with pg_engine.connect() as conn:
+        conversation_row = conn.execute(
+            text("SELECT 1 FROM conversations WHERE id = :id"), {"id": cid}
+        ).first()
+        message_rows = conn.execute(
+            text("SELECT 1 FROM messages WHERE conversation_id = :id"), {"id": cid}
+        ).all()
+    assert conversation_row is not None
+    assert len(message_rows) == 1  # just the opener -- untouched
+    # sanity: the owner herself still sees it -- proves the False above is
+    # the RLS-visibility gate, not a bug that silently no-ops for everyone.
+    assert owner_history.get_messages(cid) is not None
+
+
+@pytest.mark.pg
+def test_delete_conversation_returns_false_for_a_conversation_id_never_created(history_store):
+    user_history = history_store.for_user(_fresh_user_sub())
+
+    assert user_history.delete_conversation(str(uuid7())) is False
+
+
+@pytest.mark.pg
+def test_delete_conversation_returns_false_for_a_malformed_conversation_id(history_store):
+    """A malformed id can never match a real row -- treated the same as
+    absent (history.py's own module docstring), never an unhandled
+    database error."""
+    user_history = history_store.for_user(_fresh_user_sub())
+
+    assert user_history.delete_conversation("not-a-uuid") is False
+
+
+@pytest.mark.pg
+def test_delete_conversation_is_idempotent_second_call_returns_false(history_store):
+    user_history = history_store.for_user(_fresh_user_sub())
+    conversation, _opener = user_history.create_conversation()
+    cid = conversation["id"]
+
+    first = user_history.delete_conversation(cid)
+    second = user_history.delete_conversation(cid)
+
+    assert first is True
+    assert second is False
+
+
+# ===========================================================================
 # pg: restart survival -- store A writes, a NEW HistoryStore on a NEW engine
 # reads the same rows (proves durability, not an in-process illusion).
 # ===========================================================================
