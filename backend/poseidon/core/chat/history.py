@@ -53,18 +53,43 @@ a parse failure into the SAME "not found" outcome the method already has to
 support for a genuinely absent or genuinely invisible row -- never an
 unhandled ``DataError`` escaping from the database driver as a raw 500.
 
-**Reads fail closed to a harmless default; most writes fail closed to a
-silent no-op; two writes raise.** :meth:`~UserHistory.get_messages`,
-:meth:`~UserHistory.read_state`, :meth:`~DbStateStore.get`, and
-:meth:`~DbStateStore.get_brief_done` all return the documented "nothing
-here" value (``None``/``{}``/the empty-slots sentinel/``False``) for a row
-that is absent, invisible, or malformed-id -- never raise. Plain
-``conversations``-only UPDATEs (:meth:`~UserHistory.set_title`,
-:meth:`~UserHistory.write_state`, :meth:`~DbStateStore.put`, :meth:`~
-DbStateStore.set_brief_done`) are ALREADY fully protected by RLS's own
-per-row predicate on the UPDATE itself, so a zero-row match there is simply
-the correct outcome already -- these no-op silently, adding no bookkeeping
-of their own. Two operations differ, each for its own disclosed reason:
+**Reads fail closed to a harmless default for a bad ID; most writes fail
+closed to a silent no-op; three operations raise -- two writes, and (Fix
+round 1) one read-side carve-out for a bad CURSOR.**
+:meth:`~UserHistory.get_messages`, :meth:`~UserHistory.read_state`,
+:meth:`~DbStateStore.get`, and :meth:`~DbStateStore.get_brief_done` all
+return the documented "nothing here" value (``None``/``{}``/the
+empty-slots sentinel/``False``) for a row that is absent, invisible, or
+malformed-id -- never raise for a bad ID. Plain ``conversations``-only
+UPDATEs (:meth:`~UserHistory.set_title`, :meth:`~UserHistory.write_state`,
+:meth:`~DbStateStore.put`, :meth:`~DbStateStore.set_brief_done`) are
+ALREADY fully protected by RLS's own per-row predicate on the UPDATE
+itself, so a zero-row match there is simply the correct outcome already --
+these no-op silently, adding no bookkeeping of their own. Three operations
+differ, each for its own disclosed reason:
+
+0. :meth:`~UserHistory.list_conversations` and :meth:`~UserHistory.get_
+   messages` raise :class:`MalformedCursor` (a :class:`ValueError`
+   subclass) when their ``cursor`` argument fails to base64/JSON-decode, or
+   decodes to something missing the expected keys or holding the wrong
+   value types (:func:`_decode_conversations_cursor`/:func:`_decode_
+   messages_cursor`). This is deliberately NOT the same "fail closed"
+   treatment a bad ID gets, and the asymmetry is intentional: an id is
+   something a legitimate caller might reasonably mistype (a stale
+   bookmark, a copy-paste slip), so "not found" is an ordinary, expected
+   outcome worth absorbing silently. A cursor is different in kind -- it is
+   a value ONLY this module itself ever produces (:func:`_encode_cursor`),
+   so a cursor that fails to even DECODE means a caller corrupted,
+   hand-built, or replayed a tampered/foreign token it was never supposed
+   to construct by hand. Silently treating that as "start over at page
+   one" would hide exactly the kind of client bug (or cursor replayed
+   against the wrong method, or across an unrelated conversation) worth
+   surfacing loudly instead. A cursor that DECODES cleanly but describes a
+   semantically nonsensical position (e.g. a timestamp before any row
+   exists) is emphatically NOT malformed: keyset pagination treats any
+   well-typed value as a legitimate continuation point and simply returns
+   whatever page that position implies (often an empty one) -- only a
+   structural decode/parse/type failure raises.
 
 1. :meth:`~UserHistory.append_user_message` and :meth:`~UserHistory.write_
    assistant_message` first run a same-transaction, RLS-filtered ``UPDATE
@@ -139,6 +164,19 @@ def _parse_optional_uuid(value: str | None) -> uuid.UUID | None:
     return parsed
 
 
+class MalformedCursor(ValueError):
+    """Raised by :meth:`UserHistory.list_conversations`/:meth:`UserHistory.
+    get_messages` when their ``cursor`` argument fails to decode, parse, or
+    validate against this module's own cursor shape -- see the module
+    docstring's numbered item 0 for the full rationale (an id can be
+    fail-closed to "not found"; a cursor cannot, since it is a value only
+    this module itself ever produces via :func:`_encode_cursor`).
+    Deliberately a :class:`ValueError` subclass, not a bare custom
+    exception -- Task 3 (route cutover) maps it to a 400 RFC-7807 problem
+    detail, and any pre-existing broad ``except ValueError`` a caller might
+    already have keeps working unchanged."""
+
+
 def _encode_cursor(payload: dict) -> str:
     """Opaque urlsafe-base64 of ``payload`` -- callers round-trip this
     string, never parse it (doc 08's cursor contract)."""
@@ -146,14 +184,51 @@ def _encode_cursor(payload: dict) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii")
 
 
-def _decode_cursor(cursor: str) -> dict:
-    """The inverse of :func:`_encode_cursor`. Raises on a malformed cursor
-    (bad base64, bad JSON) -- a cursor is only ever a value this module
-    itself produced, so a decode failure means a caller mutated or
-    hand-built one, which is a programming error worth surfacing loudly,
-    not a user-facing condition worth a soft fallback."""
-    raw = base64.urlsafe_b64decode(cursor.encode("ascii"))
-    return json.loads(raw)
+#: Every exception type the decode-through-parse pipeline below can
+#: legitimately raise for some malformed input, empirically enumerated
+#: (not merely assumed) against every matrix cell the fix-round review
+#: named: bad base64 / non-ASCII text -- ``binascii.Error``/``UnicodeError``,
+#: both ``ValueError`` subclasses; invalid JSON -- ``json.JSONDecodeError``,
+#: also a ``ValueError`` subclass; a decoded value that is not a dict at
+#: all, or a dict missing the expected key -- ``TypeError``/``KeyError``;
+#: a present-but-wrongly-typed field passed to ``datetime.fromisoformat``/
+#: ``uuid.UUID`` -- ``TypeError``/``AttributeError``. One shared tuple so
+#: both cursor-shape decoders below catch identically.
+_CURSOR_DECODE_ERRORS = (ValueError, TypeError, KeyError, AttributeError)
+
+
+def _decode_conversations_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
+    """``list_conversations``'s cursor shape: ``{"u": <iso updated_at>,
+    "i": <id>}``. Raises :class:`MalformedCursor` for any failure anywhere
+    in decode-through-parse (see :data:`_CURSOR_DECODE_ERRORS`) -- a
+    structurally broken cursor (bad base64/JSON), one missing a key, or one
+    whose ``"u"``/``"i"`` value has the wrong type. A cursor that decodes
+    and parses cleanly but describes a nonsensical position (e.g. a
+    timestamp before any row exists) is NOT malformed and does not reach
+    this ``except`` at all -- see the module docstring's numbered item 0.
+    """
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode("ascii"))
+        decoded = json.loads(raw)
+        updated_at = datetime.fromisoformat(decoded["u"])
+        conversation_id = uuid.UUID(decoded["i"])
+    except _CURSOR_DECODE_ERRORS as exc:
+        raise MalformedCursor(f"cursor {cursor!r} is not a valid conversations cursor") from exc
+    return updated_at, conversation_id
+
+
+def _decode_messages_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
+    """``get_messages``'s cursor shape: ``{"c": <iso created_at>, "i":
+    <id>}``. Same failure handling as :func:`_decode_conversations_cursor`
+    (see :data:`_CURSOR_DECODE_ERRORS`), different keys."""
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode("ascii"))
+        decoded = json.loads(raw)
+        created_at = datetime.fromisoformat(decoded["c"])
+        message_id = uuid.UUID(decoded["i"])
+    except _CURSOR_DECODE_ERRORS as exc:
+        raise MalformedCursor(f"cursor {cursor!r} is not a valid messages cursor") from exc
+    return created_at, message_id
 
 
 # ---------------------------------------------------------------------------
@@ -331,15 +406,20 @@ class UserHistory:
         """``(items, next_cursor)``, ordered ``updated_at DESC, id DESC``.
         Fetches one extra row past ``limit`` to know whether a next page
         exists without a separate COUNT query; ``next_cursor`` is ``None``
-        exactly when that extra row was not there."""
+        exactly when that extra row was not there.
+
+        Raises :class:`MalformedCursor` if ``cursor`` fails to decode --
+        see the module docstring's numbered item 0 for why this is the one
+        read in this module that does NOT fail closed to a harmless
+        default."""
         fetch_limit = limit + 1
         params: dict[str, object] = {"fetch_limit": fetch_limit}
         if cursor is None:
             sql = _LIST_CONVERSATIONS_FIRST_PAGE_SQL
         else:
-            decoded = _decode_cursor(cursor)
-            params["cursor_u"] = datetime.fromisoformat(decoded["u"])
-            params["cursor_i"] = uuid.UUID(decoded["i"])
+            cursor_u, cursor_i = _decode_conversations_cursor(cursor)
+            params["cursor_u"] = cursor_u
+            params["cursor_i"] = cursor_i
             sql = _LIST_CONVERSATIONS_NEXT_PAGE_SQL
         with self._transaction() as conn:
             rows = conn.execute(sql, params).all()
@@ -357,7 +437,15 @@ class UserHistory:
         """``(items, next_cursor)`` ordered ``created_at ASC, id ASC``, or
         ``None`` when ``cid`` is absent, malformed, or another user's --
         RLS makes the three indistinguishable ON PURPOSE (module
-        docstring); the route above 404s all three alike."""
+        docstring); the route above 404s all three alike.
+
+        Raises :class:`MalformedCursor` if ``cursor`` fails to decode --
+        same carve-out as :meth:`list_conversations`, and checked BEFORE
+        the ``cid`` visibility check below, so a malformed cursor against
+        someone else's (or a nonexistent) conversation still raises rather
+        than returning ``None`` -- the two failure modes are orthogonal,
+        and a client sending garbage on both counts should hear about the
+        cursor, since that is the input it built itself."""
         parsed_cid = _parse_uuid(cid)
         if parsed_cid is None:
             return None
@@ -369,9 +457,9 @@ class UserHistory:
         if cursor is None:
             sql = _GET_MESSAGES_FIRST_PAGE_SQL
         else:
-            decoded = _decode_cursor(cursor)
-            params["cursor_c"] = datetime.fromisoformat(decoded["c"])
-            params["cursor_i"] = uuid.UUID(decoded["i"])
+            cursor_c, cursor_i = _decode_messages_cursor(cursor)
+            params["cursor_c"] = cursor_c
+            params["cursor_i"] = cursor_i
             sql = _GET_MESSAGES_NEXT_PAGE_SQL
         with self._transaction() as conn:
             exists = conn.execute(_CONVERSATION_EXISTS_SQL, {"id": str(parsed_cid)}).first()
@@ -701,6 +789,7 @@ __all__ = [
     "DbStateStore",
     "FeedbackStubStore",
     "HistoryStore",
+    "MalformedCursor",
     "TurnTranscriptBuffer",
     "UserHistory",
     "slots_from_json",

@@ -53,6 +53,8 @@ unconditionally bypasses RLS unless ``rls_transaction`` is also told to
 ``SET LOCAL ROLE`` to a genuine non-superuser role first.
 """
 
+import base64
+import json
 import os
 import string
 import uuid
@@ -68,7 +70,9 @@ from poseidon.core.chat.history import (
     DbStateStore,
     FeedbackStubStore,
     HistoryStore,
+    MalformedCursor,
     TurnTranscriptBuffer,
+    UserHistory,
     slots_from_json,
     slots_to_json,
 )
@@ -280,6 +284,118 @@ def test_history_and_this_test_module_are_ascii_on_disk():
 
 
 # ===========================================================================
+# offline: MalformedCursor -- Fix round 1, Important Finding 1. The decode
+# step runs entirely in Python BEFORE list_conversations/get_messages ever
+# open an rls_transaction (confirmed by reading the source: the decode call
+# sits above the `with self._transaction()` line in both methods), so every
+# case below needs no real engine at all -- a placeholder object() proves
+# the point: if the decode raised any later than claimed, these tests would
+# blow up on a real attribute access against a non-engine object instead of
+# cleanly raising MalformedCursor.
+# ===========================================================================
+
+
+def _offline_user_history() -> UserHistory:
+    """A UserHistory whose ``engine`` is never touched for any of the cases
+    below -- see the section banner above."""
+    return UserHistory(object(), "offline-test-sub")
+
+
+def _b64_json(payload: object) -> str:
+    """Base64-encode an arbitrary JSON-serializable ``payload`` the same
+    way ``_encode_cursor`` does, but WITHOUT going through this module's
+    own key shape -- lets these tests build cursors ``_encode_cursor``
+    itself would never produce (a non-dict payload, missing keys, wrong
+    value types) while still being valid base64-encoded JSON."""
+    raw = json.dumps(payload).encode("ascii")
+    return base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def _b64_not_json() -> str:
+    """Valid urlsafe-base64 whose decoded bytes are NOT valid JSON at
+    all -- the "valid base64 but not JSON" matrix cell."""
+    return base64.urlsafe_b64encode(b"not json at all").decode("ascii")
+
+
+# The matrix Important Finding 1 asked for, by category: not-base64; valid
+# base64 but not JSON; valid JSON but not even a dict (a list, a bare
+# string); a dict missing the expected keys; a dict with the right keys but
+# wrong value types (an int where a date/uuid string belongs; null).
+_MALFORMED_CONVERSATIONS_CURSORS = [
+    pytest.param("not-base64", id="not-base64"),
+    pytest.param(_b64_not_json(), id="valid-b64-not-json"),
+    pytest.param(_b64_json([1, 2, 3]), id="json-is-a-list-not-a-dict"),
+    pytest.param(_b64_json("just a string"), id="json-is-a-string-not-a-dict"),
+    pytest.param(_b64_json({"x": 1}), id="missing-both-u-and-i-keys"),
+    pytest.param(_b64_json({"i": str(uuid.uuid4())}), id="missing-u-key"),
+    pytest.param(_b64_json({"u": "2026-04-01T00:00:00"}), id="missing-i-key"),
+    pytest.param(_b64_json({"u": 12345, "i": str(uuid.uuid4())}), id="u-has-the-wrong-type"),
+    pytest.param(
+        _b64_json({"u": "2026-04-01T00:00:00", "i": 12345}), id="i-has-the-wrong-type"
+    ),
+    pytest.param(_b64_json({"u": "2026-04-01T00:00:00", "i": None}), id="i-is-null"),
+    pytest.param(_b64_json({"u": "not a real date", "i": str(uuid.uuid4())}), id="u-is-not-iso"),
+    pytest.param(_b64_json({"u": "2026-04-01T00:00:00", "i": "not-a-uuid"}), id="i-is-not-a-uuid"),
+]
+
+
+@pytest.mark.parametrize("bad_cursor", _MALFORMED_CONVERSATIONS_CURSORS)
+def test_list_conversations_raises_malformedcursor_for_undecodable_cursors(bad_cursor):
+    user_history = _offline_user_history()
+
+    with pytest.raises(MalformedCursor):
+        user_history.list_conversations(cursor=bad_cursor)
+
+
+_MALFORMED_MESSAGES_CURSORS = [
+    pytest.param("not-base64", id="not-base64"),
+    pytest.param(_b64_not_json(), id="valid-b64-not-json"),
+    pytest.param(_b64_json([1, 2, 3]), id="json-is-a-list-not-a-dict"),
+    pytest.param(_b64_json("just a string"), id="json-is-a-string-not-a-dict"),
+    pytest.param(_b64_json({"x": 1}), id="missing-both-c-and-i-keys"),
+    pytest.param(_b64_json({"i": str(uuid.uuid4())}), id="missing-c-key"),
+    pytest.param(_b64_json({"c": "2026-04-01T00:00:00"}), id="missing-i-key"),
+    pytest.param(_b64_json({"c": 12345, "i": str(uuid.uuid4())}), id="c-has-the-wrong-type"),
+    pytest.param(
+        _b64_json({"c": "2026-04-01T00:00:00", "i": 12345}), id="i-has-the-wrong-type"
+    ),
+    pytest.param(_b64_json({"c": "2026-04-01T00:00:00", "i": None}), id="i-is-null"),
+    pytest.param(_b64_json({"c": "not a real date", "i": str(uuid.uuid4())}), id="c-is-not-iso"),
+    pytest.param(_b64_json({"c": "2026-04-01T00:00:00", "i": "not-a-uuid"}), id="i-is-not-a-uuid"),
+]
+
+
+@pytest.mark.parametrize("bad_cursor", _MALFORMED_MESSAGES_CURSORS)
+def test_get_messages_raises_malformedcursor_for_undecodable_cursors(bad_cursor):
+    user_history = _offline_user_history()
+
+    with pytest.raises(MalformedCursor):
+        user_history.get_messages(str(uuid.uuid4()), cursor=bad_cursor)
+
+
+def test_get_messages_raises_malformedcursor_before_checking_conversation_visibility():
+    """The cursor decode sits ABOVE the exists-check in get_messages's own
+    source, so a malformed cursor against a conversation id that would
+    otherwise 404 (never created, or another user's) still raises
+    MalformedCursor rather than returning None -- the two failure modes
+    are orthogonal, and the malformed input the CALLER built (the cursor)
+    takes precedence. No pg needed: a placeholder engine plus an id that
+    has never been created proves the raise happens before any query."""
+    user_history = _offline_user_history()
+
+    with pytest.raises(MalformedCursor):
+        user_history.get_messages(str(uuid.uuid4()), cursor="not-base64")
+
+
+def test_malformedcursor_is_a_valueerror_subclass():
+    """A typed exception, not a bare one -- Task 3 catches this specific
+    type to map it to a 400 RFC-7807 problem detail, and the ValueError
+    parentage means any existing broad `except ValueError` a caller
+    already has keeps working unchanged."""
+    assert issubclass(MalformedCursor, ValueError)
+
+
+# ===========================================================================
 # pg fixtures -- mirrors test_rls_policies.py's own guard/role computation,
 # adapted to a fixture (test_runlog_writer.py's shape) since this file also
 # holds offline tests that must always run.
@@ -426,6 +542,29 @@ def test_list_conversations_cursor_is_opaque_urlsafe_base64_text(history_store):
     assert set(cursor) <= allowed
 
 
+@pytest.mark.pg
+def test_list_conversations_with_a_well_formed_but_absurd_cursor_returns_an_empty_page(
+    history_store,
+):
+    """The other half of Important Finding 1's matrix: a cursor that
+    decodes and parses cleanly (valid base64, valid JSON, right keys,
+    right value TYPES) but whose values were never actually issued by
+    _encode_cursor -- here, a timestamp from before this fresh user_sub
+    ever created anything -- is NOT a MalformedCursor. Keyset pagination
+    treats any well-typed value as a legitimate continuation point: no
+    row's updated_at is less than 1900, so the DESC "less than cursor"
+    predicate matches nothing, and the page comes back empty rather than
+    raising."""
+    user_history = history_store.for_user(_fresh_user_sub())
+    user_history.create_conversation()
+    absurd_cursor = _b64_json({"u": "1900-01-01T00:00:00", "i": str(uuid.uuid4())})
+
+    items, next_cursor = user_history.list_conversations(cursor=absurd_cursor)
+
+    assert items == []
+    assert next_cursor is None
+
+
 # ===========================================================================
 # pg: get_messages -- cursor pagination + cross-user invisibility
 # ===========================================================================
@@ -452,6 +591,25 @@ def test_get_messages_pagination_seven_rows_page_size_three(history_store):
     assert cursor1 is not None
     assert cursor2 is not None
     assert cursor3 is None
+
+
+@pytest.mark.pg
+def test_get_messages_with_a_well_formed_but_absurd_cursor_returns_an_empty_page(history_store):
+    """Mirrors test_list_conversations_with_a_well_formed_but_absurd_cursor_
+    returns_an_empty_page for the ASC-ordered side: a cursor timestamped
+    far in the future decodes and parses cleanly, but no message's
+    created_at is greater than it, so the "after cursor" predicate matches
+    nothing -- an empty, legitimate page, not a MalformedCursor."""
+    user_history = history_store.for_user(_fresh_user_sub())
+    conversation, _opener = user_history.create_conversation()
+    absurd_cursor = _b64_json({"c": "2099-01-01T00:00:00", "i": str(uuid.uuid4())})
+
+    result = user_history.get_messages(conversation["id"], cursor=absurd_cursor)
+
+    assert result is not None
+    items, next_cursor = result
+    assert items == []
+    assert next_cursor is None
 
 
 @pytest.mark.pg
