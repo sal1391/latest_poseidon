@@ -179,6 +179,31 @@ client -- the identical "a second failure must never re-terminate an
 already-finished turn" discipline ``orchestrator.py``'s own pass-through
 repopulation guard uses.
 
+**Fix round 1, Important-3: persistence happens-before the terminal
+frame.** The in-memory ``TranscriptStore`` this cutover replaced mutated
+the SAME dict object a reopened transcript read, in place, before any
+frame (including the terminal one) was ever queued -- "the client saw the
+terminal frame" and "the transcript reflects it" were inseparable, since
+there was no commit step to race. Moving to a real database introduces
+exactly that commit step, and the first cut of this cutover queued each
+turn's terminal frame (``done`` or ``error``) BEFORE ``_persist_assistant_
+message`` ran in ``run_turn_sync``'s own ``finally`` -- a client reacting
+to the terminal SSE frame by immediately issuing ``GET .../messages``
+could, in principle, race the still-in-flight ``INSERT``. Closed by moving
+the persist call to the exact two call sites that ever queue a terminal
+frame -- ``send``'s own ``"error"`` branch, and :func:`_finalize_turn`
+immediately before it queues the (title-injected) ``done`` frame -- via
+:func:`_persist_once`, so the write ALWAYS completes, synchronously, on
+this turn's one worker thread, before ``frame_queue.put`` ever makes that
+frame visible to the async generator (and therefore the client) at all.
+``run_turn_sync``'s own ``finally`` still calls ``_persist_once`` too --
+now a pure safety net for a path that produces neither frame at all
+(unreachable through any code this app controls today), never a second,
+independent write: ``_persist_once``'s own guard makes a repeated call
+into a no-op, which matters concretely here -- ``messages.id`` is this
+turn's one fixed, already-minted ``message_id``, so a genuine second
+``INSERT`` would fail the table's own primary key, not merely waste work.
+
 *Malformed cursors.* ``UserHistory.list_conversations``/``.get_messages``
 raise :class:`~poseidon.core.chat.history.MalformedCursor` (a ``ValueError``
 subclass) for a cursor that fails to decode -- see that module's own
@@ -578,6 +603,27 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
     # rather than merely folding or forwarding -- TurnOutcome carries no
     # such field.
     turn_index_holder: list[int] = []
+    # Fix round 1, Important-3 (persistence-ordering race): set the instant
+    # _persist_once actually runs, so a SECOND call (the terminal-frame call
+    # site below, racing the `finally` safety net) becomes a no-op instead
+    # of a second INSERT against the SAME message_id -- which would violate
+    # messages' own primary key. No lock needed: every caller of
+    # _persist_once runs on the ONE worker thread this turn's own
+    # run_turn_sync call owns -- send()'s calls happen synchronously,
+    # inline, from wherever that thread's call stack already is, never from
+    # a second thread that could interleave with it.
+    persisted_holder: list[bool] = []
+
+    def _persist_once() -> None:
+        """See the module docstring's "Persistence happens-before the
+        terminal frame" -- called from the terminal-frame call sites below
+        AND, as a safety net, unconditionally from run_turn_sync's own
+        `finally`; idempotent via persisted_holder so at most one INSERT
+        ever reaches the database for this turn's assistant message."""
+        if persisted_holder:
+            return
+        persisted_holder.append(True)
+        _persist_assistant_message(user_history, cid, assistant, turn_id)
 
     def send(frame: str) -> None:
         _record_transcript_frame(frame, assistant, buffer)
@@ -586,6 +632,15 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
             turn_index_holder.append(data["turn_index"])
         elif name == "done":
             pending_done.append(frame)
+            return
+        elif name == "error":
+            # Fix round 1, Important-3: "error" is ALWAYS this turn's
+            # terminal frame (orchestrator.py's own pinned contract: no
+            # `done` ever follows an `error`) -- persist BEFORE the client
+            # can possibly observe it and race a GET against a row that has
+            # not committed yet.
+            _persist_once()
+            frame_queue.put(frame)
             return
         frame_queue.put(frame)
 
@@ -615,6 +670,10 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
                     exc,
                 )
                 title = None
+        # Fix round 1, Important-3: persist BEFORE queuing the done frame --
+        # the client must never be able to see "done" and then GET a
+        # conversation whose last message row does not exist yet.
+        _persist_once()
         frame_queue.put(_inject_done_title(frame, title))
 
     def run_turn_sync() -> None:
@@ -681,8 +740,15 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
             # Persisted on EVERY path, success or crash alike -- whatever
             # parts the buffer accumulated before a crash still get
             # recorded, mirroring the snowflake guard's own "record what
-            # happened before the failure" discipline.
-            _persist_assistant_message(user_history, cid, assistant, turn_id)
+            # happened before the failure" discipline. Fix round 1,
+            # Important-3: this is now a SAFETY NET, not the primary write
+            # -- the terminal-frame call sites in send()/_finalize_turn
+            # above already persisted before queuing "error"/"done"; this
+            # call only does real work on a path that produced NEITHER
+            # (unreachable through any code this app controls today, but
+            # defensive regardless). _persist_once's own idempotency guard
+            # makes this safe to call unconditionally every time.
+            _persist_once()
             frame_queue.put(_DONE)
 
     async def event_stream():

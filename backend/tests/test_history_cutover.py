@@ -537,3 +537,265 @@ async def test_feedback_404_gate_unknown_mid_and_another_users_mid(pg_database_u
     assert r_alice_post.status_code == 204
     assert r_alice_get.status_code == 200
     assert r_alice_get.json() == {"verdict": "up", "comment": None}
+
+
+# ===========================================================================
+# Fix round 1 (review findings I-1/I-2/I-3, task-3-review.md section (c)):
+# three coverage/ordering gaps on top of the cutover above -- I-1 and I-2
+# are coverage-only (the reviewer confirmed the underlying code was already
+# correct by inspection); I-3 is a genuine ordering fix in api/live_chat.py
+# itself (persist-before-terminal-frame), proven RED against the pre-fix
+# ordering before being made GREEN -- see task-3-report.md's own "Fix round
+# 1" section for the full RED/GREEN evidence this file's tests produced.
+# ===========================================================================
+
+
+@pytest.mark.pg
+@pytest.mark.anyio
+async def test_title_fallback_to_first_60_chars_when_title_for_returns_empty(pg_database_url):
+    """I-1: ``title_for(...)`` only ever returns ``""`` when the role
+    client's ``utility``-role call resolves with ``stop_reason="error"``
+    (``core/llm/titles.py``'s own docstring) -- under the stub ``RoleClient``
+    every OTHER pg test in this suite exercises, that call always succeeds
+    (the deterministic capability-message fallback, :data:`_STUB_TITLE`
+    above), so the ``computed if computed else body.text[:60]`` ternary's
+    ``else`` branch had no coverage anywhere in this suite. This test
+    forces exactly that branch: a small wrapper role client answers the
+    ``"utility"`` role with a ``stop_reason="error"`` ``LLMResponse`` --
+    ``title_for``'s own documented empty-string trigger -- while
+    delegating every OTHER role to the real, wrapped client unchanged, so
+    the turn itself still completes normally (``status="ok"``) and only
+    the title computation is forced down its fallback path. The question
+    is deliberately over 60 characters (probed directly against the real
+    parser first: no customer/port/period detected, no issues -- the same
+    clean, unambiguous shape "hello" already takes elsewhere in this file)
+    so the assertion actually exercises truncation, not merely "any
+    non-empty fallback" (a short question would pass even a buggy
+    implementation that forgot to slice at all).
+    """
+    from poseidon.core.llm.types import LLMResponse
+
+    class _UtilityErrorRoleClient:
+        """Wraps a real ``RoleClient``: the ``"utility"`` role (``title_
+        for``'s own role) always resolves as a provider ERROR; every other
+        role (the turn's own real router call) delegates unchanged."""
+
+        def __init__(self, real):
+            self._real = real
+
+        def resolve(self, role):
+            return self._real.resolve(role)
+
+        def invoke(self, role, *, system, messages, tools=()):
+            if role == "utility":
+                return LLMResponse(
+                    text="", tool_calls=(), stop_reason="error", input_tokens=0, output_tokens=0
+                )
+            return self._real.invoke(role, system=system, messages=messages, tools=tools)
+
+    headers = _headers(_dev_user("alice"))
+    app = _app(pg_database_url)
+    app.state.role_client = _UtilityErrorRoleClient(app.state.role_client)
+    transport = httpx.ASGITransport(app=app)
+    question = (
+        "hello there, this is a plain conversational opener with no "
+        "special query keywords in it at all today"
+    )
+    assert len(question) > 60  # the whole point of this test
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid = (await client.post("/api/conversations", headers=headers)).json()["conversation"][
+            "id"
+        ]
+        events = await read_sse(client, cid, question, headers=headers)
+
+        listing = await client.get("/api/conversations", headers=headers)
+
+    done_payloads = [payload for name, payload in events if name == "done"]
+    assert len(done_payloads) == 1
+    assert done_payloads[0]["title"] == question[:60]
+
+    items = listing.json()["items"]
+    assert items[0]["id"] == cid
+    assert items[0]["title"] == question[:60]
+
+
+def _crashing_run_turn(**kwargs):
+    """Stands in for ``orchestrator.py``'s own imported ``run_turn`` (from
+    ``core.llm.loop``) -- patched at its USE site
+    (``poseidon.core.chat.orchestrator.run_turn``), never orchestrator.py's
+    own source (a runtime attribute substitution for one test, not a file
+    edit -- the identical technique ``test_live_chat_sse.py`` already uses
+    one layer up, patching ``poseidon.api.live_chat.execute_turn``).
+    Streams ONE real token through the turn's own sink -- folding a
+    genuine partial content part into the transcript buffer, exactly like
+    a provider that answered partway before a network hiccup -- then
+    raises, unhandled. Landing here (rather than patching ``execute_turn``
+    itself, the way the crash tests in ``test_live_chat_sse.py`` do) means
+    the REAL ``execute_turn`` has already run ``_begin_turn`` for real by
+    the time this fires: a genuine ``turn_run`` row exists, with a genuine
+    ``turn_index``, for ``writer.finalize`` to actually update -- exactly
+    what I-2's own database-level proof needs."""
+    kwargs["sink"].push_token("partial reply")
+    raise RuntimeError("simulated mid-turn crash")
+
+
+@pytest.mark.pg
+@pytest.mark.anyio
+async def test_mid_turn_crash_persists_the_partial_assistant_row_and_marks_turn_run_error(
+    pg_database_url, monkeypatch
+):
+    """I-2: the OLD ``TranscriptStore`` precedent (BASE ``live_chat.py``:
+    "this mirrors how the internal-error crash path also leaves behind an
+    assistant message with whatever parts existed before the crash") and
+    ``TurnTranscriptBuffer``'s own docstring ("discarded once ``UserHistory.
+    write_assistant_message`` PERSISTS the finished message," never
+    "discarded INSTEAD OF") both already establish that a crash mid-turn
+    persists whatever partial content the buffer had folded by the time it
+    happened -- the reviewer confirmed this design is correct by direct
+    inspection. This test is the missing DATABASE-level proof (a real
+    ``GET .../messages`` AND a real ``turn_run`` row), not a design change.
+
+    Uses the REAL ``RunLogWriter`` (no double override): the crash is
+    injected deep enough (:func:`_crashing_run_turn`, patched at
+    ``orchestrator.py``'s own ``run_turn`` call) that the real
+    ``_begin_turn``/``writer.start_turn`` already ran first, so a genuine
+    ``turn_run`` row exists for ``finalize()`` to actually update to
+    ``status="error"`` -- the status Phase 11's reconciliation endpoint
+    will read.
+    """
+    headers = _headers(_dev_user("alice"))
+    app = _app(pg_database_url)
+    monkeypatch.setattr("poseidon.core.chat.orchestrator.run_turn", _crashing_run_turn)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid = (await client.post("/api/conversations", headers=headers)).json()["conversation"][
+            "id"
+        ]
+        events = await read_sse(client, cid, "hello", headers=headers)
+
+        messages = await client.get(f"/api/conversations/{cid}/messages", headers=headers)
+
+    names = [name for name, _payload in events]
+    assert names == ["accepted", "token", "error"]
+    turn_id = events[0][1]["turn_id"]
+
+    items = messages.json()["items"]
+    assert items[-1]["role"] == "assistant"
+    assert items[-1]["parts"] == [{"kind": "text", "payload": {"markdown": "partial reply"}}]
+
+    with psycopg.connect(normalize_dsn(pg_database_url)) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT status FROM turn_run WHERE id = %s", (turn_id,))
+            row = cur.fetchone()
+    assert row is not None
+    assert row[0] == "error"
+
+
+@pytest.mark.pg
+@pytest.mark.anyio
+async def test_normal_turn_persists_exactly_one_assistant_row_never_a_duplicate(pg_database_url):
+    """I-3's own "double-write must be impossible" pin: the terminal-frame
+    persist (``send``'s own ``"error"`` branch / ``_finalize_turn``) and
+    the ``finally`` safety net (``_persist_once``) must never BOTH write --
+    a genuine second ``INSERT`` against the same, already-minted
+    ``message_id`` would violate ``messages``' own primary key outright, so
+    if the idempotency guard ever failed this test would not merely
+    over-count, it would 500. Proven on the ordinary success path (no
+    crash, no guard) -- the path every OTHER test in this suite already
+    exercises without ever counting rows, made explicit here."""
+    headers = _headers(_dev_user("alice"))
+    app = _app(pg_database_url)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid = (await client.post("/api/conversations", headers=headers)).json()["conversation"][
+            "id"
+        ]
+        await read_sse(client, cid, "hello", headers=headers)
+
+        messages = await client.get(f"/api/conversations/{cid}/messages", headers=headers)
+
+    items = messages.json()["items"]
+    assistant_ids = [m["id"] for m in items if m["role"] == "assistant"]
+    # opener (from create) + this turn's own answer -- two DISTINCT
+    # assistant rows, neither one duplicated.
+    assert len(assistant_ids) == 2
+    assert len(set(assistant_ids)) == 2
+
+
+@pytest.mark.pg
+@pytest.mark.anyio
+async def test_terminal_frame_is_queued_only_after_the_assistant_row_is_persisted(
+    pg_database_url, monkeypatch
+):
+    """I-3's own "observe the window directly" pin -- made deterministic at
+    the CODE level, not at the test HTTP transport's own timing.
+
+    A first attempt at this test drove ``httpx.ASGITransport`` manually
+    (read one SSE line at a time, stop the instant the terminal frame's
+    text arrived, query the database via a second, concurrent request
+    before ever finishing the first) -- probed directly (see this
+    repository's own probe script, reproduced in miniature: a
+    ``StreamingResponse`` that yields one chunk, sleeps a full second, then
+    yields a second chunk) and found that ``httpx.ASGITransport`` does NOT
+    deliver ``StreamingResponse`` chunks progressively at all: the client
+    received both chunks concatenated as ONE ``aiter_bytes()`` item, and
+    the server-side generator had ALREADY finished (sleep included) before
+    the client observed anything. Every attempted "read partway, check
+    concurrently" test therefore passed identically whether the underlying
+    ordering fix was applied or reverted -- it was testing the test
+    transport's own buffering, not this code's ordering, and would not
+    have caught the bug it was written for (verified directly: reverting
+    just the reorder and re-running that version of this test still
+    passed). That approach is abandoned as unsound for this transport
+    rather than kept as a test that cannot fail.
+
+    This version instead observes the property that actually determines
+    real-world (uvicorn) behavior: within ONE turn, does the call to
+    ``UserHistory.write_assistant_message`` (the real database write)
+    happen-before the ``queue.Queue.put`` call that enqueues the terminal
+    (``"done"``/``"error"``) frame's own text -- the exact statement order
+    ``send``/``_finalize_turn``/the ``finally`` safety net now guarantee,
+    on the ONE worker thread a turn runs on, regardless of how fast or
+    slow any test transport happens to relay bytes afterward. Both calls
+    are recorded, in relative order, into one shared list; the persist
+    event for this turn's own message id must come first.
+
+    Reverting just the reorder (restoring the pre-fix code that queued the
+    terminal frame before ``run_turn_sync``'s own ``finally`` ran the
+    persist) makes this exact test FAIL, deterministically, every time --
+    verified directly (see task-3-report.md's own Fix round 1 RED
+    evidence) -- unlike the abandoned transport-timing approach above.
+    """
+    import queue as queue_module
+
+    from poseidon.core.chat.history import UserHistory
+
+    event_log: list[tuple[str, str]] = []
+    real_write = UserHistory.write_assistant_message
+    real_put = queue_module.Queue.put
+
+    def recording_write(self, cid, message, turn_id):
+        event_log.append(("persist", message["id"]))
+        return real_write(self, cid, message, turn_id)
+
+    def recording_put(self, item, *args, **kwargs):
+        if isinstance(item, str) and ("event: done" in item or "event: error" in item):
+            event_log.append(("terminal_frame_queued", item))
+        return real_put(self, item, *args, **kwargs)
+
+    monkeypatch.setattr(UserHistory, "write_assistant_message", recording_write)
+    monkeypatch.setattr(queue_module.Queue, "put", recording_put)
+
+    headers = _headers(_dev_user("alice"))
+    app = _app(pg_database_url)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid = (await client.post("/api/conversations", headers=headers)).json()["conversation"][
+            "id"
+        ]
+        await read_sse(client, cid, "hello", headers=headers)
+
+    kinds = [kind for kind, _detail in event_log]
+    assert "persist" in kinds
+    assert "terminal_frame_queued" in kinds
+    assert kinds.index("persist") < kinds.index("terminal_frame_queued")
