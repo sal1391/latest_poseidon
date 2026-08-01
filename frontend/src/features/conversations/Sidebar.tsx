@@ -5,9 +5,11 @@ import { UserMenu } from "../auth/UserMenu";
  * and the user-menu slot (doc 01 section 3's ASCII layout) at the bottom. */
 export function Sidebar() {
   const conversations = useChatStore((s) => s.conversations);
+  const nextCursor = useChatStore((s) => s.conversationsNextCursor);
   const activeId = useChatStore((s) => s.activeId);
   const newConversation = useChatStore((s) => s.newConversation);
   const openConversation = useChatStore((s) => s.openConversation);
+  const loadMoreConversations = useChatStore((s) => s.loadMoreConversations);
 
   return (
     <aside className="sidebar">
@@ -37,6 +39,20 @@ export function Sidebar() {
             {conversation.title}
           </button>
         ))}
+        {nextCursor !== null ? (
+          <button
+            type="button"
+            // Reuses `.conversation-item`'s own row styling (no new CSS --
+            // this task does no styling pass) with `load-more` as a stable,
+            // unstyled hook for tests/future work.
+            className="conversation-item load-more"
+            onClick={() => {
+              void loadMoreConversations().catch(() => undefined);
+            }}
+          >
+            Load more
+          </button>
+        ) : null}
       </nav>
       <UserMenu />
     </aside>

@@ -60,6 +60,11 @@ export function applyEventTo(messages: Message[], e: SseEvent): Message[] {
 
 export interface ChatState {
   conversations: Conversation[];
+  // The cursor for the NEXT page of conversations, or `null` when the list
+  // is exhausted (also true before the first successful list, same as
+  // "nothing more to load"). `Sidebar`'s load-more control renders exactly
+  // when this is non-null.
+  conversationsNextCursor: string | null;
   activeId: string | null;
   messages: Record<string, Message[]>;
   streamingByConv: Record<string, boolean>;
@@ -67,7 +72,12 @@ export interface ChatState {
   bootstrap: () => Promise<void>;
   newConversation: () => Promise<string>;
   openConversation: (cid: string) => Promise<void>;
-  sendMessage: (cid: string, text: string) => Promise<void>;
+  // clientTurnKey: omitted for a brand-new logical send (one is minted);
+  // passed explicitly to RETRY that same send with the backend's own
+  // (user_sub, client_turn_key) idempotency short-circuit intact -- see
+  // this function's own implementation comment below.
+  sendMessage: (cid: string, text: string, clientTurnKey?: string) => Promise<void>;
+  loadMoreConversations: () => Promise<void>;
   applyEvent: (cid: string, e: SseEvent) => void;
   submitFeedback: (mid: string, verdict: "up" | "down", comment?: string) => Promise<void>;
 }
@@ -77,6 +87,7 @@ let bootstrapInFlight: Promise<void> | null = null;
 
 export const useChatStore = create<ChatState>((set, get) => ({
   conversations: [],
+  conversationsNextCursor: null,
   activeId: null,
   messages: {},
   streamingByConv: {},
@@ -86,18 +97,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Re-entrant: StrictMode's double effect, or a send issued before the first
     // list request lands, joins the in-flight run instead of starting a second.
     bootstrapInFlight ??= (async () => {
-      const conversations = await api.listConversations();
-      if (conversations.length === 0) {
+      const page = await api.listConversations();
+      if (page.items.length === 0) {
         const { conversation, opener } = await api.createConversation();
         set((s) => ({
           conversations: [conversation],
+          conversationsNextCursor: null,
           activeId: conversation.id,
           messages: { ...s.messages, [conversation.id]: [opener] },
         }));
         return;
       }
-      set({ conversations });
-      await get().openConversation(conversations[0].id);
+      set({ conversations: page.items, conversationsNextCursor: page.next_cursor });
+      await get().openConversation(page.items[0].id);
     })().finally(() => {
       bootstrapInFlight = null; // a later mount (or a retry after failure) starts fresh
     });
@@ -118,15 +130,34 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   openConversation: async (cid) => {
     set({ activeId: cid });
-    const messages = await api.getMessages(cid);
-    set((s) => ({ messages: { ...s.messages, [cid]: messages } }));
+    const page = await api.getMessages(cid);
+    set((s) => ({ messages: { ...s.messages, [cid]: page.items } }));
   },
 
-  sendMessage: async (cid, text) => {
+  loadMoreConversations: async () => {
+    const cursor = get().conversationsNextCursor;
+    if (!cursor) return; // nothing more to load -- mirrors Sidebar's own conditional render
+    const page = await api.listConversations(cursor);
+    set((s) => ({
+      conversations: [...s.conversations, ...page.items],
+      conversationsNextCursor: page.next_cursor,
+    }));
+  },
+
+  sendMessage: async (cid, text, clientTurnKey) => {
     // One turn at a time per conversation. Without this, a second send started
     // while the first is streaming would clear `streamingByConv[cid]` in its own
     // `finally` and re-enable the composer mid-stream.
     if (get().streamingByConv[cid]) return;
+    // Minted ONCE per logical send (poseidon-carryforwards.md's "Phase 6"
+    // entry, closed): a caller with nothing to retry omits `clientTurnKey`
+    // and gets a fresh one; a caller retrying the SAME logical send (the
+    // backend's own `(user_sub, client_turn_key)` short-circuit in
+    // orchestrator.py's `_begin_turn`) passes the key it already used back
+    // in, verbatim -- never derived from `cid`/`text` alone, which would be
+    // content-based replay detection, deliberately out of this task's scope
+    // (doc-08: "true replay stays P11").
+    const turnKey = clientTurnKey ?? crypto.randomUUID();
     const userMessage: Message = {
       id: crypto.randomUUID(),
       role: "user",
@@ -137,7 +168,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       streamingByConv: { ...s.streamingByConv, [cid]: true },
     }));
     try {
-      await streamTurn(cid, text, (e) => get().applyEvent(cid, e));
+      await streamTurn(cid, text, turnKey, (e) => get().applyEvent(cid, e));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const errorMessage: Message = {
@@ -154,8 +185,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   applyEvent: (cid, e) => {
+    // done's title is additive and non-null exactly once (the turn that
+    // first names the conversation) -- computed here, outside `set`'s own
+    // updater, so the narrowing from `e.name === "done"` survives into the
+    // closure below without a cast.
+    const title = e.name === "done" ? e.data.title : null;
     set((s) => ({
       messages: { ...s.messages, [cid]: applyEventTo(s.messages[cid] ?? [], e) },
+      conversations:
+        title == null
+          ? s.conversations
+          : s.conversations.map((c) => (c.id === cid ? { ...c, title } : c)),
     }));
   },
 
@@ -184,6 +224,7 @@ export function resetChatStore(): void {
   bootstrapInFlight = null;
   useChatStore.setState({
     conversations: [],
+    conversationsNextCursor: null,
     activeId: null,
     messages: {},
     streamingByConv: {},

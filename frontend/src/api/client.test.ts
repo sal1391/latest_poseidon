@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { ApiError, getMe, listConversations, setAuthTokenProvider } from "./client";
+import { ApiError, getMe, getMessages, listConversations, setAuthTokenProvider } from "./client";
 import { streamTurn } from "./sse";
 
 function jsonResponse(body: unknown, init?: ResponseInit): Response {
@@ -37,13 +37,15 @@ test("the injector attaches an Authorization header to BOTH apiFetch and streamT
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const headers = new Headers(init?.headers);
     seenAuthHeaders.push(headers.get("Authorization"));
-    return String(input).includes("/messages") ? emptySseResponse() : jsonResponse({ conversations: [] });
+    return String(input).includes("/messages")
+      ? emptySseResponse()
+      : jsonResponse({ items: [], next_cursor: null });
   });
   vi.stubGlobal("fetch", fetchMock);
   setAuthTokenProvider(() => Promise.resolve("test-token-123"));
 
   await listConversations(); // apiFetch call site
-  await streamTurn("c1", "hello", () => undefined); // streamTurn call site
+  await streamTurn("c1", "hello", "turn-key-1", () => undefined); // streamTurn call site
 
   expect(fetchMock).toHaveBeenCalledTimes(2);
   expect(seenAuthHeaders).toEqual(["Bearer test-token-123", "Bearer test-token-123"]);
@@ -51,7 +53,7 @@ test("the injector attaches an Authorization header to BOTH apiFetch and streamT
 
 test("no token provider set -> requests carry no Authorization header", async () => {
   const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
-    jsonResponse({ conversations: [] }));
+    jsonResponse({ items: [], next_cursor: null }));
   vi.stubGlobal("fetch", fetchMock);
 
   await listConversations();
@@ -62,7 +64,7 @@ test("no token provider set -> requests carry no Authorization header", async ()
 
 test("a token provider returning null omits the header rather than sending 'Bearer null'", async () => {
   const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
-    jsonResponse({ conversations: [] }));
+    jsonResponse({ items: [], next_cursor: null }));
   vi.stubGlobal("fetch", fetchMock);
   setAuthTokenProvider(() => Promise.resolve(null));
 
@@ -122,4 +124,80 @@ test("ApiError.problem is null when the failure body is not JSON", async () => {
   );
 
   await expect(getMe()).rejects.toMatchObject({ status: 500, problem: null });
+});
+
+// Phase 10 Task 4: the real backend (poseidon.api.live_chat, byte-pinned in
+// backend/tests/test_history_cutover.py) wraps both list endpoints in
+// `{items: [...], next_cursor: str | null}` instead of the old bare
+// `{conversations: [...]}`/`{messages: [...]}` arrays. These pin the
+// envelope pass-through AND the cursor query-param forwarding that makes
+// `Sidebar`'s load-more control (and any future "load more messages")
+// possible.
+
+test("listConversations returns the {items, next_cursor} envelope untouched", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      jsonResponse({
+        items: [{ id: "c1", title: "First chat" }],
+        next_cursor: "opaque-cursor-1",
+      }),
+    ),
+  );
+
+  const page = await listConversations();
+
+  expect(page).toEqual({
+    items: [{ id: "c1", title: "First chat" }],
+    next_cursor: "opaque-cursor-1",
+  });
+});
+
+test("listConversations forwards a given cursor as a ?cursor= query param", async () => {
+  const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+    jsonResponse({ items: [], next_cursor: null }));
+  vi.stubGlobal("fetch", fetchMock);
+
+  await listConversations("opaque-cursor-1");
+
+  const [url] = fetchMock.mock.calls[0];
+  expect(String(url)).toBe("/api/conversations?cursor=opaque-cursor-1");
+});
+
+test("listConversations omits the query string entirely when no cursor is given", async () => {
+  const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+    jsonResponse({ items: [], next_cursor: null }));
+  vi.stubGlobal("fetch", fetchMock);
+
+  await listConversations();
+
+  const [url] = fetchMock.mock.calls[0];
+  expect(String(url)).toBe("/api/conversations");
+});
+
+test("getMessages returns the {items, next_cursor} envelope and forwards a given cursor", async () => {
+  const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+    jsonResponse({ items: [{ id: "m1", role: "assistant", parts: [] }], next_cursor: null }));
+  vi.stubGlobal("fetch", fetchMock);
+
+  const page = await getMessages("c1", "opaque-cursor-2");
+
+  const [url] = fetchMock.mock.calls[0];
+  expect(String(url)).toBe("/api/conversations/c1/messages?cursor=opaque-cursor-2");
+  expect(page).toEqual({
+    items: [{ id: "m1", role: "assistant", parts: [] }],
+    next_cursor: null,
+  });
+});
+
+test("streamTurn sends the caller-supplied client_turn_key verbatim, never minting its own", async () => {
+  const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+    emptySseResponse());
+  vi.stubGlobal("fetch", fetchMock);
+
+  await streamTurn("c1", "hello", "the-exact-key-the-caller-chose", () => undefined);
+
+  const [, init] = fetchMock.mock.calls[0];
+  const body = JSON.parse(String(init?.body)) as { text: string; client_turn_key: string };
+  expect(body).toEqual({ text: "hello", client_turn_key: "the-exact-key-the-caller-chose" });
 });

@@ -1,4 +1,4 @@
-import type { Conversation, Message, SkillSummary } from "./types";
+import type { Conversation, Message, Page, SkillSummary } from "./types";
 
 /** RFC-7807 problem-details shape every backend failure in this codebase
  * renders through (poseidon.core.skills.result.problem; api/auth.py's
@@ -104,16 +104,21 @@ export async function createConversation(): Promise<{ conversation: Conversation
   return (await r.json()) as { conversation: Conversation; opener: Message };
 }
 
-export async function listConversations(): Promise<Conversation[]> {
-  const r = await apiFetch("/api/conversations");
-  const body = (await r.json()) as { conversations: Conversation[] };
-  return body.conversations;
+/** Appends `?cursor=` when a cursor is given; the first page of either list
+ * endpoint below is requested with none at all, matching `live_chat.py`'s
+ * own "absent means first page" contract (never an empty-string cursor). */
+function withCursor(path: string, cursor?: string): string {
+  return cursor ? `${path}?cursor=${encodeURIComponent(cursor)}` : path;
 }
 
-export async function getMessages(cid: string): Promise<Message[]> {
-  const r = await apiFetch(`/api/conversations/${cid}/messages`);
-  const body = (await r.json()) as { messages: Message[] };
-  return body.messages;
+export async function listConversations(cursor?: string): Promise<Page<Conversation>> {
+  const r = await apiFetch(withCursor("/api/conversations", cursor));
+  return (await r.json()) as Page<Conversation>;
+}
+
+export async function getMessages(cid: string, cursor?: string): Promise<Page<Message>> {
+  const r = await apiFetch(withCursor(`/api/conversations/${cid}/messages`, cursor));
+  return (await r.json()) as Page<Message>;
 }
 
 export async function postFeedback(

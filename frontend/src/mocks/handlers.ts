@@ -46,15 +46,25 @@ export const mockOpener: Message = {
  * create-first-conversation path and lands on the opener above. The SSE turn
  * route (`POST /api/conversations/:cid/messages`) is deliberately absent —
  * component tests stub `api/sse` instead of streaming over the network.
+ *
+ * Phase 10 Task 4: the list/messages envelopes changed shape (real backend,
+ * `poseidon.api.live_chat`) from a bare `{conversations: [...]}`/
+ * `{messages: [...]}` array wrapper to `{items: [...], next_cursor}` --
+ * these handlers now mirror that byte-for-byte so this mock layer cannot
+ * drift from the real contract the way it did across Task 3's cutover (that
+ * task's own report: "the vitest pass is not a green light" -- see
+ * task-3-report.md). `next_cursor: null` throughout: no fixture here has a
+ * second page, so `Sidebar`'s load-more control never renders under these
+ * mocks.
  */
 export const handlers = [
   http.post("/api/conversations", () =>
     HttpResponse.json({ conversation: mockConversation, opener: mockOpener }, { status: 201 })),
 
-  http.get("/api/conversations", () => HttpResponse.json({ conversations: [] })),
+  http.get("/api/conversations", () => HttpResponse.json({ items: [], next_cursor: null })),
 
   http.get("/api/conversations/:cid/messages", () =>
-    HttpResponse.json({ messages: [mockOpener] })),
+    HttpResponse.json({ items: [mockOpener], next_cursor: null })),
 
   http.post("/api/messages/:mid/feedback", () => new HttpResponse(null, { status: 204 })),
 

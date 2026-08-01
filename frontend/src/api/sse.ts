@@ -28,6 +28,15 @@ export function parseSseChunk(buffer: string): { events: SseEvent[]; rest: strin
 export async function streamTurn(
   cid: string,
   text: string,
+  // Phase 10 Task 4 (poseidon-carryforwards.md's "Phase 6" entry, closed):
+  // minting moved OUT of this module and into `chatStore.ts`'s own
+  // `sendMessage`, which mints exactly once per logical send and can be
+  // handed the SAME key again for a retry of that same send -- the
+  // backend's `(user_sub, client_turn_key)` short-circuit in
+  // orchestrator.py's `_begin_turn` depends on retries reusing it. A
+  // required parameter (not defaulted here) so this module can no longer
+  // silently mint a fresh one and defeat that idempotency check.
+  clientTurnKey: string,
   onEvent: (e: SseEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -39,7 +48,7 @@ export async function streamTurn(
   const response = await requestWithAuth(`/api/conversations/${cid}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text, client_turn_key: crypto.randomUUID() }),
+    body: JSON.stringify({ text, client_turn_key: clientTurnKey }),
     signal,
   });
   if (!response.ok || !response.body) {

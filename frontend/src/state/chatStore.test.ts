@@ -5,13 +5,18 @@ import { applyEventTo, resetChatStore, useChatStore } from "./chatStore";
 
 vi.mock("../api/sse", () => ({ streamTurn: vi.fn(async () => undefined) }));
 
+// Phase 10 Task 4: both list endpoints now return a `{items, next_cursor}`
+// envelope (byte-pinned against the real backend in
+// backend/tests/test_history_cutover.py), not a bare array -- these
+// defaults mirror that shape so `bootstrap`/`openConversation` see exactly
+// what the real `api/client.ts` hands them.
 vi.mock("../api/client", () => ({
-  listConversations: vi.fn(async () => []),
+  listConversations: vi.fn(async () => ({ items: [], next_cursor: null })),
   createConversation: vi.fn(async () => ({
     conversation: { id: "c1", title: "New chat" },
     opener: { id: "m0", role: "assistant" as const, parts: [] },
   })),
-  getMessages: vi.fn(async () => []),
+  getMessages: vi.fn(async () => ({ items: [], next_cursor: null })),
   postFeedback: vi.fn(async () => undefined),
 }));
 
@@ -95,4 +100,79 @@ test("a second send while a turn is streaming is dropped", async () => {
 
   expect(useChatStore.getState().streamingByConv.c1).toBe(false);
   expect(useChatStore.getState().messages.c1).toHaveLength(1);
+});
+
+// Phase 10 Task 4 -- carryforward closed: `client_turn_key` generation
+// hoisted out of `sse.ts` and into `sendMessage`, so a caller that wants to
+// RETRY the same logical send (the backend's own `(user_sub,
+// client_turn_key)` short-circuit in orchestrator.py's `_begin_turn` --
+// see poseidon-carryforwards.md's "Phase 6" entry) can pass the key back in
+// and have it reused verbatim, rather than every attempt minting a fresh
+// one and defeating that idempotency check. Both directions asserted
+// together (a "sensitivity" pin): a version of `sendMessage` that always
+// mints fresh would fail the second test; a version that always reuses (or
+// derives the key from `cid`/`text` alone -- content-based "replay"
+// detection, deliberately NOT this task's job, see doc-08's own "true
+// replay stays P11") would fail the first.
+test("sendMessage mints a fresh client_turn_key for each NEW logical send", async () => {
+  const { sendMessage } = useChatStore.getState();
+
+  await sendMessage("c1", "a");
+  await sendMessage("c1", "a"); // same cid+text, but a SEPARATE send -- no retry key passed
+
+  const calls = vi.mocked(streamTurn).mock.calls;
+  expect(calls).toHaveLength(2);
+  const [, , firstKey] = calls[0];
+  const [, , secondKey] = calls[1];
+  expect(typeof firstKey).toBe("string");
+  expect(firstKey).not.toBe(secondKey);
+});
+
+test("sendMessage reuses an explicitly-passed client_turn_key (a retry of the same logical send)", async () => {
+  const { sendMessage } = useChatStore.getState();
+
+  await sendMessage("c1", "a");
+  const [, , firstKey] = vi.mocked(streamTurn).mock.calls[0];
+
+  await sendMessage("c1", "a", firstKey); // the retry path: caller hands the SAME key back
+
+  const [, , secondKey] = vi.mocked(streamTurn).mock.calls[1];
+  expect(secondKey).toBe(firstKey);
+});
+
+// Phase 10 Task 3 (backend) added an additive `"title": str | null` to the
+// `done` frame, non-null exactly once (the turn that first names the
+// conversation) -- this is the frontend half of that carryforward
+// ("done -> conversation-title refresh", poseidon-carryforwards.md's
+// "Phase 6" entry).
+test("a done event carrying a title updates the matching conversation in place", () => {
+  useChatStore.setState({
+    conversations: [
+      { id: "c1", title: "New chat" },
+      { id: "other", title: "Untouched" },
+    ],
+  });
+
+  useChatStore.getState().applyEvent("c1", {
+    name: "done",
+    data: { turn_id: "t1", message_id: "a1", event_seq: 9, usage: {}, title: "Atlas Bunkering follow-up" },
+  });
+
+  expect(useChatStore.getState().conversations).toEqual([
+    { id: "c1", title: "Atlas Bunkering follow-up" },
+    { id: "other", title: "Untouched" },
+  ]);
+});
+
+test("a done event with a null title (every turn after the first) leaves conversation titles alone", () => {
+  useChatStore.setState({ conversations: [{ id: "c1", title: "Atlas Bunkering follow-up" }] });
+
+  useChatStore.getState().applyEvent("c1", {
+    name: "done",
+    data: { turn_id: "t2", message_id: "a2", event_seq: 20, usage: {}, title: null },
+  });
+
+  expect(useChatStore.getState().conversations).toEqual([
+    { id: "c1", title: "Atlas Bunkering follow-up" },
+  ]);
 });

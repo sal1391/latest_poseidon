@@ -62,6 +62,13 @@ export interface Message {
   lastSeq?: number; // highest applied event_seq (client-side replay guard)
 }
 export interface Conversation { id: string; title: string }
+// Phase 10 Task 4: both list endpoints (poseidon.api.live_chat's
+// list_conversations/get_messages, byte-pinned in
+// backend/tests/test_history_cutover.py) wrap their array in this cursor
+// envelope now -- `next_cursor` is an opaque, base64-ish string while more
+// pages remain, `null` on the last page. One generic shape for both
+// endpoints since both paginate the identical way.
+export interface Page<T> { items: T[]; next_cursor: string | null }
 // GET /api/skills's wire shape (poseidon.api.live_chat.list_skills) -- no
 // curated example prompt field; see SkillsPicker.tsx's own fallback list for
 // where an example comes from instead.
@@ -73,5 +80,8 @@ export type SseEvent =
   | { name: "token"; data: SseEnvelope & { text: string } }
   | { name: "part"; data: SseEnvelope & MessagePart }
   | { name: "phase"; data: SseEnvelope & { phase: string; status: "start" | "done" } }
-  | { name: "done"; data: SseEnvelope & { usage: unknown } }
+  // title (Phase 10 Task 3, backend): additive, always present, `null` on
+  // every turn except the one that first names the conversation (turn_index
+  // 1, status "ok") -- see poseidon.api.live_chat's own "_inject_done_title".
+  | { name: "done"; data: SseEnvelope & { usage: unknown; title: string | null } }
   | { name: "error"; data: SseEnvelope & ErrorPayload };

@@ -9,16 +9,27 @@ import { streamTurn } from "../../api/sse";
 import type { SseEvent } from "../../api/types";
 
 vi.mock("../../api/sse", () => ({
-  streamTurn: vi.fn(async (_cid: string, _text: string, onEvent: (e: SseEvent) => void) => {
-    const events: SseEvent[] = [
-      { name: "accepted", data: { turn_id: "t1", message_id: "a1", event_seq: 1, turn_index: 1 } },
-      { name: "tool", data: { turn_id: "t1", message_id: "a1", event_seq: 2, tool_seq: 1, tool: "top_customers", server: "internal", status: "start", label: "Running skill · top_customers…" } },
-      { name: "tool", data: { turn_id: "t1", message_id: "a1", event_seq: 3, tool_seq: 1, tool: "top_customers", server: "internal", status: "done", label: "top_customers · done · 0.3s" } },
-      { name: "token", data: { turn_id: "t1", message_id: "a1", event_seq: 4, text: "Three customers drove April." } },
-      { name: "done", data: { turn_id: "t1", message_id: "a1", event_seq: 5, usage: {} } },
-    ];
-    events.forEach(onEvent);
-  }),
+  // Phase 10 Task 4: `streamTurn` gained a REQUIRED `clientTurnKey` third
+  // positional parameter (the `crypto.randomUUID()` call that used to live
+  // in `sse.ts` moved up into `chatStore.ts`'s own `sendMessage`) -- this
+  // mock's own parameter list has to shift too, or `onEvent` would silently
+  // bind to the key string instead of the callback and every event below
+  // would go nowhere.
+  streamTurn: vi.fn(
+    async (_cid: string, _text: string, _clientTurnKey: string, onEvent: (e: SseEvent) => void) => {
+      const events: SseEvent[] = [
+        { name: "accepted", data: { turn_id: "t1", message_id: "a1", event_seq: 1, turn_index: 1 } },
+        { name: "tool", data: { turn_id: "t1", message_id: "a1", event_seq: 2, tool_seq: 1, tool: "top_customers", server: "internal", status: "start", label: "Running skill · top_customers…" } },
+        { name: "tool", data: { turn_id: "t1", message_id: "a1", event_seq: 3, tool_seq: 1, tool: "top_customers", server: "internal", status: "done", label: "top_customers · done · 0.3s" } },
+        { name: "token", data: { turn_id: "t1", message_id: "a1", event_seq: 4, text: "Three customers drove April." } },
+        // title: null -- this suite exercises the streamed-answer/feedback/
+        // composer paths, never title refresh (see Sidebar.test.tsx and
+        // chatStore.test.ts for that); null keeps it behavior-neutral here.
+        { name: "done", data: { turn_id: "t1", message_id: "a1", event_seq: 5, usage: {}, title: null } },
+      ];
+      events.forEach(onEvent);
+    },
+  ),
 }));
 
 import ChatScreen from "./ChatScreen";
@@ -132,7 +143,7 @@ test("clicking a chip sends its entry phrase as a user message, not just a compo
   // fix, the mock's own missing send_text let this assertion pass while
   // checking something no real backend click ever sends).
   expect(streamTurn).toHaveBeenCalledWith(
-    "c1", "start an existing-customer brief", expect.any(Function));
+    "c1", "start an existing-customer brief", expect.any(String), expect.any(Function));
   // The composer itself was never populated -- this went straight through
   // the send path, unlike SkillsPicker's insert-only affordance above.
   expect(screen.getByPlaceholderText(/message poseidon/i)).toHaveValue("");
