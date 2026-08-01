@@ -65,6 +65,13 @@ export interface ChatState {
   // "nothing more to load"). `Sidebar`'s load-more control renders exactly
   // when this is non-null.
   conversationsNextCursor: string | null;
+  // Fix round 1 (review finding I-1): `loadMoreConversations` appends off a
+  // cursor read before its own `await`, so two overlapping calls (a
+  // double-click) would both read the SAME cursor and both append the SAME
+  // page -- unlike `sendMessage`'s `streamingByConv` guard, which this
+  // mirrors, there was no flag stopping the second one. `false` outside any
+  // in-flight load.
+  loadingMoreConversations: boolean;
   activeId: string | null;
   messages: Record<string, Message[]>;
   streamingByConv: Record<string, boolean>;
@@ -88,6 +95,7 @@ let bootstrapInFlight: Promise<void> | null = null;
 export const useChatStore = create<ChatState>((set, get) => ({
   conversations: [],
   conversationsNextCursor: null,
+  loadingMoreConversations: false,
   activeId: null,
   messages: {},
   streamingByConv: {},
@@ -136,12 +144,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   loadMoreConversations: async () => {
     const cursor = get().conversationsNextCursor;
-    if (!cursor) return; // nothing more to load -- mirrors Sidebar's own conditional render
-    const page = await api.listConversations(cursor);
-    set((s) => ({
-      conversations: [...s.conversations, ...page.items],
-      conversationsNextCursor: page.next_cursor,
-    }));
+    // Guards two things: nothing more to load (mirrors Sidebar's own
+    // conditional render), and a load already in flight -- a double-click
+    // firing a second call before the first's `await` below resolves would
+    // otherwise read this SAME cursor and append this SAME page twice
+    // (review finding I-1). Set synchronously, before the first `await`, so
+    // a second call arriving in the same tick (no interleaving network
+    // latency needed) already sees it.
+    if (!cursor || get().loadingMoreConversations) return;
+    set({ loadingMoreConversations: true });
+    try {
+      const page = await api.listConversations(cursor);
+      set((s) => ({
+        conversations: [...s.conversations, ...page.items],
+        conversationsNextCursor: page.next_cursor,
+      }));
+    } finally {
+      set({ loadingMoreConversations: false });
+    }
   },
 
   sendMessage: async (cid, text, clientTurnKey) => {
@@ -225,6 +245,7 @@ export function resetChatStore(): void {
   useChatStore.setState({
     conversations: [],
     conversationsNextCursor: null,
+    loadingMoreConversations: false,
     activeId: null,
     messages: {},
     streamingByConv: {},
