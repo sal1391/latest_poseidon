@@ -120,6 +120,17 @@ class Settings(BaseSettings):
     # every chat request fail closed on a permissions error instead of an
     # RLS filter.
     database_app_role: str | None = "poseidon_app"
+    # Phase 11 Task 4 (doc 06 observability): the threshold poseidon.scripts.
+    # cost_rollup's --spike-check mode reads to flag a turn_run row whose
+    # input_tokens + output_tokens exceeds it -- a config choice, recorded
+    # per environment, the same "0 = off" shape rate_limit_chat_per_minute's
+    # own effective_rate_limit_chat_per_minute property already uses
+    # elsewhere in this file. Defaults to 0 (off): an un-configured operator
+    # gets a script that runs and says so plainly (a "disabled" line, never
+    # a silent zero-results roll-up that reads as "nothing ever spikes"),
+    # rather than an arbitrary numeric guess this file would otherwise have
+    # to invent with no environment-specific basis for picking it.
+    token_spike_threshold: int = 0
 
     @field_validator("database_url", "s3_bucket")
     @classmethod

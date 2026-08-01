@@ -20,3 +20,9 @@ frontend/dist/
 .pytest_cache/
 .ruff_cache/
 .maestro/
+
+# Phase 11 Task 4: router-case harvest candidates are real, unreviewed user
+# text (export_router_cases.py) -- gitignored so they never land in git
+# history; the directory's own README.md (the human-review promotion
+# workflow) stays tracked since it is not one of these generated files.
+backend/tests/router_cases/candidates/*.yml
