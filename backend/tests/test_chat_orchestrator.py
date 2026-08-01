@@ -40,6 +40,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from poseidon.core.chat import events, orchestrator
 from poseidon.core.chat.dev_router import DevDeterministicRouter
 from poseidon.core.chat.events import SseEnvelopeSink
@@ -56,7 +58,7 @@ from poseidon.core.llm.prompts import DEFAULT_PROMPTS_DIR, PromptRegistry
 from poseidon.core.llm.roles import RoleClient
 from poseidon.core.llm.stub import StubProvider
 from poseidon.core.llm.types import LLMResponse, ToolCall
-from poseidon.core.runlog import TurnHandle
+from poseidon.core.runlog import ReplayTurn, TurnHandle
 from poseidon.core.skills.context import ArtifactRef, ConversationSlots
 from poseidon.core.skills.registry import SkillRegistry
 from poseidon.mcp.perplexity.fixture_tool import FixtureResearchTool
@@ -169,15 +171,27 @@ class RecordingWriter:
     =None`` never conflicts (matches Postgres unique-constraint semantics for
     NULL, and ``runlog.py``'s own test coverage of it), so only calls that
     supply the SAME non-None key ever short-circuit each other.
+
+    ``replay_by_turn_run_id`` (Phase 11 Task 3, additive): what
+    :meth:`read_for_replay` hands back for a given ``turn_run_id``, or
+    ``None`` (the default, empty-dict behavior) for every id this double was
+    never seeded for. Empty by default so every pre-existing test in this
+    suite -- which constructs a bare ``RecordingWriter()`` and never seeds
+    anything -- keeps exercising exactly today's byte-pinned ``duplicate_
+    turn`` error path: this offline double has no real ``messages`` table to
+    replay FROM, so "no replay data available" is the honest answer, not
+    merely a convenient default.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, replay_by_turn_run_id: dict[str, ReplayTurn] | None = None) -> None:
         self.start_turn_calls: list[dict] = []
         self.append_llm_calls: list[dict] = []
         self.append_tool_calls: list[dict] = []
         self.finalize_calls: list[dict] = []
+        self.read_for_replay_calls: list[dict] = []
         self._next_id = 1
         self._existing_by_key: dict[tuple[str, str], str] = {}
+        self._replay_by_turn_run_id = replay_by_turn_run_id or {}
 
     def start_turn(self, **kwargs) -> TurnHandle:
         self.start_turn_calls.append(kwargs)
@@ -202,6 +216,14 @@ class RecordingWriter:
 
     def finalize(self, **kwargs) -> None:
         self.finalize_calls.append(kwargs)
+
+    def read_for_replay(self, **kwargs) -> ReplayTurn | None:
+        """Stands in for :meth:`~poseidon.core.runlog.RunLogWriter.
+        read_for_replay` -- see this class's own docstring for why an
+        unseeded ``turn_run_id`` returning ``None`` is the correct offline
+        behavior, not a stub-only shortcut."""
+        self.read_for_replay_calls.append(kwargs)
+        return self._replay_by_turn_run_id.get(kwargs["turn_run_id"])
 
 
 # ===========================================================================
@@ -1383,6 +1405,191 @@ def test_retry_with_same_client_turn_key_short_circuits_with_duplicate_turn_erro
     assert len(writer.append_tool_calls) == 1
     assert len(writer.finalize_calls) == 1
     assert writer.finalize_calls[0]["turn_run_id"] == "turn-A"
+
+
+# ===========================================================================
+# execute_turn -- Phase 11 Task 3 (doc 01 section 5): the duplicate-turn
+# short-circuit's true-replay upgrade. _begin_turn now asks the writer
+# (read_for_replay) what the ORIGINAL turn's status/persisted parts were --
+# an "ok" answer with real parts replays them instead of erroring; anything
+# else (no data at all, or a non-"ok" status) falls through to exactly the
+# same byte-pinned duplicate_turn error the test above already proves.
+# ===========================================================================
+
+
+def test_retry_after_an_ok_turn_replays_the_persisted_parts_instead_of_erroring(monkeypatch):
+    """The docstring's own promised upgrade: a duplicate ``client_turn_key``
+    whose ORIGINAL turn already finished ``ok`` replays that turn's
+    persisted parts (via ``sink.push_part`` -- the SAME public method the
+    clarify short-circuit already calls directly, never ``part_emitter``,
+    so the P8 retired-dispatch guard never enters the picture at all) and a
+    ``done`` frame, rather than the ``duplicate_turn`` error. No dispatch, no
+    ``run_turn`` call, no new ``writer.start_turn``/``append_*``/``finalize``
+    beyond the SECOND ``start_turn`` call the retry itself always makes
+    (identical to the pre-existing error-path test above)."""
+    settings = _settings(monkeypatch, LLM_MODE="stub", LLM_PROFILE="bedrock")
+    data = FakeDataClient()
+    state = ConversationStateStore()
+    seeded_parts = [
+        {"kind": "text", "payload": {"markdown": "the cached answer from turn one"}},
+        {"kind": "proof", "payload": {"lines": ["Backend: synthetic"]}},
+    ]
+    writer = RecordingWriter(
+        replay_by_turn_run_id={"turn-A": ReplayTurn(status="ok", parts=seeded_parts)}
+    )
+    role_client = _dev_role_client(settings)
+    prompt_registry = PromptRegistry(DEFAULT_PROMPTS_DIR)
+
+    first_frames, first_send = _capturing_send()
+    first_sink = SseEnvelopeSink(
+        turn_id="turn-A", message_id="msg-A", send=first_send, registry=REGISTRY
+    )
+    first_outcome = execute_turn(
+        user=DISABLED_DEFAULT_USER,
+        conversation_id="conv-replay",
+        text="Top GP customers for Port of Singapore in April 2026",
+        client_turn_key="ctk-replay",
+        settings=settings,
+        registry=REGISTRY,
+        data=data,
+        state=state,
+        writer=writer,
+        role_client=role_client,
+        prompt_registry=prompt_registry,
+        sink=first_sink,
+        reference_date=REFERENCE_DATE,
+    )
+    assert first_outcome.status == "ok"
+    calls_after_first_turn = (
+        len(writer.append_llm_calls),
+        len(writer.append_tool_calls),
+        len(writer.finalize_calls),
+    )
+
+    retry_frames, retry_send = _capturing_send()
+    retry_sink = SseEnvelopeSink(
+        turn_id="turn-B", message_id="msg-B", send=retry_send, registry=REGISTRY
+    )
+    retry_outcome = execute_turn(
+        user=DISABLED_DEFAULT_USER,
+        conversation_id="conv-replay",
+        text="Top GP customers for Port of Singapore in April 2026",
+        client_turn_key="ctk-replay",
+        settings=settings,
+        registry=REGISTRY,
+        data=data,
+        state=state,
+        writer=writer,
+        role_client=role_client,
+        prompt_registry=prompt_registry,
+        sink=retry_sink,
+        reference_date=REFERENCE_DATE,
+    )
+
+    # A true replay is still an "ok" outcome (the ORIGINAL turn succeeded) --
+    # `replayed=True` is the one new, additive signal distinguishing it from
+    # an ordinary fresh "ok" turn.
+    assert retry_outcome == TurnOutcome(
+        status="ok", message_id="msg-B", turn_run_id="turn-A", replayed=True
+    )
+
+    decoded = [_parse_frame(f) for f in retry_frames]
+    names = [name for _seq, name, _data in decoded]
+    assert names == ["accepted", "part", "part", "done"]
+    for _seq, _name, frame_data in decoded:
+        assert frame_data["turn_id"] == "turn-B"
+        assert frame_data["message_id"] == "msg-B"
+
+    part_frames = [data for _seq, name, data in decoded if name == "part"]
+    assert [{"kind": f["kind"], "payload": f["payload"]} for f in part_frames] == seeded_parts
+
+    done_frame = decoded[-1][2]
+    assert done_frame["usage"] == {"input_tokens": 0, "output_tokens": 0}
+
+    # No re-dispatch: the pipeline never ran for the retry -- only the
+    # SECOND start_turn call happened; append_llm_call/append_tool_call/
+    # finalize counts are UNCHANGED from right after the first turn.
+    assert len(writer.start_turn_calls) == 2
+    assert (
+        len(writer.append_llm_calls),
+        len(writer.append_tool_calls),
+        len(writer.finalize_calls),
+    ) == calls_after_first_turn
+    assert writer.read_for_replay_calls == [
+        {"turn_run_id": "turn-A", "user_sub": DISABLED_DEFAULT_USER.sub}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("seeded_status", "seeded_parts"),
+    [
+        ("running", None),
+        ("error", None),
+        # Defensive: even an "ok" status with no reachable parts (a
+        # never-realistic shape today, since finalize(status="ok") always
+        # follows a real persisted message -- see live_chat.py's own
+        # Fix-round-1 persistence-ordering guarantee) must not fabricate a
+        # replay out of nothing.
+        ("ok", None),
+    ],
+)
+def test_retry_falls_back_to_duplicate_turn_error_when_replay_data_is_not_ok(
+    monkeypatch, seeded_status, seeded_parts
+):
+    settings = _settings(monkeypatch, LLM_MODE="stub", LLM_PROFILE="bedrock")
+    data = FakeDataClient()
+    state = ConversationStateStore()
+    writer = RecordingWriter(
+        replay_by_turn_run_id={"turn-A": ReplayTurn(status=seeded_status, parts=seeded_parts)}
+    )
+    role_client = _dev_role_client(settings)
+    prompt_registry = PromptRegistry(DEFAULT_PROMPTS_DIR)
+
+    first_sink = SseEnvelopeSink(
+        turn_id="turn-A", message_id="msg-A", send=lambda _f: None, registry=REGISTRY
+    )
+    execute_turn(
+        user=DISABLED_DEFAULT_USER,
+        conversation_id="conv-no-replay",
+        text="hello",
+        client_turn_key="ctk-no-replay",
+        settings=settings,
+        registry=REGISTRY,
+        data=data,
+        state=state,
+        writer=writer,
+        role_client=role_client,
+        prompt_registry=prompt_registry,
+        sink=first_sink,
+        reference_date=REFERENCE_DATE,
+    )
+
+    retry_frames, retry_send = _capturing_send()
+    retry_sink = SseEnvelopeSink(
+        turn_id="turn-C", message_id="msg-C", send=retry_send, registry=REGISTRY
+    )
+    retry_outcome = execute_turn(
+        user=DISABLED_DEFAULT_USER,
+        conversation_id="conv-no-replay",
+        text="hello",
+        client_turn_key="ctk-no-replay",
+        settings=settings,
+        registry=REGISTRY,
+        data=data,
+        state=state,
+        writer=writer,
+        role_client=role_client,
+        prompt_registry=prompt_registry,
+        sink=retry_sink,
+        reference_date=REFERENCE_DATE,
+    )
+
+    assert retry_outcome == TurnOutcome(status="error", message_id="msg-C", turn_run_id="turn-A")
+    decoded = [_parse_frame(f) for f in retry_frames]
+    names = [name for _seq, name, _data in decoded]
+    assert names == ["accepted", "error"]
+    error_data = decoded[1][2]
+    assert error_data["code"] == "duplicate_turn"
 
 
 # ===========================================================================

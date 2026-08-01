@@ -94,7 +94,30 @@ The SAME technique -- decode an already-serialized frame, mutate it, and
 re-serialize it byte-for-byte in the SAME pinned wire shape -- is how
 :func:`_inject_done_title` adds the additive ``"title"`` field to the
 ``done`` frame (see "Phase 10 Task 3" below for why that field cannot be
-known at the moment ``sink.done()`` fires).
+known at the moment ``sink.done()`` fires), and (Phase 11 Task 3) the
+additive ``"replayed"`` field.
+
+**Phase 11 Task 3: true duplicate-turn replay, and why this module needs
+almost no new code for it.** ``core/chat/orchestrator.py``'s own ``_begin_
+turn`` (doc 01 section 5) now replays an earlier ``ok`` turn's persisted
+answer via ``sink.push_part``/``sink.done`` -- the SAME two public
+``SseEnvelopeSink`` methods the clarify short-circuit already calls
+directly. Because ``send`` (above) and :func:`_record_transcript_frame`
+already fold every ``part``/``done`` frame into the transcript buffer
+GENERICALLY, with no branch on WHY a frame was produced, a replayed turn's
+frames flow through this module's entire existing pipeline -- transcript
+folding, the held-back-``done``/title machinery, persistence -- completely
+unchanged: the only two edits this task makes here are threading
+``TurnOutcome.replayed`` into :func:`_inject_done_title` (the wire-level
+additive field) and into :func:`_finalize_turn`'s own title-computation
+guard (see that function's own docstring for why the guard is defensive
+rather than load-bearing in practice). A replayed turn's OWN assistant
+message still persists as a new row, under this request's own freshly
+minted ``message_id`` -- never the original turn's -- exactly mirroring
+this module's own pre-existing "every retry duplicates the user's own
+message row too" behavior (``append_user_message`` runs, unconditionally,
+before the duplicate-turn check is ever reached); this is disclosed as an
+accepted, symmetric consequence, not a gap this task closes.
 
 **The snowflake guard.** ``dev_runner.py``'s own ``_build_ctx`` refuses
 ``data_backend != "synthetic"`` with a structured 501 BEFORE ever
@@ -399,7 +422,7 @@ def _record_transcript_frame(frame: str, assistant: dict, buffer: TurnTranscript
     # comment: "the error is a stream event, not a persisted part".
 
 
-def _inject_done_title(frame: str, title: str | None) -> str:
+def _inject_done_title(frame: str, title: str | None, *, replayed: bool = False) -> str:
     """Re-serialize a buffered ``done`` SSE frame with the additive
     ``"title"`` field -- see the module docstring's "Titles at turn one" for
     why this rewrites already-serialized frame text (the same technique
@@ -407,9 +430,21 @@ def _inject_done_title(frame: str, title: str | None) -> str:
     than widening ``SseEnvelopeSink``'s own contract, which this task may
     not touch. Mirrors ``SseEnvelopeSink._frame``'s own wire-format
     construction exactly -- same ``id``/``event`` line, ``data`` re-dumped
-    with one more key appended."""
+    with one or two more keys appended.
+
+    ``replayed`` (Phase 11 Task 3, doc 01 section 5's true-replay upgrade):
+    unlike ``title`` -- always present, ``str | None`` -- this key is added
+    ONLY when ``True``. A duplicate-``client_turn_key`` replay is the one
+    and only caller that ever passes ``replayed=True`` (see
+    :func:`_finalize_turn`'s own call site, reading ``TurnOutcome.
+    replayed``); every ordinary turn's ``done`` frame stays byte-identical
+    to what it was before this task -- no new key at all -- which is what
+    keeps every PRE-EXISTING test in this codebase that asserts a normal
+    turn's exact ``done`` frame shape passing unchanged."""
     name, data = _decode_frame(frame)
     data["title"] = title
+    if replayed:
+        data["replayed"] = True
     return f"id: {data['event_seq']}\nevent: {name}\ndata: {json.dumps(data)}\n\n"
 
 
@@ -785,14 +820,29 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
         """Flush the buffered ``done`` frame now that ``execute_turn`` has
         returned -- see the module docstring's "Titles at turn one" for the
         full rationale. A no-op when the turn produced no ``done`` frame at
-        all (a duplicate-turn retry, or a turn-one entry/subject clarify
-        that still needs no title)."""
+        all (a duplicate-turn error retry, or a turn-one entry/subject
+        clarify that still needs no title).
+
+        ``outcome.replayed`` (Phase 11 Task 3) gates title computation off
+        too, defensively, alongside ``turn_index == 1``: a true replay's
+        freshly-minted ``turn_index`` is, in every reachable case, at least
+        2 (the ORIGINAL turn it replays already consumed an earlier index
+        for itself -- ``core/chat/orchestrator.py``'s own ``_begin_turn``
+        mints a fresh index unconditionally, before the duplicate check
+        ever runs), so this guard is not expected to change behavior on any
+        real request today -- it exists so a replayed turn can never, even
+        in a theoretical race, trigger a spurious ``title_for``/``set_
+        title`` call for content the pipeline never actually produced this
+        time. Threaded into :func:`_inject_done_title` either way, so the
+        additive ``"replayed": true`` field reaches the wire exactly when
+        ``execute_turn`` said this was one -- never guessed at here.
+        """
         if not pending_done:
             return
         frame = pending_done[0]
         turn_index = turn_index_holder[0] if turn_index_holder else None
         title = None
-        if outcome.status == "ok" and turn_index == 1:
+        if outcome.status == "ok" and turn_index == 1 and not outcome.replayed:
             try:
                 computed = title_for(body.text, app_state.role_client, app_state.prompt_registry)
                 title = computed if computed else body.text[:60]
@@ -809,7 +859,7 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
         # the client must never be able to see "done" and then GET a
         # conversation whose last message row does not exist yet.
         _persist_once()
-        frame_queue.put(_inject_done_title(frame, title))
+        frame_queue.put(_inject_done_title(frame, title, replayed=outcome.replayed))
 
     def run_turn_sync() -> None:
         started = monotonic()

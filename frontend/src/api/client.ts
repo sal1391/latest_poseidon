@@ -1,4 +1,4 @@
-import type { Conversation, Message, Page, SkillSummary } from "./types";
+import type { Conversation, Message, MessagePart, Page, SkillSummary } from "./types";
 
 /** RFC-7807 problem-details shape every backend failure in this codebase
  * renders through (poseidon.core.skills.result.problem; api/auth.py's
@@ -139,4 +139,55 @@ export async function postFeedback(
 export async function listSkills(): Promise<SkillSummary[]> {
   const r = await apiFetch("/api/skills");
   return (await r.json()) as SkillSummary[];
+}
+
+/** GET /api/turns/{id}'s pinned wire shape (poseidon.api.turns.get_turn,
+ * doc 01 section 5) -- reconnect reconciliation, Phase 11 Task 3. Field
+ * names mirror the backend verbatim (this codebase's own DTO convention --
+ * see this file's module-level types above), never renamed to camelCase. */
+export interface TurnSummary {
+  id: string;
+  conversation_id: string | null;
+  message_id: string | null;
+  kind: string;
+  status: string;
+  question: string | null;
+  mode: string | null;
+  created_at: string;
+  finished_at: string | null;
+  trace_id: string | null;
+  redacted: boolean;
+}
+export interface LlmCallSummary {
+  seq: number;
+  provider: string;
+  model_id: string;
+  role: string;
+  prompt_version: string;
+  status: string;
+  input_tokens: number;
+  output_tokens: number;
+  latency_ms: number | null;
+}
+export interface ToolCallSummary {
+  seq: number;
+  tool: string;
+  server: string | null;
+  status: string;
+  latency_ms: number | null;
+}
+export interface TurnDetail {
+  turn: TurnSummary;
+  llm_calls: LlmCallSummary[];
+  tool_calls: ToolCallSummary[];
+  message: { id: string; parts: MessagePart[] } | null;
+}
+
+/** Live-chat-only, like `listSkills` above. The one caller today is
+ * `chatStore.ts`'s own on-drop reconcile hook (doc 01 section 5, client
+ * rule 3) -- a stream that errors mid-turn with a known turn_id fetches
+ * this to materialize whatever the run log already captured. */
+export async function getTurn(turnId: string): Promise<TurnDetail> {
+  const r = await apiFetch(`/api/turns/${turnId}`);
+  return (await r.json()) as TurnDetail;
 }

@@ -51,19 +51,31 @@ Three terminal states, three writer/state disciplines
   implemented as "do not touch the store at all", not as writing back
   whatever the pre-turn value was.
 
-A fourth, EARLIER short-circuit (Phase 6 Task 4 amendment): retry
+A fourth, EARLIER short-circuit (Phase 6 Task 4 amendment, Phase 11 Task 3
+upgrade): retry / true replay
 ------------------------------------------------------------------------
 Before any of the three terminal states above is even reached: when
 ``writer.start_turn`` reports ``created=False`` -- ``(user_sub,
 client_turn_key)`` already named a row some EARLIER request created -- this
-function emits ONE pinned ``error`` frame (``code="duplicate_turn"``) and
-returns immediately. No ``run_turn`` call, no dispatch, no
-``writer.append_*``, no ``writer.finalize`` (the ORIGINAL turn owns the row;
-writing to it again from here would race that request), and no
+function asks the writer (:meth:`~poseidon.core.runlog.RunLogWriter.
+read_for_replay`) what that ORIGINAL turn's terminal status and persisted
+answer were (Phase 11 Task 3, doc 01 section 5). An ``"ok"`` status with a
+real, persisted message REPLAYS that answer -- its parts pushed verbatim,
+as one part-frame sequence, via ``sink.push_part`` (never ``part_emitter``,
+so the P8 retired-dispatch guard is never in the call path at all -- see
+:func:`_begin_turn`'s own inline comment at this branch), then ``sink.
+done`` -- and returns a ``TurnOutcome`` with ``replayed=True``. Anything
+else (``"running"``, ``"error"``, no writer to ask, or a replay lookup that
+itself failed -- :meth:`~poseidon.core.runlog.RunLogWriter.read_for_replay`
+never raises, matching every other ``RunLogWriter`` method's own
+never-raises rule) falls through to the ORIGINAL, byte-pinned behavior:
+this function emits ONE pinned ``error`` frame (``code="duplicate_turn"``)
+and returns immediately. Either branch: no ``run_turn`` call, no dispatch,
+no ``writer.append_*``, no ``writer.finalize`` (the ORIGINAL turn owns the
+row; writing to it again from here would race that request), and no
 ``state.put``. ``next_turn_index`` was already consumed before this check
 runs (a known, accepted residual: a dense-numbering gap on retry, harmless --
-``turn_index`` is advisory ordering, never a primary key). Phase 11 upgrades
-this short-circuit to true replay, per doc 01 section 5.
+``turn_index`` is advisory ordering, never a primary key).
 
 D19 entry orchestration (Phase 8 Task 5): two MORE short-circuits, both
 BEFORE parse_turn's normal path
@@ -381,11 +393,22 @@ class TurnOutcome:
     """What :func:`execute_turn` hands back to the HTTP layer: enough to
     log the request and know whether to keep the connection open for more
     (it never does today -- one POST is one turn) or reconcile from the run
-    log (doc 01 section 5's ``GET /api/turns/{turn_id}``, a later phase)."""
+    log (doc 01 section 5's ``GET /api/turns/{turn_id}``, a later phase).
+
+    ``replayed`` (Phase 11 Task 3, additive -- defaults to ``False`` so
+    every pre-existing construction of this dataclass, every call site in
+    this module, and every equality assertion pinned before this task
+    keeps meaning exactly what it meant before it): ``True`` exactly when
+    ``_begin_turn``'s duplicate-turn branch replayed an earlier ``ok``
+    turn's persisted answer instead of running the pipeline. ``api/live_
+    chat.py`` reads this back to inject the additive ``"replayed": true``
+    field into the ``done`` frame (never onto an ordinary turn's) and to
+    skip a spurious title recompute."""
 
     status: str  # ok | clarify | error
     message_id: str
     turn_run_id: str | None
+    replayed: bool = False
 
 
 def execute_turn(
@@ -838,6 +861,51 @@ def _begin_turn(
         # turn_run_id here is the ORIGINAL row's id (the one start_turn
         # found, not sink.turn_id), since this request never created a row
         # of its own.
+        #
+        # Phase 11 Task 3 (doc 01 section 5): true replay. Ask the writer
+        # (read_for_replay -- see runlog.py's own docstring for why THAT
+        # module, not this one, owns the messages join) what the ORIGINAL
+        # turn's terminal status and persisted answer were. Only an "ok"
+        # status with real, persisted parts replays; a "running"/"error"
+        # status, a writer that could not be asked (writer is None -- never
+        # actually reachable here, since handle is only non-None when
+        # writer was, but checked explicitly rather than assumed), or a
+        # lookup failure (read_for_replay never raises -- see its own
+        # docstring) all fall through to the SAME duplicate_turn error this
+        # branch has always produced, byte-identical.
+        replay = (
+            writer.read_for_replay(turn_run_id=turn_run_id, user_sub=user.sub)
+            if writer is not None
+            else None
+        )
+        if replay is not None and replay.status == "ok" and replay.parts is not None:
+            # Replay the ORIGINAL answer's parts verbatim, as one part-frame
+            # sequence, via push_part -- the SAME public sink method the
+            # clarify short-circuit above already calls directly. This is
+            # why the P8 "retired-dispatch guard" (events.py's own
+            # part_emitter/_streamed_counts bookkeeping) never enters the
+            # picture: that guard only ever triggers through the closure
+            # sink.part_emitter(tool_seq) returns to a SKILL mid-dispatch,
+            # and nothing on this path ever calls part_emitter or dispatches
+            # anything -- push_part/done are unconditional, always-safe
+            # public methods that never read or write _streamed_counts.
+            # No run_turn call, no registry.dispatch, no writer.append_*/
+            # finalize -- the pipeline genuinely never executes, so no new
+            # turn_run row and no new llm_calls/tool_calls rows are ever
+            # produced for a replayed turn.
+            for part in replay.parts:
+                sink.push_part(part["kind"], part["payload"])
+            sink.done({"input_tokens": 0, "output_tokens": 0})
+            return (
+                turn_index,
+                turn_run_id,
+                TurnOutcome(
+                    status="ok",
+                    message_id=sink.message_id,
+                    turn_run_id=turn_run_id,
+                    replayed=True,
+                ),
+            )
         sink.emit(
             "turn_error", {"problem": problem(409, _DUPLICATE_TURN_TITLE, _DUPLICATE_TURN_DETAIL)}
         )

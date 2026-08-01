@@ -1,0 +1,160 @@
+import { http, HttpResponse } from "msw";
+import { setupServer } from "msw/node";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { StreamError, streamTurn } from "../api/sse";
+import { resetChatStore, useChatStore } from "./chatStore";
+
+/**
+ * Phase 11 Task 3 (doc 01 section 5, client rule 3): "On connection drop
+ * [the client] calls GET /api/turns/{turn_id} to reconcile from the run log
+ * ... rather than replaying the model." This is the frontend half of that
+ * contract -- a THIN hook: when `sendMessage`'s own stream throws mid-turn
+ * (a `StreamError` carrying a known ``turnId``), it fetches `GET
+ * /api/turns/:id` and materializes the recovered parts into the
+ * conversation, instead of the generic `stream_failed` error bubble.
+ *
+ * `streamTurn` itself is mocked (its own StreamError/turn_id-capturing
+ * contract is proven directly, against a real stream, in `sse.test.ts` --
+ * re-proving stream mechanics here would only re-test sse.ts through an
+ * extra layer of indirection). `api/client.ts`'s `getTurn` is NOT mocked --
+ * this suite drives it over REAL MSW (the `chatStore.pagination.test.ts`
+ * precedent, not `chatStore.test.ts`'s own full-module `vi.mock`), so the
+ * request path and the folded response shape are proven against something
+ * that looks like the real backend, never a hand-rolled stub that could
+ * silently drift from it.
+ */
+vi.mock("../api/sse", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/sse")>();
+  return { ...actual, streamTurn: vi.fn() };
+});
+
+const server = setupServer();
+beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
+afterEach(() => server.resetHandlers());
+afterAll(() => server.close());
+
+beforeEach(() => {
+  resetChatStore();
+  vi.clearAllMocks();
+});
+
+test("a stream that errors mid-turn with a known turn_id fetches getTurn and materializes the recovered parts", async () => {
+  vi.mocked(streamTurn).mockRejectedValueOnce(
+    new StreamError("simulated network drop", "turn-drop-1"),
+  );
+  let getTurnRequests = 0;
+  server.use(
+    http.get("/api/turns/turn-drop-1", () => {
+      getTurnRequests += 1;
+      return HttpResponse.json({
+        turn: {
+          id: "turn-drop-1",
+          conversation_id: "c1",
+          message_id: "recovered-1",
+          kind: "chat_turn",
+          status: "ok",
+          question: "hello",
+          mode: "default",
+          created_at: "2026-08-01T00:00:00Z",
+          finished_at: "2026-08-01T00:00:01Z",
+          trace_id: null,
+          redacted: false,
+        },
+        llm_calls: [],
+        tool_calls: [],
+        message: {
+          id: "recovered-1",
+          parts: [{ kind: "text", payload: { markdown: "the reconciled answer" } }],
+        },
+      });
+    }),
+  );
+
+  await useChatStore.getState().sendMessage("c1", "hello");
+
+  expect(getTurnRequests).toBe(1);
+  const messages = useChatStore.getState().messages.c1;
+  const last = messages[messages.length - 1];
+  expect(last.id).toBe("recovered-1");
+  expect(last.role).toBe("assistant");
+  expect(last.parts).toEqual([{ kind: "text", payload: { markdown: "the reconciled answer" } }]);
+  // The generic stream_failed bubble must NOT also be present -- reconcile
+  // REPLACES it, never merely supplements it.
+  expect(messages.some((m) => m.parts.some((p) => p.kind === "error"))).toBe(false);
+});
+
+test("no reconcile call when the stream completes normally", async () => {
+  vi.mocked(streamTurn).mockResolvedValueOnce(undefined);
+  // Deliberately NO handler for GET /api/turns/* -- onUnhandledRequest:
+  // "error" (above) means a reconcile call here would fail this test
+  // loudly, proving the hook never fires on a clean completion, not merely
+  // that it swallows a network error.
+
+  await useChatStore.getState().sendMessage("c1", "hello");
+
+  // sendMessage resolved with no thrown error and no MSW violation --
+  // exactly today's pre-existing, unchanged happy path.
+  expect(useChatStore.getState().streamingByConv.c1).toBe(false);
+});
+
+test("a stream error with no known turn_id shows the generic error, no reconcile attempted", async () => {
+  vi.mocked(streamTurn).mockRejectedValueOnce(new StreamError("turn failed: 500", null));
+  // No GET /api/turns/* handler -- a reconcile attempt with no turn_id
+  // would have nothing to call anyway, but this also proves it is never
+  // even tried.
+
+  await useChatStore.getState().sendMessage("c1", "hello");
+
+  const messages = useChatStore.getState().messages.c1;
+  const last = messages[messages.length - 1];
+  expect(last.role).toBe("assistant");
+  expect(last.parts[0].kind).toBe("error");
+});
+
+test("a stream error whose own getTurn reconcile call also fails falls back to the generic error bubble", async () => {
+  vi.mocked(streamTurn).mockRejectedValueOnce(
+    new StreamError("simulated network drop", "turn-drop-2"),
+  );
+  server.use(http.get("/api/turns/turn-drop-2", () => new HttpResponse(null, { status: 500 })));
+
+  await useChatStore.getState().sendMessage("c1", "hello");
+
+  const messages = useChatStore.getState().messages.c1;
+  const last = messages[messages.length - 1];
+  expect(last.role).toBe("assistant");
+  expect(last.parts[0].kind).toBe("error");
+});
+
+test("a stream error whose getTurn reconcile succeeds but reports no message falls back to the generic error bubble", async () => {
+  vi.mocked(streamTurn).mockRejectedValueOnce(
+    new StreamError("simulated network drop", "turn-drop-3"),
+  );
+  server.use(
+    http.get("/api/turns/turn-drop-3", () =>
+      HttpResponse.json({
+        turn: {
+          id: "turn-drop-3",
+          conversation_id: "c1",
+          message_id: null,
+          kind: "chat_turn",
+          status: "running",
+          question: "hello",
+          mode: "default",
+          created_at: "2026-08-01T00:00:00Z",
+          finished_at: null,
+          trace_id: null,
+          redacted: false,
+        },
+        llm_calls: [],
+        tool_calls: [],
+        message: null,
+      })),
+  );
+
+  await useChatStore.getState().sendMessage("c1", "hello");
+
+  const messages = useChatStore.getState().messages.c1;
+  const last = messages[messages.length - 1];
+  expect(last.role).toBe("assistant");
+  expect(last.parts[0].kind).toBe("error");
+});

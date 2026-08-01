@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { Conversation, Message, MessagePart, SseEvent } from "../api/types";
 import * as api from "./../api/client";
-import { streamTurn } from "../api/sse";
+import { StreamError, streamTurn } from "../api/sse";
 
 export function applyEventTo(messages: Message[], e: SseEvent): Message[] {
   const { message_id, event_seq } = e.data;
@@ -190,15 +190,47 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       await streamTurn(cid, text, turnKey, (e) => get().applyEvent(cid, e));
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const errorMessage: Message = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        parts: [{ kind: "error", payload: { code: "stream_failed", message } }],
-      };
-      set((s) => ({
-        messages: { ...s.messages, [cid]: [...(s.messages[cid] ?? []), errorMessage] },
-      }));
+      // On-drop reconcile (doc 01 section 5, client rule 3): a stream that
+      // errored mid-turn with a known turn_id (StreamError.turnId -- sse.ts's
+      // own error path, set from the last envelope this stream actually
+      // saw) means the run log may already hold a real answer this client
+      // simply never received. GET /api/turns/{id} and materialize its
+      // parts INSTEAD OF the generic error bubble; a turn_id we never saw
+      // (a failure before the first frame), or a reconcile call that itself
+      // fails, both fall through to that same generic bubble unchanged --
+      // never worse than before this hook existed, only sometimes better.
+      let reconciled = false;
+      if (err instanceof StreamError && err.turnId) {
+        try {
+          const turn = await api.getTurn(err.turnId);
+          if (turn.message) {
+            const recovered: Message = {
+              id: turn.message.id,
+              role: "assistant",
+              parts: turn.message.parts,
+            };
+            set((s) => ({
+              messages: { ...s.messages, [cid]: [...(s.messages[cid] ?? []), recovered] },
+            }));
+            reconciled = true;
+          }
+        } catch {
+          // The reconcile call itself failed (still offline, 404, ...) --
+          // fall through to the generic bubble below rather than leaving
+          // the user with neither an answer nor an error shown.
+        }
+      }
+      if (!reconciled) {
+        const message = err instanceof Error ? err.message : String(err);
+        const errorMessage: Message = {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          parts: [{ kind: "error", payload: { code: "stream_failed", message } }],
+        };
+        set((s) => ({
+          messages: { ...s.messages, [cid]: [...(s.messages[cid] ?? []), errorMessage] },
+        }));
+      }
     } finally {
       set((s) => ({ streamingByConv: { ...s.streamingByConv, [cid]: false } }));
     }

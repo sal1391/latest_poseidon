@@ -1,6 +1,25 @@
 import { requestWithAuth } from "./client";
 import type { SseEvent } from "./types";
 
+/**
+ * Thrown by `streamTurn` for any failure -- a non-2xx/missing-body response,
+ * or the read loop itself rejecting mid-stream (a network drop). `turnId` is
+ * the last `turn_id` this stream actually saw (from the envelope of any
+ * frame processed before the failure), or `null` when nothing arrived yet --
+ * Phase 11 Task 3 (doc 01 section 5, client rule 3): `chatStore.ts`'s own
+ * catch block reads this back to decide whether a `GET /api/turns/{id}`
+ * reconcile is even possible, never guessing at an id this module never saw.
+ */
+export class StreamError extends Error {
+  readonly turnId: string | null;
+
+  constructor(message: string, turnId: string | null) {
+    super(message);
+    this.name = "StreamError";
+    this.turnId = turnId;
+  }
+}
+
 export function parseSseChunk(buffer: string): { events: SseEvent[]; rest: string } {
   const events: SseEvent[] = [];
   const normalized = buffer.replace(/\r\n/g, "\n");
@@ -52,17 +71,33 @@ export async function streamTurn(
     signal,
   });
   if (!response.ok || !response.body) {
-    throw new Error(`turn failed: ${response.status}`);
+    // Failed before a single frame arrived -- no turn_id has ever been
+    // seen, so there is nothing a GET /api/turns/{id} reconcile could look
+    // up yet.
+    throw new StreamError(`turn failed: ${response.status}`, null);
   }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const parsed = parseSseChunk(buffer);
-    buffer = parsed.rest;
-    parsed.events.forEach(onEvent);
+  // The last turn_id this stream actually saw -- every SseEvent's envelope
+  // carries one unconditionally (types.ts's own SseEnvelope), so the very
+  // first frame (always "accepted") already sets this before anything else
+  // can go wrong.
+  let lastTurnId: string | null = null;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parsed = parseSseChunk(buffer);
+      buffer = parsed.rest;
+      for (const e of parsed.events) {
+        lastTurnId = e.data.turn_id;
+        onEvent(e);
+      }
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new StreamError(message, lastTurnId);
   }
 }

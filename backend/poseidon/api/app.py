@@ -1,7 +1,7 @@
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from poseidon.api import auth, dev_runner, health, live_chat, mock_chat
+from poseidon.api import auth, dev_runner, health, live_chat, mock_chat, turns
 from poseidon.core.artifacts import ArtifactStore
 from poseidon.core.chat.dev_router import DevDeterministicRouter
 from poseidon.core.chat.history import FeedbackStubStore, HistoryStore
@@ -457,6 +457,12 @@ def _wire_live_chat(app: FastAPI) -> None:
     # regardless of chat_mode, e.g. GET /api/me).
     app.add_exception_handler(live_chat.MalformedCursor, live_chat.malformed_cursor_response)
     app.include_router(live_chat.router)
+    # Phase 11 Task 3 (doc 01 section 5): the reconnect reconciliation
+    # endpoint -- mounted here, alongside live_chat.router, rather than
+    # unconditionally in create_app, since it reads app.state.db_engine,
+    # which only exists once this function has run (see turns.py's own
+    # module docstring).
+    app.include_router(turns.router)
 
 
 def _build_chat_rate_limiter(settings: Settings) -> auth.ChatRateLimiter | None:

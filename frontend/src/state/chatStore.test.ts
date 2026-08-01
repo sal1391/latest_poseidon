@@ -3,7 +3,16 @@ import * as api from "../api/client";
 import { streamTurn } from "../api/sse";
 import { applyEventTo, resetChatStore, useChatStore } from "./chatStore";
 
-vi.mock("../api/sse", () => ({ streamTurn: vi.fn(async () => undefined) }));
+// Phase 11 Task 3: chatStore.ts now also imports StreamError (a real class,
+// used via `instanceof` in its own catch block) from this module -- partial
+// mock via importOriginal, so StreamError stays the REAL class (an
+// `instanceof` check against `undefined` would throw TypeError) while
+// streamTurn stays a plain stand-in, exactly as every test in this file
+// already expects.
+vi.mock("../api/sse", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/sse")>();
+  return { ...actual, streamTurn: vi.fn(async () => undefined) };
+});
 
 // Phase 10 Task 4: both list endpoints now return a `{items, next_cursor}`
 // envelope (byte-pinned against the real backend in

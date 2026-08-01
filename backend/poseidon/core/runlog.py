@@ -73,6 +73,20 @@ Postgres infer that column's type for the placeholder and parse the text
 through the normal ``jsonb`` input path, so no explicit ``::jsonb`` cast is
 needed (confirmed against a real Postgres in ``test_runlog_writer.py``'s pg
 suite, not just asserted).
+
+**Phase 11 Task 3: one new read method, ``read_for_replay``, disclosed as a
+minimal necessary extension beyond this task's own file list.** True
+duplicate-turn replay (doc 01 section 5) needs the ORIGINAL turn's status
+and its persisted assistant message before ``core/chat/orchestrator.py``'s
+``_begin_turn`` can decide replay-vs-error, and this class already owns
+the one shared, per-process ``Engine`` every read against ``turn_run``
+goes through. See :meth:`RunLogWriter.read_for_replay`'s own docstring for
+the full "why here, not orchestrator.py or history.py" reasoning (circular
+import, leading-underscore boundary, and single-Engine discipline all rule
+out the alternatives) -- the same category of judgment call this phase's
+own Task 1 already made once (``api/app.py``'s one-line ``RunLogWriter``
+wiring, outside that task's own brief file list) and disclosed rather than
+routed around.
 """
 
 import json
@@ -99,6 +113,33 @@ class TurnHandle:
     turn_run_id: str
     created: bool
 
+
+@dataclass(frozen=True)
+class ReplayTurn:
+    """What :meth:`RunLogWriter.read_for_replay` hands back for a duplicate
+    turn's replay decision (Phase 11 Task 3, doc 01 section 5's true-replay
+    upgrade): the original row's terminal ``status`` and, when a linked
+    assistant message exists, its persisted ``parts`` -- ``None`` for
+    ``parts`` when no message is linked yet (a ``running`` turn never sets
+    ``turn_run.message_id`` at all) or none was found. ``core/chat/
+    orchestrator.py``'s ``_begin_turn`` is the one caller: it only ever
+    treats ``status == "ok" and parts is not None`` as replayable: any
+    other combination (``running``, ``error``, or -- defensively -- an
+    ``ok`` row whose message somehow never persisted) falls back to the
+    pre-existing ``duplicate_turn`` error, unchanged."""
+
+    status: str
+    parts: list[dict] | None
+
+
+_READ_FOR_REPLAY_SQL = text(
+    """
+    SELECT tr.status, m.parts
+    FROM turn_run tr
+    LEFT JOIN messages m ON m.id = tr.message_id
+    WHERE tr.id = :turn_run_id
+    """
+)
 
 _START_TURN_SQL = text(
     """
@@ -306,6 +347,64 @@ class RunLogWriter:
             )
             return None
 
+    def read_for_replay(self, *, turn_run_id: str, user_sub: str) -> ReplayTurn | None:
+        """Phase 11 Task 3 (doc 01 section 5): what ``core/chat/
+        orchestrator.py``'s ``_begin_turn`` needs to decide whether a
+        duplicate ``client_turn_key`` replays the ORIGINAL turn's answer or
+        falls back to the pre-existing ``duplicate_turn`` error -- the
+        original row's ``status`` and, via one join to ``messages`` on
+        ``turn_run.message_id``, that message's persisted ``parts``.
+
+        **Why this reads ``messages`` -- a table no other ``RunLogWriter``
+        method ever touches -- rather than the caller reaching ``core/chat/
+        history.py``'s ``UserHistory`` itself.** ``core/chat/history.py``
+        already imports ``ENTRY_PHRASE_EXISTING``/``ENTRY_PHRASE_PROSPECT``
+        FROM ``core/chat/orchestrator.py`` -- so the reverse import
+        ``orchestrator.py`` would need to call a ``UserHistory`` method
+        directly is a genuine circular import, not merely an inconvenient
+        one. Reaching into this writer's own ``self._engine``/``self.
+        _app_role`` from OUTSIDE the class (a hypothetical direct
+        ``rls_transaction`` call in ``orchestrator.py`` itself) would cross
+        the same leading-underscore boundary this codebase treats as a hard
+        rule everywhere else (see e.g. ``events.py``'s own ``_label``,
+        ``loop.py``'s own ``_dispatch_one``). And minting a SECOND,
+        independent ``Engine`` inside ``orchestrator.py`` just for this one
+        read would defeat the entire "one Engine per process" discipline
+        ``api/app.py``'s own ``_wire_live_chat`` establishes. This method is
+        the minimal, disclosed extension that avoids all three: ``_begin_
+        turn`` already receives ``writer`` as an ordinary parameter at
+        every one of its three call sites, so no new parameter has to
+        thread through ``execute_turn``'s own pinned signature (or through
+        ``_finish_entry``/``_finish_subject_turn``) to reach it -- "via the
+        writer's connection/wrapper", literally.
+
+        Never raises (see the module docstring's never-raises rule,
+        extended here to a READ for the first time): a replay lookup that
+        fails for any reason must degrade to the SAME ``duplicate_turn``
+        error a request would have gotten before this task existed, never
+        crash a request that, pre-Task-3, always ended cleanly. Returns
+        ``None`` when the row itself is not visible under RLS (a caller
+        this ``turn_run_id`` does not actually own -- unreachable in
+        practice, since ``_begin_turn`` only ever calls this with an id its
+        OWN ``start_turn`` call just resolved for this same ``user_sub``)
+        or is genuinely absent; the caller (``_begin_turn``) treats a
+        ``None`` return identically to a non-``ok`` status.
+        """
+        try:
+            with rls_transaction(self._engine, user_sub, app_role=self._app_role) as conn:
+                row = conn.execute(_READ_FOR_REPLAY_SQL, {"turn_run_id": turn_run_id}).first()
+            if row is None:
+                return None
+            return ReplayTurn(status=row[0], parts=row[1])
+        except Exception as exc:  # a replay lookup failure must degrade, never crash the retry
+            logger.error(
+                "runlog read_for_replay failed: turn_run_id=%s: %s: %s",
+                turn_run_id,
+                type(exc).__name__,
+                exc,
+            )
+            return None
+
     def append_llm_call(
         self,
         *,
@@ -491,4 +590,4 @@ def redact_turns_for_conversation(conn: Connection, conversation_id: str) -> int
     return result.rowcount
 
 
-__all__ = ["RunLogWriter", "TurnHandle", "redact_turns_for_conversation"]
+__all__ = ["ReplayTurn", "RunLogWriter", "TurnHandle", "redact_turns_for_conversation"]
