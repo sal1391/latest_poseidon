@@ -701,6 +701,78 @@ def test_spike_check_flags_exactly_the_seeded_over_threshold_turn(pg_engine, mon
     assert turn6_line["total_tokens"] == 7000
 
 
+def test_spike_check_flags_memory_update_and_redacted_turns_too(pg_engine, monkeypatch, capsys):
+    """Fix round 1 (review finding, Important): JC-4 (task-4-report.md)
+    claims ``--spike-check`` has no ``kind``/``redacted_at`` filter -- the
+    SQL itself already has none, but nothing proved it before this test.
+    Two turns, both over threshold: one ``kind='memory_update'`` (the same
+    "real spend" reasoning the cost roll-up applies), and one that has
+    since been REDACTED via the real T1 ``redact_turns_for_conversation``
+    path. ``turn_run.input_tokens``/``output_tokens`` are never touched by
+    redaction (``runlog.py``'s own docstring: "untouched by design"), so
+    this test doubles as proof that redacting a conversation never quietly
+    disables spike detection on the spend it already recorded.
+    """
+    tag = uuid.uuid4().hex[:8]
+    writer = _writer(pg_engine)
+    user = _fresh_user_sub()
+    conversation_id = str(uuid.uuid4())
+
+    with pg_engine.connect() as conn:
+        since_iso = conn.execute(text("SELECT now()")).scalar_one().isoformat()
+
+    memory_update_turn = _seed_turn(
+        writer,
+        user_sub=user,
+        question=None,
+        kind="memory_update",
+        calls=[
+            dict(
+                model_id=_label("model-mu", tag),
+                role=_label("role-mu", tag),
+                prompt_version="v1",
+                input_tokens=6000,
+                output_tokens=3000,
+            )
+        ],
+    )
+    redacted_turn = _seed_turn(
+        writer,
+        user_sub=user,
+        question="will be redacted, still spikes",
+        conversation_id=conversation_id,
+        calls=[
+            dict(
+                model_id=_label("model-rd", tag),
+                role=_label("role-rd", tag),
+                prompt_version="v1",
+                input_tokens=7000,
+                output_tokens=4000,
+            )
+        ],
+    )
+    with rls_transaction(pg_engine, user, app_role=_EFFECTIVE_APP_ROLE) as conn:
+        assert redact_turns_for_conversation(conn, conversation_id) == 1
+
+    exit_code, lines = _run_cost_rollup(
+        monkeypatch,
+        capsys,
+        ["--spike-check", "--since", since_iso],
+        database_url=_DSN,
+        token_spike_threshold=1000,
+    )
+    assert exit_code == 0
+
+    flagged = {line["turn_id"]: line for line in lines}
+
+    assert memory_update_turn in flagged, "over-threshold memory_update turn must be flagged"
+    assert flagged[memory_update_turn]["total_tokens"] == 9000
+    assert flagged[memory_update_turn]["kind"] == "memory_update"
+
+    assert redacted_turn in flagged, "over-threshold REDACTED turn must still be flagged"
+    assert flagged[redacted_turn]["total_tokens"] == 11000
+
+
 def test_spike_check_threshold_zero_is_disabled_and_never_touches_the_database(monkeypatch, capsys):
     """threshold=0 must short-circuit BEFORE any database connection is
     attempted -- proven, not just asserted, by pointing DATABASE_URL at a
