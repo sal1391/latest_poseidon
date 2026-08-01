@@ -1,0 +1,112 @@
+# Phase 11 — Full Observability Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Make the run log useful and governed: RLS + admin role over the P6 tables, deletion with audit-preserving redaction, trace-id/JSON logging with span timings, dropped-stream reconciliation + true turn replay, and the harvest/cost scripts that close the router-evidence loop.
+
+**Architecture:** One migration (0005) brings `turn_run`/`llm_calls`/`tool_calls` under the same D28 discipline `conversations`/`messages` already live under (owner policies + FORCE + the runtime wrapper), adds a role-targeted read-across-users policy for a named-operator admin role, adds `turn_run.redacted_at`, and relaxes `tool_calls.args` to nullable so redaction can null it (doc 05 §7's list wins over 0003's NOT NULL — recorded here as the deliberate resolution). `RunLogWriter` swaps its raw `engine.begin()` for `rls_transaction`. Deletion hard-deletes chat content and redacts the audit rows in one transaction. A request-scoped `trace_id` (contextvar + middleware) flows into logs, the response header, and `turn_run`. `GET /api/turns/{id}` rebuilds a turn for reconciliation; the `duplicate_turn` short-circuit upgrades to true replay of completed turns. Two scripts close the loop: router-case export (candidate YAML, human-review gated) and cost roll-up + token-spike check.
+
+**Tech Stack:** Alembic (hand-written), SQLAlchemy Core, stdlib `logging` with a JSON formatter (NO OpenTelemetry dependency — span names are merely OTel-compatible strings), FastAPI middleware + contextvars, React/zustand thin reconcile hook.
+
+## Global Constraints
+
+- **D28 everywhere now:** after Task 1, EVERY statement touching `turn_run`/`llm_calls`/`tool_calls`/`conversations`/`messages` runs inside `rls_transaction(engine, user_sub, app_role=settings.database_app_role)` — including `RunLogWriter`. No raw `engine.begin()` on governed tables anywhere in `poseidon/` (the health probe's `SELECT 1` and migrations are the only exceptions).
+- **Redaction (doc 05 §7, verbatim contract):** `DELETE /api/conversations/{id}` hard-deletes the conversation, its messages, and its conversation state; the `turn_run` rows and their children are RETAINED with payload columns redacted: `turn_run.question`, `turn_run.answer_summary`, `turn_run.parsed`, and `tool_calls.args` nulled, row stamped `redacted_at`; ids, timestamps, model/provider, token counts, latency, and status survive. `llm_calls` rows carry no payload columns — they survive untouched.
+- **Admin boundary (doc 05 §7):** an admin database role may READ `turn_run`/`llm_calls`/`tool_calls` across users; granted to named operators, never the runtime role, never a chat user. Mechanism: `poseidon_admin` NOLOGIN role + `FOR SELECT TO poseidon_admin USING (true)` policies on the three tables (no BYPASSRLS anywhere).
+- **JSON log shape (doc 06 §3, verbatim):** `{ts, level, trace_id, turn_id, component, event, context}`. JSON logs only — the existing boot `print(..., flush=True)` lines (identity mode, research transport) convert to the structured logger; their pinned-format tests adapt to assert the JSON fields instead (adaptation, not weakening — the pinned CONTENT survives inside the JSON `event`/`context`).
+- **Trace (doc 06 §3):** one `trace_id` per HTTP request (middleware, contextvar), returned as the `X-Trace-Id` response header, stamped on `turn_run.trace_id` (column exists since 0003 — verify what the writer does today and thread if missing). Span names verbatim where they wrap existing sites: `parse`, `route`, `skill:<id>`, `subskill:<id>`, `llm:<role>`, `db:query`, `ext:perplexity` — durations go to the log stream; `llm_calls.latency_ms`/`tool_calls.latency_ms` keep being written exactly as today (spans ADD logging, they do not re-time).
+- **True replay scope (pinned):** duplicate `client_turn_key` where the stored turn's status is `ok` → replay the persisted assistant message parts and a `done` frame (byte-shaped like a live stream, plus an additive `"replayed": true` field on the done payload); status `running` or `error` → today's `duplicate_turn` error frame stays. Nothing else changes about dedupe.
+- **Reconciliation endpoint:** `GET /api/turns/{id}` — `require_sales`-guarded, RLS-scoped (foreign/unknown id → 404), response rebuilt from `turn_run` + `llm_calls` + `tool_calls` + the linked `messages` row(s); response shape pinned in Task 3.
+- **Harvest output is CANDIDATE-only:** `scripts/export_router_cases.py` writes candidate YAML into `backend/tests/router_cases/candidates/` (gitignored contents except a README) in the exact fixture format the P5 router-decision suite consumes; promotion into the suite is a human act (doc 06 §6's "human review + expected outcome"). Both `turn_run.kind` values are handled (`chat_turn` exported as router cases; `memory_update` excluded from router cases but counted in cost).
+- **Cost roll-up dimensions (doc 06 §2.4, verbatim):** by user/day/model/role/prompt version, from `llm_calls`, with per-call attribution; token-spike check flags per-turn total tokens exceeding `TOKEN_SPIKE_THRESHOLD` (new Settings int, default 0 = off — a config choice, recorded).
+- **ENVIRONMENT:** withhold PERPLEXITY_API_KEY on every suite run (`env -u PERPLEXITY_API_KEY`); zero live calls; Windows venv `backend/.venv/Scripts/python.exe`; pg needs `DATABASE_URL=postgresql+psycopg://poseidon:poseidon@localhost:5432/poseidon` (compose at migration 0004 → this phase applies 0005); no `-q` stacking.
+- ASCII-only .py; deterministic; docstrings explain WHY; ruff clean on touched files; conventional commits on `phase-3-8-overnight` with trailer `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`; NEVER push; TDD RED-first with genuine evidence.
+- Baselines at phase start: re-pin at Task 1 dispatch from the P10-close values (offline 1564 passed / 97 skipped; pg 119 passed / 1 skipped; vitest 80; lints clean) adjusted for any P10 final-review wave.
+- Sanctioned modifications to closed files: `core/runlog.py` (wrapper cutover + redaction writer + trace threading), `core/chat/history.py` (+`delete_conversation`; reopened THIS phase with its own review), `core/chat/orchestrator.py` (ONLY the `_begin_turn` replay upgrade its own docstring promises — everything else untouched), `api/app.py` (trace middleware + router mounts), `api/live_chat.py` (DELETE route, `X-Accel-Buffering: no` on the SSE response, replay wiring), `migrations/env.py` (logging config carryforward), frontend `api/client.ts`/`state/chatStore.ts`/`api/sse.ts` (thin reconcile hook only). Everything else: untouched.
+
+## File Map
+
+```
+backend/migrations/versions/0005_runlog_rls_redaction.py  # NEW: RLS+FORCE on 3 tables, admin policies, redacted_at, args nullable
+backend/poseidon/core/obs.py                    # NEW: JSON formatter, get_logger(component), trace contextvar, span()
+backend/poseidon/core/runlog.py                 # writer -> rls_transaction; redact_turns_for_conversation(); trace stamp
+backend/poseidon/core/chat/history.py           # + delete_conversation (content hard-delete, same transaction as redaction call)
+backend/poseidon/api/turns.py                   # NEW: GET /api/turns/{id} reconciliation router
+backend/poseidon/api/app.py                     # trace middleware + X-Trace-Id + turns router mount + obs bootstrap
+backend/poseidon/api/live_chat.py               # DELETE /api/conversations/{cid}; X-Accel-Buffering; replay path wiring
+backend/poseidon/core/chat/orchestrator.py      # _begin_turn: duplicate ok-turn -> replay (docstring-promised upgrade ONLY)
+backend/migrations/env.py                       # alembic logging config (carryforward)
+backend/scripts -> backend/poseidon/scripts/export_router_cases.py + cost_rollup.py  # NEW (follow the existing scripts/ package home)
+backend/tests/test_runlog_rls.py                # NEW: run-log four-test pattern + admin role + redaction
+backend/tests/test_obs_logging.py               # NEW: JSON shape, trace propagation, span emission, boot-line conversion
+backend/tests/test_turns_reconcile.py           # NEW: endpoint rebuild + replay semantics (pg)
+backend/tests/test_harvest_cost.py              # NEW: export format + cost rollup + spike check (pg, seeded rows)
+frontend/src/api/client.ts + sse.ts + state/chatStore.ts  # getTurn + on-drop reconcile hook + vitest
+```
+
+---
+
+### Task 1: Migration 0005 + RunLogWriter under D28 + deletion/redaction
+
+**Files:** create `migrations/versions/0005_runlog_rls_redaction.py`, `tests/test_runlog_rls.py`; modify `core/runlog.py`, `core/chat/history.py` (+`delete_conversation`), `api/live_chat.py` (DELETE route).
+
+**Interfaces produced:** `RunLogWriter` methods unchanged in signature but every statement now inside `rls_transaction(engine, user_sub, app_role)`; `redact_turns_for_conversation(conn, conversation_id) -> int` (runs on an ALREADY-OPEN wrapper connection — same transaction as the delete); `UserHistory.delete_conversation(cid) -> bool` (False when invisible → route 404s); `DELETE /api/conversations/{cid}` → 204 on success, 404 on invisible, `require_sales`-guarded.
+
+- [ ] **Step 1 (RED):** `test_runlog_rls.py` (pg): the four-test pattern on the three run-log tables through the writer (two-user isolation; no-context zero rows; pooled-connection leak; owner FORCE); admin-role catalog assertions (`poseidon_admin` exists, no BYPASSRLS, SELECT-only policies with `USING (true)` targeted `TO poseidon_admin` on exactly the three tables) plus one functional SET-ROLE test (grant membership in-test, read both users' rows, RESET ROLE + revoke in teardown); redaction: build a real turn (writer), delete its conversation via the route, assert `question`/`answer_summary`/`parsed` are NULL, `tool_calls.args` NULL, `redacted_at` stamped, while ids/token counts/latency/status/model fields survive and `llm_calls` rows are untouched; two-user delete isolation (bob cannot delete alice's → 404, rows intact); deletion transactionality (a failing redaction rolls back the content delete — force with a temporary trigger or savepoint probe; if impractical, assert both effects land in ONE transaction by code inspection + disclose).
+- [ ] **Step 2:** RED run (migration missing → policy assertions fail; route missing → 404 tests fail differently — capture).
+- [ ] **Step 3:** Write 0005 (`revision "0005", down_revision "0004"`, Postgres-only guard like 0003/0004): ENABLE+FORCE RLS on `turn_run`/`llm_calls`/`tool_calls`; owner policies (`USING`/`WITH CHECK` on `current_setting('app.user_sub', true)`); `poseidon_admin` NOLOGIN idempotent + the three `FOR SELECT TO poseidon_admin USING (true)` policies + GRANT SELECT on the three tables to it; `ALTER TABLE turn_run ADD COLUMN redacted_at timestamptz`; `ALTER TABLE tool_calls ALTER COLUMN args DROP NOT NULL` (comment: doc 05 §7 redaction nulls args — the §7 contract wins over 0003's NOT NULL); grants for `poseidon_app` on the three tables (SELECT/INSERT/UPDATE — no DELETE; audit rows are never deleted). Downgrade reverses (keep roles, like 0004).
+- [ ] **Step 4:** `core/runlog.py`: swap the four `with self._engine.begin()` sites to `rls_transaction(self._engine, user_sub, app_role=...)` — `start_turn` has `user_sub`; verify `append_llm_call`/`append_tool_call`/`finalize` receive or can derive it (they take turn ids — thread `user_sub` through their signatures from the orchestrator call sites if absent; the orchestrator already holds `user.sub`; that threading is sanctioned). Add `redact_turns_for_conversation`. `core/chat/history.py`: `delete_conversation` (RLS-filtered DELETE of the conversation row — cascade removes messages — returning rowcount). `api/live_chat.py`: the DELETE route calling both inside ONE `rls_transaction`.
+- [ ] **Step 5:** Apply 0005 to the compose db (`alembic upgrade head`); GREEN; existing suites green (offline + pg); ruff.
+- [ ] **Step 6:** **Commit** — `feat(observability): run-log rls with admin role and audit-preserving deletion`
+
+### Task 2: trace_id + JSON logging + spans + boot-line conversion
+
+**Files:** create `core/obs.py`, `tests/test_obs_logging.py`; modify `api/app.py` (middleware + bootstrap), `core/runlog.py` (trace stamp verify/thread), `migrations/env.py`, the boot-print sites (`core/identity.py` resolve_provider line + the research-transport line's module), `api/live_chat.py` (`X-Accel-Buffering: no` header on the SSE response).
+
+**Interfaces produced:** `obs.configure_json_logging()` (idempotent, called from `create_app`); `obs.get_logger(component: str)`; `obs.trace_id_var` contextvar + `obs.new_trace_id() -> str` (uuid7 hex); `obs.span(name: str, **context)` contextmanager emitting one JSON line with `duration_ms` on exit; every emitted line is one JSON object with exactly `{ts, level, trace_id, turn_id, component, event, context}` (absent values null).
+
+- [ ] **Step 1 (RED):** `test_obs_logging.py`: JSON line shape (capture handler; assert the seven keys, no extras, ts ISO-8601 UTC); trace middleware sets the contextvar, returns `X-Trace-Id`, and two concurrent requests get distinct ids (anyio test); `turn_run.trace_id` stamped with the request's id (pg — send a turn, read the row); span() emits `event="span"`, the verbatim name, and a non-negative `duration_ms`; boot lines: identity-mode and research-transport lines now arrive as JSON events carrying the same pinned content (adapt the existing pinned tests — do not delete the content assertions); `X-Accel-Buffering: no` present on the SSE response headers.
+- [ ] **Step 2:** RED run. Capture.
+- [ ] **Step 3:** Implement `obs.py`; wire middleware FIRST in the chain (trace exists before identity middleware logs anything); convert the two boot print sites; stamp trace into the writer path (verify existing threading first — the column and possibly the plumbing exist); spans wrapped at the named EXISTING sites only: `parse` + `route` (orchestrator), `skill:<id>`/`subskill:<id>` (dispatch sites), `llm:<role>` (roles client), `db:query` (synthetic client), `ext:perplexity` (adapter) — one line each, no re-timing.
+- [ ] **Step 4:** `migrations/env.py` logging config (the parked carryforward: alembic logs visible under the JSON regime — keep alembic's own format, just ensure it flows to stderr in containers).
+- [ ] **Step 5:** GREEN; full suites; ruff. **Commit** — `feat(observability): request tracing, structured json logs, and span timings`
+
+### Task 3: Reconciliation endpoint + true replay + frontend reconcile hook
+
+**Files:** create `api/turns.py`, `tests/test_turns_reconcile.py`; modify `api/app.py` (mount), `core/chat/orchestrator.py` (`_begin_turn` replay ONLY), `api/live_chat.py` (replay wiring), frontend `api/client.ts` (+`getTurn`), `api/sse.ts` (on-drop hook), `state/chatStore.ts` (reconcile reducer) + vitest.
+
+**Interfaces produced:** `GET /api/turns/{id}` → pinned shape `{turn: {id, conversation_id, message_id, kind, status, question, mode, created_at, finished_at, trace_id, redacted: bool}, llm_calls: [{seq, provider, model_id, role, prompt_version, status, input_tokens, output_tokens, latency_ms}], tool_calls: [{seq, tool, server, status, latency_ms}], message: {id, parts} | null}` (`question` null when redacted; children NEVER expose `args`/prompt hashes — the SPA needs progress, not payloads); replay: duplicate `client_turn_key` + stored status `ok` → the persisted parts streamed as one part-frame sequence + `done` with `"replayed": true`.
+
+- [ ] **Step 1 (RED):** `test_turns_reconcile.py` (pg): happy rebuild (real turn via the stub pipeline → GET returns the pinned shape, children ordered by seq, message parts present); foreign/unknown id → 404 both; redacted turn → `redacted: true`, `question` null, counts/status intact; replay — send the SAME `client_turn_key` again after an ok turn → SSE yields the original parts + done with `replayed: true` and does NOT execute the pipeline (no new `turn_run`, no new `llm_calls` — assert row counts unchanged); duplicate against a `running` turn → today's `duplicate_turn` error frame (unchanged — byte-pin); duplicate against an `error` turn → `duplicate_turn` too. Frontend vitest: on-drop reconcile — a stream that errors mid-turn with a known turn_id triggers `getTurn` and materializes the parts into the message (MSW); no reconcile call when the stream completes normally.
+- [ ] **Step 2:** RED. Capture.
+- [ ] **Step 3:** Implement `api/turns.py` (queries inside `rls_transaction`); `_begin_turn`: on `created=False`, read the duplicate turn's status + message (via the writer's connection/wrapper), branch replay-vs-error per the pinned scope — the docstring's promised upgrade, nothing else; `live_chat.py` streams the replayed frames through the existing envelope sink (retired-dispatch guard untouched); frontend hook thin (sse.ts error path exposes turn_id when it has one; chatStore fetches + folds).
+- [ ] **Step 4:** GREEN; full suites incl. vitest; ruff + tsc + oxlint. E2E evidence: kill the backend container mid-turn against localhost:5173, restart, show the UI reconciles the partial turn from `GET /api/turns/{id}` (Playwright or disclosed probes — doc 08's validation line).
+- [ ] **Step 5:** **Commit** — `feat(observability): turn reconciliation endpoint with true duplicate replay`
+
+### Task 4: Harvest export + cost roll-up + token-spike check
+
+**Files:** create `poseidon/scripts/export_router_cases.py`, `poseidon/scripts/cost_rollup.py`, `tests/test_harvest_cost.py`; modify `core/config.py` (+`token_spike_threshold: int = 0`); `backend/tests/router_cases/candidates/` dir (+ README, contents gitignored).
+
+**Interfaces produced:** `export_router_cases.py --since <iso> --limit N [--include-errors]` → one YAML file per candidate turn in the P5 router-decision fixture format (READ the existing suite's fixtures first and match byte-conventions), fields: question, expected skill/args placeholder (`expected: TODO-human-review`), source turn id + trace id as comments; excludes `kind='memory_update'` and redacted turns. `cost_rollup.py [--by user|day|model|role|prompt_version] [--since]` → JSON lines to stdout, one per group, `{group, calls, input_tokens, output_tokens}` + a `--spike-check` mode listing turns whose total tokens exceed `token_spike_threshold` (0 = off → exits 0 with a "disabled" line).
+
+- [ ] **Step 1 (RED):** `test_harvest_cost.py` (pg): seed known turns via the writer (mixed kinds, one redacted, one error); export → correct candidate count, format parses as YAML, matches the router-suite schema (import the suite's loader), memory_update + redacted excluded, `--include-errors` flips error inclusion; cost roll-up per dimension with hand-computed expected sums (per-call attribution — a multi-call turn contributes each call to its role/model groups); spike check flags exactly the seeded over-threshold turn; threshold 0 = disabled path.
+- [ ] **Step 2:** RED. Capture.
+- [ ] **Step 3:** Implement both scripts (all queries inside `rls_transaction`... these are OPERATOR tools: run them under the admin path — a `--as-admin` connection note is honest scope: locally they run as the compose superuser; document in each script's docstring that deployed usage runs under `poseidon_admin` membership. No new auth code.).
+- [ ] **Step 4:** Doc-08 validation evidence: export one REAL turn from the compose db (a turn actually driven through localhost or the pg suite) into a candidate YAML; include the file content in the report.
+- [ ] **Step 5:** GREEN; full suites; ruff. **Commit** — `feat(observability): router-case harvest export and cost roll-up with spike check`
+
+---
+
+## Phase Gate (human validation)
+
+1. Suites green (pg now covers run-log RLS four-pattern, redaction, reconcile, replay, harvest, cost).
+2. localhost:5173: delete a conversation from the API (curl) and see the sidebar reflect it; kill the backend mid-turn and watch the UI reconcile the partial turn after restart; send the same message twice quickly and get the replayed answer, not a duplicate error.
+3. Run `export_router_cases.py` and `cost_rollup.py` against your real local usage; eyeball a candidate YAML and the cost lines.
+4. `X-Trace-Id` visible on responses; JSON log lines in `docker compose logs backend`.
+
+## Self-Review Notes
+
+- Doc-08 P11 coverage: RLS on the three tables + admin read role ✓ (T1); `kind='memory_update'` accounted ✓ (T4 exclusion/inclusion rules); trace-id + JSON logging ✓ (T2); reconciliation ✓ (T3); export_router_cases ✓ (T4); cost roll-up + token-spike ✓ (T4); redaction path ✓ (T1). Validation lines map: kill-SSE-reconcile (T3 E2E), export-one-real-turn (T4 step 4), per-call attribution (T4 test), redacted-row shape (T1 test).
+- Carryforwards folded: true replay (T3, orchestrator's own docstring promise); alembic env.py logging (T2); X-Accel-Buffering (T2); SSE disconnect recovery (T3 frontend hook — the P6 carryforward). NOT folded (routing pending the P10 final review's recommendation): messages next_cursor UI consumption; loadingMoreConversations Sidebar wiring — both likely chat-UX, revisit at P12 planning.
+- Type consistency: `rls_transaction(engine, user_sub, app_role)` signature matches P10 T1's shipped wrapper; `redact_turns_for_conversation(conn, ...)` takes the open wrapper connection so delete+redact share one transaction; the reconcile response never exposes `args` (redaction-consistent by construction); span names are strings at call sites — no enum to drift.
+- Known risks, named: RunLogWriter signature threading (`user_sub` into append/finalize) touches the orchestrator's writer CALLS (argument additions only — the sanctioned line covers it; zero behavioral orchestrator changes outside `_begin_turn`); converting boot prints will touch P9-pinned tests (adapt content-preserving, disclose each); replay streams through the envelope sink — the P8 retired-dispatch guard must not fire on replayed frames (T3's reviewer watches this seam).
