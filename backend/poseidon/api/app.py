@@ -381,7 +381,13 @@ def _wire_live_chat(app: FastAPI) -> None:
     prompts_dir = settings.prompts_dir if settings.prompts_dir is not None else DEFAULT_PROMPTS_DIR
     app.state.prompt_registry = PromptRegistry(prompts_dir)
     app.state.data_client = SyntheticDataClient(settings.database_url)
-    app.state.run_log_writer = RunLogWriter(engine)
+    # Phase 11 Task 1: turn_run/llm_calls/tool_calls join conversations/
+    # messages under the same RLS discipline (migration 0005) -- app_role is
+    # load-bearing here for the identical reason the history_store
+    # construction above already documents (this dev database's DATABASE_URL
+    # role is a superuser; omitting it would silently disable RLS
+    # enforcement for every run-log write this process makes).
+    app.state.run_log_writer = RunLogWriter(engine, app_role=settings.database_app_role)
     print(
         "chat persistence: history store + run-log writer share one Engine "
         "(DATABASE_URL configured)",

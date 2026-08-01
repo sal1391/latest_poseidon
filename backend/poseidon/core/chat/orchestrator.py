@@ -234,7 +234,10 @@ required ``user: UserContext`` (``poseidon.core.identity``), resolved
 upstream by ``api/app.py``'s identity middleware from the actual request
 (``api/live_chat.py`` reads ``request.state.user`` and passes it straight
 through) and threaded into every writer call's ``user_sub`` (``user.sub``)
-and into ``SkillContext.user`` verbatim. The disabled-mode DEFAULT identity
+and into ``SkillContext.user`` verbatim -- including ``writer.finalize``
+(Phase 11 Task 1, additive: that method did not take a ``user_sub`` before,
+since it had no ``rls_transaction`` of its own to open yet -- see
+``core/runlog.py``'s own docstring). The disabled-mode DEFAULT identity
 is still the fixed ``UserContext("dev|local", ...)`` (now ``core.identity.
 DISABLED_DEFAULT_USER``) -- so every existing row/test that pinned
 ``"dev|local"`` stays coherent -- but it now arrives THROUGH the seam
@@ -513,6 +516,7 @@ def execute_turn(
             turn_run_id=turn_run_id,
             state=state,
             conversation_id=conversation_id,
+            user=user,
             started=started,
         )
 
@@ -644,6 +648,7 @@ def execute_turn(
         )
         writer.finalize(
             turn_run_id=turn_run_id,
+            user_sub=user.sub,
             status=turn_result.status,
             message_id=sink.message_id,
             answer_summary=(_capped(turn_result.text) if turn_result.status == "ok" else None),
@@ -695,6 +700,7 @@ def _finish_clarify(
     turn_run_id: str | None,
     state: ConversationStateStore,
     conversation_id: str,
+    user: UserContext,
     started: float,
 ) -> TurnOutcome:
     """The clarify short-circuit: chips + text parts, done, finalize,
@@ -705,6 +711,13 @@ def _finish_clarify(
     landed in the candidate band the same turn) -- a bounded, disclosed
     scope: this function does not attempt to merge in an unrelated
     period/other issue also present the same turn.
+
+    ``user`` (Phase 11 Task 1, additive) is new: ``writer.finalize`` below
+    now takes a ``user_sub`` (``core/runlog.py``'s own docstring), and this
+    was the one ``execute_turn`` helper with no identity of its own to
+    supply it -- threaded straight from ``execute_turn``'s own ``user``
+    parameter, unexamined otherwise, the same "argument-addition-only"
+    change this task's brief sanctions for every writer call site here.
     """
     sink.push_part(
         "chips",
@@ -738,6 +751,7 @@ def _finish_clarify(
     if writer is not None and turn_run_id is not None:
         writer.finalize(
             turn_run_id=turn_run_id,
+            user_sub=user.sub,
             status="clarify",
             message_id=sink.message_id,
             answer_summary=_capped(ambiguous_issue.message),
@@ -862,6 +876,7 @@ def _finish_entry(
     if writer is not None and turn_run_id is not None:
         writer.finalize(
             turn_run_id=turn_run_id,
+            user_sub=user.sub,
             status="clarify",
             message_id=sink.message_id,
             answer_summary=_capped(prompt_text),
@@ -923,6 +938,7 @@ def _finish_subject_turn(
                 sink=sink,
                 writer=writer,
                 turn_run_id=turn_run_id,
+                user=user,
                 started=started,
             )
         subject = resolution.entity.value
@@ -1003,6 +1019,7 @@ def _finish_subject_turn(
             )
             writer.finalize(
                 turn_run_id=turn_run_id,
+                user_sub=user.sub,
                 status="error",
                 message_id=sink.message_id,
                 answer_summary=None,
@@ -1033,6 +1050,7 @@ def _finish_subject_turn(
         )
         writer.finalize(
             turn_run_id=turn_run_id,
+            user_sub=user.sub,
             status="ok",
             message_id=sink.message_id,
             answer_summary=_capped(answer_summary),
@@ -1111,12 +1129,18 @@ def _finish_subject_clarify(
     sink: SseEnvelopeSink,
     writer: RunLogWriter | None,
     turn_run_id: str | None,
+    user: UserContext,
     started: float,
 ) -> TurnOutcome:
     """The subject turn's own customer-resolution failure (candidate-band
     or unknown) -- the same ``clarify`` discipline :func:`_finish_clarify`
     uses for a normal turn's ``customer_ambiguous`` issue, scoped to the
     subject turn's own direct ``customer_resolver.resolve()`` call.
+
+    ``user`` (Phase 11 Task 1, additive): same reason as :func:`_finish_
+    clarify`'s identical addition -- threaded from :func:`_finish_subject_
+    turn`'s own ``user`` parameter so ``writer.finalize`` below has an
+    identity to open ``rls_transaction`` with.
 
     Chips (when ``issue.candidates`` is non-empty) carry BARE ``send_text``
     (falls back to ``label``) rather than :func:`_finish_clarify`'s own
@@ -1147,6 +1171,7 @@ def _finish_subject_clarify(
     if writer is not None and turn_run_id is not None:
         writer.finalize(
             turn_run_id=turn_run_id,
+            user_sub=user.sub,
             status="clarify",
             message_id=sink.message_id,
             answer_summary=_capped(issue.message),

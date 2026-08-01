@@ -287,6 +287,8 @@ _BUMP_UPDATED_AT_SQL = text("UPDATE conversations SET updated_at = now() WHERE i
 
 _SET_TITLE_SQL = text("UPDATE conversations SET title = :title WHERE id = :id")
 
+_DELETE_CONVERSATION_SQL = text("DELETE FROM conversations WHERE id = :id")
+
 _READ_STATE_SQL = text("SELECT state FROM conversations WHERE id = :id")
 
 _WRITE_STATE_SQL = text("UPDATE conversations SET state = :state WHERE id = :id")
@@ -606,6 +608,39 @@ class UserHistory:
             return
         with self._transaction() as conn:
             conn.execute(_WRITE_STATE_SQL, {"id": str(parsed_cid), "state": json.dumps(state)})
+
+    def delete_conversation(self, cid: str) -> bool:
+        """Hard-delete this user's conversation row -- ``ON DELETE CASCADE``
+        (migration 0004) removes its messages with it. ``False`` for an
+        absent, malformed, or another user's ``cid`` (RLS-filtered DELETE
+        matches zero rows either way, indistinguishable on purpose -- module
+        docstring); ``True`` when a row was actually removed.
+
+        Doc 05 section 7's redaction contract requires this conversation's
+        ``turn_run``/``tool_calls`` rows to be redacted in the SAME
+        transaction as this delete, so a failing redaction rolls the delete
+        back too. This method's own :func:`~poseidon.core.db.rls_transaction`
+        -- like every other method on this class -- is self-contained and
+        commits the instant it returns, so it structurally CANNOT be the one
+        transaction redaction also needs to run inside. ``api/live_chat.py``
+        's ``DELETE /api/conversations/{cid}`` route therefore does not call
+        this method for its real delete-and-redact path: it opens its own
+        ``rls_transaction`` spanning both operations directly, mirroring
+        that SAME route module's own ``_message_visible`` precedent (that
+        function's docstring: a cross-cutting need ``UserHistory``'s shipped
+        interface does not fit gets a direct ``rls_transaction`` call at the
+        route, not a bespoke method here). This method remains the pinned,
+        independently-testable "just delete, RLS-filtered" primitive the
+        task brief's own interface names -- useful standalone (e.g. a future
+        non-HTTP caller with no audit-redaction obligation of its own) and
+        directly tested on its own terms.
+        """
+        parsed_cid = _parse_uuid(cid)
+        if parsed_cid is None:
+            return False
+        with self._transaction() as conn:
+            result = conn.execute(_DELETE_CONVERSATION_SQL, {"id": str(parsed_cid)})
+        return result.rowcount > 0
 
 
 class TurnTranscriptBuffer:

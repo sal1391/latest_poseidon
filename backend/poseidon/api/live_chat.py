@@ -4,7 +4,7 @@
 -- the two routers are never mounted together (see ``app.py``'s own mount
 switch).
 
-Six routes:
+Seven routes:
 
 - ``POST /api/conversations/{cid}/messages`` drives ONE real chat turn
   through :func:`~poseidon.core.chat.orchestrator.execute_turn` and streams
@@ -21,6 +21,9 @@ Six routes:
   5), now (Phase 10 Task 3) backed by persisted history instead of an
   in-memory store -- see "Phase 10 Task 3: the persistent-history cutover"
   below.
+- ``DELETE /api/conversations/{cid}`` (Phase 11 Task 1) hard-deletes a
+  conversation and redacts its linked run-log audit rows in one transaction
+  -- see :func:`delete_conversation`'s own docstring, doc 05 section 7.
 
 **Bridging a synchronous orchestrator into an async stream.**
 ``execute_turn`` is entirely synchronous -- it calls its sink's ``send``
@@ -283,6 +286,7 @@ from poseidon.core.chat.history import (
 from poseidon.core.chat.orchestrator import TurnOutcome, execute_turn
 from poseidon.core.db import rls_transaction
 from poseidon.core.llm.titles import title_for
+from poseidon.core.runlog import redact_turns_for_conversation
 from poseidon.core.skills.registry import SkillRegistry
 from poseidon.core.skills.result import problem
 from poseidon.core.util.uuid7 import uuid7
@@ -334,6 +338,13 @@ _ENVELOPE_KEYS = ("turn_id", "message_id", "event_seq")
 # docstring's "The feedback existence gate" for why this runs directly
 # through rls_transaction rather than through UserHistory.
 _MESSAGE_VISIBLE_SQL = text("SELECT 1 FROM messages WHERE id = :id")
+
+# Phase 11 Task 1: the DELETE route's own delete statement -- see that
+# route's own docstring for why it runs this inline (through its own
+# rls_transaction, shared with redact_turns_for_conversation) rather than
+# calling UserHistory.delete_conversation, whose own rls_transaction is a
+# separate, self-contained one.
+_DELETE_CONVERSATION_SQL = text("DELETE FROM conversations WHERE id = :id")
 
 
 def _decode_frame(frame: str) -> tuple[str, dict]:
@@ -546,6 +557,60 @@ def get_messages(
         raise HTTPException(404, detail="unknown conversation")
     items, next_cursor = result
     return {"items": items, "next_cursor": next_cursor}
+
+
+@router.delete("/conversations/{cid}", status_code=204, dependencies=[Depends(require_sales)])
+def delete_conversation(cid: str, request: Request) -> None:
+    """Doc 05 section 7: hard-delete the conversation (``ON DELETE CASCADE``
+    removes its messages with it) and, in the SAME transaction, redact the
+    linked ``turn_run``/``tool_calls`` audit rows. 404 when ``cid`` is
+    malformed, absent, or another user's -- the delete matches zero rows,
+    indistinguishable by RLS design, the same convention :func:`get_messages`
+    above already uses.
+
+    **Why this opens its own ``rls_transaction`` directly instead of calling
+    ``UserHistory.delete_conversation``.** That method (``core/chat/
+    history.py``, this same task) is self-contained -- like every other
+    method on that class, it opens and commits its own transaction -- so it
+    cannot also be the transaction :func:`~poseidon.core.runlog.redact_
+    turns_for_conversation` needs to share. This mirrors :func:`_message_
+    visible` above's own precedent one section up: a cross-cutting need
+    ``UserHistory``'s shipped interface does not fit gets a direct
+    ``rls_transaction`` call here, using the same ``app_state.db_engine``/
+    ``app_state.settings.database_app_role`` every other direct call in
+    this module already reads.
+
+    **Why there is no ``try/except`` around the transaction.** Unlike
+    ``RunLogWriter``'s four normal write methods -- never raises, TM1's
+    CSV-writer rule, for a best-effort BACKGROUND audit write that must
+    never break a chat turn -- a failing redaction here must roll back the
+    whole transaction, content delete included: silently returning 204
+    while quietly leaving the caller's question/answer text un-redacted in
+    the audit trail would violate doc 05 section 7's explicit "deletion
+    redacts, unconditionally" contract. Letting the exception propagate is
+    therefore correct: it unwinds out of ``rls_transaction``'s own
+    ``engine.begin()``, which rolls back the entire transaction -- the
+    DELETE included -- exactly the same way any other unhandled exception
+    inside a route already becomes a 500 with no special handling in this
+    codebase (``api/app.py`` registers no catch-all ``Exception`` handler).
+    """
+    parsed_cid = _parse_message_id(cid)  # a generic UUID parser despite its name
+    if parsed_cid is None:
+        raise HTTPException(404, detail="unknown conversation")
+
+    app_state = request.app.state
+    with rls_transaction(
+        app_state.db_engine,
+        request.state.user.sub,
+        app_role=app_state.settings.database_app_role,
+    ) as conn:
+        result = conn.execute(_DELETE_CONVERSATION_SQL, {"id": str(parsed_cid)})
+        deleted = result.rowcount > 0
+        if deleted:
+            redact_turns_for_conversation(conn, str(parsed_cid))
+
+    if not deleted:
+        raise HTTPException(404, detail="unknown conversation")
 
 
 @router.get("/skills", dependencies=[Depends(require_sales)])
@@ -777,9 +842,15 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
                 # turn_run_id is sink.turn_id UNCONDITIONALLY -- correct
                 # even when the crash happened before start_turn ever ran:
                 # the UPDATE simply matches zero rows, which the
-                # never-raises writer absorbs harmlessly.
+                # never-raises writer absorbs harmlessly. user_sub (Phase 11
+                # Task 1, additive): finalize now needs an identity to open
+                # rls_transaction with, same as every other writer call site
+                # in this module/orchestrator.py -- request.state.user is
+                # always set by this point (api/app.py's identity
+                # middleware runs ahead of every route).
                 writer.finalize(
                     turn_run_id=sink.turn_id,
+                    user_sub=request.state.user.sub,
                     status="error",
                     message_id=None,
                     answer_summary=None,

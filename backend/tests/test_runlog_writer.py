@@ -61,21 +61,48 @@ class _FakeResult:
         return self._row
 
 
+# Phase 11 Task 1: every RunLogWriter method now opens poseidon.core.db's
+# rls_transaction instead of a bare self._engine.begin() -- which itself
+# calls engine.begin() (this fake's own .begin() still stands in for that
+# unchanged) and then executes ONE bookkeeping statement, `SELECT
+# set_config('app.user_sub', ...)`, as the transaction's own first
+# statement, BEFORE the writer's real SQL ever runs. Recognized here by a
+# simple substring match and routed to `identity_calls` -- never scripted,
+# never consuming a queued result -- so every pre-existing assertion in this
+# file (`len(engine.calls) == 1`, `engine.calls[0]` == the writer's own SQL)
+# keeps meaning exactly what it meant before this cutover, with zero
+# test-body changes needed (see this task's own report for the full
+# disclosure). `SET LOCAL ROLE` is matched too, defensively, even though no
+# test in this file constructs a writer with `app_role` set (all pass a bare
+# `RunLogWriter(engine)`) -- so it is never actually emitted today, only
+# guarded against for whichever test is first to pass one.
+_IDENTITY_SQL_MARKER = "set_config"
+_ROLE_SQL_MARKER = "SET LOCAL ROLE"
+
+
 class _RecordingConnection:
     """Records every ``(sql text, bound params)`` pair it is asked to
     execute and replays a scripted queue of rows, one per call -- enough to
     drive both branches of ``start_turn`` (a row back on insert, or ``None``
-    forcing the idempotency fallback) from a single offline test."""
+    forcing the idempotency fallback) from a single offline test. See the
+    module-level comment above ``_IDENTITY_SQL_MARKER`` for why identity/role
+    bookkeeping statements are recorded separately, in ``identity_calls``,
+    never in ``calls``."""
 
     def __init__(self, results: list[tuple | None]) -> None:
         self.calls: list[tuple[str, dict]] = []
+        self.identity_calls: list[tuple[str, dict]] = []
         self._results = list(results)
 
     def execute(self, statement, params) -> _FakeResult:
         # str() on a bare sqlalchemy.text() clause is just the literal SQL
         # this module wrote -- no compiler, no dialect, nothing sqlite could
         # possibly object to (see the module docstring).
-        self.calls.append((str(statement), dict(params)))
+        text_sql = str(statement)
+        if _IDENTITY_SQL_MARKER in text_sql or _ROLE_SQL_MARKER in text_sql:
+            self.identity_calls.append((text_sql, dict(params)))
+            return _FakeResult(None)
+        self.calls.append((text_sql, dict(params)))
         row = self._results.pop(0) if self._results else None
         return _FakeResult(row)
 
@@ -100,6 +127,10 @@ class _RecordingEngine:
     @property
     def calls(self) -> list[tuple[str, dict]]:
         return self.connection.calls
+
+    @property
+    def identity_calls(self) -> list[tuple[str, dict]]:
+        return self.connection.identity_calls
 
 
 class _RaisingContext:
@@ -375,6 +406,7 @@ def test_finalize_generates_update_with_expected_columns_and_params():
 
     writer.finalize(
         turn_run_id="turn-1",
+        user_sub="u",
         status="ok",
         message_id="msg-1",
         answer_summary="Three customers drove April GP.",
@@ -481,6 +513,7 @@ def test_finalize_never_raises_on_broken_engine_and_logs_error(caplog):
     with caplog.at_level(logging.ERROR, logger="poseidon.core.runlog"):
         result = writer.finalize(
             turn_run_id="turn-1",
+            user_sub="u",
             status="ok",
             message_id=None,
             answer_summary=None,
@@ -715,6 +748,7 @@ def test_finalize_rolls_up_child_llm_call_tokens(pg_engine):
 
     writer.finalize(
         turn_run_id=handle.turn_run_id,
+        user_sub=user_sub,
         status="ok",
         message_id=str(uuid.uuid4()),
         answer_summary="done",
@@ -866,6 +900,7 @@ def test_finalize_invalid_status_check_constraint_is_logged_not_raised(pg_engine
     with caplog.at_level(logging.ERROR, logger="poseidon.core.runlog"):
         result = writer.finalize(
             turn_run_id=handle.turn_run_id,
+            user_sub=user_sub,
             status="bogus",  # not in ('running','ok','clarify','error')
             message_id=None,
             answer_summary=None,
@@ -938,6 +973,7 @@ def test_full_turn_round_trip_persists_every_field_including_json(pg_engine):
     message_id = str(uuid.uuid4())
     writer.finalize(
         turn_run_id=handle.turn_run_id,
+        user_sub=user_sub,
         status="ok",
         message_id=message_id,
         answer_summary="Maersk's April GP in Singapore was $412K.",

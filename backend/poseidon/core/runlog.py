@@ -36,17 +36,35 @@ ordering starts to matter for something more than a nice-to-have. Every id
 column in migration 0003 carries no server-side default for exactly this
 reason: the writer always supplies one explicitly.
 
-**Connections.** One short-lived, transactional connection per call
-(``engine.begin()``), opened and closed inside the method -- the same
-per-call discipline ``SyntheticDataClient`` uses for the data path (see that
-module's docstring), translated to the SQLAlchemy ``Engine`` this class is
-handed rather than a raw DSN. Every statement is a plain
-:func:`sqlalchemy.text` string with bound parameters, not a Core
-``Table``/``insert()`` expression: these tables are Postgres-only (migration
-0003 no-ops everywhere else, same as 0002), so there is no dialect to
-abstract over, and a literal SQL string is both the simplest thing that
-works and the easiest thing to pin the SHAPE of in an offline test (see
-``test_runlog_writer.py``'s ``_RecordingEngine``).
+**Connections.** One short-lived, transactional connection per call, opened
+and closed inside the method -- the same per-call discipline
+``SyntheticDataClient`` uses for the data path (see that module's
+docstring), translated to the SQLAlchemy ``Engine`` this class is handed
+rather than a raw DSN. Every statement is a plain :func:`sqlalchemy.text`
+string with bound parameters, not a Core ``Table``/``insert()`` expression:
+these tables are Postgres-only (migration 0003 no-ops everywhere else, same
+as 0002), so there is no dialect to abstract over, and a literal SQL string
+is both the simplest thing that works and the easiest thing to pin the SHAPE
+of in an offline test (see ``test_runlog_writer.py``'s ``_RecordingEngine``).
+
+**Phase 11 Task 1: every connection now comes from ``rls_transaction``, never
+a bare ``engine.begin()``.** Migration 0005 brings ``turn_run``/``llm_calls``/
+``tool_calls`` under the same row-level-security discipline migration 0004
+gave ``conversations``/``messages`` (doc 05 section 4, decision D28) -- see
+that migration's own docstring. The four call sites below that used to open
+``self._engine.begin()`` directly now open :func:`poseidon.core.db.
+rls_transaction` instead, passing the SAME ``user_sub`` each method already
+receives (or, for :meth:`finalize`, now ALSO receives -- see that method's
+own docstring for why this is an additive signature change) and this
+instance's own ``app_role`` (a new, optional constructor keyword mirroring
+:class:`~poseidon.core.chat.history.HistoryStore`'s identical parameter,
+threaded through for the identical reason: this dev compose database's
+``DATABASE_URL`` role is a Postgres superuser, which unconditionally bypasses
+RLS, so ``rls_transaction``'s own ``SET LOCAL ROLE`` round-0 correction is
+what makes RLS real for this writer's own pg test suite, not merely asserted
+by a test that routes around it). ``app_role=None`` (the default) disables
+the role switch entirely, matching a real deploy's already-non-privileged
+DSN -- see ``core/db.py``'s own module docstring for the full rationale.
 
 **JSON columns.** ``parsed``/``args`` (always provided) and
 ``error``/``result_digest`` (optional) bind as ``json.dumps(...)`` text; an
@@ -63,7 +81,9 @@ import uuid
 from dataclasses import dataclass
 
 from sqlalchemy import text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
+
+from poseidon.core.db import rls_transaction
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +152,30 @@ _FINALIZE_SQL = text(
     """
 )
 
+# Doc 05 section 7's redaction contract, migration 0005's schema half:
+# question/answer_summary null out (both nullable since migration 0003);
+# parsed resets to the SAME '{}'::jsonb sentinel migration 0003 already uses
+# for "no parsed content" (its own docstring: "{} for non-chat kinds"),
+# never SQL NULL -- the column stays NOT NULL on purpose (see migration
+# 0005's own docstring for why only tool_calls.args, not this column, had
+# its NOT NULL dropped). llm_calls carries no payload columns at all, so it
+# has no UPDATE here -- doc 05 section 7 names it untouched by design.
+_REDACT_TURN_RUN_SQL = text(
+    """
+    UPDATE turn_run
+    SET question = NULL, answer_summary = NULL, parsed = '{}'::jsonb, redacted_at = now()
+    WHERE conversation_id = :conversation_id AND redacted_at IS NULL
+    """
+)
+
+_REDACT_TOOL_CALLS_SQL = text(
+    """
+    UPDATE tool_calls
+    SET args = NULL
+    WHERE turn_run_id IN (SELECT id FROM turn_run WHERE conversation_id = :conversation_id)
+    """
+)
+
 
 def _json_or_none(value: dict | None) -> str | None:
     return None if value is None else json.dumps(value)
@@ -141,10 +185,21 @@ class RunLogWriter:
     """Writes migration 0003's three tables. Construction touches nothing --
     ``engine`` is only ever used inside a method call, never at ``__init__``
     time -- and every public method below never raises (see the module
-    docstring)."""
+    docstring).
 
-    def __init__(self, engine: Engine) -> None:
+    ``app_role`` (``None`` by default) is threaded straight through to every
+    :func:`~poseidon.core.db.rls_transaction` call the four write methods
+    below open -- mirrors :class:`~poseidon.core.chat.history.HistoryStore`'s
+    identical constructor parameter and identical rationale (see the module
+    docstring's "Phase 11 Task 1" section). ``redact_turns_for_conversation``
+    below is a module-level function, not a method: it deliberately operates
+    on a connection the CALLER already opened (never its own), so it has no
+    ``self``/``app_role`` of its own to read -- see its own docstring.
+    """
+
+    def __init__(self, engine: Engine, app_role: str | None = None) -> None:
         self._engine = engine
+        self._app_role = app_role
 
     def start_turn(
         self,
@@ -194,7 +249,7 @@ class RunLogWriter:
                 "parsed": json.dumps(parsed),
                 "trace_id": trace_id,
             }
-            with self._engine.begin() as conn:
+            with rls_transaction(self._engine, user_sub, app_role=self._app_role) as conn:
                 row = conn.execute(_START_TURN_SQL, params).first()
                 if row is not None:
                     return TurnHandle(turn_run_id=row[0], created=True)
@@ -259,7 +314,7 @@ class RunLogWriter:
                 "status": status,
                 "error": _json_or_none(error),
             }
-            with self._engine.begin() as conn:
+            with rls_transaction(self._engine, user_sub, app_role=self._app_role) as conn:
                 conn.execute(_APPEND_LLM_CALL_SQL, params)
         except Exception as exc:  # a run-log failure must never break the user's answer
             logger.error(
@@ -301,7 +356,7 @@ class RunLogWriter:
                 "latency_ms": latency_ms,
                 "error": _json_or_none(error),
             }
-            with self._engine.begin() as conn:
+            with rls_transaction(self._engine, user_sub, app_role=self._app_role) as conn:
                 conn.execute(_APPEND_TOOL_CALL_SQL, params)
         except Exception as exc:  # a run-log failure must never break the user's answer
             logger.error(
@@ -316,6 +371,7 @@ class RunLogWriter:
         self,
         *,
         turn_run_id: str,
+        user_sub: str,
         status: str,
         message_id: str | None,
         answer_summary: str | None,
@@ -329,7 +385,17 @@ class RunLogWriter:
         its own appended records. Never raises -- see the module docstring;
         an invalid ``status`` (CHECK violation) is just another failure this
         logs and swallows, and the whole UPDATE rolls back with it (a single
-        statement either fully applies or not at all)."""
+        statement either fully applies or not at all).
+
+        ``user_sub`` (Phase 11 Task 1, additive) is new: this method is the
+        one write site that used to have no identity of its own to open
+        ``rls_transaction`` with (``start_turn``/``append_llm_call``/
+        ``append_tool_call`` all already took one). It is never bound into
+        ``_FINALIZE_SQL``'s own params -- the UPDATE still matches by ``id``
+        alone, exactly as before -- it exists ONLY to open the correct
+        identity-scoped transaction; every orchestrator call site already
+        holds the turn's ``UserContext`` and threads ``user.sub`` through
+        (argument-addition-only changes, per this task's own brief)."""
         try:
             params = {
                 "turn_run_id": turn_run_id,
@@ -341,7 +407,7 @@ class RunLogWriter:
                 "latency_ms": latency_ms,
                 "error": _json_or_none(error),
             }
-            with self._engine.begin() as conn:
+            with rls_transaction(self._engine, user_sub, app_role=self._app_role) as conn:
                 conn.execute(_FINALIZE_SQL, params)
         except Exception as exc:  # a run-log failure must never break the user's answer
             logger.error(
@@ -352,4 +418,48 @@ class RunLogWriter:
             )
 
 
-__all__ = ["RunLogWriter", "TurnHandle"]
+def redact_turns_for_conversation(conn: Connection, conversation_id: str) -> int:
+    """Doc 05 section 7's deletion contract, runtime half (migration 0005 is
+    the schema half): null ``turn_run.question``/``answer_summary``, reset
+    ``turn_run.parsed`` to ``'{}'::jsonb``, null every linked ``tool_calls.
+    args``, and stamp ``turn_run.redacted_at`` -- for every ``turn_run`` row
+    naming ``conversation_id`` that has not already been redacted. Returns
+    the number of ``turn_run`` rows newly redacted (0 on a repeat call for
+    the same conversation, or a conversation with no turns at all -- both
+    honest, not exceptional, outcomes). ``llm_calls`` is never touched: it
+    carries no payload columns (doc 06 section 1's own schema), so there is
+    nothing on it for doc 05 section 7's contract to redact.
+
+    Runs on ``conn``, a connection the CALLER already opened via
+    :func:`rls_transaction` -- this function opens no transaction of its
+    own, unlike every method on :class:`RunLogWriter`. That is deliberate,
+    not an oversight: the only sanctioned caller today (``api/live_chat.py``
+    's ``DELETE /api/conversations/{cid}`` route) must run this in the SAME
+    transaction as the conversation/message hard-delete, so a failure here
+    rolls the delete back too rather than leaving user-visible content gone
+    while its audit trail silently stays un-redacted.
+
+    **Deliberately NOT never-raising -- the one place in this module that
+    breaks with :class:`RunLogWriter`'s own rule.** Every write method above
+    swallows its own failure (TM1's CSV-writer rule: a BACKGROUND audit
+    write must never break the user's chat turn). Redaction is not a
+    background write; it is the direct, user-requested consequence of
+    "delete my conversation", and doc 05 section 7 promises deletion redacts
+    the audit trail UNCONDITIONALLY. Swallowing a redaction failure here
+    would silently violate that promise while still returning 204 to the
+    caller -- worse than raising, which at least surfaces as a failed
+    request the caller (and the transaction) can react to correctly. Callers
+    must not wrap this call in a broad ``except Exception`` the way every
+    ``RunLogWriter`` method's own internals do.
+
+    Relies on the SAME transaction's row-level security to scope the
+    UPDATEs to the caller's own rows -- no explicit ``user_sub`` predicate
+    is written here, matching ``core/chat/history.py``'s own "no WHERE
+    clauses, anywhere, on purpose" discipline for every RLS-protected table.
+    """
+    result = conn.execute(_REDACT_TURN_RUN_SQL, {"conversation_id": conversation_id})
+    conn.execute(_REDACT_TOOL_CALLS_SQL, {"conversation_id": conversation_id})
+    return result.rowcount
+
+
+__all__ = ["RunLogWriter", "TurnHandle", "redact_turns_for_conversation"]
