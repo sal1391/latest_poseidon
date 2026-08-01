@@ -886,9 +886,15 @@ async def test_send_message_to_a_never_created_conversation_id_404s(pg_database_
 @pytest.mark.pg
 @pytest.mark.anyio
 async def test_feedback_roundtrip_and_unknown_message_404(pg_database_url):
-    app = _live_app(
-        data_client=FakeDataClient(), writer=RecordingWriter(), database_url=pg_database_url
-    )
+    # Phase 12 Task 1: a real RunLogWriter, not RecordingWriter -- unlike
+    # every OTHER pg test in this module, this one now needs a genuine
+    # turn_run row: message_feedback.run_id is NOT NULL REFERENCES turn_run
+    # (id) (doc 06 section 7), and RecordingWriter is a pure in-memory
+    # double that never inserts one (see that class's own docstring in
+    # test_chat_orchestrator.py). Omitting `writer=` here leaves _live_app's
+    # underlying create_app()-built app.state.run_log_writer in place --
+    # the real writer create_app()/`_wire_live_chat` already constructs.
+    app = _live_app(data_client=FakeDataClient(), database_url=pg_database_url)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         cid = (await client.post("/api/conversations")).json()["conversation"]["id"]

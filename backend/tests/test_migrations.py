@@ -20,8 +20,9 @@ def test_upgrade_head_on_sqlite(tmp_path, monkeypatch):
     # `alembic upgrade head` would also exit 0 (a silent no-op) if a revision
     # were never chained onto its predecessor's down_revision, so `alembic
     # current` is checked explicitly rather than trusting the upgrade
-    # command's own return code alone. Phase 11 Task 1 extends this same
-    # check from 0004 to 0005 (run-log RLS, admin role, redaction support) --
+    # command's own return code alone. Phase 11 Task 1 extended this same
+    # check from 0004 to 0005 (run-log RLS, admin role, redaction support);
+    # Phase 12 Task 1 extends it again, 0005 to 0006 (message_feedback) --
     # `alembic current` reports only the single revision at the tip, so this
     # assertion always names the CURRENT head, not every revision the chain
     # passed through on the way there.
@@ -30,4 +31,4 @@ def test_upgrade_head_on_sqlite(tmp_path, monkeypatch):
         cwd=BACKEND, capture_output=True, text=True,
     )
     assert current.returncode == 0, current.stderr
-    assert "0005" in current.stdout, current.stdout
+    assert "0006" in current.stdout, current.stdout

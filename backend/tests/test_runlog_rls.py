@@ -540,16 +540,24 @@ def test_admin_select_only_policy_exists_with_using_true(pg_engine, table_name):
     assert row.qual.strip() == "true"
 
 
-def test_admin_read_policies_exist_on_exactly_the_three_run_log_tables(pg_engine):
-    """"Exactly the three tables": conversations/messages/every other RLS
-    table must carry NO admin policy at all (doc 05 section 7: "Admins have
-    no path to another user's messages... those tables are RLS-scoped with
-    no admin policy, deliberately")."""
+def test_admin_read_policies_exist_on_exactly_the_run_log_and_feedback_tables(pg_engine):
+    """"Exactly these tables": ``conversations``/``messages`` must carry NO
+    admin policy at all (doc 05 section 7: "Admins have no path to another
+    user's messages... those tables are RLS-scoped with no admin policy,
+    deliberately") -- the one invariant this test exists to prove, and the
+    one migration 0005 itself could still fully name as "the three run-log
+    tables". Phase 12 Task 1 (doc 06 section 7 / D25) deliberately adds a
+    FOURTH: ``message_feedback`` gets its own admin-read policy too (the
+    harvest exporter and verdict roll-up need to read every user's feedback,
+    the identical reason the run-log tables already have one) -- amended
+    here rather than left failing, since the invariant this test actually
+    protects (conversations/messages stay admin-policy-free) still holds;
+    only the ENUMERATION of which OTHER tables legitimately carry one grew."""
     with pg_engine.connect() as conn:
         rows = conn.execute(text("SELECT tablename, roles FROM pg_policies")).all()
     tables_with_admin_policy = {row.tablename for row in rows if _ADMIN_ROLE in row.roles}
 
-    assert tables_with_admin_policy == set(_RUN_LOG_TABLES)
+    assert tables_with_admin_policy == set(_RUN_LOG_TABLES) | {"message_feedback"}
 
 
 @pytest.mark.parametrize("table_name", list(_RUN_LOG_TABLES))

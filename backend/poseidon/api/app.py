@@ -4,7 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from poseidon.api import auth, dev_runner, health, live_chat, mock_chat, turns
 from poseidon.core.artifacts import ArtifactStore
 from poseidon.core.chat.dev_router import DevDeterministicRouter
-from poseidon.core.chat.history import FeedbackStubStore, HistoryStore
+from poseidon.core.chat.feedback import FeedbackStore
+from poseidon.core.chat.history import HistoryStore
 from poseidon.core.config import Settings, get_settings
 from poseidon.core.data.synthetic_client import SyntheticDataClient
 from poseidon.core.db import build_engine
@@ -351,10 +352,12 @@ def _wire_live_chat(app: FastAPI) -> None:
     construct, safe to share" discipline ``deploy_mode == "local"``'s own
     ``artifact_store`` wiring uses: ``RoleClient``/``PromptRegistry`` touch
     only a packaged YAML file and a prompts directory, ``HistoryStore``/
-    ``FeedbackStubStore`` are both explicitly meant to be ONE shared instance
-    each (their whole job is being shared, identity-scoped access to
-    persisted state across requests -- see ``core/chat/history.py``'s own
-    module docstring), and ``SyntheticDataClient`` holds nothing but a DSN
+    ``FeedbackStore`` (Phase 12 Task 1; replaces the in-memory
+    ``FeedbackStubStore``) are both explicitly meant to be ONE shared
+    instance each (their whole job is being shared, identity-scoped access
+    to persisted state across requests -- see ``core/chat/history.py``'s/
+    ``core/chat/feedback.py``'s own module docstrings), and
+    ``SyntheticDataClient`` holds nothing but a DSN
     string (its own module docstring), so one long-lived instance behaves
     identically to a fresh one per request -- unlike ``dev_runner.py``'s
     per-request construction, there is no connection or other per-call state
@@ -424,11 +427,14 @@ def _wire_live_chat(app: FastAPI) -> None:
     app.state.history_store = HistoryStore(engine, app_role=settings.database_app_role)
     # Phase 10 Task 3: replaces the Task 5 amendment's in-memory
     # TranscriptStore/ConversationStateStore pair -- see live_chat.py's own
-    # module docstring for the full cutover. FeedbackStubStore is exactly
-    # what its name says: still in-memory (Phase 12 promises a persisted
-    # message_feedback table), extracted verbatim from TranscriptStore's own
-    # feedback dict+lock by history.py's own Task 2.
-    app.state.feedback_store = FeedbackStubStore()
+    # module docstring for the full cutover. Phase 12 Task 1: FeedbackStore
+    # replaces the in-memory FeedbackStubStore that same cutover introduced
+    # here -- migration 0006's persisted message_feedback table is the
+    # promise that module's own docstring named. Same app_role rationale as
+    # history_store immediately above (this dev database's DATABASE_URL role
+    # is a superuser; omitting it would silently disable RLS enforcement for
+    # every feedback write this process makes) and the SAME shared engine.
+    app.state.feedback_store = FeedbackStore(engine, app_role=settings.database_app_role)
     app.state.role_client = RoleClient(
         settings, providers={"stub": DevDeterministicRouter(), "bedrock": BedrockProvider()}
     )

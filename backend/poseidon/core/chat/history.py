@@ -125,17 +125,20 @@ differ, each for its own disclosed reason:
    ``page[-1]`` line with an EMPTY ``page``, raising an opaque
    ``IndexError`` instead of a clear, named failure.
 
-**FeedbackStubStore is exactly what its name says: a stub.** It extracts
-today's ``TranscriptStore._feedback`` dict and lock verbatim, with the
-existence check TranscriptStore used to run (whether ``mid`` names a
-message it had ever recorded) DROPPED, because that check read the OLD
-``_messages`` dict this store never held. In-memory until Phase 12's
-``message_feedback`` table lands; a restart loses every recorded verdict.
+**Phase 12 Task 1: ``FeedbackStubStore`` deleted.** It extracted today's
+``TranscriptStore._feedback`` dict and lock verbatim, honestly documented as
+a stub pending "Phase 12's ``message_feedback`` table" -- that table now
+exists (migration 0006), and :class:`~poseidon.core.chat.feedback.
+FeedbackStore` (same module layout as this file's own ``HistoryStore``/
+``UserHistory``: ``FeedbackStore(engine, app_role).for_user(sub) ->
+UserFeedback``) is its real, persisted, RLS-scoped replacement. Its own
+former unit tests (round trip, upsert-overwrite, unknown-id) are ported into
+``tests/test_feedback_store.py`` against the real store; nothing here holds
+feedback state anymore.
 """
 
 import base64
 import json
-import threading
 import uuid
 from datetime import date, datetime
 
@@ -792,29 +795,6 @@ class DbStateStore:
             conn.execute(_SET_BRIEF_DONE_SQL, {"id": str(parsed), "value": json.dumps(bool(value))})
 
 
-class FeedbackStubStore:
-    """``TranscriptStore._feedback``'s dict + lock, extracted verbatim
-    (``api/live_chat.py:436-448``). In-memory until Phase 12's
-    ``message_feedback`` table lands: a process restart loses every
-    recorded verdict, and (unlike the original) this store no longer knows
-    whether ``mid`` names a message that really exists -- that check read
-    the old ``_messages`` dict, which lived on TranscriptStore, never here.
-    Routes keep their wire contract meanwhile by checking existence some
-    other way before calling in (a Task 3 concern, not this store's)."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._feedback: dict[str, dict] = {}
-
-    def upsert_feedback(self, mid: str, verdict: str, comment: str | None) -> None:
-        with self._lock:
-            self._feedback[mid] = {"verdict": verdict, "comment": comment}
-
-    def get_feedback(self, mid: str) -> dict | None:
-        with self._lock:
-            return self._feedback.get(mid)
-
-
 def slots_to_json(slots: ConversationSlots) -> dict:
     """:class:`ConversationSlots` -> a plain, jsonb-safe dict: dates become
     ISO strings, ``pass_through`` becomes a list of ``[key, value]`` pairs
@@ -854,7 +834,6 @@ def slots_from_json(raw: dict) -> ConversationSlots:
 
 __all__ = [
     "DbStateStore",
-    "FeedbackStubStore",
     "HistoryStore",
     "MalformedCursor",
     "TurnTranscriptBuffer",

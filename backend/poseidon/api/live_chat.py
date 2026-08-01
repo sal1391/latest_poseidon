@@ -119,6 +119,43 @@ message row too" behavior (``append_user_message`` runs, unconditionally,
 before the duplicate-turn check is ever reached); this is disclosed as an
 accepted, symmetric consequence, not a gap this task closes.
 
+**Phase 12 Task 1: replayed messages persist under the ORIGINAL run's id.**
+The paragraph above's own "freshly minted ``message_id`` -- never the
+original turn's" is exactly right about the ROW's id; it does not extend to
+that row's ``turn_id`` COLUMN. Before this task, :func:`_persist_once`
+unconditionally persisted every assistant message -- replayed or not --
+under this request's own freshly minted ``turn_id`` (the SAME value the SSE
+envelope carries, per ``_begin_turn``'s own "not ``sink.turn_id``" comment
+and its test's own ``replay_turn_id != first_turn_id`` assertion). For a
+TRUE replay that id is never written to ``turn_run`` at all -- the entire
+point of a replay is that the pipeline, and therefore ``writer.start_turn``,
+never runs again -- so the persisted message ended up with an ORPHANED
+``turn_id``, matched by no ``turn_run`` row, confirmed empirically against
+this environment's own compose Postgres (a throwaway probe script, this
+codebase's own "not guessed at" discipline). Phase 12's ``message_feedback.
+run_id`` is ``NOT NULL REFERENCES turn_run(id)`` (doc 06 section 7) with no
+special-casing for replay anywhere in :mod:`~poseidon.core.chat.feedback`
+(that module's own docstring: "no special-casing... a test proves it"),
+which is only satisfiable if ``messages.turn_id`` already names a real run
+for every message, replayed or not. :func:`_persist_once` therefore now
+prefers ``outcome_holder``'s ``TurnOutcome.turn_run_id`` when one is
+available -- ``_begin_turn`` already resolves this to the ORIGINAL row's id
+on a true replay -- falling back to the closure ``turn_id`` exactly when no
+outcome exists yet (a mid-turn structured failure reaches ``_persist_once``
+via ``send``'s own ``"error"`` branch, synchronously, WHILE ``execute_turn``
+is still on the stack -- ``run_turn_sync`` has no outcome to record until
+that call returns) or carries no run at all (no writer configured, or
+``start_turn`` itself failed -- ``RunLogWriter`` never raises, degrading to
+``turn_run_id=None`` instead per its own module docstring). For every
+NON-replay turn, ``TurnOutcome.turn_run_id`` already equals ``turn_id``
+byte-for-byte (``_begin_turn`` passes ``turn_run_id=sink.turn_id`` to
+``start_turn``, which uses it verbatim as the new row's id when it creates
+one), so this is a no-op change for every other path -- confirmed by this
+task's full regression run, and by ``messages.turn_id`` having had no
+production reader anywhere in this codebase before Phase 12 (nothing else
+ever selected that column), so no existing behavior could have depended on
+the old, orphaned value.
+
 **The snowflake guard.** ``dev_runner.py``'s own ``_build_ctx`` refuses
 ``data_backend != "synthetic"`` with a structured 501 BEFORE ever
 constructing a client to query with. ``send_message`` checks ``settings.
@@ -240,30 +277,42 @@ harmless default. :func:`malformed_cursor_response`, registered by
 RFC-7807 problem detail -- never a bare 500, and never FastAPI's default
 ``{"detail": ...}`` shape.
 
-*The feedback existence gate.* ``TranscriptStore``'s own membership check
-(does ``_messages`` hold a message with this id) is gone along with the
-class; :class:`~poseidon.core.chat.history.FeedbackStubStore` (the
-extracted verbatim dict+lock, still in-memory until Phase 12's persisted
-``message_feedback`` table) explicitly does not know whether ``mid`` names a
-real message (its own docstring). :func:`_message_visible` closes that gap
-with an RLS-filtered ``SELECT 1 FROM messages WHERE id = :id`` -- absent or
-another user's message both read back as "not visible," indistinguishable
-by construction, preserving the 404-on-unknown-mid contract for both routes
-uniformly (the old code only gated ``POST``; ``GET`` never checked
-existence at all, only "was feedback ever recorded"). This is the ONE place
-this cutover reaches for :func:`~poseidon.core.db.rls_transaction` directly
-rather than going through :class:`~poseidon.core.chat.history.UserHistory`:
-a bare message id, with no conversation id to scope a call through, is not
-a lookup ``UserHistory``'s shipped interface (Task 2, review closed) can
-perform -- and reaching into that class's own private ``_engine``/
-``_transaction`` from here would cross the same leading-underscore boundary
-this codebase treats as a hard rule elsewhere. ``core/db.py``'s
-``rls_transaction`` is public, general-purpose infrastructure (not private
-to ``history.py``), and this route already has everything the call needs --
-the shared ``Engine`` (``app.state.db_engine``, the SAME object ``History
-Store``/``RunLogWriter`` hold), the caller's ``user_sub``, and ``Settings.
-database_app_role`` -- so no second connection pool and no new ``History``
-method are needed to close this one gap.
+*The feedback existence gate (Phase 10 Task 3; POST's own path changed by
+Phase 12 Task 1).* ``TranscriptStore``'s own membership check (does
+``_messages`` hold a message with this id) is gone along with the class.
+:func:`_message_visible` closes that gap with an RLS-filtered ``SELECT 1
+FROM messages WHERE id = :id`` -- absent or another user's message both
+read back as "not visible," indistinguishable by construction. ``GET``
+below still calls it first, unchanged since Phase 10 Task 3: it needs to
+tell "unknown message" (404, ``_message_visible`` false) apart from "known
+message, no feedback yet" (404, a different detail string) BEFORE ever
+asking the store, and :meth:`~poseidon.core.chat.feedback.UserFeedback.get`
+itself does not perform that distinction (that method's own docstring).
+``POST`` no longer calls it: :meth:`~poseidon.core.chat.feedback.
+UserFeedback.upsert` (Phase 12 Task 1) needs the identical RLS-filtered read
+anyway, to resolve ``run_id`` from ``messages.turn_id`` (doc 06 section 7) --
+resolving ``run_id`` and gating existence are the SAME query there, so a
+separate ``_message_visible`` call first would just be the same SELECT
+running twice. ``upsert`` raises ``LookupError`` on zero rows, which this
+route maps to the SAME 404 ``_message_visible`` already produces, and
+:class:`~poseidon.core.chat.feedback.FeedbackNotApplicable` (a VISIBLE
+message whose ``turn_id`` is ``NULL`` -- the opener) to a pinned 422
+RFC-7807 problem (title ``"feedback_not_applicable"``, the same ``problem()``
+constructor :func:`malformed_cursor_response` already renders through).
+:func:`_message_visible` is the ONE place this cutover reaches for
+:func:`~poseidon.core.db.rls_transaction` directly rather than going through
+:class:`~poseidon.core.chat.history.UserHistory`: a bare message id, with no
+conversation id to scope a call through, is not a lookup ``UserHistory``'s
+shipped interface (Task 2, review closed) can perform -- and reaching into
+that class's own private ``_engine``/``_transaction`` from here would cross
+the same leading-underscore boundary this codebase treats as a hard rule
+elsewhere. ``core/db.py``'s ``rls_transaction`` is public, general-purpose
+infrastructure (not private to ``history.py``), and this route already has
+everything the call needs -- the shared ``Engine`` (``app.state.db_engine``,
+the SAME object ``HistoryStore``/``RunLogWriter``/``FeedbackStore`` hold),
+the caller's ``user_sub``, and ``Settings.database_app_role`` -- so no
+second connection pool and no new ``History``/``Feedback`` method are
+needed to close this one gap.
 
 *Disclosed, scoped gap: ``list_conversations``' item shape.* The brief's own
 interface line for ``GET /api/conversations`` asks each item to carry
@@ -291,16 +340,16 @@ from datetime import date
 from time import monotonic
 
 import anyio
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import text
 
 from poseidon.api.auth import rate_limit_chat_send, require_sales
 from poseidon.core.chat.events import SseEnvelopeSink, skill_label
+from poseidon.core.chat.feedback import FeedbackNotApplicable, FeedbackStore
 from poseidon.core.chat.history import (
     DbStateStore,
-    FeedbackStubStore,
     HistoryStore,
     MalformedCursor,
     TurnTranscriptBuffer,
@@ -366,6 +415,14 @@ _SYNTHETIC_DATA_BACKEND = "synthetic"
 # Phase 10 Task 3: MalformedCursor's RFC-7807 title (see malformed_cursor_
 # response below).
 _MALFORMED_CURSOR_TITLE = "malformed cursor"
+
+# Phase 12 Task 1: FeedbackNotApplicable's RFC-7807 title -- the plan's own
+# "pinned code" (doc 06 section 7), read back verbatim by the frontend/tests
+# from the problem body's "title" field, the same convention _MALFORMED_
+# CURSOR_TITLE/_SNOWFLAKE_GUARD_TITLE/_INTERNAL_ERROR_TITLE above already
+# establish (and events.py's own SseEnvelopeSink.emit mirrors for its wire-
+# level "code" key: `problem["title"]`, never a separate field).
+_FEEDBACK_NOT_APPLICABLE_TITLE = "feedback_not_applicable"
 
 # Envelope fields SseEnvelopeSink._frame adds to EVERY frame -- stripped back
 # out by _record_transcript_frame below when folding a frame into a
@@ -783,17 +840,43 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
     # inline, from wherever that thread's call stack already is, never from
     # a second thread that could interleave with it.
     persisted_holder: list[bool] = []
+    # Phase 12 Task 1: the TurnOutcome, once execute_turn returns -- see the
+    # module docstring's "Phase 12 Task 1: replayed messages persist under
+    # the ORIGINAL run's id" for why _persist_once reads this instead of
+    # unconditionally closing over turn_id.
+    outcome_holder: list[TurnOutcome] = []
 
     def _persist_once() -> None:
         """See the module docstring's "Persistence happens-before the
         terminal frame" -- called from the terminal-frame call sites below
         AND, as a safety net, unconditionally from run_turn_sync's own
         `finally`; idempotent via persisted_holder so at most one INSERT
-        ever reaches the database for this turn's assistant message."""
+        ever reaches the database for this turn's assistant message.
+
+        Persists under ``outcome_holder[0].turn_run_id`` when ``execute_
+        turn`` has already returned one (module docstring's "Phase 12 Task
+        1" section) -- ``turn_id`` (this request's own, freshly minted
+        envelope id) otherwise: no writer configured, a mid-turn structured
+        failure (this closure runs from ``send``'s own ``"error"`` branch,
+        synchronously, DURING ``execute_turn`` -- before ``run_turn_sync``
+        ever receives an outcome to record here), or a crash escaping
+        ``execute_turn`` entirely.
+
+        ``str(...)``: against a real Postgres, ``RunLogWriter.start_turn``'s
+        own ``RETURNING id``/lookup hands back a genuine ``uuid.UUID`` object
+        for ``TurnHandle.turn_run_id`` (that dataclass's ``str`` annotation
+        notwithstanding -- ``test_runlog_writer.py``'s own pg suite
+        documents this exact round trip), never the plain ``str`` the
+        closure ``turn_id`` already is -- ``write_assistant_message``'s own
+        id parsing expects a string to parse, not an already-parsed
+        ``UUID``."""
         if persisted_holder:
             return
         persisted_holder.append(True)
-        _persist_assistant_message(user_history, cid, assistant, turn_id)
+        persisted_turn_id = turn_id
+        if outcome_holder and outcome_holder[0].turn_run_id is not None:
+            persisted_turn_id = str(outcome_holder[0].turn_run_id)
+        _persist_assistant_message(user_history, cid, assistant, persisted_turn_id)
 
     def send(frame: str) -> None:
         _record_transcript_frame(frame, assistant, buffer)
@@ -926,6 +1009,11 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
                     error=problem(500, _INTERNAL_ERROR_TITLE, f"{type(exc).__name__}: {exc}"),
                 )
         else:
+            # Phase 12 Task 1: recorded BEFORE _finalize_turn (which is what
+            # actually calls _persist_once for the "ok"/"clarify" done-frame
+            # path) so persistence can read outcome.turn_run_id -- see
+            # _persist_once's own docstring.
+            outcome_holder.append(outcome)
             _finalize_turn(outcome)
         finally:
             # Persisted on EVERY path, success or crash alike -- whatever
@@ -982,21 +1070,45 @@ def _snowflake_guard_response(
 
 
 @router.post("/messages/{mid}/feedback", status_code=204, dependencies=[Depends(require_sales)])
-def upsert_feedback(mid: str, body: FeedbackBody, request: Request) -> None:
+def upsert_feedback(mid: str, body: FeedbackBody, request: Request) -> Response:
+    """See the module docstring's "The feedback existence gate" for why this
+    route no longer calls :func:`_message_visible` itself: :meth:`~poseidon.
+    core.chat.feedback.UserFeedback.upsert` performs the identical
+    RLS-filtered read as its own ``run_id`` resolution and raises
+    ``LookupError`` on zero rows, which this route maps to the SAME 404
+    ``_message_visible`` used to gate directly.
+
+    Returns a bare :class:`~fastapi.Response` explicitly, on every path
+    (never a plain ``None``/dict FastAPI would itself wrap): the ONE success
+    shape (204, no body) and the ONE pinned-422 shape both need their own
+    status code, and FastAPI passes any ``Response`` instance an endpoint
+    returns straight through unchanged, ignoring this decorator's own
+    ``status_code=204`` (kept here purely as accurate OpenAPI documentation
+    of the default/success case) -- the same pass-through behavior
+    :func:`malformed_cursor_response`/:func:`send_message` already rely on.
+    """
     if body.verdict not in ("up", "down"):
         raise HTTPException(422, detail="verdict must be up or down")
-    if not _message_visible(request, mid):
-        raise HTTPException(404, detail="unknown message")
-    store: FeedbackStubStore = request.app.state.feedback_store
-    store.upsert_feedback(mid, body.verdict, body.comment)
+    feedback_store: FeedbackStore = request.app.state.feedback_store
+    user_feedback = feedback_store.for_user(request.state.user.sub)
+    try:
+        user_feedback.upsert(mid, body.verdict, body.comment)
+    except LookupError as exc:
+        raise HTTPException(404, detail="unknown message") from exc
+    except FeedbackNotApplicable as exc:
+        return JSONResponse(
+            status_code=422,
+            content=problem(422, _FEEDBACK_NOT_APPLICABLE_TITLE, str(exc)),
+        )
+    return Response(status_code=204)
 
 
 @router.get("/messages/{mid}/feedback", dependencies=[Depends(require_sales)])
 def get_feedback(mid: str, request: Request) -> dict:
     if not _message_visible(request, mid):
         raise HTTPException(404, detail="unknown message")
-    store: FeedbackStubStore = request.app.state.feedback_store
-    feedback = store.get_feedback(mid)
+    feedback_store: FeedbackStore = request.app.state.feedback_store
+    feedback = feedback_store.for_user(request.state.user.sub).get(mid)
     if feedback is None:
         raise HTTPException(404, detail="no feedback")
     return feedback

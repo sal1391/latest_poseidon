@@ -12,8 +12,13 @@ half of what it covers needs no database at all):
 - **Offline** (always run, zero network): the slots serializer
   (``slots_to_json``/``slots_from_json``) is pure Python, dict in dict out;
   ``TurnTranscriptBuffer`` is a pure in-memory fold with no engine anywhere
-  in its call chain; ``FeedbackStubStore`` is a plain dict behind a lock.
-  None of these three need Postgres to prove correct.
+  in its call chain. Neither needs Postgres to prove correct. (A third
+  offline citizen used to live here -- ``FeedbackStubStore``, a plain dict
+  behind a lock -- deleted by Phase 12 Task 1 once migration 0006's real
+  ``message_feedback`` table landed; its own round-trip/overwrite/unknown-id
+  tests are ported into ``tests/test_feedback_store.py`` against the real
+  ``FeedbackStore``, which needs Postgres, so they no longer belong in this
+  file's offline half.)
 - **``pg``** (``@pytest.mark.pg``, skipped without a reachable, migrated-to-
   0004 Postgres): everything that actually depends on row-level security to
   prove itself right -- ``HistoryStore``/``UserHistory``/``DbStateStore``.
@@ -68,7 +73,6 @@ from sqlalchemy import create_engine, text
 from poseidon.core.chat import history
 from poseidon.core.chat.history import (
     DbStateStore,
-    FeedbackStubStore,
     HistoryStore,
     MalformedCursor,
     TurnTranscriptBuffer,
@@ -244,33 +248,14 @@ def test_turn_transcript_buffer_record_tool_event_position_matches_the_live_view
 
 
 # ===========================================================================
-# offline: FeedbackStubStore -- today's _feedback dict + lock, extracted
-# verbatim (the "is this mid known" existence check is dropped: it read the
-# old TranscriptStore's _messages dict, which this store never held).
-# ===========================================================================
-
-
-def test_feedback_stub_store_round_trip():
-    store = FeedbackStubStore()
-
-    store.upsert_feedback("msg-1", "down", "wrong port")
-
-    assert store.get_feedback("msg-1") == {"verdict": "down", "comment": "wrong port"}
-
-
-def test_feedback_stub_store_upsert_overwrites_the_previous_verdict():
-    store = FeedbackStubStore()
-    store.upsert_feedback("msg-1", "down", "wrong port")
-
-    store.upsert_feedback("msg-1", "up", None)
-
-    assert store.get_feedback("msg-1") == {"verdict": "up", "comment": None}
-
-
-def test_feedback_stub_store_get_feedback_unknown_mid_returns_none():
-    assert FeedbackStubStore().get_feedback("nope") is None
-
-
+# Phase 12 Task 1: FeedbackStubStore (and its three tests that used to live
+# here -- round trip, upsert-overwrite, unknown-id) is deleted along with
+# core/chat/history.py's own class. Its assertions are ported, not lost,
+# into tests/test_feedback_store.py's test_upsert_amends_verdict_and_
+# comment_keeping_created_at_stable_and_moving_updated_at (round trip +
+# overwrite) and test_get_returns_none_when_no_feedback_recorded_yet
+# (unknown id) -- against the real, Postgres-backed FeedbackStore, which
+# this offline section cannot exercise.
 # ===========================================================================
 # offline: ASCII-on-disk (house rule; matches
 # test_rls_policies_module_is_ascii_on_disk / test_runlog_module_is_ascii_on_disk)
