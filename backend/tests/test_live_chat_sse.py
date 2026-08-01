@@ -2,22 +2,40 @@
 mounted behind ``CHAT_MODE=live``, and the app-factory mount switch itself
 (``poseidon/api/app.py``).
 
-Everything here is OFFLINE, mirroring ``test_chat_orchestrator.py``'s own
-discipline: a real ``create_app`` (never both routers mounted -- see
+Most of this file was OFFLINE through Phase 9, mirroring
+``test_chat_orchestrator.py``'s own discipline: a real ``create_app``
+(never both routers mounted -- see
 ``test_default_settings_app_mounts_mock_not_live_chat`` /
 ``test_live_settings_app_mounts_live_chat_not_mock``), then, for the turn-
 streaming tests, ``app.state.data_client``/``app.state.run_log_writer``
-swapped for a fake data client and a writer double AFTER construction --
-the same post-construction substitution ``test_dev_runner.py``'s own
-``test_artifact_refs_serialize_to_the_frontend_wire_shape`` uses for
-``app.state.skill_registry``. ``FakeDataClient``/``RecordingWriter`` are
-imported straight from ``test_chat_orchestrator.py`` (the same cross-test-
-module reuse ``test_dev_runner.py`` already does for its own throwaway-
-package fixture) rather than re-derived: the flagship scenario below is
-the IDENTICAL scripted turn that suite already pins frame-by-frame, so
-reusing its fixtures is what proves the HTTP layer reproduces the exact
-same numbers the orchestrator-level suite already established, not a
-coincidentally-similar-looking copy.
+swapped for a fake data client and a writer double AFTER construction.
+``FakeDataClient``/``RecordingWriter`` are imported straight from
+``test_chat_orchestrator.py`` rather than re-derived: the flagship scenario
+below is the IDENTICAL scripted turn that suite already pins frame-by-frame,
+so reusing its fixtures is what proves the HTTP layer reproduces the exact
+same numbers the orchestrator-level suite already established.
+
+**Phase 10 Task 3 (the cutover): most of this file is pg-marked now.**
+Every route that touches a conversation now goes through
+:class:`~poseidon.core.chat.history.HistoryStore` (real Postgres, RLS-
+scoped) instead of the deleted in-memory ``TranscriptStore`` -- there is no
+offline double for that anymore (the same reasoning
+``test_history_store.py``'s own module docstring gives for its pg half).
+Tests that only inspect ``app.state``/hit ``/api/skills`` (the mount-switch,
+wiring, and tool-registry tests below) never touch history at all and stay
+OFFLINE, unmarked, exactly as before. Every OTHER test that used to dispatch
+against an ad hoc, never-created conversation id (``"conv-1"``, ``"conv-
+retry"``, ``"conv-crash"``, ...) now creates a REAL conversation first via
+``POST /api/conversations`` and uses its real id: ``UserHistory.append_
+user_message`` raises ``LookupError`` -- mapped to a 404 -- for a ``cid``
+that was never created, closing the old TranscriptStore-era auto-vivify
+asymmetry this file's docstring used to document (see ``api/live_chat.py``'s
+own module docstring, "A conversation that does not exist... now 404s at
+send time too"). ``FakeDataClient``/``_ExplodingDataClient`` overrides are
+kept exactly as before for every adapted test -- only ``database_url``
+switches to a real, migrated Postgres (:func:`pg_database_url`), so every
+pinned number in the flagship scenario stays byte-identical; only the
+PERSISTENCE layer underneath it is now real.
 
 SSE frames are parsed with the same discipline ``test_mock_chat.py``'s own
 ``read_sse`` helper uses (httpx ASGI transport, ``client.stream(...)``,
@@ -28,16 +46,62 @@ module docstring), so the same parsing works unchanged against either.
 
 import json
 import logging
+import os
 
 import httpx
+import psycopg
 import pytest
 
-from poseidon.api import live_chat
-from poseidon.api.live_chat import TranscriptStore
-from poseidon.core.chat.events import SseEnvelopeSink
 from poseidon.core.config import Settings
+from poseidon.core.data.synthetic_client import normalize_dsn
 from poseidon.core.skills.registry import SkillRegistry
 from tests.test_chat_orchestrator import REGISTRY, FakeDataClient, RecordingWriter
+
+# ===========================================================================
+# pg availability -- mirrors test_history_store.py's/test_history_cutover.
+# py's own pg fixture exactly (this file has no conftest.py to share one
+# from; every pg-marked test module in this codebase defines its own).
+# ===========================================================================
+
+CONNECT_TIMEOUT_SECONDS = 2
+_UP_HINT = "start it with `docker compose -f infra/docker-compose.yml up -d db`"
+_MIGRATE_HINT = "migrate it with `python -m alembic upgrade head` (revision 0004)"
+
+
+@pytest.fixture
+def pg_database_url() -> str:
+    """``DATABASE_URL``, or a SKIP with an actionable reason -- see
+    ``test_history_store.py``'s own ``pg_engine`` for the identical
+    reachability/migration check, adapted here to hand back the DSN string
+    rather than a raw ``Engine`` (this file drives everything through a
+    real ``create_app()``, never ``HistoryStore`` directly)."""
+    dsn = os.environ.get("DATABASE_URL", "")
+    if not dsn:
+        pytest.skip(
+            f"DATABASE_URL is not set - pg live chat tests need a Postgres: "
+            f"{_UP_HINT}, {_MIGRATE_HINT}"
+        )
+    try:
+        with psycopg.connect(normalize_dsn(dsn), connect_timeout=CONNECT_TIMEOUT_SECONDS) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('public.conversations')")
+                if cur.fetchone()[0] is None:
+                    pytest.skip(f"conversations does not exist - {_MIGRATE_HINT}")
+    except psycopg.Error as exc:
+        pytest.skip(
+            f"Postgres at DATABASE_URL is not usable within {CONNECT_TIMEOUT_SECONDS}s "
+            f"({type(exc).__name__}: {str(exc).strip()}) - {_UP_HINT}"
+        )
+    return dsn
+
+
+async def _create_conversation(client: httpx.AsyncClient) -> str:
+    """A real conversation id via ``POST /api/conversations`` -- every
+    adapted test in this file that used to dispatch against an ad hoc
+    string now creates one for real first (module docstring's "most of
+    this file is pg-marked now")."""
+    r = await client.post("/api/conversations")
+    return r.json()["conversation"]["id"]
 
 # U+2014 EM DASH, written as an escape (not a typed literal) -- the same
 # convention every earlier Phase 4/5/6 suite uses (see test_chat_orchestrator.
@@ -160,16 +224,26 @@ def test_live_mode_app_wires_the_expected_app_state():
     app = _live_app()
     assert hasattr(app.state, "skill_registry")
     assert "data_qa.metric_query" in app.state.skill_registry.skill_ids
-    assert hasattr(app.state, "conversation_state_store")
+    # Phase 10 Task 3: conversation_state_store/transcript_store are gone --
+    # history_store/feedback_store/db_engine replace them (app.py's own
+    # _wire_live_chat docstring, "Phase 10 Task 3: ONE Engine per process").
+    assert hasattr(app.state, "history_store")
+    assert hasattr(app.state, "feedback_store")
+    assert hasattr(app.state, "db_engine")
+    assert not hasattr(app.state, "conversation_state_store")
+    assert not hasattr(app.state, "transcript_store")
     assert hasattr(app.state, "role_client")
     assert hasattr(app.state, "prompt_registry")
     assert hasattr(app.state, "data_client")
     # Phase 7 Task 4.
     assert hasattr(app.state, "tool_registry")
     # DATABASE_URL is always syntactically valid here (a placeholder host,
-    # never a malformed DSN), so the writer is a real, constructed one --
-    # see test_run_log_writer_is_none_when_the_engine_cannot_be_built below
-    # for the disclosed else-branch.
+    # never a malformed DSN), so construction succeeds and the writer is a
+    # real, constructed one -- see
+    # test_live_app_construction_fails_fast_when_the_engine_cannot_be_built
+    # below for the disclosed hard-failure branch (Phase 10 Task 3: history
+    # is no longer optional, so a malformed DATABASE_URL is now a boot
+    # failure rather than a silently-absent writer).
     assert app.state.run_log_writer is not None
 
 
@@ -224,15 +298,26 @@ def test_live_mode_local_deploy_discovers_the_skill_registry_exactly_once(monkey
     assert len(calls) == 1
 
 
-def test_run_log_writer_is_none_when_the_engine_cannot_be_built(capsys):
-    """``create_engine`` -- unlike ``SyntheticDataClient.__init__`` -- DOES
-    eagerly parse its URL argument, so a value ``Settings.database_url``'s
-    own "not blank" validator accepts but which is not a URL SQLAlchemy can
-    parse at all is the one realistic way this branch is reached (see
-    ``app.py``'s own ``_build_run_log_writer`` docstring)."""
-    app = _live_app_with_database_url("not-a-url-at-all")
-    assert app.state.run_log_writer is None
-    assert "WARNING" in capsys.readouterr().out
+def test_live_app_construction_fails_fast_when_the_engine_cannot_be_built():
+    """Phase 10 Task 3 adaptation of the old ``test_run_log_writer_is_none_
+    when_the_engine_cannot_be_built`` (renamed: the OLD assertion --
+    ``run_log_writer is None``, booting anyway -- no longer holds). ``create_
+    engine`` -- unlike ``SyntheticDataClient.__init__`` -- DOES eagerly parse
+    its URL argument, so a value ``Settings.database_url``'s own "not blank"
+    validator accepts but which is not a URL SQLAlchemy can parse at all is
+    the one realistic way this branch is reached (see ``app.py``'s own
+    ``_wire_live_chat`` docstring, "A malformed DATABASE_URL is now a hard
+    boot failure"). Before this task, ``RunLogWriter`` alone depended on
+    this engine and its own construction failure was caught and logged
+    non-fatally (an OPTIONAL run log); now ``HistoryStore`` -- with no
+    "disabled" mode of its own -- shares the identical engine, so the SAME
+    failure can no longer be swallowed without leaving ``app.state.history_
+    store`` unset for every request to crash on individually instead of at
+    boot, once, loudly."""
+    from sqlalchemy.exc import ArgumentError
+
+    with pytest.raises(ArgumentError):
+        _live_app_with_database_url("not-a-url-at-all")
 
 
 def _live_app_with_database_url(database_url: str):
@@ -247,14 +332,18 @@ def _live_app_with_database_url(database_url: str):
 # ===========================================================================
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
-async def test_live_turn_streams_the_flagship_frame_sequence_and_table_and_proof_parts():
+async def test_live_turn_streams_the_flagship_frame_sequence_and_table_and_proof_parts(
+    pg_database_url,
+):
     writer = RecordingWriter()
-    app = _live_app(data_client=FakeDataClient(), writer=writer)
+    app = _live_app(data_client=FakeDataClient(), writer=writer, database_url=pg_database_url)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid = await _create_conversation(client)
         events = await read_sse(
-            client, "conv-1", "Top GP customers for Port of Singapore in April 2026", "ctk-1"
+            client, cid, "Top GP customers for Port of Singapore in April 2026", "ctk-1"
         )
 
     names = [name for name, _data in events]
@@ -297,17 +386,21 @@ async def test_live_turn_streams_the_flagship_frame_sequence_and_table_and_proof
     assert writer.finalize_calls[0]["turn_run_id"] == turn_id
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
-async def test_client_turn_key_retry_gets_pinned_duplicate_turn_error_and_no_second_dispatch():
+async def test_client_turn_key_retry_gets_pinned_duplicate_turn_error_and_no_second_dispatch(
+    pg_database_url,
+):
     writer = RecordingWriter()
-    app = _live_app(data_client=FakeDataClient(), writer=writer)
+    app = _live_app(data_client=FakeDataClient(), writer=writer, database_url=pg_database_url)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid = await _create_conversation(client)
         first = await read_sse(
-            client, "conv-retry", "Top GP customers for Port of Singapore in April 2026", "ctk-1"
+            client, cid, "Top GP customers for Port of Singapore in April 2026", "ctk-1"
         )
         second = await read_sse(
-            client, "conv-retry", "Top GP customers for Port of Singapore in April 2026", "ctk-1"
+            client, cid, "Top GP customers for Port of Singapore in April 2026", "ctk-1"
         )
 
     first_names = [name for name, _data in first]
@@ -350,18 +443,20 @@ def _crashing_execute_turn(**kwargs):
     raise RuntimeError("simulated bedrock network hiccup")
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
 async def test_unhandled_exception_mid_turn_emits_pinned_internal_error_and_ends_stream_cleanly(
-    monkeypatch, caplog
+    pg_database_url, monkeypatch, caplog
 ):
     writer = RecordingWriter()
-    app = _live_app(data_client=FakeDataClient(), writer=writer)
+    app = _live_app(data_client=FakeDataClient(), writer=writer, database_url=pg_database_url)
     monkeypatch.setattr("poseidon.api.live_chat.execute_turn", _crashing_execute_turn)
 
     transport = httpx.ASGITransport(app=app)
     with caplog.at_level(logging.ERROR, logger="poseidon.api.live_chat"):
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-            events = await read_sse(client, "conv-crash", "hello", None)
+            cid = await _create_conversation(client)
+            events = await read_sse(client, cid, "hello", None)
 
     # The client sees the partial turn, then ONE pinned error frame, then a
     # clean stream end -- never a raw protocol error (no more frames, no
@@ -398,11 +493,14 @@ async def test_unhandled_exception_mid_turn_emits_pinned_internal_error_and_ends
     assert "RuntimeError" in errors[0].message
 
     # A follow-up request on the SAME app (real execute_turn restored)
-    # succeeds -- the crash left nothing wedged.
+    # succeeds -- the crash left nothing wedged. A SECOND real conversation
+    # (never the crashed one): a fresh cid, exactly like a real client
+    # opening a new chat, not a retry against the one that just failed.
     monkeypatch.undo()
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid2 = await _create_conversation(client)
         follow_up = await read_sse(
-            client, "conv-crash-2", "Top GP customers for Port of Singapore in April 2026", None
+            client, cid2, "Top GP customers for Port of Singapore in April 2026", None
         )
     assert [name for name, _data in follow_up] == [
         "accepted",
@@ -415,18 +513,27 @@ async def test_unhandled_exception_mid_turn_emits_pinned_internal_error_and_ends
     ]
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
-async def test_unhandled_exception_with_no_writer_still_ends_stream_cleanly(monkeypatch):
-    """``writer=None`` (no DATABASE_URL) must not change the crash-handling
-    shape -- only the run-log gains no finalize call, mirroring execute_turn's
-    own `writer is not None` guard convention throughout."""
-    app = _live_app(data_client=FakeDataClient())
+async def test_unhandled_exception_with_no_writer_still_ends_stream_cleanly(
+    pg_database_url, monkeypatch
+):
+    """``writer=None`` (simulating no DATABASE_URL configured for the run
+    log specifically) must not change the crash-handling shape -- only the
+    run-log gains no finalize call, mirroring execute_turn's own `writer is
+    not None` guard convention throughout. ``app.state.run_log_writer`` is
+    overridden to ``None`` AFTER construction -- Phase 10 Task 3 no longer
+    has a way to construct a live app with a genuinely absent writer
+    (history and the run log share one mandatory engine now), so this is
+    the one remaining way to exercise that guard at all."""
+    app = _live_app(data_client=FakeDataClient(), database_url=pg_database_url)
     app.state.run_log_writer = None
     monkeypatch.setattr("poseidon.api.live_chat.execute_turn", _crashing_execute_turn)
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        events = await read_sse(client, "conv-crash-no-writer", "hello", None)
+        cid = await _create_conversation(client)
+        events = await read_sse(client, cid, "hello", None)
 
     assert [name for name, _data in events] == ["accepted", "token", "error"]
 
@@ -475,21 +582,20 @@ async def test_get_skills_returns_registry_backed_shape():
 
 
 # ===========================================================================
-# Phase 6 Task 5 amendment (post-T4 disclosure): the live bootstrap routes --
-# mock_chat.py's own conversation create/list/transcript/feedback shapes,
-# backed by a minimal in-memory TranscriptStore alongside
-# ConversationStateStore. Closes Task 4's own disclosed gap (that task's
-# report, Judgment Call 1 / Concern 1): a chat_mode="live" app could not
-# serve the frontend's bootstrap() flow end to end.
+# The live bootstrap routes -- mock_chat.py's own conversation create/list/
+# transcript/feedback shapes. Phase 10 Task 3: backed by Postgres-backed
+# HistoryStore now, not the deleted in-memory TranscriptStore -- pg-marked
+# below wherever a route actually touches it.
 # ===========================================================================
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
-async def test_post_conversations_returns_the_same_opener_shape_as_mock():
+async def test_post_conversations_returns_the_same_opener_shape_as_mock(pg_database_url):
     """Same wire shape mock_chat.py's own create_conversation returns --
     the frontend's bootstrap() reads conversation.id/opener.parts and does
     not care which mode produced them."""
-    app = _live_app()
+    app = _live_app(database_url=pg_database_url)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         r = await client.post("/api/conversations")
@@ -506,15 +612,18 @@ async def test_post_conversations_returns_the_same_opener_shape_as_mock():
     assert ids == ["existing_customer", "new_prospect"]
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
-async def test_opener_flow_chips_carry_the_d19_pinned_entry_phrases_as_send_text():
+async def test_opener_flow_chips_carry_the_d19_pinned_entry_phrases_as_send_text(
+    pg_database_url,
+):
     """Phase 8 Task 5: the P6 send_text mechanism (ChipsPart.tsx's own
     ``option.send_text ?? option.label``), now on the opener's flow chips
     too -- clicking either one sends the EXACT pinned phrase
     ``orchestrator.py``'s own D19 entry branch matches, casefolded-exact,
     rather than the bare "Existing customer"/"New customer prospect"
     labels a human reads on the button."""
-    app = _live_app()
+    app = _live_app(database_url=pg_database_url)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         r = await client.post("/api/conversations")
@@ -534,16 +643,23 @@ async def test_opener_flow_chips_carry_the_d19_pinned_entry_phrases_as_send_text
     ]
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
-async def test_get_conversations_lists_newest_first():
-    app = _live_app()
+async def test_get_conversations_lists_newest_first(pg_database_url):
+    """Phase 10 Task 3: the envelope changed from a bare ``{"conversations":
+    [...]}`` array to ``{"items": [...], "next_cursor": ...}`` -- Task 4
+    (the frontend) follows immediately; see api/live_chat.py's own module
+    docstring for the disclosed, scoped gap in each item's own shape
+    (``{"id", "title"}`` today, not yet ``mode``/``updated_at``)."""
+    app = _live_app(database_url=pg_database_url)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         c1 = (await client.post("/api/conversations")).json()["conversation"]["id"]
         c2 = (await client.post("/api/conversations")).json()["conversation"]["id"]
-        listing = (await client.get("/api/conversations")).json()["conversations"]
+        body = (await client.get("/api/conversations")).json()
 
-    assert [c["id"] for c in listing[:2]] == [c2, c1]
+    assert set(body) == {"items", "next_cursor"}
+    assert [c["id"] for c in body["items"][:2]] == [c2, c1]
 
 
 @pytest.mark.anyio
@@ -556,34 +672,40 @@ async def test_get_messages_404_for_a_conversation_id_never_seen():
     assert r.status_code == 404
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
-async def test_get_messages_returns_the_opener_right_after_create():
-    app = _live_app()
+async def test_get_messages_returns_the_opener_right_after_create(pg_database_url):
+    app = _live_app(database_url=pg_database_url)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
         r = await client.get(f"/api/conversations/{cid}/messages")
 
     assert r.status_code == 200
-    assert [m["role"] for m in r.json()["messages"]] == ["assistant"]
+    body = r.json()
+    assert set(body) == {"items", "next_cursor"}
+    assert [m["role"] for m in body["items"]] == ["assistant"]
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
-async def test_a_real_turn_is_recorded_into_the_transcript_user_then_assistant_parts():
+async def test_a_real_turn_is_recorded_into_the_transcript_user_then_assistant_parts(
+    pg_database_url,
+):
     """The flagship scripted turn, through the real bootstrap-send-reopen
     round trip: create a conversation for real, send a real turn, reopen
     the transcript and see exactly what was streamed -- assistant messages
     are appended from the turn's emitted parts at done-time (the amendment's
     own words), not re-derived some other way."""
     writer = RecordingWriter()
-    app = _live_app(data_client=FakeDataClient(), writer=writer)
+    app = _live_app(data_client=FakeDataClient(), writer=writer, database_url=pg_database_url)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
         await read_sse(
             client, cid, "Top GP customers for Port of Singapore in April 2026", "ctk-transcript"
         )
-        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["messages"]
+        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["items"]
 
     # opener (from create), then the user's question, then the assistant's answer.
     assert [m["role"] for m in msgs] == ["assistant", "user", "assistant"]
@@ -606,83 +728,36 @@ async def test_a_real_turn_is_recorded_into_the_transcript_user_then_assistant_p
     )
 
 
-def test_record_transcript_frame_tool_event_position_matches_the_live_views_own_rule():
-    """Final-review wave item 8 (M-1): a tool_event's position in the
-    RELOADED transcript must match where the LIVE view shows it -- pinned
-    directly at the ``_record_transcript_frame``/``TranscriptStore`` unit
-    level (no HTTP app needed; a real ``SseEnvelopeSink`` produces the
-    exact frames a real dispatch would, ``part_emitter`` included, so
-    nothing here is a hand-typed approximation of the wire format).
-
-    A dispatch that streams a part EARLY (between the wire's own
-    ``tool_start`` and ``tool_done`` frames -- Phase 8 Task 1's own
-    ``ctx.emit_part`` seam, e.g. a brief's metric_grid) must still show
-    its tool_event BEFORE that early part once the transcript is
-    reloaded, mirroring chatStore.ts's own ``applyEventTo`` "tool" case:
-    a tool_seq not yet seen is pushed (at "start" time, before any part
-    exists yet); the SAME tool_seq seen again is replaced IN PLACE, never
-    re-appended (at "done" time). Before this fix, ``_record_transcript_
-    frame`` recorded a tool_event only on "done" -- byte-identical to the
-    live view for the common, no-early-part case (see the flagship
-    ``test_a_real_turn_is_recorded_into_the_transcript_...`` test above,
-    unaffected by this fix), but WRONG here: the early part would already
-    be recorded by the time "done" finally appended the tool_event,
-    landing the tool_event AFTER it instead of before.
-    """
-    store = TranscriptStore()
-    assistant = store.start_assistant_message("conv-1", "msg-1")
-    frames: list[str] = []
-    sink = SseEnvelopeSink(turn_id="t", message_id="msg-1", send=frames.append, registry=REGISTRY)
-    emit = sink.part_emitter(1)
-    early_part = {"kind": "metric_grid", "payload": {"periods": {}, "metrics": []}}
-
-    sink.emit(
-        "tool_start",
-        {"tool_seq": 1, "skill_id": "customer_insight.existing_customer_brief", "arguments": {}},
-    )
-    emit(early_part)
-    sink.emit(
-        "tool_done",
-        {
-            "tool_seq": 1,
-            "skill_id": "customer_insight.existing_customer_brief",
-            "status": "ok",
-            "duration_ms": 1,
-            "digest": "d",
-            "parts": [early_part],
-            "proof": [],
-            "problem": None,
-        },
-    )
-
-    for frame in frames:
-        live_chat._record_transcript_frame(frame, assistant, store)
-
-    kinds = [p["kind"] for p in assistant["parts"]]
-    assert kinds == ["tool_event", "metric_grid"]
-    tool_event = assistant["parts"][0]["payload"]
-    # replaced in place, not appended a second time -- the FINAL status is
-    # "done", carried by the SAME single part this dispatch ever gets.
-    assert tool_event["status"] == "done"
-    assert tool_event["tool"] == "customer_insight.existing_customer_brief"
-    assert "turn_id" not in tool_event and "event_seq" not in tool_event
-    assert assistant["parts"][1]["payload"] == early_part["payload"]
+# Phase 10 Task 3: the old test_record_transcript_frame_tool_event_position_
+# matches_the_live_views_own_rule (a unit-level TranscriptStore/_record_
+# transcript_frame test) is DELETED, not merely moved -- its fold-semantics
+# assertions were already ported verbatim onto TurnTranscriptBuffer in Task
+# 2 (test_history_store.py's own test_turn_transcript_buffer_record_tool_
+# event_position_matches_the_live_views_own_rule, which says exactly this).
+# _record_transcript_frame's OWN decode-and-dispatch logic (the half Task 2
+# explicitly left to this task -- see that test's own docstring, "SSE frame
+# decoding is api/live_chat.py's concern, not this store's") stays covered
+# by the end-to-end HTTP tests above and below, which exercise it for real
+# on every real turn/clarify they drive.
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
-async def test_a_clarify_turn_is_recorded_into_the_transcript_as_chips_then_text():
+async def test_a_clarify_turn_is_recorded_into_the_transcript_as_chips_then_text(pg_database_url):
     """Final-review wave item 6: contrast with
     ``test_post_conversations_returns_the_same_opener_shape_as_mock``'s own
     OPENER kinds (``["text", "chips"]``) -- the clarify TURN's own
     transcript kinds are the opposite order, chips first then text, matching
     ``orchestrator.py``'s own ``_finish_clarify`` push order (the chips part,
     then the "did you mean" text part)."""
-    app = _live_app(data_client=FakeDataClient(), writer=RecordingWriter())
+    app = _live_app(
+        data_client=FakeDataClient(), writer=RecordingWriter(), database_url=pg_database_url
+    )
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
         await read_sse(client, cid, "gp for Meridiann in April 2026", None)
-        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["messages"]
+        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["items"]
 
     assistant_msg = msgs[-1]
     kinds = [p["kind"] for p in assistant_msg["parts"]]
@@ -694,32 +769,42 @@ async def test_a_clarify_turn_is_recorded_into_the_transcript_as_chips_then_text
     assert first_option["send_text"] == f"for {first_option['label']}"
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
-async def test_streaming_route_auto_vivifies_transcript_for_an_unregistered_conversation_id():
-    """Backward compatibility, disclosed in the module docstring: the
-    streaming route itself stays opaque about cid (Task 4's own documented
-    choice -- every test above this section dispatches against an ad hoc id
-    like "conv-1" that was never created via POST /api/conversations), but
-    the transcript store still records whatever happened, so a SUBSEQUENT
-    GET on that same id now succeeds instead of 404ing."""
-    app = _live_app(data_client=FakeDataClient(), writer=RecordingWriter())
+async def test_send_message_to_a_never_created_conversation_id_404s(pg_database_url):
+    """Phase 10 Task 3 repurposes the old ``test_streaming_route_auto_
+    vivifies_transcript_for_an_unregistered_conversation_id``: TranscriptStore's
+    own auto-vivify behavior that test exercised is GONE, by necessity, not
+    merely by choice -- ``messages.conversation_id`` is a real foreign key
+    now, so a bare INSERT naming a conversation nobody created cannot
+    silently succeed the way a dict write always could. The NEW, opposite
+    behavior (see api/live_chat.py's own module docstring, "A conversation
+    that does not exist... now 404s at send time too") is worth the same
+    kind of direct coverage the old test gave its own behavior, rather than
+    simply deleting it and losing the scenario."""
+    app = _live_app(
+        data_client=FakeDataClient(), writer=RecordingWriter(), database_url=pg_database_url
+    )
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        await read_sse(client, "conv-never-created", "hello", None)
-        r = await client.get("/api/conversations/conv-never-created/messages")
+        r = await client.post(
+            "/api/conversations/never-created/messages", json={"text": "hello"}
+        )
 
-    assert r.status_code == 200
-    assert [m["role"] for m in r.json()["messages"]] == ["user", "assistant"]
+    assert r.status_code == 404
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
-async def test_feedback_roundtrip_and_unknown_message_404():
-    app = _live_app(data_client=FakeDataClient(), writer=RecordingWriter())
+async def test_feedback_roundtrip_and_unknown_message_404(pg_database_url):
+    app = _live_app(
+        data_client=FakeDataClient(), writer=RecordingWriter(), database_url=pg_database_url
+    )
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
         await read_sse(client, cid, "hello", None)
-        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["messages"]
+        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["items"]
         mid = msgs[-1]["id"]
 
         r = await client.post(
@@ -734,20 +819,28 @@ async def test_feedback_roundtrip_and_unknown_message_404():
         r = await client.get(f"/api/messages/{mid}/feedback")
         assert r.json() == {"verdict": "up", "comment": None}
 
+        # "nope" is not even a well-formed uuid -- the SAME fail-closed
+        # "malformed id treated exactly like absent" gate core/chat/
+        # history.py's own methods use, reached here via the feedback
+        # existence gate (api/live_chat.py's own _message_visible) rather
+        # than TranscriptStore's now-deleted membership check.
         r = await client.post("/api/messages/nope/feedback", json={"verdict": "up"})
         assert r.status_code == 404
         r = await client.get("/api/messages/nope/feedback")
         assert r.status_code == 404
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
-async def test_feedback_invalid_verdict_returns_422():
-    app = _live_app(data_client=FakeDataClient(), writer=RecordingWriter())
+async def test_feedback_invalid_verdict_returns_422(pg_database_url):
+    app = _live_app(
+        data_client=FakeDataClient(), writer=RecordingWriter(), database_url=pg_database_url
+    )
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
         await read_sse(client, cid, "hello", None)
-        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["messages"]
+        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["items"]
 
         r = await client.post(
             f"/api/messages/{msgs[-1]['id']}/feedback", json={"verdict": "sideways"}
@@ -777,14 +870,21 @@ class _ExplodingDataClient:
         return _boom
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
-async def test_snowflake_data_backend_emits_one_structured_error_frame_and_never_touches_data():
+async def test_snowflake_data_backend_emits_one_structured_error_frame_and_never_touches_data(
+    pg_database_url,
+):
     app = _live_app(
-        data_client=_ExplodingDataClient(), writer=RecordingWriter(), data_backend="snowflake"
+        data_client=_ExplodingDataClient(),
+        writer=RecordingWriter(),
+        data_backend="snowflake",
+        database_url=pg_database_url,
     )
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        events = await read_sse(client, "conv-snow", "hello", None)
+        cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
+        events = await read_sse(client, cid, "hello", None)
 
     assert [name for name, _data in events] == ["error"]
     error_data = events[0][1]
@@ -793,16 +893,22 @@ async def test_snowflake_data_backend_emits_one_structured_error_frame_and_never
     assert "Phase 15" in error_data["message"]
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
-async def test_snowflake_guard_still_records_an_empty_assistant_message_in_the_transcript():
+async def test_snowflake_guard_still_records_an_empty_assistant_message_in_the_transcript(
+    pg_database_url,
+):
     app = _live_app(
-        data_client=_ExplodingDataClient(), writer=RecordingWriter(), data_backend="snowflake"
+        data_client=_ExplodingDataClient(),
+        writer=RecordingWriter(),
+        data_backend="snowflake",
+        database_url=pg_database_url,
     )
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
         await read_sse(client, cid, "hello", None)
-        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["messages"]
+        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["items"]
 
     assert msgs[-1]["role"] == "assistant"
     assert msgs[-1]["parts"] == []

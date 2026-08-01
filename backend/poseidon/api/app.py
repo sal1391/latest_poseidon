@@ -1,13 +1,13 @@
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine
 
 from poseidon.api import auth, dev_runner, health, live_chat, mock_chat
 from poseidon.core.artifacts import ArtifactStore
 from poseidon.core.chat.dev_router import DevDeterministicRouter
-from poseidon.core.chat.state import ConversationStateStore
+from poseidon.core.chat.history import FeedbackStubStore, HistoryStore
 from poseidon.core.config import Settings, get_settings
 from poseidon.core.data.synthetic_client import SyntheticDataClient
+from poseidon.core.db import build_engine
 from poseidon.core.identity import AuthError, resolve_provider
 from poseidon.core.llm.bedrock import BedrockProvider
 from poseidon.core.llm.prompts import DEFAULT_PROMPTS_DIR, PromptRegistry
@@ -296,39 +296,106 @@ def _wire_live_chat(app: FastAPI) -> None:
     Everything else here is built once per app/process, the same "cheap to
     construct, safe to share" discipline ``deploy_mode == "local"``'s own
     ``artifact_store`` wiring uses: ``RoleClient``/``PromptRegistry`` touch
-    only a packaged YAML file and a prompts directory, ``ConversationState
-    Store``/``TranscriptStore`` (Task 5 amendment) are both explicitly meant
-    to be ONE shared instance each (their whole job is being shared mutable
-    state across requests -- see their own module docstrings), and
-    ``SyntheticDataClient`` holds nothing but a DSN string (its own module
-    docstring), so one long-lived instance behaves identically to a fresh
-    one per request -- unlike ``dev_runner.py``'s per-request construction,
-    there is no connection or other per-call state here to keep isolated
-    between requests. ``RoleClient`` registers BOTH the stub router
-    (``DevDeterministicRouter``, what actually answers in ``LLM_MODE=stub``)
-    and the real Bedrock provider (what answers in ``LLM_MODE=live`` with
-    ``llm_profile=bedrock``) -- the two canonical shapes ``roles.py``'s own
-    docstring documents; registering both at once is harmless
-    (``RoleClient.invoke`` reads exactly one key per call). ``tool_registry``
-    (Phase 7 Task 4) follows the identical "build once, share" discipline --
-    see :func:`_build_tool_registry`.
+    only a packaged YAML file and a prompts directory, ``HistoryStore``/
+    ``FeedbackStubStore`` are both explicitly meant to be ONE shared instance
+    each (their whole job is being shared, identity-scoped access to
+    persisted state across requests -- see ``core/chat/history.py``'s own
+    module docstring), and ``SyntheticDataClient`` holds nothing but a DSN
+    string (its own module docstring), so one long-lived instance behaves
+    identically to a fresh one per request -- unlike ``dev_runner.py``'s
+    per-request construction, there is no connection or other per-call state
+    here to keep isolated between requests. ``RoleClient`` registers BOTH
+    the stub router (``DevDeterministicRouter``, what actually answers in
+    ``LLM_MODE=stub``) and the real Bedrock provider (what answers in
+    ``LLM_MODE=live`` with ``llm_profile=bedrock``) -- the two canonical
+    shapes ``roles.py``'s own docstring documents; registering both at once
+    is harmless (``RoleClient.invoke`` reads exactly one key per call).
+    ``tool_registry`` (Phase 7 Task 4) follows the identical "build once,
+    share" discipline -- see :func:`_build_tool_registry`.
+
+    **Phase 10 Task 3: ONE Engine per process (doc 08's cutover).** Before
+    this task, ``RunLogWriter`` got its own ``create_engine(settings.
+    database_url)`` call (:func:`_build_run_log_writer`, removed by this
+    task) -- a second, independent connection pool against the exact same
+    database ``HistoryStore`` now also needs. :func:`~poseidon.core.db.
+    build_engine` is called exactly ONCE here and the SAME ``Engine`` object
+    is handed to both ``RunLogWriter`` and ``HistoryStore`` (``health.py``'s
+    own throwaway ``/ready`` probe engine is unrelated and untouched -- a
+    short-lived probe connection, not a pool this app holds for the process
+    lifetime). ``app.state.db_engine`` also keeps a direct handle on it:
+    ``live_chat.py``'s feedback routes need one more RLS-scoped query
+    (``SELECT 1 FROM messages WHERE id = :id``) that ``UserHistory`` itself
+    has no method for (a bare message id, with no conversation id to scope
+    it through -- see that module's own docstring for why this is the one
+    place this cutover reaches for :func:`~poseidon.core.db.rls_transaction`
+    directly rather than going through ``UserHistory``), and doing that
+    against a SECOND, independently-built engine would defeat the entire
+    point of unifying the pool here.
+
+    **A malformed ``DATABASE_URL`` is now a hard boot failure under
+    ``chat_mode="live"`` (a behavior change from ``_build_run_log_writer``'s
+    old contract).** ``create_engine`` -- called once via ``build_engine``
+    below -- never opens a network connection (engines are lazy, so an
+    unreachable-but-well-formed host still builds fine here and only fails
+    later, per call), but it DOES eagerly parse its URL argument, so a value
+    ``Settings.database_url``'s own "not blank" validator accepts but which
+    is not a URL SQLAlchemy can parse at all still raises immediately.
+    ``_build_run_log_writer`` used to catch exactly that and log a WARNING,
+    booting anyway with ``run_log_writer=None`` -- a deliberate design for
+    an OPTIONAL run log. History is not optional anymore: every route
+    ``live_chat.py`` serves now reads ``app.state.history_store``
+    unconditionally, with no ``is not None`` guard anywhere (unlike
+    ``run_log_writer``, which ``execute_turn`` has always treated as
+    optional throughout). Catching the same exception here and continuing
+    to boot would leave ``app.state.history_store`` unset, which would not
+    degrade gracefully the way a missing run log does -- it would 500 the
+    very first real request instead of failing loudly at boot, the opposite
+    of ``Settings``'s own stated philosophy ("no half-configured server ever
+    accepts traffic"). Letting the exception propagate is therefore the
+    correct, disclosed choice: a live-chat deploy with a malformed
+    ``DATABASE_URL`` now fails ``create_app`` itself, matching that
+    philosophy instead of carving out a second, inconsistent exception for
+    it.
     """
     settings = app.state.settings
-    app.state.conversation_state_store = ConversationStateStore()
-    # Phase 6 Task 5 amendment: the live bootstrap routes' own transcript
-    # store -- see live_chat.py's module docstring ("Task 5 amendment: the
-    # live bootstrap routes") for why this is a SEPARATE object from
-    # conversation_state_store above, not a field added to it.
-    app.state.transcript_store = live_chat.TranscriptStore()
+    engine = build_engine(settings.database_url)
+    app.state.db_engine = engine
+    # app_role is load-bearing, not decorative: omitting it here would
+    # silently disable RLS enforcement on this dev database's superuser DSN
+    # (core/db.py's own "round-0 correction" -- a Postgres superuser
+    # unconditionally bypasses row-level security), exactly the bypass class
+    # Phase 10 Task 1/2 closed at the rls_transaction layer. Settings.
+    # database_app_role already resolves to None for a real deploy whose DSN
+    # authenticates as an ordinary, non-privileged role.
+    app.state.history_store = HistoryStore(engine, app_role=settings.database_app_role)
+    # Phase 10 Task 3: replaces the Task 5 amendment's in-memory
+    # TranscriptStore/ConversationStateStore pair -- see live_chat.py's own
+    # module docstring for the full cutover. FeedbackStubStore is exactly
+    # what its name says: still in-memory (Phase 12 promises a persisted
+    # message_feedback table), extracted verbatim from TranscriptStore's own
+    # feedback dict+lock by history.py's own Task 2.
+    app.state.feedback_store = FeedbackStubStore()
     app.state.role_client = RoleClient(
         settings, providers={"stub": DevDeterministicRouter(), "bedrock": BedrockProvider()}
     )
     prompts_dir = settings.prompts_dir if settings.prompts_dir is not None else DEFAULT_PROMPTS_DIR
     app.state.prompt_registry = PromptRegistry(prompts_dir)
     app.state.data_client = SyntheticDataClient(settings.database_url)
-    app.state.run_log_writer = _build_run_log_writer(settings)
+    app.state.run_log_writer = RunLogWriter(engine)
+    print(
+        "chat persistence: history store + run-log writer share one Engine "
+        "(DATABASE_URL configured)",
+        flush=True,
+    )
     app.state.tool_registry = _build_tool_registry(settings)
     app.state.chat_rate_limiter = _build_chat_rate_limiter(settings)
+    # MalformedCursor (core/chat/history.py) can only ever be raised from a
+    # route on THIS router (list_conversations/get_messages), so its handler
+    # is registered here, scoped alongside the router it protects, rather
+    # than unconditionally at the top of create_app the way AuthError/
+    # RateLimitExceeded are (both of those are reachable from routes mounted
+    # regardless of chat_mode, e.g. GET /api/me).
+    app.add_exception_handler(live_chat.MalformedCursor, live_chat.malformed_cursor_response)
     app.include_router(live_chat.router)
 
 
@@ -345,36 +412,6 @@ def _build_chat_rate_limiter(settings: Settings) -> auth.ChatRateLimiter | None:
     if limit <= 0:
         return None
     return auth.ChatRateLimiter(limit)
-
-
-def _build_run_log_writer(settings: Settings) -> RunLogWriter | None:
-    """``RunLogWriter`` over an engine built from ``DATABASE_URL``, or
-    ``None`` when that fails -- disclosed either way with a boot log line,
-    the same non-fatal, honestly-logged shape ``ensure_bucket()`` above
-    already uses for a MinIO/S3 that is not reachable yet.
-
-    ``Settings.database_url`` only enforces "not blank" (``not_blank``'s own
-    validator); it is not itself proof that the value is a URL SQLAlchemy's
-    ``create_engine`` can parse. ``create_engine`` never opens a network
-    connection (engines are lazy -- see ``health.py``'s own ``/ready`` probe
-    and ``SyntheticDataClient``'s module docstring for the identical
-    convention), so the only realistic way this ever fails is a
-    syntactically malformed DSN; a merely-unreachable host still builds a
-    real writer here; that writer only ever fails later, per call, inside
-    its OWN never-raises methods (``runlog.py``'s module docstring).
-    """
-    try:
-        engine = create_engine(settings.database_url)
-        writer = RunLogWriter(engine)
-    except Exception as exc:  # noqa: BLE001 - a bad DATABASE_URL must not block live chat booting
-        print(
-            f"WARNING: RunLogWriter could not be built from DATABASE_URL "
-            f"({type(exc).__name__}: {exc}); chat turns will not be logged to the run log",
-            flush=True,
-        )
-        return None
-    print("run-log writer: enabled (DATABASE_URL configured)", flush=True)
-    return writer
 
 
 def _build_tool_registry(settings: Settings) -> ToolServerRegistry:

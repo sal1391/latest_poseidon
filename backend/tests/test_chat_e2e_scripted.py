@@ -83,6 +83,19 @@ Every other numeric value pinned below (table rows, GP totals, proof
 lines, prompt hashes' length) was read directly off a real run against the
 seeded database before being written into an assertion -- never guessed
 from the generator's config or hand-computed from ``profiles.yml``.
+
+**Phase 10 Task 3 adaptation.** Each of the three scripted conversations
+below used to mint its own ``conversation_id`` as a bare ``str(uuid.
+uuid4())`` -- valid-shaped, but never created via ``POST /api/
+conversations``. ``UserHistory.append_user_message`` now raises
+``LookupError`` (mapped to a 404) for exactly that: a conversation id that
+looks real but was never actually created is indistinguishable, at the
+database, from one that belongs to someone else (see ``api/live_chat.py``'s
+own module docstring, "A conversation that does not exist... now 404s at
+send time too"). Each scripted conversation below now opens with a real
+``POST /api/conversations`` first; every other pinned value in this file
+(the whole point of it) is unaffected -- none of it depended on which id
+the conversation happened to carry.
 """
 
 import os
@@ -192,9 +205,14 @@ async def test_scripted_four_turn_conversation_against_live_seeded_postgres():
 
     app = create_app(_settings())
     transport = httpx.ASGITransport(app=app)
-    conversation_id = str(uuid.uuid4())
 
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        # Phase 10 Task 3: a real conversation, not a bare fresh uuid4 --
+        # UserHistory.append_user_message now raises LookupError (mapped to
+        # a 404) for a cid that was never created via POST /api/conversations
+        # (see api/live_chat.py's own module docstring, "A conversation that
+        # does not exist... now 404s at send time too").
+        conversation_id = (await client.post("/api/conversations")).json()["conversation"]["id"]
         events_1 = await read_sse(client, conversation_id, TURN_1, str(uuid.uuid4()))
         events_2 = await read_sse(client, conversation_id, TURN_2, str(uuid.uuid4()))
         events_3 = await read_sse(client, conversation_id, TURN_3, str(uuid.uuid4()))
@@ -604,11 +622,13 @@ async def test_existing_customer_brief_flow_scripted_against_live_seeded_postgre
 
     app = create_app(_settings())
     transport = httpx.ASGITransport(app=app)
-    conversation_id = str(uuid.uuid4())
     anchor, prior_window, ytd_window = _brief_anchor_windows()
     ports_window_start = anchor - timedelta(days=365)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        # Phase 10 Task 3: a real conversation -- see the four-turn test's
+        # own comment above for why a bare uuid4 no longer works.
+        conversation_id = (await client.post("/api/conversations")).json()["conversation"]["id"]
         events_1 = await read_sse(
             client, conversation_id, "start an existing-customer brief", str(uuid.uuid4())
         )
@@ -880,10 +900,12 @@ async def test_new_prospect_brief_flow_scripted_against_live_seeded_postgres():
 
     app = create_app(_settings())
     transport = httpx.ASGITransport(app=app)
-    conversation_id = str(uuid.uuid4())
     prospect_pivot = "any relevant news on Meridian Global Shipping?"
 
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        # Phase 10 Task 3: a real conversation -- see the four-turn test's
+        # own comment above for why a bare uuid4 no longer works.
+        conversation_id = (await client.post("/api/conversations")).json()["conversation"]["id"]
         events_1 = await read_sse(
             client, conversation_id, "start a new-prospect brief", str(uuid.uuid4())
         )

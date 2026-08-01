@@ -37,12 +37,14 @@ own ``SpcsIngressProvider`` matrix instead, the same provider-tests-there/
 HTTP-tests-here split Task 2 established above.
 """
 
+import os
 import sys
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
+import psycopg
 import pytest
 from fastapi import Request
 from pydantic import ValidationError
@@ -50,6 +52,7 @@ from pydantic import ValidationError
 from poseidon.api import auth as auth_module
 from poseidon.api.auth import current_user
 from poseidon.core.config import Settings
+from poseidon.core.data.synthetic_client import normalize_dsn
 from poseidon.core.identity_auth0 import ROLES_CLAIM, Auth0Provider
 from tests.test_chat_orchestrator import FakeDataClient, RecordingWriter
 from tests.test_identity_providers import (
@@ -66,6 +69,54 @@ from tests.test_identity_providers import (
 )
 
 _PLACEHOLDER_DSN = "postgresql+psycopg://nobody:nope@127.0.0.1:1/void"
+
+# ===========================================================================
+# Phase 10 Task 3 (the cutover): a chat_mode="live" app's /api/conversations*
+# routes now depend on a real Postgres for every call that touches a
+# conversation -- see api/live_chat.py's own module docstring. Every test in
+# this file that drives such a route now needs a REAL, reachable dsn
+# (:func:`pg_database_url`, mirroring test_live_chat_sse.py's own fixture of
+# the same name) rather than the placeholder above: against the placeholder,
+# a route that reaches an actual rls_transaction call blocks on a real TCP
+# connect attempt to a closed loopback port, which does not fail fast on
+# every platform. A route whose whole path 404s BEFORE ever opening a
+# connection (a malformed, non-uuid ad hoc cid like the ones this file used
+# to use -- UserHistory.append_user_message's own fail-fast "not a valid
+# id" check runs before any transaction opens) would happen to still return
+# quickly against the placeholder, but that is an accident of WHICH check
+# fires first, not something these tests should rely on -- they use a real,
+# reachable Postgres and a real conversation like every other adapted test
+# in this suite.
+# ===========================================================================
+
+CONNECT_TIMEOUT_SECONDS = 2
+_UP_HINT = "start it with `docker compose -f infra/docker-compose.yml up -d db`"
+_MIGRATE_HINT = "migrate it with `python -m alembic upgrade head` (revision 0004)"
+
+
+@pytest.fixture
+def pg_database_url() -> str:
+    """``DATABASE_URL``, or a SKIP with an actionable reason -- see
+    ``test_history_store.py``'s own ``pg_engine``/``test_live_chat_sse.py``'s
+    own ``pg_database_url`` for the identical reachability/migration check."""
+    dsn = os.environ.get("DATABASE_URL", "")
+    if not dsn:
+        pytest.skip(
+            f"DATABASE_URL is not set - pg live chat tests need a Postgres: "
+            f"{_UP_HINT}, {_MIGRATE_HINT}"
+        )
+    try:
+        with psycopg.connect(normalize_dsn(dsn), connect_timeout=CONNECT_TIMEOUT_SECONDS) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('public.conversations')")
+                if cur.fetchone()[0] is None:
+                    pytest.skip(f"conversations does not exist - {_MIGRATE_HINT}")
+    except psycopg.Error as exc:
+        pytest.skip(
+            f"Postgres at DATABASE_URL is not usable within {CONNECT_TIMEOUT_SECONDS}s "
+            f"({type(exc).__name__}: {str(exc).strip()}) - {_UP_HINT}"
+        )
+    return dsn
 
 # The flagship scripted phrase test_chat_orchestrator.py/test_live_chat_sse.
 # py already pin frame-by-frame (DevDeterministicRouter's own lexicon match)
@@ -157,6 +208,17 @@ async def _send_turn(client: httpx.AsyncClient, cid: str, text: str, *, headers=
             pass
 
 
+async def _create_conversation(client: httpx.AsyncClient, *, headers=None) -> str:
+    """A real conversation id via ``POST /api/conversations`` -- mirrors
+    ``test_live_chat_sse.py``'s own helper of the same name. ``headers``
+    matters here specifically: a conversation created as one identity is
+    invisible (RLS) to every other one, so a test proving something about
+    ``bob`` needs a conversation ``bob`` himself created, never one reused
+    from ``alice``."""
+    r = await client.post("/api/conversations", headers=headers or {})
+    return r.json()["conversation"]["id"]
+
+
 # ===========================================================================
 # current_user -- the dependency's own defensive branch
 # ===========================================================================
@@ -237,13 +299,16 @@ async def test_me_ignores_an_invalid_act_as_header():
 # ===========================================================================
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
-async def test_act_as_header_flows_through_to_every_run_log_writer_call():
+async def test_act_as_header_flows_through_to_every_run_log_writer_call(pg_database_url):
     writer = RecordingWriter()
-    app = _live_app(data_client=FakeDataClient(), writer=writer)
+    app = _live_app(data_client=FakeDataClient(), writer=writer, database_url=pg_database_url)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        await _send_turn(client, "conv-actas", FLAGSHIP_TEXT, headers={"X-Dev-User": "alice"})
+        headers = {"X-Dev-User": "alice"}
+        cid = await _create_conversation(client, headers=headers)
+        await _send_turn(client, cid, FLAGSHIP_TEXT, headers=headers)
 
     assert len(writer.start_turn_calls) == 1
     assert writer.start_turn_calls[0]["user_sub"] == "dev|alice"
@@ -253,33 +318,44 @@ async def test_act_as_header_flows_through_to_every_run_log_writer_call():
     assert writer.append_tool_calls[0]["user_sub"] == "dev|alice"
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
-async def test_no_act_as_header_still_uses_the_pinned_disabled_mode_default():
+async def test_no_act_as_header_still_uses_the_pinned_disabled_mode_default(pg_database_url):
     """The pg-stability pin, proven here at the HTTP layer too (see this
     task's own report for the pg re-run): user_sub flows must not shift for
     the common, no-header case -- the SAME "dev|local" every pre-Phase-9
     run-log row already carries."""
     writer = RecordingWriter()
-    app = _live_app(data_client=FakeDataClient(), writer=writer)
+    app = _live_app(data_client=FakeDataClient(), writer=writer, database_url=pg_database_url)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        await _send_turn(client, "conv-default", FLAGSHIP_TEXT)
+        cid = await _create_conversation(client)
+        await _send_turn(client, cid, FLAGSHIP_TEXT)
 
     assert writer.start_turn_calls[0]["user_sub"] == "dev|local"
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
-async def test_two_act_as_identities_in_the_same_process_get_independent_user_subs():
+async def test_two_act_as_identities_in_the_same_process_get_independent_user_subs(
+    pg_database_url,
+):
     """Multi-user local testing, the whole point of the act-as header
     (Global Constraints) -- two different X-Dev-User values against the
     SAME running app/registry produce two independent user_subs, never
-    conflated with each other or with the fixed default."""
+    conflated with each other or with the fixed default. Each identity
+    sends into a conversation IT created: RLS means alice cannot send into
+    a conversation only bob's sub has ever created."""
     writer = RecordingWriter()
-    app = _live_app(data_client=FakeDataClient(), writer=writer)
+    app = _live_app(data_client=FakeDataClient(), writer=writer, database_url=pg_database_url)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        await _send_turn(client, "conv-alice", FLAGSHIP_TEXT, headers={"X-Dev-User": "alice"})
-        await _send_turn(client, "conv-bob", FLAGSHIP_TEXT, headers={"X-Dev-User": "bob"})
+        alice_headers = {"X-Dev-User": "alice"}
+        bob_headers = {"X-Dev-User": "bob"}
+        alice_cid = await _create_conversation(client, headers=alice_headers)
+        bob_cid = await _create_conversation(client, headers=bob_headers)
+        await _send_turn(client, alice_cid, FLAGSHIP_TEXT, headers=alice_headers)
+        await _send_turn(client, bob_cid, FLAGSHIP_TEXT, headers=bob_headers)
 
     subs = [call["user_sub"] for call in writer.start_turn_calls]
     assert subs == ["dev|alice", "dev|bob"]
@@ -571,10 +647,13 @@ async def test_conversations_post_403_when_token_lacks_the_sales_role():
     }
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
-async def test_conversations_post_200_when_token_has_the_sales_role():
+async def test_conversations_post_200_when_token_has_the_sales_role(pg_database_url):
     key1, pub1 = generate_rsa_keypair()
-    app = _auth0_app(JwksTransport([jwk_for(pub1, "key-1")]), chat_mode="live")
+    app = _auth0_app(
+        JwksTransport([jwk_for(pub1, "key-1")]), chat_mode="live", database_url=pg_database_url
+    )
     token = mint_auth0_token(key1, "key-1")
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
@@ -583,12 +662,13 @@ async def test_conversations_post_200_when_token_has_the_sales_role():
     assert r.status_code == 201
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
-async def test_conversations_post_is_open_by_default_in_disabled_mode():
+async def test_conversations_post_is_open_by_default_in_disabled_mode(pg_database_url):
     """Global Constraints: "guards default-open in disabled mode with the
     fixed user" -- pinned explicitly on a conversations route too (the
     Controller's Round 0 correction's own ask), not only /api/skills."""
-    app = _live_app()
+    app = _live_app(database_url=pg_database_url)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         r = await client.post("/api/conversations")
@@ -670,42 +750,63 @@ async def test_dev_skills_run_is_open_by_default_in_disabled_mode():
 # ===========================================================================
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
-async def test_chat_rate_limit_is_off_by_default_in_disabled_mode():
+async def test_chat_rate_limit_is_off_by_default_in_disabled_mode(pg_database_url):
     """Global Constraints: "OFF in disabled mode by default so dev/tests
     are unaffected" -- proven directly: MORE than the nominal default of
-    30 rapid sends, none blocked, with no explicit override."""
+    30 rapid sends, none blocked, with no explicit override. All 35 land on
+    ONE real conversation -- nothing about "35 successful sends, none
+    blocked" needs 35 distinct conversations, only 35 distinct turns."""
     writer = RecordingWriter()
-    app = _live_app(data_client=FakeDataClient(), writer=writer)
+    app = _live_app(data_client=FakeDataClient(), writer=writer, database_url=pg_database_url)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        for i in range(35):
-            await _send_turn(client, f"conv-rl-{i}", FLAGSHIP_TEXT)
+        cid = await _create_conversation(client)
+        for _i in range(35):
+            await _send_turn(client, cid, FLAGSHIP_TEXT)
 
     assert len(writer.start_turn_calls) == 35
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
-async def test_chat_rate_limit_zero_means_off_even_when_explicit():
+async def test_chat_rate_limit_zero_means_off_even_when_explicit(pg_database_url):
     writer = RecordingWriter()
-    app = _live_app(data_client=FakeDataClient(), writer=writer, rate_limit_chat_per_minute=0)
+    app = _live_app(
+        data_client=FakeDataClient(),
+        writer=writer,
+        rate_limit_chat_per_minute=0,
+        database_url=pg_database_url,
+    )
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        for i in range(10):
-            await _send_turn(client, f"conv-rl0-{i}", FLAGSHIP_TEXT)
+        cid = await _create_conversation(client)
+        for _i in range(10):
+            await _send_turn(client, cid, FLAGSHIP_TEXT)
 
     assert len(writer.start_turn_calls) == 10
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
-async def test_chat_rate_limit_blocks_once_the_bucket_is_empty():
+async def test_chat_rate_limit_blocks_once_the_bucket_is_empty(pg_database_url):
     app = _live_app(
-        data_client=FakeDataClient(), writer=RecordingWriter(), rate_limit_chat_per_minute=2
+        data_client=FakeDataClient(),
+        writer=RecordingWriter(),
+        rate_limit_chat_per_minute=2,
+        database_url=pg_database_url,
     )
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        await _send_turn(client, "conv-rl-a", FLAGSHIP_TEXT)
-        await _send_turn(client, "conv-rl-b", FLAGSHIP_TEXT)
+        cid = await _create_conversation(client)
+        await _send_turn(client, cid, FLAGSHIP_TEXT)
+        await _send_turn(client, cid, FLAGSHIP_TEXT)
+        # The THIRD call never reaches the route body at all -- require_sales/
+        # rate_limit_chat_send are FastAPI dependencies, resolved before the
+        # handler runs, so the empty bucket 429s here regardless of whether
+        # "conv-rl-c" names a real conversation (it does not, on purpose --
+        # proving the block happens before any conversation lookup).
         r = await client.post("/api/conversations/conv-rl-c/messages", json={"text": FLAGSHIP_TEXT})
 
     assert r.status_code == 429
@@ -722,26 +823,39 @@ async def test_chat_rate_limit_blocks_once_the_bucket_is_empty():
     assert 1 <= retry_after <= 60
 
 
+@pytest.mark.pg
 @pytest.mark.anyio
-async def test_chat_rate_limit_keys_independently_per_act_as_sub():
+async def test_chat_rate_limit_keys_independently_per_act_as_sub(pg_database_url):
     """Global Constraints: "keyed by sub" -- alice exhausting her own
     bucket must never affect bob's, proven the same way test_api_auth.py's
     own Task 1 section already proves act-as identities are independent."""
     app = _live_app(
-        data_client=FakeDataClient(), writer=RecordingWriter(), rate_limit_chat_per_minute=1
+        data_client=FakeDataClient(),
+        writer=RecordingWriter(),
+        rate_limit_chat_per_minute=1,
+        database_url=pg_database_url,
     )
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        await _send_turn(client, "conv-rl-alice-1", FLAGSHIP_TEXT, headers={"X-Dev-User": "alice"})
+        alice_headers = {"X-Dev-User": "alice"}
+        bob_headers = {"X-Dev-User": "bob"}
+        alice_cid = await _create_conversation(client, headers=alice_headers)
+        bob_cid = await _create_conversation(client, headers=bob_headers)
+        await _send_turn(client, alice_cid, FLAGSHIP_TEXT, headers=alice_headers)
+        # Blocked before the route body runs (same reasoning as the single-
+        # user test above) -- "conv-rl-alice-2" need not be real.
         r_alice_second = await client.post(
             "/api/conversations/conv-rl-alice-2/messages",
             json={"text": FLAGSHIP_TEXT},
-            headers={"X-Dev-User": "alice"},
+            headers=alice_headers,
         )
+        # Bob's OWN, bob-created conversation -- RLS means alice's cid is
+        # invisible to him, so this must be a real conversation bob himself
+        # made, not merely a fresh ad hoc string.
         r_bob_first = await client.post(
-            "/api/conversations/conv-rl-bob-1/messages",
+            f"/api/conversations/{bob_cid}/messages",
             json={"text": FLAGSHIP_TEXT},
-            headers={"X-Dev-User": "bob"},
+            headers=bob_headers,
         )
 
     assert r_alice_second.status_code == 429

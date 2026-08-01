@@ -14,6 +14,29 @@ replaces the dict with persisted, per-user state behind this SAME surface --
 seam (the orchestrator) needs to change when that lands; only what backs it
 does.
 
+**Phase 10 Task 3 (the cutover): KEPT, not deleted.** The live path
+(``api/live_chat.py``'s real ``POST .../messages`` route) now threads
+:class:`~poseidon.core.chat.history.DbStateStore` into
+``execute_turn``'s own ``state`` parameter instead of an instance of this
+class -- ``DbStateStore`` implements the identical five-method surface
+(``get``/``put``/``next_turn_index``/``get_brief_done``/``set_brief_done``,
+same parameter name ``conversation_id``) against ``conversations.state``
+jsonb, so the orchestrator needed zero edits to accept it. This class stays
+because it is still a REAL, live import, not a stray reference: ``core/chat/
+orchestrator.py``'s own ``execute_turn`` signature type-hints its ``state``
+argument as ``ConversationStateStore`` (structurally satisfied by
+``DbStateStore`` today, never enforced at runtime -- Python type hints
+are not checked), and ``core/chat/__init__.py`` re-exports this class as
+part of the package's own public surface. Deleting the class would break
+both without also editing ``orchestrator.py``, which this task's brief
+places out of scope (zero orchestrator edits, by design -- see that
+module's own docstring). Four offline test modules
+(``test_chat_orchestrator.py``, ``test_entry_orchestration.py``,
+``test_chat_state_devrouter.py``, ``test_emit_seam_loop_events.py``)
+also still construct this class directly for orchestrator/router-level
+testing that has nothing to do with the live HTTP surface; none of them
+needed any change for this cutover.
+
 Phase 8 Task 5 (D19) adds a THIRD, additive dict here: :meth:`~
 ConversationStateStore.get_brief_done`/:meth:`~ConversationStateStore.
 set_brief_done`, a per-conversation ``bool`` recording whether a

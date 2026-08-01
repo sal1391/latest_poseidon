@@ -1,11 +1,10 @@
 """Phase 6 Task 4's live chat HTTP surface (doc 01 section 5): the real
-``execute_turn`` pipeline (Task 3) behind ``CHAT_MODE=live``, mounted BY
+``execute_turn`` pipeline behind ``CHAT_MODE=live``, mounted BY
 ``poseidon.api.app.create_app`` INSTEAD of ``mock_chat.py``'s scripted demo
 -- the two routers are never mounted together (see ``app.py``'s own mount
-switch). Task 5 amends this module with the live bootstrap routes below,
-closing the gap Task 4's own report disclosed (Judgment Call 1 / Concern 1).
+switch).
 
-Six routes now:
+Six routes:
 
 - ``POST /api/conversations/{cid}/messages`` drives ONE real chat turn
   through :func:`~poseidon.core.chat.orchestrator.execute_turn` and streams
@@ -18,206 +17,250 @@ Six routes now:
   -- ``[{id, label, description}]`` -- for the frontend's ``SkillsPicker``.
 - ``POST /api/conversations``, ``GET /api/conversations``, ``GET
   /api/conversations/{cid}/messages``, ``POST``/``GET
-  /api/messages/{mid}/feedback`` -- Task 5's own addition, below.
-
-**Task 5 amendment: the live bootstrap routes.** Task 4 shipped only the
-two routes above, so a ``chat_mode="live"`` app could not serve the
-frontend's own ``bootstrap()`` flow (``createConversation``/
-``listConversations``/``getMessages``) end to end -- disclosed there as a
-real, intentional scope boundary, not an oversight, but one that meant
-"localhost stays demo-able" could not be honored the moment compose flips
-``CHAT_MODE=live``. This amendment adds ``mock_chat.py``'s own four
-remaining route SHAPES (create/list conversations, transcript, feedback),
-backed by :class:`TranscriptStore` -- a minimal in-memory store held
-ALONGSIDE :class:`~poseidon.core.chat.state.ConversationStateStore`, never
-instead of it: that store holds parse-time :class:`~poseidon.core.skills.
-context.ConversationSlots` (what the router reasons about), while
-``TranscriptStore`` holds the rendered conversation a human reopens
-(conversations, messages, feedback) -- two different shapes of "state,"
-never merged into one class. Phase 10 (History + RLS) replaces
-``TranscriptStore`` with persisted ``conversations``/``messages`` tables
-behind this EXACT SAME four-route surface, the same "same surface, real
-backing store" contract ``ConversationStateStore``'s own docstring already
-established for Phase 6 as a whole.
-
-The streaming route's own ``cid`` handling is UNCHANGED by this amendment,
-on purpose: ``cid`` stays an opaque, unvalidated path segment (mirroring
-``ConversationStateStore.get``'s own "unseen id -> empty slots"
-permissiveness) rather than 404ing on an id ``TranscriptStore`` has never
-seen, the way ``GET .../messages`` below does. This is a disclosed,
-deliberate asymmetry, not an inconsistency: every EXISTING test in this
-file (Task 4's own) dispatches turns against ad hoc ids like ``"conv-1"``
-that were never created via ``POST /api/conversations`` -- rejecting those
-would be a silent regression of already-shipped, already-tested behavior
-for a case a real frontend session never hits (it always creates first).
-Instead, :meth:`TranscriptStore.append_user_message`/
-:meth:`~TranscriptStore.start_assistant_message` AUTO-VIVIFY an entry for
-whatever ``cid`` the streaming route is handed, so a real session (which
-always creates first) and an existing ad hoc test (which does not) both
-end up with a transcript ``GET`` can serve -- only a ``cid`` NEITHER route
-has ever touched 404s.
+  /api/messages/{mid}/feedback`` -- the live bootstrap routes (Phase 6 Task
+  5), now (Phase 10 Task 3) backed by persisted history instead of an
+  in-memory store -- see "Phase 10 Task 3: the persistent-history cutover"
+  below.
 
 **Bridging a synchronous orchestrator into an async stream.**
-``execute_turn`` (Task 3) is entirely synchronous -- it calls its sink's
-``send`` callable directly, with no ``await`` anywhere in the call chain
-(see ``events.py``'s own "Synchronous by construction"). Running it
-directly on the asyncio event loop thread would block every other request
-for the whole turn. Each request therefore runs ``execute_turn`` in a
-worker thread (``anyio.to_thread.run_sync``), and the sink's ``send``
-callable pushes each frame onto a plain, thread-safe ``queue.Queue`` that
-the async generator drains one item at a time (also via
-``anyio.to_thread.run_sync``, so the event loop is never blocked waiting
-on it either) -- the "simplest correct equivalent" the brief invites in
-place of a lower-level ``anyio.from_thread`` portal, adequate for a turn's
-small, bounded frame count.
+``execute_turn`` is entirely synchronous -- it calls its sink's ``send``
+callable directly, with no ``await`` anywhere in the call chain (see
+``events.py``'s own "Synchronous by construction"). Running it directly on
+the asyncio event loop thread would block every other request for the whole
+turn. Each request therefore runs ``execute_turn`` in a worker thread
+(``anyio.to_thread.run_sync``), and the sink's ``send`` callable pushes each
+frame onto a plain, thread-safe ``queue.Queue`` that the async generator
+drains one item at a time (also via ``anyio.to_thread.run_sync``, so the
+event loop is never blocked waiting on it either).
 
 **App-state wiring** (built once per app, in ``app.py``'s own
 ``_wire_live_chat``, and read back here per request): ``skill_registry``,
-``conversation_state_store``, ``role_client``, ``prompt_registry``,
-``data_client``, ``run_log_writer`` (``None`` when ``DATABASE_URL``
-could not be turned into an engine -- see ``app.py``'s own
-``_build_run_log_writer``), and, since Phase 7 Task 4, ``tool_registry``
-(a :class:`~poseidon.mcp.registry.ToolServerRegistry`, threaded to
-``execute_turn`` as its own ``tools`` keyword -- see ``app.py``'s own
-``_build_tool_registry`` for the ``LLM_MODE``-gated fixture-vs-real
-choice). ``data_client`` is built ONCE, unlike
-``poseidon.api.dev_runner``'s own per-request ``SyntheticDataClient``
-construction: that module's docstring calls the class "cheap to build...
-opens no network connection until a query actually runs" precisely because
-it holds nothing but a DSN string, which is exactly what makes one shared,
-long-lived instance behaviorally identical to a fresh one per request --
-there is no connection pool or other per-call state to leak between
-requests either way. A test therefore swaps ``app.state.data_client`` for a
-fake after construction, the same substitution ``test_dev_runner.py``
-already uses for ``app.state.skill_registry``.
+``history_store`` (Phase 10 Task 3, replacing ``conversation_state_store``/
+``transcript_store``), ``feedback_store``, ``db_engine``, ``role_client``,
+``prompt_registry``, ``data_client``, ``run_log_writer``, and
+``tool_registry`` (a :class:`~poseidon.mcp.registry.ToolServerRegistry`,
+threaded to ``execute_turn`` as its own ``tools`` keyword -- see ``app.py``'s
+own ``_build_tool_registry`` for the ``LLM_MODE``-gated fixture-vs-real
+choice). ``data_client`` is built ONCE, unlike ``poseidon.api.dev_runner``'s
+own per-request ``SyntheticDataClient`` construction -- there is no
+connection pool or other per-call state to leak between requests either way.
 
-**An unhandled exception mid-turn (fix round 1, REQUIRED F1).**
-``execute_turn`` already turns every failure ITS OWN pinned contract
-recognizes into a structured ``turn_error`` frame (an LLM provider error, a
-skill dispatch failure, the duplicate-turn retry short-circuit -- see
-``orchestrator.py``'s own module docstring). It does not, and cannot,
-promise to catch EVERYTHING -- a genuine bug, or a real network exception a
-provider layer failed to normalize into its own ``LLMResponse(stop_
-reason="error", ...)`` contract (decision D11's own normalization promise,
-not this module's to re-verify), can still escape it. Before this fix,
-letting that exception propagate out of ``run_turn_sync`` crashed the whole
-``anyio`` task group with an ``ExceptionGroup``, which Starlette's streaming
-response machinery turns into a raw ``httpx.RemoteProtocolError`` on the
-client side and a crash trace in the server log -- the frontend recovers
-(its own ``sendMessage``'s ``finally`` unsticks the composer) but the user
-sees a silently truncated answer with no error shown, and the ``turn_run``
-row (when a writer is configured) is left orphaned at ``status='running'``
-forever, since ``execute_turn``'s own ``finalize`` call is never reached.
-``run_turn_sync`` therefore wraps the WHOLE ``execute_turn`` call in one
-more ``except Exception`` (not ``BaseException`` -- the same "a cancelled
-request must keep unwinding" discipline ``registry.py``'s own ``dispatch``
-uses): it logs the failure at ERROR, emits ONE more pinned ``turn_error``
-frame (``code="internal_error"``, a generic, byte-pinned message that
-never leaks exception internals to the client), and -- when a writer is
-configured -- finalizes the run-log row itself, keyed by ``sink.turn_id``
-(the turn-id unification amendment is what makes this possible from the
-HTTP layer at all: without it, this function would have no id to finalize
-against). Calling ``finalize`` unconditionally here is safe even when the
-crash happened before ``execute_turn`` ever reached its own ``start_turn``
-call: the ``UPDATE ... WHERE id = :turn_run_id`` simply matches zero rows,
-which the never-raises writer absorbs exactly as harmlessly as any other
-finalize call against an id it does not recognize (``runlog.py``'s own
-module docstring). The stream still ends cleanly either way -- the
-``finally: frame_queue.put(_DONE)`` below is untouched, so a crash now looks
-to the client like any other terminal ``error`` frame, never a broken
-connection.
+**An unhandled exception mid-turn.** ``execute_turn`` already turns every
+failure ITS OWN pinned contract recognizes into a structured ``turn_error``
+frame (an LLM provider error, a skill dispatch failure, the duplicate-turn
+retry short-circuit -- see ``orchestrator.py``'s own module docstring). It
+does not, and cannot, promise to catch EVERYTHING -- a genuine bug, or a
+real network exception a provider layer failed to normalize, can still
+escape it. Letting that exception propagate out of ``run_turn_sync``
+uncaught would crash the whole ``anyio`` task group with an
+``ExceptionGroup``, which Starlette's streaming response machinery turns
+into a raw ``httpx.RemoteProtocolError`` on the client side -- the frontend
+recovers, but the user sees a silently truncated answer with no error shown,
+and the ``turn_run`` row (when a writer is configured) is left orphaned at
+``status='running'`` forever. ``run_turn_sync`` therefore wraps the WHOLE
+``execute_turn`` call in one more ``except Exception`` (not ``BaseException``
+-- a cancelled request must keep unwinding): it logs the failure at ERROR,
+emits ONE more pinned ``turn_error`` frame (``code="internal_error"``, a
+generic, byte-pinned message that never leaks exception internals to the
+client), and -- when a writer is configured -- finalizes the run-log row
+itself, keyed by ``sink.turn_id`` (the turn-id unification: ``turn_run.id``
+IS the SSE ``turn_id`` every frame already carries). The stream still ends
+cleanly either way -- ``finally: frame_queue.put(_DONE)`` is untouched, so a
+crash now looks to the client like any other terminal ``error`` frame, never
+a broken connection.
 
-**Recording the transcript (Task 5 amendment).** ``TranscriptStore`` needs
-each turn's assistant PARTS, but the only place those exist is already-
-serialized SSE frame strings -- ``execute_turn``/``SseEnvelopeSink`` push
-wire-format text through the ``send`` callable, never a structured event
-object (see ``events.py``'s own "Synchronous by construction": this keeps
-that module importing nothing async and knowing nothing about a caller's
-storage needs). Rather than widen ``SseEnvelopeSink``'s contract to also
-hand back structured data -- a sanctioned-file boundary this task does not
-cross -- :func:`_record_transcript_frame` decodes each frame the SAME way
-every test module in this codebase already does (``_parse_frame``/
-``read_sse``'s own line-splitting discipline: ``events.py``'s wire format
-is pinned byte-for-byte, so this decoding is exactly as stable as the
-format itself), then folds it into the assistant message's parts: a
-``part`` frame is appended verbatim (kind + payload, envelope stripped --
-the same fields the frontend's own ``applyEventTo`` keeps for its "part"
-case); a ``token`` frame folds into the trailing text part, or starts a
-new one, mirroring the frontend's own token-folding rule (never mock's,
-since mock's illustrative multi-chunk demo has no live equivalent to
-match -- see ``orchestrator.py``'s own "never chunked" note); an
-``accepted``/``done``/``error`` frame persists nothing, exactly mirroring
-mock's own comment that "the error is a stream event, not a persisted
-part." This runs inside ``send`` itself (called synchronously, from
-whichever thread is running the turn), so recording is complete by the
-time the client sees the final frame -- there is no separate "at done-time"
-step to race.
+**Recording the transcript.** :class:`~poseidon.core.chat.history.
+TurnTranscriptBuffer` needs each turn's assistant PARTS, but the only place
+those exist is already-serialized SSE frame strings -- ``execute_turn``/
+``SseEnvelopeSink`` push wire-format text through the ``send`` callable,
+never a structured event object (see ``events.py``'s own "Synchronous by
+construction": this keeps that module importing nothing async and knowing
+nothing about a caller's storage needs). Rather than widen
+``SseEnvelopeSink``'s contract to also hand back structured data --
+``events.py`` is not a file this task may touch -- :func:`_record_
+transcript_frame` decodes each frame the SAME way every test module in this
+codebase already does (``_parse_frame``/``read_sse``'s own line-splitting
+discipline: ``events.py``'s wire format is pinned byte-for-byte, so this
+decoding is exactly as stable as the format itself), then folds it into the
+assistant message's parts, mirroring the frontend's own ``applyEventTo``
+rules. This runs inside ``send`` itself (called synchronously, from
+whichever thread is running the turn), so the buffer is complete by the
+time the client sees the final frame.
 
-A ``tool`` frame (P8 whole-branch final-review wave, 2026-07-30, item 8 /
-M-1 -- corrects this paragraph's own earlier claim) folds through
-:meth:`TranscriptStore.record_tool_event` on EVERY status, not only
-``"done"``: ``mock_chat.py``'s own accumulation rule records a tool_event
-only at "done" too, but that is harmless FOR MOCK specifically, since its
-scripted demo has no ``ctx.emit_part`` concept and therefore nothing
-ever lands between one step's own "start" and "done" -- see that
-method's own docstring for why replaying "start" too is what a REAL
-dispatch (one that streams a part early, Phase 8 Task 1's own seam)
-needs to keep the reloaded transcript's part order agreeing with the
-live view's.
+The SAME technique -- decode an already-serialized frame, mutate it, and
+re-serialize it byte-for-byte in the SAME pinned wire shape -- is how
+:func:`_inject_done_title` adds the additive ``"title"`` field to the
+``done`` frame (see "Phase 10 Task 3" below for why that field cannot be
+known at the moment ``sink.done()`` fires).
 
-**The snowflake guard (Task 5 amendment).** ``dev_runner.py``'s own
-``_build_ctx`` refuses ``data_backend != "synthetic"`` with a structured
-501 BEFORE ever constructing a client to query with -- Task 4 disclosed
-that live chat had no equivalent (that task's own report, Judgment Call 3 /
-Concern 2): ``app.state.data_client`` is always a ``SyntheticDataClient``
-regardless of ``settings.data_backend``, so a ``CHAT_MODE=live`` deploy
-misconfigured with ``DATA_BACKEND=snowflake`` before Phase 15 ships a real
-adapter would silently answer from the WRONG schema instead of failing
-loudly. ``send_message`` now checks ``settings.data_backend`` first, before
-building the worker-thread/queue machinery and before ``execute_turn`` (and
-therefore ``parse_turn``'s own ``data.list_dimension_values`` calls) could
-ever touch ``app.state.data_client`` at all -- mirroring dev_runner's exact
-guard condition and ``problem()`` shape (``501``, title ``"backend not
-implemented"``), adapted to this endpoint's SSE contract instead of a plain
-JSON body: one ``turn_error`` frame, built through a THROWAWAY
-:class:`~poseidon.core.chat.events.SseEnvelopeSink` (the same class, a
-fresh instance, since the real one is never constructed on this path) whose
-``send`` merely appends to a list instead of bridging a worker thread --
-there is no turn to run, so there is nothing to bridge. This frame carries
-no preceding ``accepted``: unlike every other terminal path in
-``orchestrator.py``, this guard fires before any turn begins at all, so
-there is no ``turn_index`` to report and nothing dishonest about skipping a
-step that never started (the frontend's own ``applyEventTo`` is
-replay-safe regardless -- "an event for an unseen message creates it").
-The user's message and an (empty) assistant message are still recorded
-into the transcript first, the same as every other path through
-``send_message`` -- the user really did send it, and this mirrors how the
-internal-error crash path also leaves behind an assistant message with
-whatever parts existed before the crash.
+**The snowflake guard.** ``dev_runner.py``'s own ``_build_ctx`` refuses
+``data_backend != "synthetic"`` with a structured 501 BEFORE ever
+constructing a client to query with. ``send_message`` checks ``settings.
+data_backend`` first, before building the worker-thread/queue machinery and
+before ``execute_turn`` (and therefore ``parse_turn``'s own ``data.list_
+dimension_values`` calls) could ever touch ``app_state.data_client`` at
+all -- mirroring dev_runner's exact guard condition and ``problem()`` shape
+(``501``, title ``"backend not implemented"``), adapted to this endpoint's
+SSE contract instead of a plain JSON body: one ``turn_error`` frame, built
+through a THROWAWAY :class:`~poseidon.core.chat.events.SseEnvelopeSink`
+whose ``send`` merely appends to a list, since there is no turn to run and
+therefore nothing to bridge into a worker thread. This frame carries no
+preceding ``accepted``: this guard fires before any turn begins at all, so
+there is no ``turn_index`` to report. The user's message and an (empty)
+assistant message are still persisted first, the same as every other path
+through ``send_message`` -- the user really did send it, and this mirrors
+how the internal-error crash path also leaves behind an assistant message
+with whatever parts existed before the crash.
+
+**Phase 10 Task 3: the persistent-history cutover.** Live chat moves from
+two in-memory stores (``TranscriptStore``, deleted by this task --
+conversations/messages/feedback; ``ConversationStateStore`` -- per-
+conversation slots/turn-index/brief-done, KEPT in ``core/chat/state.py``
+since ``core/chat/orchestrator.py`` still imports it as a type hint, but no
+longer constructed here) to :class:`~poseidon.core.chat.history.
+HistoryStore`/:class:`~poseidon.core.chat.history.DbStateStore` (Postgres,
+row-level-security-scoped per caller). Every route below resolves a fresh
+:class:`~poseidon.core.chat.history.UserHistory` per request --
+``request.app.state.history_store.for_user(request.state.user.sub)`` --
+rather than reading one shared, unscoped store, so nothing returned can
+ever be another user's row (RLS enforces this in the database; this module
+adds no ``user_sub`` filtering of its own, matching ``history.py``'s own
+"no WHERE clauses, anywhere, on purpose" discipline).
+
+*Id minting.* ``turn_id``/``message_id``/the user message's own id are all
+minted here, via :func:`~poseidon.core.util.uuid7.uuid7` -- never
+``uuid.uuid4`` -- since Phase 10 Task 2's migration declares no server-side
+default for either table's ``id`` column and ``uuid7`` is this phase's only
+id mint (real time-ordering for the busy ``messages`` table's insert
+locality, doc 05 section 6). ``uuid.uuid4`` remains imported for a DIFFERENT
+reason -- ``uuid.UUID(...)`` parsing (:func:`_parse_message_id`), never
+minting.
+
+*A conversation that does not exist (or is not this caller's) now 404s at
+SEND time too.* ``TranscriptStore.append_user_message`` used to auto-vivify
+any ``cid`` it had never seen (a disclosed Task 4/5 asymmetry with ``GET
+.../messages``, which always 404'd on an unknown id). ``UserHistory.
+append_user_message`` cannot do that: ``messages.conversation_id`` is a real
+foreign key, so a bare INSERT naming a conversation that does not exist (or
+belongs to someone else) raises ``LookupError`` rather than silently
+succeeding or auto-creating a row. This is not a gap to route around --
+auto-vivifying a real, persisted, RLS-owned table would mean minting
+``conversations`` rows nobody ever asked for -- so ``send_message`` maps
+that ``LookupError`` straight to the SAME 404 ``GET .../messages`` already
+uses for an unknown/foreign conversation.
+
+*Titles at turn one.* After a SUCCESSFUL first turn (``turn_index == 1``,
+``outcome.status == "ok"``), the route calls :func:`~poseidon.core.llm.
+titles.title_for`, falls back to ``question[:60]`` on ``""``, and both
+persists the result (``UserHistory.set_title``) and folds it into that
+turn's own ``done`` frame as an additive ``"title": str|null`` field (``null``
+on every other ``done`` frame -- a later turn, or a turn-one ``clarify``).
+The catch: ``sink.done(usage)`` is called by ``orchestrator.py`` itself,
+synchronously, BEFORE ``execute_turn`` returns its ``TurnOutcome`` -- by the
+time this route could inspect ``outcome.status``, the ``done`` frame may
+already be serialized and queued for the client. ``core/chat/orchestrator.py``
+is out of this task's sanctioned edits (zero orchestrator changes, by
+design), so the fix cannot move up a layer into ``sink.done`` itself
+either. Instead, ``send`` holds back (never immediately queues) the ONE
+``done`` frame a turn ever produces; once ``execute_turn`` returns (the
+``else:`` branch of ``run_turn_sync``'s ``try``), the real outcome is known,
+the title is computed (or left ``None``), and :func:`_inject_done_title`
+re-serializes the buffered frame with that field before it ever reaches the
+client. ``turn_index`` itself is read back off the ``accepted`` frame
+(``TurnOutcome`` carries no such field) -- the one other frame ``send``
+inspects rather than merely folding into the transcript buffer or forwarding
+verbatim. A title-computation failure (a role-client bug, a ``set_title``
+call landing on a dropped connection -- ``title_for`` itself already
+swallows a provider error into ``""``, per its own docstring, but nothing
+guards the ``RoleClient.invoke``/``set_title`` calls THIS route makes) is
+caught, logged, and treated as "no title" rather than allowed to break the
+``done`` frame an already-finished, otherwise-successful turn owes the
+client -- the identical "a second failure must never re-terminate an
+already-finished turn" discipline ``orchestrator.py``'s own pass-through
+repopulation guard uses.
+
+*Malformed cursors.* ``UserHistory.list_conversations``/``.get_messages``
+raise :class:`~poseidon.core.chat.history.MalformedCursor` (a ``ValueError``
+subclass) for a cursor that fails to decode -- see that module's own
+docstring for why this is the one input that does NOT fail closed to a
+harmless default. :func:`malformed_cursor_response`, registered by
+``app.py`` as this exception's handler (the same pattern ``api/auth.py``'s
+``AuthError``/``RateLimitExceeded`` already establish), maps it to a 400
+RFC-7807 problem detail -- never a bare 500, and never FastAPI's default
+``{"detail": ...}`` shape.
+
+*The feedback existence gate.* ``TranscriptStore``'s own membership check
+(does ``_messages`` hold a message with this id) is gone along with the
+class; :class:`~poseidon.core.chat.history.FeedbackStubStore` (the
+extracted verbatim dict+lock, still in-memory until Phase 12's persisted
+``message_feedback`` table) explicitly does not know whether ``mid`` names a
+real message (its own docstring). :func:`_message_visible` closes that gap
+with an RLS-filtered ``SELECT 1 FROM messages WHERE id = :id`` -- absent or
+another user's message both read back as "not visible," indistinguishable
+by construction, preserving the 404-on-unknown-mid contract for both routes
+uniformly (the old code only gated ``POST``; ``GET`` never checked
+existence at all, only "was feedback ever recorded"). This is the ONE place
+this cutover reaches for :func:`~poseidon.core.db.rls_transaction` directly
+rather than going through :class:`~poseidon.core.chat.history.UserHistory`:
+a bare message id, with no conversation id to scope a call through, is not
+a lookup ``UserHistory``'s shipped interface (Task 2, review closed) can
+perform -- and reaching into that class's own private ``_engine``/
+``_transaction`` from here would cross the same leading-underscore boundary
+this codebase treats as a hard rule elsewhere. ``core/db.py``'s
+``rls_transaction`` is public, general-purpose infrastructure (not private
+to ``history.py``), and this route already has everything the call needs --
+the shared ``Engine`` (``app.state.db_engine``, the SAME object ``History
+Store``/``RunLogWriter`` hold), the caller's ``user_sub``, and ``Settings.
+database_app_role`` -- so no second connection pool and no new ``History``
+method are needed to close this one gap.
+
+*Disclosed, scoped gap: ``list_conversations``' item shape.* The brief's own
+interface line for ``GET /api/conversations`` asks each item to carry
+``title``, ``mode``, ``updated_at``. ``UserHistory.list_conversations``
+(Task 2, review closed) queries ``id, title, updated_at`` but returns only
+``{"id", "title"}`` per item -- ``mode`` is not even in that SELECT, and
+``updated_at`` is read for cursor encoding but dropped before the item dict
+is built. Serving the fuller shape would need a ``history.py`` change (add
+``mode`` to the SELECT; add both fields to the item dict) that this task's
+scope explicitly defers ("no history.py changes ... report BLOCKED with
+specifics"). This route therefore serves exactly what ``UserHistory``
+returns today -- ``{"id", "title"}`` per item, inside the new ``{"items",
+"next_cursor"}`` envelope -- and this gap is reported, with the precise fix
+above, as a concern for Task 4/a follow-up rather than worked around by
+reaching past ``UserHistory`` (which would replicate the exact SQL/
+transaction plumbing this class exists to own in exactly one place) or by
+silently shipping a shape the frontend cannot actually rely on.
 """
 
 import json
 import logging
 import queue
-import threading
 import uuid
 from datetime import date
 from time import monotonic
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy import text
 
 from poseidon.api.auth import rate_limit_chat_send, require_sales
 from poseidon.core.chat.events import SseEnvelopeSink, skill_label
-from poseidon.core.chat.orchestrator import (
-    ENTRY_PHRASE_EXISTING,
-    ENTRY_PHRASE_PROSPECT,
-    execute_turn,
+from poseidon.core.chat.history import (
+    DbStateStore,
+    FeedbackStubStore,
+    HistoryStore,
+    MalformedCursor,
+    TurnTranscriptBuffer,
+    UserHistory,
 )
+from poseidon.core.chat.orchestrator import TurnOutcome, execute_turn
+from poseidon.core.db import rls_transaction
+from poseidon.core.llm.titles import title_for
 from poseidon.core.skills.registry import SkillRegistry
 from poseidon.core.skills.result import problem
+from poseidon.core.util.uuid7 import uuid7
 
 logger = logging.getLogger(__name__)
 
@@ -234,24 +277,27 @@ _DONE = object()
 # the same convention orchestrator.py's own _EM_DASH constant uses.
 _EM_DASH = chr(0x2014)
 
-# Fix round 1, REQUIRED F1: an unhandled exception mid-turn (the realistic
-# case once LLM_MODE=live -- a Bedrock network hiccup, a database blip inside
-# a skill dispatch, anything execute_turn itself does not already turn into a
-# structured `error` frame) must still end the stream cleanly, not crash the
-# whole ASGI response with an ExceptionGroup and leave the turn_run row
-# orphaned at status='running' forever. `title` is shared between the
-# user-facing SSE frame (generic, byte-pinned -- never leaks exception
-# internals to the client) and the run-log's own `error` dict (which DOES
-# carry the exception class name and message, for whoever reads the row
-# later); only `detail` differs between the two uses.
+# An unhandled exception mid-turn (the realistic case once LLM_MODE=live -- a
+# Bedrock network hiccup, a database blip inside a skill dispatch, anything
+# execute_turn itself does not already turn into a structured `error` frame)
+# must still end the stream cleanly, not crash the whole ASGI response with
+# an ExceptionGroup and leave the turn_run row orphaned at status='running'
+# forever. `title` is shared between the user-facing SSE frame (generic,
+# byte-pinned -- never leaks exception internals to the client) and the
+# run-log's own `error` dict (which DOES carry the exception class name and
+# message, for whoever reads the row later); only `detail` differs.
 _INTERNAL_ERROR_TITLE = "internal_error"
 _INTERNAL_ERROR_DETAIL = "the turn failed unexpectedly " + _EM_DASH + " the error has been logged"
 
-# Task 5 amendment: the snowflake guard. Same title/condition dev_runner.py's
-# own _build_ctx uses for the identical misconfiguration -- see the module
-# docstring's "The snowflake guard".
+# The snowflake guard: same title/condition dev_runner.py's own _build_ctx
+# uses for the identical misconfiguration -- see the module docstring's
+# "The snowflake guard".
 _SNOWFLAKE_GUARD_TITLE = "backend not implemented"
 _SYNTHETIC_DATA_BACKEND = "synthetic"
+
+# Phase 10 Task 3: MalformedCursor's RFC-7807 title (see malformed_cursor_
+# response below).
+_MALFORMED_CURSOR_TITLE = "malformed cursor"
 
 # Envelope fields SseEnvelopeSink._frame adds to EVERY frame -- stripped back
 # out by _record_transcript_frame below when folding a frame into a
@@ -259,193 +305,10 @@ _SYNTHETIC_DATA_BACKEND = "synthetic"
 # for its "part"/"tool" cases (chatStore.ts).
 _ENVELOPE_KEYS = ("turn_id", "message_id", "event_seq")
 
-
-def _message(role: str, parts: list[dict]) -> dict:
-    """Same shape mock_chat.py's own ``_message`` builds -- a fresh id per
-    message, never reused across conversations."""
-    return {"id": str(uuid.uuid4()), "role": role, "parts": parts}
-
-
-class TranscriptStore:
-    """Task 5 amendment: the minimal in-memory conversation+message+feedback
-    store backing the live bootstrap routes -- see the module docstring's
-    "Task 5 amendment: the live bootstrap routes" for how this relates to
-    :class:`~poseidon.core.chat.state.ConversationStateStore`. Phase 10
-    (History + RLS) replaces this class with persisted ``conversations``/
-    ``messages`` tables behind the exact same surface used below: ``create_
-    conversation``/``list_conversations``/``get_messages``/``append_user_
-    message``/``start_assistant_message``/``append_part``/``fold_token``/
-    ``upsert_feedback``/``get_feedback``.
-
-    One :class:`threading.Lock` guards every dict below -- the same
-    "uvicorn workers=1 in dev; a plain dict + lock is correct enough"
-    discipline :class:`~poseidon.core.chat.state.ConversationStateStore`'s
-    own docstring already established for this exact deployment shape.
-    """
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._conversations: dict[str, dict] = {}
-        self._messages: dict[str, list[dict]] = {}
-        self._feedback: dict[str, dict] = {}
-
-    def create_conversation(self) -> tuple[dict, dict]:
-        """Same opener mock_chat.py's own ``create_conversation`` builds,
-        PLUS ``send_text`` on both flow chips (Phase 8 Task 5): clicking
-        either one now sends the exact pinned D19 entry phrase
-        (``core/chat/orchestrator.py``'s own ``_ENTRY_MODE_BY_PHRASE``,
-        matched casefolded-exact) rather than the bare button label -- the
-        P6 send_text mechanism (``ChipsPart.tsx``'s own ``option.send_text
-        ?? option.label``), now exercised by the opener's own chips too,
-        not only a clarify turn's. Phase 6 had no live-specific
-        flow-branching content of its own yet (Phase 8 owns the two brief
-        flows the chips name); this amendment is that content landing.
-
-        ``send_text`` values are IMPORTED from ``orchestrator.py`` (P8
-        whole-branch final-review wave, 2026-07-30, item 6 / I-6), not
-        retyped as independent literals -- see that module's own
-        ``ENTRY_PHRASE_EXISTING``/``ENTRY_PHRASE_PROSPECT`` for why."""
-        cid = str(uuid.uuid4())
-        conversation = {"id": cid, "title": "New chat"}
-        opener = _message(
-            "assistant",
-            [
-                {"kind": "text", "payload": {"markdown": "Ask about your data, or pick a flow:"}},
-                {
-                    "kind": "chips",
-                    "payload": {
-                        "options": [
-                            {
-                                "id": "existing_customer",
-                                "label": "Existing customer",
-                                "send_text": ENTRY_PHRASE_EXISTING,
-                            },
-                            {
-                                "id": "new_prospect",
-                                "label": "New customer prospect",
-                                "send_text": ENTRY_PHRASE_PROSPECT,
-                            },
-                        ]
-                    },
-                },
-            ],
-        )
-        with self._lock:
-            self._conversations[cid] = conversation
-            self._messages[cid] = [opener]
-        return conversation, opener
-
-    def list_conversations(self) -> list[dict]:
-        """Newest first -- same ordering mock_chat.py's own
-        ``list_conversations`` returns."""
-        with self._lock:
-            return list(reversed(list(self._conversations.values())))
-
-    def get_messages(self, cid: str) -> list[dict] | None:
-        """``None`` for a ``cid`` neither :meth:`create_conversation` nor
-        the streaming route's own auto-vivification (see
-        :meth:`append_user_message`) has ever touched -- the route above
-        turns that into a 404, mirroring mock_chat.py's own ``get_messages``."""
-        with self._lock:
-            existing = self._messages.get(cid)
-            return None if existing is None else list(existing)
-
-    def append_user_message(self, cid: str, text: str) -> None:
-        """Auto-vivifies ``cid`` if this is the first time anything has
-        touched it -- see the module docstring's disclosed streaming-route
-        asymmetry."""
-        message = _message("user", [{"kind": "text", "payload": {"markdown": text}}])
-        with self._lock:
-            self._messages.setdefault(cid, []).append(message)
-
-    def start_assistant_message(self, cid: str, message_id: str) -> dict:
-        """Registers an (initially empty) assistant message and returns the
-        SAME mutable dict :meth:`append_part`/:meth:`fold_token` fill in
-        place as the turn runs -- mirroring mock_chat.py's own "register the
-        assistant message before the first frame goes out, then fill it in
-        place" comment verbatim."""
-        assistant = {"id": message_id, "role": "assistant", "parts": []}
-        with self._lock:
-            self._messages.setdefault(cid, []).append(assistant)
-        return assistant
-
-    def append_part(self, assistant: dict, part: dict) -> None:
-        with self._lock:
-            assistant["parts"].append(part)
-
-    def record_tool_event(self, assistant: dict, payload: dict) -> None:
-        """A ``tool`` frame (either status) folds into ``assistant``'s
-        parts by ``tool_seq`` -- mirroring the frontend's own
-        ``applyEventTo`` "tool" case (chatStore.ts) EXACTLY (P8
-        whole-branch final-review wave, 2026-07-30, item 8 / M-1): a
-        ``tool_seq`` not yet present is PUSHED (a "start" frame always
-        arrives first for any given dispatch), and a ``tool_seq`` already
-        present is REPLACED IN PLACE, at its EXISTING array position,
-        never re-appended.
-
-        Before this method existed, ``_record_transcript_frame`` recorded
-        a tool_event only on ``status="done"`` -- byte-identical to the
-        live view for a dispatch that never streams a part early (the
-        common case today), but WRONG the moment a subskill streams a
-        part between the wire's own ``tool_start`` and ``tool_done``
-        frames (``ctx.emit_part``, Phase 8 Task 1): the reloaded
-        transcript would show that early part BEFORE the tool_event
-        (recorded late, once ``tool_done`` finally arrived), while the
-        live view -- which pushed a tool_event placeholder the moment
-        ``tool_start`` arrived, then only updated it in place at
-        ``tool_done`` -- shows the tool_event FIRST, exactly where
-        ``tool_start`` put it. Replaying this rule server-side is what
-        makes GET .../messages agree with the live view's own part order
-        under progressive streaming, not merely under the no-early-part
-        common case.
-        """
-        with self._lock:
-            parts = assistant["parts"]
-            index = next(
-                (
-                    i
-                    for i, part in enumerate(parts)
-                    if part["kind"] == "tool_event"
-                    and part["payload"]["tool_seq"] == payload["tool_seq"]
-                ),
-                None,
-            )
-            part = {"kind": "tool_event", "payload": payload}
-            if index is not None:
-                parts[index] = part
-            else:
-                parts.append(part)
-
-    def fold_token(self, assistant: dict, text: str) -> None:
-        """A ``token`` frame's text folds into the trailing text part, or
-        starts a new one -- the same rule the frontend's own
-        ``applyEventTo`` uses for its "token" case (chatStore.ts), not
-        mock_chat.py's illustrative multi-chunk demo, since live text
-        arrives in exactly one chunk today (see ``orchestrator.py``'s own
-        "never chunked" note) but this stays correct if that ever changes."""
-        with self._lock:
-            parts = assistant["parts"]
-            if parts and parts[-1]["kind"] == "text":
-                parts[-1] = {
-                    "kind": "text",
-                    "payload": {"markdown": parts[-1]["payload"]["markdown"] + text},
-                }
-            else:
-                parts.append({"kind": "text", "payload": {"markdown": text}})
-
-    def upsert_feedback(self, mid: str, verdict: str, comment: str | None) -> bool:
-        """``False`` when ``mid`` names no message this store has ever
-        recorded -- the route above turns that into a 404, mirroring
-        mock_chat.py's own ``_known_message`` guard."""
-        with self._lock:
-            if not any(m["id"] == mid for msgs in self._messages.values() for m in msgs):
-                return False
-            self._feedback[mid] = {"verdict": verdict, "comment": comment}
-            return True
-
-    def get_feedback(self, mid: str) -> dict | None:
-        with self._lock:
-            return self._feedback.get(mid)
+# Phase 10 Task 3: the feedback existence gate's own SQL -- see the module
+# docstring's "The feedback existence gate" for why this runs directly
+# through rls_transaction rather than through UserHistory.
+_MESSAGE_VISIBLE_SQL = text("SELECT 1 FROM messages WHERE id = :id")
 
 
 def _decode_frame(frame: str) -> tuple[str, dict]:
@@ -462,28 +325,106 @@ def _decode_frame(frame: str) -> tuple[str, dict]:
     return name, data
 
 
-def _record_transcript_frame(frame: str, assistant: dict, store: TranscriptStore) -> None:
+def _record_transcript_frame(frame: str, assistant: dict, buffer: TurnTranscriptBuffer) -> None:
     """Fold one already-serialized SSE frame into ``assistant``'s persisted
-    parts -- see the module docstring's "Recording the transcript" for the
-    accumulation rules this implements (mock_chat.py's own rules for
-    ``part``/everything-else; the frontend's own token-folding rule, since
-    mock's multi-chunk demo has no live equivalent). ``tool`` frames --
-    EVERY status, not only "done" -- fold through ``store.record_tool_
-    event`` (item 8 / M-1, see that method's own docstring for why both
-    statuses matter, not only the terminal one)."""
+    parts -- see the module docstring's "Recording the transcript". A
+    ``tool`` frame -- EVERY status, not only "done" -- folds through
+    ``buffer.record_tool_event`` (both statuses matter so a reloaded
+    transcript's part order agrees with the live view's under progressive
+    streaming; see that method's own docstring)."""
     name, data = _decode_frame(frame)
     if name == "tool":
         payload = {key: value for key, value in data.items() if key not in _ENVELOPE_KEYS}
-        store.record_tool_event(assistant, payload)
+        buffer.record_tool_event(assistant, payload)
         return
     if name == "part":
-        store.append_part(assistant, {"kind": data["kind"], "payload": data["payload"]})
+        buffer.append_part(assistant, {"kind": data["kind"], "payload": data["payload"]})
         return
     if name == "token":
-        store.fold_token(assistant, data["text"])
+        buffer.fold_token(assistant, data["text"])
         return
     # "accepted"/"done"/"error": no persisted part -- mock_chat.py's own
     # comment: "the error is a stream event, not a persisted part".
+
+
+def _inject_done_title(frame: str, title: str | None) -> str:
+    """Re-serialize a buffered ``done`` SSE frame with the additive
+    ``"title"`` field -- see the module docstring's "Titles at turn one" for
+    why this rewrites already-serialized frame text (the same technique
+    :func:`_record_transcript_frame` already uses to READ a frame) rather
+    than widening ``SseEnvelopeSink``'s own contract, which this task may
+    not touch. Mirrors ``SseEnvelopeSink._frame``'s own wire-format
+    construction exactly -- same ``id``/``event`` line, ``data`` re-dumped
+    with one more key appended."""
+    name, data = _decode_frame(frame)
+    data["title"] = title
+    return f"id: {data['event_seq']}\nevent: {name}\ndata: {json.dumps(data)}\n\n"
+
+
+def _persist_assistant_message(
+    user_history: UserHistory, cid: str, assistant: dict, turn_id: str
+) -> None:
+    """Single insert at stream end -- ``assistant`` is the finished dict a
+    :class:`TurnTranscriptBuffer` folded over the course of one turn. Never
+    raises: by the time this runs, the turn's own terminal frame (``done``
+    or ``error``) has already reached the client, so a persistence failure
+    here must not re-terminate an already-finished stream -- the same
+    "a second failure must never re-terminate a finished turn" discipline
+    ``orchestrator.py``'s own pass-through repopulation guard uses."""
+    try:
+        user_history.write_assistant_message(cid, assistant, turn_id)
+    except Exception as exc:  # noqa: BLE001 - a persistence failure must not break an already-finished stream
+        logger.error(
+            "failed to persist assistant message: conversation_id=%s message_id=%s: %s: %s",
+            cid,
+            assistant["id"],
+            type(exc).__name__,
+            exc,
+        )
+
+
+def _parse_message_id(mid: str) -> uuid.UUID | None:
+    """``mid`` as a :class:`uuid.UUID`, or ``None`` if it is not one --
+    mirrors ``core/chat/history.py``'s own ``_parse_uuid`` exactly (a
+    malformed id can never match a real row, so it is treated exactly like
+    an absent one), reproduced here rather than imported: that helper is
+    private (leading underscore) to a module this task may not edit."""
+    try:
+        return uuid.UUID(mid)
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def _message_visible(request: Request, mid: str) -> bool:
+    """Whether ``mid`` names a message visible to the calling user -- an
+    RLS-filtered ``SELECT``, never a membership check against anything held
+    in process memory. See the module docstring's "The feedback existence
+    gate" for why this runs directly through ``rls_transaction`` (a bare
+    message id has no conversation id to scope a ``UserHistory`` call
+    through) rather than through ``UserHistory`` itself. A malformed
+    ``mid`` reads as "not visible," the same fail-closed treatment
+    ``history.py``'s own methods give any malformed id."""
+    parsed = _parse_message_id(mid)
+    if parsed is None:
+        return False
+    app_state = request.app.state
+    with rls_transaction(
+        app_state.db_engine,
+        request.state.user.sub,
+        app_role=app_state.settings.database_app_role,
+    ) as conn:
+        return conn.execute(_MESSAGE_VISIBLE_SQL, {"id": str(parsed)}).first() is not None
+
+
+def malformed_cursor_response(request: Request, exc: MalformedCursor) -> JSONResponse:
+    """``app.py``'s registered handler for
+    :class:`~poseidon.core.chat.history.MalformedCursor` -- the ONE place a
+    cursor decode failure becomes an RFC-7807 body, via the SAME
+    :func:`~poseidon.core.skills.result.problem` constructor every other
+    problem response in this codebase already renders through (byte-
+    identical shape to ``api/auth.py``'s ``AuthError``/``RateLimitExceeded``
+    handlers, never FastAPI's default ``{"detail": ...}`` wrapper)."""
+    return JSONResponse(status_code=400, content=problem(400, _MALFORMED_CURSOR_TITLE, str(exc)))
 
 
 class SendBody(BaseModel):
@@ -502,50 +443,66 @@ class FeedbackBody(BaseModel):
 
 @router.post("/conversations", status_code=201, dependencies=[Depends(require_sales)])
 def create_conversation(request: Request) -> dict:
-    """Same wire shape mock_chat.py's own ``create_conversation`` returns --
-    see the module docstring's "Task 5 amendment: the live bootstrap
-    routes".
+    """Same wire shape mock_chat.py's own ``create_conversation`` returns.
 
-    Phase 9 Task 2 (Global Constraints' enforcement scope, Controller's
-    Round 0 correction): gated by ``require_sales`` -- this route, and
-    every other ``/api/conversations*``/``/api/messages*`` route below,
-    exist TODAY (this is Task 4/5's own prototype surface, not a
-    Phase-10-only concern), so the enforcement scope applies to all of
-    them now, the same as ``/api/skills``/``/api/dev/*``.
+    Gated by ``require_sales`` -- this route, and every other
+    ``/api/conversations*``/``/api/messages*`` route below, are guarded the
+    same way ``/api/skills``/``/api/dev/*`` already are (Global Constraints'
+    enforcement scope).
     """
-    store: TranscriptStore = request.app.state.transcript_store
-    conversation, opener = store.create_conversation()
+    history_store: HistoryStore = request.app.state.history_store
+    user_history = history_store.for_user(request.state.user.sub)
+    conversation, opener = user_history.create_conversation()
     return {"conversation": conversation, "opener": opener}
 
 
 @router.get("/conversations", dependencies=[Depends(require_sales)])
-def list_conversations(request: Request) -> dict:
-    store: TranscriptStore = request.app.state.transcript_store
-    return {"conversations": store.list_conversations()}
+def list_conversations(request: Request, limit: int = 50, cursor: str | None = None) -> dict:
+    """``{"items": [...], "next_cursor": str|null}`` -- Phase 10 Task 3's
+    breaking change from the old bare ``{"conversations": [...]}`` array
+    (Task 4, the frontend, follows immediately). ``MalformedCursor`` from a
+    bad ``cursor`` propagates to ``app.py``'s registered handler
+    (:func:`malformed_cursor_response`) -- never caught here, the same
+    "one place this mapping happens" discipline ``AuthError`` uses. See the
+    module docstring's disclosed gap: each item is ``{"id", "title"}``
+    today, not the fuller ``{"id", "title", "mode", "updated_at"}`` this
+    route's own interface eventually wants.
+    """
+    history_store: HistoryStore = request.app.state.history_store
+    user_history = history_store.for_user(request.state.user.sub)
+    items, next_cursor = user_history.list_conversations(limit=limit, cursor=cursor)
+    return {"items": items, "next_cursor": next_cursor}
 
 
 @router.get("/conversations/{cid}/messages", dependencies=[Depends(require_sales)])
-def get_messages(cid: str, request: Request) -> dict:
-    store: TranscriptStore = request.app.state.transcript_store
-    messages = store.get_messages(cid)
-    if messages is None:
+def get_messages(cid: str, request: Request, limit: int = 200, cursor: str | None = None) -> dict:
+    """``{"items": [...], "next_cursor": str|null}`` -- same envelope as
+    :func:`list_conversations`. ``None`` from ``UserHistory.get_messages``
+    (``cid`` absent, malformed, or another user's -- RLS makes the three
+    indistinguishable on purpose) becomes this route's 404, mirroring
+    mock_chat.py's own ``get_messages``. A malformed ``cursor`` still
+    raises ``MalformedCursor`` even against such a ``cid`` (checked first,
+    inside ``UserHistory.get_messages`` itself) -- the client hears about
+    the cursor it built, not a 404 for input it also got wrong.
+    """
+    history_store: HistoryStore = request.app.state.history_store
+    user_history = history_store.for_user(request.state.user.sub)
+    result = user_history.get_messages(cid, limit=limit, cursor=cursor)
+    if result is None:
         raise HTTPException(404, detail="unknown conversation")
-    return {"messages": messages}
+    items, next_cursor = result
+    return {"items": items, "next_cursor": next_cursor}
 
 
 @router.get("/skills", dependencies=[Depends(require_sales)])
 def list_skills(request: Request) -> list[dict[str, str]]:
     """``[{id, label, description}]`` for every router-visible skill, in
     ``SkillRegistry.skill_ids`` order (already deterministic -- see that
-    property's own docstring). ``label`` is ``events.skill_label`` (final-
-    review wave item 3 / I4: the ONE shared home for this derivation --
-    byte-identical to the existing static ``SkillsPicker`` entry for the
-    same skill, and to the SSE tool-step label
-    :class:`~poseidon.core.chat.events.SseEnvelopeSink` now emits).
-
-    Phase 9 Task 2 (Global Constraints' enforcement scope): gated by
-    ``require_sales`` -- as of the Controller's Round 0 correction, so is
-    every ``/api/conversations*``/``/api/messages*`` route on this router.
+    property's own docstring). ``label`` is ``events.skill_label`` -- the
+    ONE shared home for this derivation -- byte-identical to the existing
+    static ``SkillsPicker`` entry for the same skill, and to the SSE
+    tool-step label :class:`~poseidon.core.chat.events.SseEnvelopeSink`
+    emits.
     """
     registry: SkillRegistry = request.app.state.skill_registry
     return [
@@ -566,37 +523,45 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
     """Drive one real chat turn through ``execute_turn`` and stream its SSE
     frames. See the module docstring for the thread+queue bridge, the
     app-state objects read off ``request.app.state`` below, the snowflake
-    guard, and how each frame also gets folded into the transcript.
+    guard, the title-at-turn-one mechanism, and how each frame also gets
+    folded into the transcript buffer.
 
-    Phase 9 Task 2 (Global Constraints, Controller's Round 0 correction):
-    gated by BOTH ``require_sales`` and ``rate_limit_chat_send``, in that
+    Gated by BOTH ``require_sales`` and ``rate_limit_chat_send``, in that
     ORDER -- an unauthenticated/role-less caller must always get a 401/403
-    from ``require_sales`` first, never a 429 from the rate limiter, which
-    would both leak the token bucket's own state to a caller who never
-    even authenticated and let an unauthenticated caller consume/probe a
-    bucket keyed by their own client IP before being told to authenticate
-    at all. FastAPI resolves a route's ``dependencies=[...]`` list in the
-    order given, so this ordering is a direct, load-bearing property of
-    this list's literal element order, not an incidental one.
+    from ``require_sales`` first, never a 429 from the rate limiter.
+    FastAPI resolves a route's ``dependencies=[...]`` list in the order
+    given, so this ordering is a direct, load-bearing property of this
+    list's literal element order.
     """
     app_state = request.app.state
     settings = app_state.settings
     registry: SkillRegistry = app_state.skill_registry
-    store: TranscriptStore = app_state.transcript_store
+    history_store: HistoryStore = app_state.history_store
+    user_history = history_store.for_user(request.state.user.sub)
 
-    turn_id = str(uuid.uuid4())
-    message_id = str(uuid.uuid4())
+    # Phase 10 Task 3: uuid7, never uuid4 -- these ids land in real uuid
+    # columns now (module docstring's "Id minting"). turn_id is shared by
+    # the user's own message row, the assistant's, and every SSE frame's
+    # envelope -- the one value that ties all three together.
+    turn_id = str(uuid7())
+    message_id = str(uuid7())
+    user_message_id = str(uuid7())
 
-    # Recorded unconditionally, before the guard below and before the turn
-    # runs -- the user really did send this message, mirroring
-    # mock_chat.py's own unconditional append at the top of its send_message
-    # (see the module docstring's "The snowflake guard": the empty assistant
-    # message left behind here is the same shape the internal-error crash
-    # path below also produces).
-    store.append_user_message(cid, body.text)
-    assistant = store.start_assistant_message(cid, message_id)
+    # Recorded before the guard below and before the turn runs -- the user
+    # really did send this message. A cid that does not exist, is
+    # malformed, or belongs to someone else raises LookupError here (module
+    # docstring's "A conversation that does not exist... now 404s at send
+    # time too") -- mapped to the SAME 404 GET .../messages already uses.
+    try:
+        user_history.append_user_message(cid, user_message_id, body.text, turn_id)
+    except LookupError as exc:
+        raise HTTPException(404, detail="unknown conversation") from exc
+
+    buffer = TurnTranscriptBuffer()
+    assistant = buffer.start_assistant_message(message_id)
 
     if settings.data_backend != _SYNTHETIC_DATA_BACKEND:
+        _persist_assistant_message(user_history, cid, assistant, turn_id)
         return _snowflake_guard_response(
             turn_id=turn_id,
             message_id=message_id,
@@ -605,51 +570,85 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
         )
 
     frame_queue: queue.Queue[str | object] = queue.Queue()
+    # The turn's ONE `done` frame (if any -- an `error`-terminated turn has
+    # none) is held here, not queued immediately, until the real outcome is
+    # known -- see the module docstring's "Titles at turn one".
+    pending_done: list[str] = []
+    # `accepted`'s own turn_index, the ONE other frame this route reads
+    # rather than merely folding or forwarding -- TurnOutcome carries no
+    # such field.
+    turn_index_holder: list[int] = []
 
     def send(frame: str) -> None:
-        _record_transcript_frame(frame, assistant, store)
+        _record_transcript_frame(frame, assistant, buffer)
+        name, data = _decode_frame(frame)
+        if name == "accepted":
+            turn_index_holder.append(data["turn_index"])
+        elif name == "done":
+            pending_done.append(frame)
+            return
         frame_queue.put(frame)
 
     sink = SseEnvelopeSink(turn_id=turn_id, message_id=message_id, send=send, registry=registry)
 
+    def _finalize_turn(outcome: TurnOutcome) -> None:
+        """Flush the buffered ``done`` frame now that ``execute_turn`` has
+        returned -- see the module docstring's "Titles at turn one" for the
+        full rationale. A no-op when the turn produced no ``done`` frame at
+        all (a duplicate-turn retry, or a turn-one entry/subject clarify
+        that still needs no title)."""
+        if not pending_done:
+            return
+        frame = pending_done[0]
+        turn_index = turn_index_holder[0] if turn_index_holder else None
+        title = None
+        if outcome.status == "ok" and turn_index == 1:
+            try:
+                computed = title_for(body.text, app_state.role_client, app_state.prompt_registry)
+                title = computed if computed else body.text[:60]
+                user_history.set_title(cid, title)
+            except Exception as exc:  # noqa: BLE001 - a title failure must not break an already-finished turn's done frame
+                logger.error(
+                    "title computation failed: conversation_id=%s: %s: %s",
+                    cid,
+                    type(exc).__name__,
+                    exc,
+                )
+                title = None
+        frame_queue.put(_inject_done_title(frame, title))
+
     def run_turn_sync() -> None:
         started = monotonic()
         try:
-            execute_turn(
+            outcome = execute_turn(
                 conversation_id=cid,
                 # Phase 9 Task 1: request.state.user is set by app.py's
                 # identity middleware for EVERY request, ahead of this
-                # handler ever running -- see core/identity.py's own module
-                # docstring for the seam. Replaces the old fixed
-                # DEV_USER_SUB constant orchestrator.py used to hardcode.
+                # handler ever running.
                 user=request.state.user,
                 text=body.text,
                 client_turn_key=body.client_turn_key,
                 settings=settings,
                 registry=registry,
                 data=app_state.data_client,
-                state=app_state.conversation_state_store,
+                # Phase 10 Task 3: DbStateStore is signature-identical to
+                # the ConversationStateStore execute_turn was written
+                # against -- same five method names, same conversation_id
+                # parameter name -- so the orchestrator needed zero edits.
+                state=DbStateStore(user_history),
                 writer=app_state.run_log_writer,
                 role_client=app_state.role_client,
                 prompt_registry=app_state.prompt_registry,
                 sink=sink,
                 reference_date=date.today(),
-                # Phase 7 Task 4: app.py's own _wire_live_chat builds this
-                # once per app -- a FixtureResearchTool override under
-                # LLM_MODE=stub, a real Perplexity transport resolved lazily
-                # per TOOL_TRANSPORT_PERPLEXITY under LLM_MODE=live.
                 tools=app_state.tool_registry,
             )
         except Exception as exc:  # noqa: BLE001 - a crash mid-turn must still end the stream cleanly
             # execute_turn's own contract only produces a `turn_error` frame
-            # for the failures it already recognizes (an LLM provider error, a
-            # skill dispatch it can structure -- see loop.py's own "structured
-            # failures"). Anything else escaping here -- a genuine bug, a
-            # network exception the provider layer did not itself catch -- is
-            # exactly what mock_chat.py never had to handle (its own turn is a
-            # canned script that cannot fail this way) and doc 01 section 5
-            # has no frame for: this is that frame, deliberately generic so
-            # nothing about the exception leaks to the client.
+            # for the failures it already recognizes. Anything else
+            # escaping here is exactly what doc 01 section 5 has no frame
+            # for: this is that frame, deliberately generic so nothing
+            # about the exception leaks to the client.
             logger.error(
                 "live chat turn failed: conversation_id=%s: %s: %s",
                 cid,
@@ -662,12 +661,10 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
             )
             writer = app_state.run_log_writer
             if writer is not None:
-                # turn_run_id is sink.turn_id UNCONDITIONALLY (the turn-id
-                # unification amendment) -- correct even when the crash
-                # happened before start_turn ever ran: the UPDATE simply
-                # matches zero rows, which the never-raises writer absorbs
-                # harmlessly (runlog.py's own module docstring), never a
-                # doomed insert against a row that was never created.
+                # turn_run_id is sink.turn_id UNCONDITIONALLY -- correct
+                # even when the crash happened before start_turn ever ran:
+                # the UPDATE simply matches zero rows, which the
+                # never-raises writer absorbs harmlessly.
                 writer.finalize(
                     turn_run_id=sink.turn_id,
                     status="error",
@@ -678,7 +675,14 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
                     latency_ms=int((monotonic() - started) * 1000),
                     error=problem(500, _INTERNAL_ERROR_TITLE, f"{type(exc).__name__}: {exc}"),
                 )
+        else:
+            _finalize_turn(outcome)
         finally:
+            # Persisted on EVERY path, success or crash alike -- whatever
+            # parts the buffer accumulated before a crash still get
+            # recorded, mirroring the snowflake guard's own "record what
+            # happened before the failure" discipline.
+            _persist_assistant_message(user_history, cid, assistant, turn_id)
             frame_queue.put(_DONE)
 
     async def event_stream():
@@ -728,18 +732,21 @@ def _snowflake_guard_response(
 def upsert_feedback(mid: str, body: FeedbackBody, request: Request) -> None:
     if body.verdict not in ("up", "down"):
         raise HTTPException(422, detail="verdict must be up or down")
-    store: TranscriptStore = request.app.state.transcript_store
-    if not store.upsert_feedback(mid, body.verdict, body.comment):
+    if not _message_visible(request, mid):
         raise HTTPException(404, detail="unknown message")
+    store: FeedbackStubStore = request.app.state.feedback_store
+    store.upsert_feedback(mid, body.verdict, body.comment)
 
 
 @router.get("/messages/{mid}/feedback", dependencies=[Depends(require_sales)])
 def get_feedback(mid: str, request: Request) -> dict:
-    store: TranscriptStore = request.app.state.transcript_store
+    if not _message_visible(request, mid):
+        raise HTTPException(404, detail="unknown message")
+    store: FeedbackStubStore = request.app.state.feedback_store
     feedback = store.get_feedback(mid)
     if feedback is None:
         raise HTTPException(404, detail="no feedback")
     return feedback
 
 
-__all__ = ["FeedbackBody", "SendBody", "TranscriptStore", "router"]
+__all__ = ["FeedbackBody", "SendBody", "malformed_cursor_response", "router"]
