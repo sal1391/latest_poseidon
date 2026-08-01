@@ -27,6 +27,16 @@ def test_defaults_are_local_and_stub(monkeypatch):
     assert s.data_backend == "synthetic"
     assert s.memory_max_chars == 8000
     assert s.chat_mode == "mock"
+    assert s.database_app_role == "poseidon_app"
+
+
+def test_database_app_role_accepts_none(monkeypatch):
+    """A deploy whose DSN already authenticates as a non-privileged role
+    (doc 05 section 4's expected shape) opts out of the SET LOCAL ROLE
+    rls_transaction would otherwise issue -- see core/db.py and
+    Settings.database_app_role's own comment."""
+    s = make_settings(monkeypatch, DATABASE_APP_ROLE="")
+    assert s.database_app_role is None
 
 
 def test_chat_mode_live_is_accepted(monkeypatch):

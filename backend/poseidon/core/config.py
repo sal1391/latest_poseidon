@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Environment contract — docs/architecture/07-infrastructure.md §6.
+    """Environment contract -- docs/architecture/07-infrastructure.md section 6.
 
     Startup crashes on any missing or malformed value: no half-configured
     server ever accepts traffic.
@@ -16,7 +16,7 @@ class Settings(BaseSettings):
 
     # POSEIDON_ENV_FILE selects the dotenv to read; set it to "" to read none.
     # Containers bind-mount the repo, so a host `backend/.env` would otherwise
-    # shadow the environment the orchestrator passes in — compose sets it empty.
+    # shadow the environment the orchestrator passes in -- compose sets it empty.
     model_config = SettingsConfigDict(
         env_file=os.getenv("POSEIDON_ENV_FILE", ".env"), extra="ignore"
     )
@@ -25,8 +25,8 @@ class Settings(BaseSettings):
     database_url: str
     s3_endpoint_url: str | None = None
     s3_bucket: str
-    # Static credentials for the local MinIO dev stack only (doc 07 §6 names no
-    # such variables for SPCS/EC2 — those authenticate via OAuth token / IAM
+    # Static credentials for the local MinIO dev stack only (doc 07 section 6
+    # names no such variables for SPCS/EC2 -- those authenticate via OAuth token / IAM
     # instance profile). Optional: ``None`` lets boto3 fall back to its normal
     # credential chain, which is exactly what a non-local habitat needs.
     s3_access_key: str | None = None
@@ -98,12 +98,50 @@ class Settings(BaseSettings):
     # Phase 9 Task 2: explicit CORS allowlist. Defaults to the Vite dev
     # origin so localhost:5173 keeps working with zero configuration.
     cors_allow_origins: list[str] = ["http://localhost:5173"]
+    # Phase 10 Task 1, round-0 correction (doc 05 section 4, decision D28's
+    # "runtime enforcement on privileged DSNs" amendment): the role
+    # poseidon.core.db.rls_transaction additionally SET LOCAL ROLEs to,
+    # immediately after set_config, on every RLS-scoped transaction. Exists
+    # because a Postgres superuser (or any BYPASSRLS role) unconditionally
+    # bypasses row-level security -- FORCE ROW LEVEL SECURITY cannot touch
+    # it -- and this project's own local compose Postgres image bootstraps
+    # its DATABASE_URL role as exactly that (POSTGRES_USER becomes the
+    # cluster superuser by the official image's own convention; discovered
+    # in Task 1's RLS test suite, see poseidon.core.db's module docstring
+    # for the full story). Defaults to "poseidon_app" -- migration 0004's
+    # own non-owner, non-BYPASSRLS role -- so RLS is enforced by the
+    # runtime connection itself, not only by tests written against it.
+    # ``None`` disables the SET ROLE entirely: a real deploy whose
+    # DATABASE_URL already authenticates as a properly non-privileged role
+    # (doc 05 section 4's expected shape) needs no role switch, and SET
+    # ROLE to a role the connection has no membership in would itself
+    # raise a permissions error on every single request -- an operator
+    # running a non-privileged DSN sets this empty/None rather than have
+    # every chat request fail closed on a permissions error instead of an
+    # RLS filter.
+    database_app_role: str | None = "poseidon_app"
 
     @field_validator("database_url", "s3_bucket")
     @classmethod
     def not_blank(cls, v: str) -> str:
         if not v.strip():
             raise ValueError("must not be blank")
+        return v
+
+    @field_validator("database_app_role", mode="before")
+    @classmethod
+    def blank_database_app_role_means_none(cls, v: object) -> object:
+        """An empty string is the ergonomic way to write "unset" in a
+        ``.env``/compose file (``DATABASE_APP_ROLE=``) -- pydantic would
+        otherwise happily accept the literal empty string as this field's
+        value (a valid ``str``, just not a valid Postgres role name), which
+        would turn a deliberate opt-out into a crash on the first real
+        ``rls_transaction`` call (``core.db``'s ``_validate_app_role``
+        rejects the empty string) instead of simply resolving to ``None``
+        the way an operator setting it blank almost certainly means.
+        """
+        if isinstance(v, str) and not v.strip():
+            return None
         return v
 
     @field_validator("cors_allow_origins", mode="before")

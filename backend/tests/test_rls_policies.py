@@ -13,41 +13,31 @@ narrowed to "does ``conversations`` exist".
 
 **This task tests the ``rls_transaction``/SQL layer directly**, one level
 below any ``UserContext``/store abstraction (Task 2's concern) -- exactly as
-the task brief scopes it: two plain ``user_sub`` strings and raw SQL through
-``rls_transaction`` are enough to prove the database itself enforces
-isolation, and staying at this layer keeps these tests meaningful even
-before any store/API code exists to wrap them.
+the task brief scopes it.
 
-**Why almost every test below routes through ``_identity_transaction``
-instead of calling ``rls_transaction`` directly (read this before editing
-any test in this file).** Doc 05 section 4's last bullet designs RLS around
-the application connecting as a role that is "not the table owner and has
-no BYPASSRLS" -- migration 0004's ``poseidon_app`` is that role for a real
-deploy. This dev compose database's ``DATABASE_URL`` role (``poseidon``) is
-instead the cluster's bootstrap SUPERUSER -- a property of the official
-Postgres Docker image's ``POSTGRES_USER`` convention, confirmed against
-this exact database (``SELECT rolsuper FROM pg_roles WHERE rolname =
-current_user`` -> true), not assumed. Postgres superusers unconditionally
-bypass row-level security: this is a hard invariant with no schema-level
-override -- not even ``FORCE ROW LEVEL SECURITY`` touches it, since FORCE
-only removes the (separate, weaker) OWNER exemption. Concretely, this means
-every test below that runs its actual SELECT/INSERT through the raw
-``poseidon`` connection proves nothing at all in this environment: RLS
-never even engages, regardless of ``app.user_sub``, regardless of FORCE --
-confirmed the hard way (this module's first draft used ``rls_transaction``
-directly, and all four required tests failed by LEAKING rows, not by
-erroring, until this was diagnosed). ``_identity_transaction`` and
-``_no_identity_transaction`` below layer one extra statement, ``SET LOCAL
-ROLE poseidon_app``, on top of the real production ``rls_transaction`` --
-transaction-scoped (verified against this database: it reverts on COMMIT
-or ROLLBACK exactly like ``app.user_sub`` itself) and needing no password
-(a superuser may ``SET ROLE`` to any role) -- purely to reproduce, from the
-one superuser DSN this dev stack provides, the non-superuser privilege
-level a real deploy's application connection already has. Both helpers
-check ``_DSN_ROLE_IS_SUPERUSER`` (computed once, at collection time, from
-the same connection the module-level skip guard already opens) and add
-nothing when it is false, so this file behaves identically to the simplest
-possible version of itself against a properly non-superuser DSN role.
+**Round-0 correction -- these tests now exercise the WRAPPER's real
+enforcement, not a per-test workaround.** The first version of this module
+discovered that this dev compose database's ``DATABASE_URL`` role
+(``poseidon``) is the cluster's bootstrap SUPERUSER (the official Postgres
+Docker image's own ``POSTGRES_USER`` convention), and Postgres superusers
+unconditionally bypass row-level security -- a hard invariant no policy or
+``FORCE`` clause can override. That version worked around it entirely
+inside this test file (a bespoke ``SET LOCAL ROLE`` wrapper used by every
+test). The plan amendment this correction implements moves the fix into
+``poseidon.core.db.rls_transaction`` itself, via a new ``app_role``
+parameter (``Settings.database_app_role``, default ``"poseidon_app"``) --
+because doc 05's store (Task 2) is deliberately WHERE-clause-free, so its
+own isolation tests could never pass while only the TEST SUITE, and not the
+runtime connection, carried the fix. Every test below that needs a
+protected identity now calls ``rls_transaction(engine, user_sub,
+app_role=_EFFECTIVE_APP_ROLE)`` directly -- proving what the real
+application will actually do -- with exactly two narrow, disclosed
+exceptions (required test 2 and required test 4), each documented in place
+for a structural reason the wrapper's own contract makes unavoidable, never
+to paper over an unfixed wrapper. ``test_superuser_bypasses_rls_without_
+wrapper`` below is new: documentation-of-record that a bare connection,
+with no wrapper involved at all, really does leak on this database --
+proof the wrapper is load-bearing, not a defensive nicety.
 
 **Cleanup pattern (pinned by the task brief):** every test uses fresh,
 unique ``user_sub`` values (``f"test|{uuid4().hex}"``) so re-running this
@@ -62,27 +52,25 @@ both tables.
 **Why the ``pg_engine`` fixture is function-scoped, not module state:**
 required test 3 (pooled-connection context leak) needs to know its own
 engine's connection pool has never handed out more than one physical
-connection before the moment it compares identity across two checkouts --
+connection before the moment it compares identity across checkouts --
 sharing one engine across every test in this module would make that
 guarantee depend on execution order and what earlier tests happened to do
 to the pool. Every other test here could safely share one engine (a
 Postgres GUC set with ``is_local=true`` resets the instant its own
-transaction ends, regardless of which physical connection carried it -- see
-``core.db``'s module docstring) but all get their own, for uniformity and
-so no test's correctness depends on another test having run first.
+transaction ends, regardless of which physical connection carried it) but
+all get their own, for uniformity and so no test's correctness depends on
+another test having run first.
 """
 
 import json
 import os
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
 import psycopg
 import pytest
 from sqlalchemy import text
-from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.engine import Engine
 
 from poseidon.core.data.synthetic_client import normalize_dsn
 from poseidon.core.db import build_engine, rls_transaction
@@ -94,6 +82,10 @@ CONNECT_TIMEOUT_SECONDS = 2
 _UP_HINT = "start it with `docker compose -f infra/docker-compose.yml up -d db`"
 _MIGRATE_HINT = "migrate it with `python -m alembic upgrade head` (revision 0004)"
 
+# migration 0004's own non-owner, non-BYPASSRLS role -- the same default
+# Settings.database_app_role resolves to (poseidon.core.config).
+_APP_ROLE = "poseidon_app"
+
 _DSN = os.environ.get("DATABASE_URL", "")
 if not _DSN:
     pytest.skip(
@@ -102,8 +94,8 @@ if not _DSN:
     )
 
 # Computed once, here, from the same probe connection the skip guard below
-# already opens -- see the module docstring's "why almost every test routes
-# through _identity_transaction" for what this drives.
+# already opens -- see the module docstring's "round-0 correction" section
+# for what this drives.
 _DSN_ROLE_IS_SUPERUSER = False
 
 try:
@@ -122,6 +114,13 @@ except psycopg.Error as exc:
         f"({type(exc).__name__}: {str(exc).strip()}) - {_UP_HINT}",
         allow_module_level=True,
     )
+
+# The app_role value this test suite passes to rls_transaction in THIS
+# environment: poseidon_app when the DSN role needs the round-0 correction
+# (this compose database), None otherwise -- exactly mirroring what a real
+# deploy's Settings.database_app_role would resolve to in each case (see
+# that field's own docstring in poseidon.core.config).
+_EFFECTIVE_APP_ROLE = _APP_ROLE if _DSN_ROLE_IS_SUPERUSER else None
 
 
 # ---------------------------------------------------------------------------
@@ -147,9 +146,6 @@ def _fresh_user_sub() -> str:
     return f"test|{uuid4().hex}"
 
 
-_SET_IDENTITY_SQL = text("SELECT set_config('app.user_sub', :sub, true)")
-_SET_APP_ROLE_SQL = text("SET LOCAL ROLE poseidon_app")
-
 _INSERT_CONVERSATION_SQL = text(
     "INSERT INTO conversations (id, user_sub, title) VALUES (:id, :user_sub, :title)"
 )
@@ -163,51 +159,24 @@ _COUNT_MESSAGES_SQL = text("SELECT COUNT(*) FROM messages")
 _DELETE_CONVERSATIONS_BY_USER_SQL = text("DELETE FROM conversations WHERE user_sub = :user_sub")
 
 
-@contextmanager
-def _identity_transaction(engine: Engine, user_sub: str) -> Iterator[Connection]:
-    """``rls_transaction``, plus -- only when ``DATABASE_URL``'s role is
-    itself a Postgres superuser (this dev compose database; see the module
-    docstring) -- an extra ``SET LOCAL ROLE poseidon_app`` so the
-    connection is actually subject to row-level security at all. Against a
-    properly non-superuser DSN role (a real deploy's expected shape,
-    doc 05 section 4), this is exactly ``rls_transaction`` with nothing
-    added."""
-    with rls_transaction(engine, user_sub) as conn:
-        if _DSN_ROLE_IS_SUPERUSER:
-            conn.execute(_SET_APP_ROLE_SQL)
-        yield conn
-
-
-@contextmanager
-def _no_identity_transaction(engine: Engine) -> Iterator[Connection]:
-    """A transaction that never sets ``app.user_sub`` at all -- required
-    test 2 needs a connection with NO identity context, not merely a
-    different one -- plus the same superuser workaround as
-    :func:`_identity_transaction`."""
-    with engine.begin() as conn:
-        if _DSN_ROLE_IS_SUPERUSER:
-            conn.execute(_SET_APP_ROLE_SQL)
-        yield conn
-
-
 def _insert_conversation(engine: Engine, user_sub: str, title: str = "chat") -> str:
-    """Insert one conversation as its own owner, through
-    :func:`_identity_transaction` -- never a bare admin insert -- so every
-    fixture row this suite creates is itself quiet proof that a legitimate
-    same-user INSERT satisfies the owner policy's ``WITH CHECK``. Returns
-    the new row's id."""
+    """Insert one conversation as its own owner, through the real
+    ``rls_transaction`` (``app_role`` included, exactly as the application
+    calls it) -- never a bare admin insert -- so every fixture row this
+    suite creates is itself quiet proof that a legitimate same-user INSERT
+    satisfies the owner policy's ``WITH CHECK``. Returns the new row's id.
+    """
     new_id = str(uuid7())
-    with _identity_transaction(engine, user_sub) as conn:
+    with rls_transaction(engine, user_sub, app_role=_EFFECTIVE_APP_ROLE) as conn:
         conn.execute(_INSERT_CONVERSATION_SQL, {"id": new_id, "user_sub": user_sub, "title": title})
     return new_id
 
 
 def _insert_message(engine: Engine, conversation_id: str, user_sub: str, role: str = "user") -> str:
-    """Insert one message on ``conversation_id``, through
-    :func:`_identity_transaction` under ``user_sub`` -- same reasoning as
-    :func:`_insert_conversation`."""
+    """Insert one message on ``conversation_id``, through ``rls_transaction``
+    under ``user_sub`` -- same reasoning as :func:`_insert_conversation`."""
     new_id = str(uuid7())
-    with _identity_transaction(engine, user_sub) as conn:
+    with rls_transaction(engine, user_sub, app_role=_EFFECTIVE_APP_ROLE) as conn:
         conn.execute(
             _INSERT_MESSAGE_SQL,
             {
@@ -222,11 +191,11 @@ def _insert_message(engine: Engine, conversation_id: str, user_sub: str, role: s
 
 
 def _delete_conversations(engine: Engine, user_sub: str) -> None:
-    """Teardown: delete through :func:`_identity_transaction` under the
-    OWNING sub (task brief's pinned cleanup pattern, never an admin
-    bypass). ``ON DELETE CASCADE`` (migration 0004) takes this user's
-    messages with it."""
-    with _identity_transaction(engine, user_sub) as conn:
+    """Teardown: delete through ``rls_transaction`` under the OWNING sub
+    (task brief's pinned cleanup pattern, never an admin bypass). ``ON
+    DELETE CASCADE`` (migration 0004) takes this user's messages with it.
+    """
+    with rls_transaction(engine, user_sub, app_role=_EFFECTIVE_APP_ROLE) as conn:
         conn.execute(_DELETE_CONVERSATIONS_BY_USER_SQL, {"user_sub": user_sub})
 
 
@@ -238,16 +207,17 @@ def _delete_conversations(engine: Engine, user_sub: str) -> None:
 def test_two_user_isolation(pg_engine):
     """Required test 1. Two users each write a conversation; a bare,
     unfiltered ``SELECT`` (no ``WHERE`` clause -- the module docstring's "not
-    by remembering to add WHERE clauses") under each user's context sees
-    only that user's own row."""
+    by remembering to add WHERE clauses") under each user's context --
+    established through the real ``rls_transaction``, ``app_role`` included
+    -- sees only that user's own row."""
     user_a, user_b = _fresh_user_sub(), _fresh_user_sub()
     try:
         _insert_conversation(pg_engine, user_a, title="a-chat")
         _insert_conversation(pg_engine, user_b, title="b-chat")
 
-        with _identity_transaction(pg_engine, user_a) as conn:
+        with rls_transaction(pg_engine, user_a, app_role=_EFFECTIVE_APP_ROLE) as conn:
             titles_a = {row[0] for row in conn.execute(_SELECT_CONVERSATION_TITLES_SQL)}
-        with _identity_transaction(pg_engine, user_b) as conn:
+        with rls_transaction(pg_engine, user_b, app_role=_EFFECTIVE_APP_ROLE) as conn:
             titles_b = {row[0] for row in conn.execute(_SELECT_CONVERSATION_TITLES_SQL)}
 
         assert titles_a == {"a-chat"}
@@ -258,55 +228,88 @@ def test_two_user_isolation(pg_engine):
 
 
 def test_no_context_connection_sees_zero_rows_on_every_rls_table(pg_engine):
-    """Required test 2. A connection that never went through
-    :func:`rls_transaction` -- ``app.user_sub`` was never set for this
-    transaction -- must see zero rows on BOTH tables this migration
-    protects, not just the one a caller happened to think to check."""
+    """Required test 2. A transaction that never had ``app.user_sub`` set
+    AT ALL -- true SQL NULL via ``current_setting(..., true)``, confirmed
+    empirically to be a DIFFERENT state from "reset since an earlier
+    transaction on this same session" (which lands on ``''``, a placeholder
+    GUC's boot value, once ``set_config`` has ever run on that session --
+    also never matches a real ``user_sub``, but for a different reason, and
+    conflating the two would test the wrong mechanism) -- must see zero
+    rows on BOTH tables this migration protects.
+
+    Uses its OWN brand-new engine, never touched by ``_insert_conversation``/
+    ``_insert_message`` above (both of which run through ``rls_transaction``
+    on ``pg_engine`` and would leave ITS one physical connection no longer
+    virgin): reusing ``pg_engine`` here would silently start testing "reset
+    to ''" instead of "never set", which is not the same claim.
+
+    A genuinely virgin, non-privileged connection cannot be produced by
+    ``rls_transaction`` itself -- it always sets identity as its first
+    statement, by design (see its own docstring) -- so this is the one
+    place in this module that still applies ``SET LOCAL ROLE`` directly
+    rather than through the wrapper. This is NOT the old per-test
+    workaround (which used this mechanism for every test because the
+    wrapper itself was unfixed): the other three required tests below call
+    the real, fixed ``rls_transaction`` directly. This one exception exists
+    only because "protected, but with identity truly never established" is
+    a state the wrapper's own "always sets identity" contract makes
+    structurally impossible to reach through it.
+    """
     user = _fresh_user_sub()
+    fresh_engine = build_engine(_DSN)
     try:
         conversation_id = _insert_conversation(pg_engine, user, title="hidden-from-no-context")
         _insert_message(pg_engine, conversation_id, user)
 
-        with _no_identity_transaction(pg_engine) as conn:
+        with fresh_engine.begin() as conn:
+            if _DSN_ROLE_IS_SUPERUSER:
+                conn.execute(text(f'SET LOCAL ROLE "{_APP_ROLE}"'))
+            identity = conn.execute(
+                text("SELECT current_setting('app.user_sub', true)")
+            ).scalar_one()
             conversation_count = conn.execute(_COUNT_CONVERSATIONS_SQL).scalar_one()
             message_count = conn.execute(_COUNT_MESSAGES_SQL).scalar_one()
 
+        assert identity is None, (
+            "this checkout must be genuinely virgin (app.user_sub never set) to "
+            "prove the missing_ok/NULL mechanism specifically, not merely reset"
+        )
         assert conversation_count == 0
         assert message_count == 0
     finally:
+        fresh_engine.dispose()
         _delete_conversations(pg_engine, user)
 
 
 def test_pooled_connection_does_not_leak_identity_across_checkouts(pg_engine):
-    """Required test 3 -- decision D28's own reason for existing. Two
-    SEQUENTIAL checkouts of the SAME pooled connection (proven below via raw
-    DBAPI connection identity, not assumed from pool internals) under two
-    different users: the second checkout must see none of the first's rows.
+    """Required test 3 -- decision D28's own reason for existing. THREE
+    sequential touches of the SAME pooled connection (proven below via raw
+    DBAPI connection identity, not assumed from pool internals): a real
+    ``rls_transaction`` checkout for user_a; a manual, read-only peek that
+    observes whatever identity/role state that checkout left behind BEFORE
+    anything overwrites it; and a real ``rls_transaction`` checkout for
+    user_b that must see none of user_a's rows.
 
-    **Why this peeks at ``current_setting`` before setting user_b's own
-    identity, rather than just calling ``_identity_transaction(pg_engine,
-    user_b)`` and checking what it reads back.** ``rls_transaction`` always
-    calls ``set_config`` as ITS OWN first statement, unconditionally --
-    that is its entire contract. So if the second checkout's identity were
-    set the normal way (through ``rls_transaction``/``_identity_transaction``
-    again), user_b's own explicit call would overwrite whatever user_a left
-    behind BEFORE any query ran, and the two would be indistinguishable by
-    result: "sees none of user_a's rows" would hold whether ``set_config``'s
-    third argument is ``true`` or ``false``, because something always
-    overwrites it either way. Confirmed empirically, not just reasoned
-    about, before writing this version: flipping ``db.py``'s
-    ``_SET_IDENTITY_SQL`` to ``false`` left an earlier draft of this exact
-    test (both checkouts through ``_identity_transaction``) GREEN -- a test
-    that cannot fail is not a test. This version checks out the connection
-    manually and reads ``current_setting('app.user_sub', true)`` as its
-    OWN first statement, before setting user_b's identity -- the one moment
-    a transaction-scoped implementation guarantees NULL and a session-scoped
-    one would still show user_a's value -- and was confirmed to turn RED
-    under that same mutation (see the task report).
+    **Why the peek is manual, not another ``rls_transaction`` call.**
+    ``rls_transaction`` always calls ``set_config`` (and, when configured,
+    ``SET LOCAL ROLE``) as its own first statements, unconditionally --
+    that is its entire contract. If the peek were itself a normal
+    ``rls_transaction`` call, its own explicit ``set_config``/``SET LOCAL
+    ROLE`` would overwrite whatever user_a left behind BEFORE anything
+    could observe it, making this test unable to distinguish
+    transaction-scoped from session-scoped no matter which one the wrapper
+    actually implements. Confirmed empirically before settling on this
+    design: an earlier draft that routed both checkouts through the
+    wrapper stayed GREEN even after ``core/db.py``'s ``is_local`` argument
+    was deliberately flipped to ``false`` -- a test that cannot fail is not
+    a test. This version -- reading ``current_setting``/``current_user`` as
+    the peek's OWN first statements, before calling anything from the
+    wrapper -- was confirmed to turn RED under that exact mutation (see the
+    task report).
     """
     user_a, user_b = _fresh_user_sub(), _fresh_user_sub()
     try:
-        with _identity_transaction(pg_engine, user_a) as conn:
+        with rls_transaction(pg_engine, user_a, app_role=_EFFECTIVE_APP_ROLE) as conn:
             raw_connection_1 = conn.connection.dbapi_connection
             conn.execute(
                 _INSERT_CONVERSATION_SQL,
@@ -315,22 +318,28 @@ def test_pooled_connection_does_not_leak_identity_across_checkouts(pg_engine):
 
         with pg_engine.begin() as conn:
             raw_connection_2 = conn.connection.dbapi_connection
-            leftover_context = conn.execute(
+            leftover_identity = conn.execute(
                 text("SELECT current_setting('app.user_sub', true)")
             ).scalar_one()
-            if _DSN_ROLE_IS_SUPERUSER:
-                conn.execute(_SET_APP_ROLE_SQL)
-            conn.execute(_SET_IDENTITY_SQL, {"sub": user_b})
+            leftover_role = conn.execute(text("SELECT current_user")).scalar_one()
+
+        with rls_transaction(pg_engine, user_b, app_role=_EFFECTIVE_APP_ROLE) as conn:
+            raw_connection_3 = conn.connection.dbapi_connection
             titles_seen_by_b = [row[0] for row in conn.execute(_SELECT_CONVERSATION_TITLES_SQL)]
 
-        assert raw_connection_2 is raw_connection_1, (
+        assert raw_connection_1 is raw_connection_2 is raw_connection_3, (
             "this test only proves what it claims if the pool actually reused "
-            "the same physical connection across the two checkouts"
+            "the same physical connection across every checkout"
         )
-        assert leftover_context != user_a, (
+        assert leftover_identity in (None, ""), (
             "app.user_sub leaked across a pooled-connection checkout -- "
             "set_config's is_local argument has regressed to session-scoped"
         )
+        if _DSN_ROLE_IS_SUPERUSER:
+            assert leftover_role != _APP_ROLE, (
+                "SET LOCAL ROLE leaked across a pooled-connection checkout -- "
+                "the role switch has regressed to session-scoped"
+            )
         assert titles_seen_by_b == []
     finally:
         _delete_conversations(pg_engine, user_a)
@@ -347,24 +356,38 @@ def test_owner_connection_is_still_filtered_by_force_rls(pg_engine):
     FORCE is dropped, and only then start leaking every row to the owner
     connection.
 
-    In THIS environment the owner (``poseidon``) is also a superuser (see
-    the module docstring), and superuser bypass cannot be tested around by
-    switching roles alone -- a superuser stays exempt no matter what role
-    it runs as unless it actually stops being the thing being tested. So
-    this branch temporarily makes ``poseidon_app`` (confirmed non-superuser,
-    non-bypassrls by the role-catalog test below) own ``conversations``,
-    for exactly one transaction that is ALWAYS rolled back, never
-    committed: ``ALTER TABLE ... OWNER TO`` and ``SET LOCAL ROLE`` are both
-    fully transactional in Postgres (verified against this exact database
-    before writing this test), so ownership and role both revert the
-    instant this transaction ends, regardless of whether the test passes,
-    fails, or raises. ``poseidon_app`` is never left owning anything --
-    doc 05 section 4 pins it as the non-owner application role, and a
-    durable ownership change here would quietly contradict that.
+    **Why this cannot simply call ``rls_transaction(engine, user,
+    app_role=_EFFECTIVE_APP_ROLE)`` the way tests 1-3 now do.** Postgres's
+    RLS owner-exemption check is keyed off the CURRENT effective role
+    (``SET ROLE`` included, not the originally authenticated
+    ``session_user``) -- so a connection that has ``SET LOCAL ROLE``'d to
+    ``poseidon_app`` is, for the purposes of this exact check, no longer
+    "the owner", regardless of which role the physical connection
+    authenticated as. That is exactly what makes ``poseidon_app`` safe for
+    tests 1-3 (an ordinary non-owner, non-superuser role, correctly
+    filtered by plain ``ENABLE`` alone, FORCE or not) and exactly why it
+    cannot be used to test FORCE's OWNER-specific contribution -- testing
+    that requires the checked role to actually BE the owner while also not
+    being a superuser, a combination no existing role on this dev database
+    can provide.
 
-    Against a properly non-superuser DSN role (a real deploy), the ``else``
-    branch is the whole test: a direct, un-worked-around
-    ``rls_transaction`` check as the DSN role, which already is the owner.
+    So this branch manufactures it for exactly one transaction that is
+    ALWAYS rolled back, never committed: ``ALTER TABLE ... OWNER TO`` and
+    ``SET LOCAL ROLE`` are both fully transactional in Postgres (verified
+    against this exact database before this was written), so ownership and
+    role both revert the instant this transaction ends, regardless of
+    whether the test passes, fails, or raises. ``poseidon_app`` is never
+    left owning anything -- doc 05 section 4 pins it as the non-owner
+    application role, and a durable ownership change here would quietly
+    contradict that. The ``SET LOCAL ROLE`` statement below is deliberately
+    written in the exact same quoted-identifier form ``rls_transaction``
+    itself uses, for consistency, even though it cannot be produced BY the
+    wrapper here.
+
+    Against a properly non-superuser DSN role (a real deploy, ``app_role=
+    None``), the ``else`` branch is the whole test: a direct
+    ``rls_transaction`` check as the DSN role, which already is the owner
+    and already is not a superuser.
     """
     with pg_engine.connect() as conn:
         owner_is_current_user = conn.execute(
@@ -386,8 +409,11 @@ def test_owner_connection_is_still_filtered_by_force_rls(pg_engine):
             with pg_engine.connect() as conn:
                 try:
                     conn.execute(text("ALTER TABLE conversations OWNER TO poseidon_app"))
-                    conn.execute(_SET_APP_ROLE_SQL)
-                    conn.execute(_SET_IDENTITY_SQL, {"sub": caller_context})
+                    conn.execute(text(f'SET LOCAL ROLE "{_APP_ROLE}"'))
+                    conn.execute(
+                        text("SELECT set_config('app.user_sub', :sub, true)"),
+                        {"sub": caller_context},
+                    )
                     identity_ok = conn.execute(
                         text(
                             "SELECT current_user = 'poseidon_app', "
@@ -402,12 +428,69 @@ def test_owner_connection_is_still_filtered_by_force_rls(pg_engine):
                 "the ownership/role swap must actually take effect for this to prove anything"
             )
         else:
-            with rls_transaction(pg_engine, caller_context) as conn:
+            with rls_transaction(pg_engine, caller_context, app_role=_EFFECTIVE_APP_ROLE) as conn:
                 rows = conn.execute(_SELECT_CONVERSATION_TITLES_SQL).all()
 
         assert rows == []
     finally:
         _delete_conversations(pg_engine, other_user)
+
+
+# ---------------------------------------------------------------------------
+# documentation-of-record + the wrapper's own parameter contract
+# ---------------------------------------------------------------------------
+
+
+def test_superuser_bypasses_rls_without_wrapper(pg_engine):
+    """Documentation-of-record, not a defensive nicety: proves the
+    wrapper's ``SET LOCAL ROLE`` is genuinely load-bearing by showing what
+    happens without it. A raw connection that never goes through
+    ``rls_transaction`` at all -- exactly what every one of the four
+    required tests above would have been doing before the round-0
+    correction -- bypasses row-level security entirely when
+    ``DATABASE_URL``'s role is a Postgres superuser (confirmed true for
+    this compose database above), seeing another user's row through a
+    bare, unfiltered ``SELECT``. Skipped (not vacuously passed) against a
+    properly non-privileged DSN role, where this premise does not hold --
+    plain ``ENABLE`` + ``FORCE`` already protects a bare connection there.
+    """
+    if not _DSN_ROLE_IS_SUPERUSER:
+        pytest.skip(
+            "DATABASE_URL's role is not a superuser in this environment -- a bare "
+            "connection is already non-privileged and this test's premise "
+            "(unconditional superuser bypass) does not apply"
+        )
+
+    other_user = _fresh_user_sub()
+    try:
+        _insert_conversation(pg_engine, other_user, title="visible-without-the-wrapper")
+
+        with pg_engine.begin() as conn:  # deliberately bare: no rls_transaction at all
+            titles = {row[0] for row in conn.execute(_SELECT_CONVERSATION_TITLES_SQL)}
+
+        assert "visible-without-the-wrapper" in titles
+    finally:
+        _delete_conversations(pg_engine, other_user)
+
+
+def test_app_role_none_skips_set_role_but_still_sets_identity(pg_engine):
+    """``Settings.database_app_role=None`` (the documented escape hatch for
+    an already-non-privileged DSN) must not also silently skip
+    identity-setting -- ``set_config`` is unconditional; only the ``SET
+    LOCAL ROLE`` step is gated on ``app_role``. Passes ``app_role=None``
+    regardless of ``_DSN_ROLE_IS_SUPERUSER``: this test is about
+    ``rls_transaction``'s own parameter contract, not about working around
+    this environment's superuser DSN."""
+    with pg_engine.connect() as conn:
+        base_role = conn.execute(text("SELECT current_user")).scalar_one()
+
+    user = _fresh_user_sub()
+    with rls_transaction(pg_engine, user, app_role=None) as conn:
+        identity = conn.execute(text("SELECT current_setting('app.user_sub', true)")).scalar_one()
+        role = conn.execute(text("SELECT current_user")).scalar_one()
+
+    assert identity == user, "set_config must still run unconditionally when app_role is None"
+    assert role == base_role, "app_role=None must not issue any SET ROLE"
 
 
 # ---------------------------------------------------------------------------
@@ -433,10 +516,10 @@ def test_row_level_security_is_enabled_and_forced_on_both_tables(pg_engine):
 
 def test_poseidon_app_role_exists_without_bypassrls(pg_engine):
     """Also asserts ``rolsuper is False`` -- not itself required by the task
-    brief, but load-bearing for this module: :func:`_identity_transaction`
-    relies on ``poseidon_app`` being a genuine non-superuser role, and
-    required test 4's superuser branch re-derives the same fact live (see
-    its ``identity_ok`` check) precisely because it matters that much."""
+    brief, but load-bearing for this module: the round-0 correction relies
+    on ``poseidon_app`` being a genuine non-superuser role, and required
+    test 4's superuser branch re-derives the same fact live (see its
+    ``identity_ok`` check) precisely because it matters that much."""
     with pg_engine.connect() as conn:
         row = conn.execute(
             text("SELECT rolbypassrls, rolsuper FROM pg_roles WHERE rolname = 'poseidon_app'")
