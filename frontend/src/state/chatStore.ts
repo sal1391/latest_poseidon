@@ -209,9 +209,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
               role: "assistant",
               parts: turn.message.parts,
             };
-            set((s) => ({
-              messages: { ...s.messages, [cid]: [...(s.messages[cid] ?? []), recovered] },
-            }));
+            // Merge-by-id (final-review wave, I-3), not append: StreamError.
+            // turnId is non-null only when at least one frame arrived
+            // (sse.ts's own lastTurnId), and the first frame of every turn
+            // is "accepted", which applyEventTo already pushed into the
+            // store under this SAME id (sink.message_id, what turn.message.
+            // id also is) -- so a message with this id is already present
+            // on every real path that reaches here. Replace it in place
+            // (same find-by-id discipline applyEventTo already uses);
+            // append only when genuinely absent (defensive -- keeps this
+            // hook safe even if that invariant ever changes).
+            set((s) => {
+              const current = s.messages[cid] ?? [];
+              const index = current.findIndex((m) => m.id === recovered.id);
+              const next =
+                index >= 0
+                  ? current.map((m, i) => (i === index ? recovered : m))
+                  : [...current, recovered];
+              return { messages: { ...s.messages, [cid]: next } };
+            });
             reconciled = true;
           }
         } catch {

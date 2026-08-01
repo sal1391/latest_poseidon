@@ -641,7 +641,7 @@ def test_redact_turns_for_conversation_returns_count_and_clears_payload_columns(
         ).all()
         tool_args = conn.execute(
             text(
-                "SELECT args FROM tool_calls WHERE turn_run_id IN (:a, :b)"
+                "SELECT args, result_digest FROM tool_calls WHERE turn_run_id IN (:a, :b)"
             ),
             {"a": turn_a, "b": turn_b},
         ).all()
@@ -664,6 +664,11 @@ def test_redact_turns_for_conversation_returns_count_and_clears_payload_columns(
 
     assert len(tool_args) == 2
     assert all(row.args is None for row in tool_args)
+    # I-2 (P11 final-review wave): result_digest carries content-bearing
+    # proof text (entity/period/filter values) verbatim -- doc 05 section
+    # 7's own governing sentence ("loses its content") requires it null
+    # alongside args, not merely a column doc 05's enumerated list omitted.
+    assert all(row.result_digest is None for row in tool_args)
 
     # llm_calls carries no payload columns -- fully untouched.
     assert len(llm_rows) == 2
@@ -753,7 +758,10 @@ async def test_delete_conversation_redacts_turn_run_and_tool_calls_leaves_llm_ca
             {"id": handle.turn_run_id},
         ).first()
         tool_row = conn.execute(
-            text("SELECT args, status, latency_ms, tool FROM tool_calls WHERE turn_run_id = :id"),
+            text(
+                "SELECT args, result_digest, status, latency_ms, tool "
+                "FROM tool_calls WHERE turn_run_id = :id"
+            ),
             {"id": handle.turn_run_id},
         ).first()
         llm_row = conn.execute(
@@ -782,6 +790,11 @@ async def test_delete_conversation_redacts_turn_run_and_tool_calls_leaves_llm_ca
 
     assert tool_row is not None
     assert tool_row.args is None
+    # I-2 (P11 final-review wave): result_digest survives redaction today,
+    # carrying the deleted conversation's own subject matter (customer/port
+    # names, period window) verbatim -- see core/runlog.py's own
+    # _REDACT_TOOL_CALLS_SQL docstring citation for the fuller rationale.
+    assert tool_row.result_digest is None
     assert tool_row.status == "ok"
     assert tool_row.latency_ms == 17
     assert tool_row.tool == "data_qa.metric_query"

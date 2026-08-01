@@ -34,6 +34,8 @@ Section map:
      artifacts-None skip.
   D. Concurrency determinism: slow-research/fast-contextualize and
      inverted -- byte-identical part order both ways.
+  D2. Trace-id propagation across the ThreadPoolExecutor boundary (P11
+     whole-branch final-review wave, 2026-08-01, item 1 / I-1).
   E. Degraded research (ctx.tools is None): both briefs continue, ok=True.
   F. Exception-escape guard (P8 whole-branch final-review wave, 2026-07-30,
      item 2 / I-4): a raising fake subskill in EACH of the three phases,
@@ -45,12 +47,14 @@ Section map:
 """
 
 import datetime as dt
+import json
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
+from poseidon.core import obs
 from poseidon.core.config import Settings
 from poseidon.core.data.client import BreakdownResult, BreakdownRow, MetricResult
 from poseidon.core.skills.context import ArtifactRef, SkillContext
@@ -447,6 +451,98 @@ def test_concurrency_determinism_byte_identical_regardless_of_which_finishes_fir
     assert result_b.parts[2] == context_part
     assert result_b.parts[3] == research_part
     assert result_a.parts == result_b.parts
+
+
+# ===========================================================================
+# Section D2 -- trace-id propagation across the ThreadPoolExecutor boundary
+# (P11 whole-branch final-review wave, 2026-08-01, item 1 / I-1). Unlike
+# Section D's ``threading.Event`` gates (which only prove completion ORDER),
+# these fakes each emit one span-shaped log line from INSIDE the pool
+# worker -- the same shape ``contextualize``'s own real ``role_client.
+# invoke`` (``llm:<role>``) and ``research``'s own real ``ctx.tools.
+# research.search`` (``ext:perplexity``) calls already emit in live mode
+# (core/obs.py's own ``span()``). stdlib ``ThreadPoolExecutor.submit`` does
+# NOT copy contextvars the way ``anyio.to_thread.run_sync`` does (see
+# core/obs.py's own "Propagation, not threading" docstring section), so a
+# worker thread's own ``trace_id_var.get()`` silently reads back ``None``
+# unless the submitted callable is wrapped in a copied ``Context``.
+# ===========================================================================
+
+
+def _json_lines(text_blob: str) -> list[dict]:
+    """Every line of ``text_blob`` that parses as JSON, in order -- mirrors
+    ``test_obs_logging.py``'s own identical helper (kept local rather than
+    imported: this suite's own established convention, see that file's
+    ``pg_database_url`` fixture docstring, is one file owns its own
+    fixtures/helpers, never a shared conftest)."""
+    records = []
+    for line in text_blob.splitlines():
+        try:
+            records.append(json.loads(line))
+        except ValueError:
+            continue
+    return records
+
+
+def test_trace_id_propagates_from_the_concurrent_pool_into_span_lines(monkeypatch, capsys):
+    """RED against BASE: a bare ``ThreadPoolExecutor.submit`` starts its
+    worker thread with an EMPTY ``contextvars.Context``, so a trace id set
+    on the calling (request) side never reaches a span emitted from inside
+    ``contextualize``/``research`` -- exactly the ``llm:synthesis``/``ext:
+    perplexity`` spans a real live-mode brief emits (I-1's own concrete
+    failure: an operator greps ``docker compose logs`` for ``X-Trace-Id``
+    and the two most expensive spans of the whole flow are missing).
+
+    Fakes stand in for both subskills -- the same ``monkeypatch.setattr(
+    existing_skill.contextualize_subskill, "run", ...)`` seam Section D's
+    own gated fakes use -- each wrapping its body in ``obs.span(...)`` so
+    this test proves the FIX (submitting through a copied ``Context``), not
+    merely that the fakes themselves ran.
+    """
+    obs.configure_json_logging()
+    monkeypatch.setattr(existing_skill, "_today", lambda: _ANCHOR)
+
+    def _contextualize_with_a_span(ctx, mode, subject, data_block, research_inputs):
+        with obs.span("llm:synthesis"):
+            pass
+        return SubskillResult(parts=(), synthesis_inputs=({"text": "c"},), failed=False)
+
+    def _research_with_a_span(ctx, mode, subject):
+        with obs.span("ext:perplexity"):
+            pass
+        return SubskillResult(
+            parts=(),
+            synthesis_inputs=(
+                {
+                    "schema_name": "sustainability",
+                    "title": "Research",
+                    "summary": "r",
+                    "items": (),
+                    "degraded": False,
+                    "degrade_reason": None,
+                },
+            ),
+            failed=False,
+        )
+
+    monkeypatch.setattr(existing_skill.contextualize_subskill, "run", _contextualize_with_a_span)
+    monkeypatch.setattr(existing_skill.research_subskill, "run", _research_with_a_span)
+
+    trace_id = obs.new_trace_id()
+    token = obs.trace_id_var.set(trace_id)
+    try:
+        ctx = _ctx(data=_FakeDataClient(), tools=_Tools(research=FixtureResearchTool()))
+        result = existing_skill.run(ctx, existing_schema.Args(customer="Acme"))
+    finally:
+        obs.trace_id_var.reset(token)
+
+    assert result.ok is True
+    span_lines = [r for r in _json_lines(capsys.readouterr().out) if r["event"] == "span"]
+    llm_line = next(r for r in span_lines if r["context"]["name"] == "llm:synthesis")
+    perplexity_line = next(r for r in span_lines if r["context"]["name"] == "ext:perplexity")
+
+    assert llm_line["trace_id"] == trace_id
+    assert perplexity_line["trace_id"] == trace_id
 
 
 # ===========================================================================

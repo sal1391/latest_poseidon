@@ -144,6 +144,7 @@ discipline ``data_qa.metric_query``'s own ``skill.py`` uses for
 ``SpecValidationError``.
 """
 
+import contextvars
 import logging
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -421,11 +422,47 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
 
     data_summary = _data_summary(prior, ytd, ports_result)
 
+    # Context-copying submit (P11 whole-branch final-review wave,
+    # 2026-08-01, item 1 / I-1): stdlib ThreadPoolExecutor.submit does NOT
+    # copy contextvars the way anyio.to_thread.run_sync does (core/obs.py's
+    # own "Propagation, not threading" docstring section) -- an unwrapped
+    # worker thread would start from an EMPTY Context and its own
+    # trace_id_var.get() would silently read back None, dropping this
+    # request's trace id from every llm:<role>/ext:perplexity span emitted
+    # inside these two subskills. A SEPARATE contextvars.copy_context() call
+    # per submission -- never one snapshot shared across both -- is
+    # required, not merely stylistic: a Context object may only be entered
+    # by one call frame at a time (Python's own documented "not possible to
+    # enter the same context object from multiple OS threads at once"), and
+    # this skill's own PRE-EXISTING concurrency-determinism test (Section D
+    # of test_brief_skills.py, whose ``threading.Event`` gates force a REAL
+    # completion-order guarantee) reliably drives both futures' workers
+    # through genuinely overlapping execution -- a single shared snapshot
+    # raises "cannot enter context: ... is already entered" the instant
+    # both subskills are truly in flight together, which is the CONCURRENT
+    # case this whole ThreadPoolExecutor exists for. Two independent
+    # snapshots, taken back to back with no ``.set()`` between them, still
+    # carry the identical contextvar values (this request's trace id
+    # included) and can each be entered by their own worker thread with no
+    # contention. Behavior-preserving otherwise, since neither subskill
+    # reads a contextvar for control flow.
     with ThreadPoolExecutor(max_workers=2) as pool:
         contextualize_future = pool.submit(
-            contextualize_subskill.run, ctx, MODE_EXISTING, args.customer, data_summary, ()
+            contextvars.copy_context().run,
+            contextualize_subskill.run,
+            ctx,
+            MODE_EXISTING,
+            args.customer,
+            data_summary,
+            (),
         )
-        research_future = pool.submit(research_subskill.run, ctx, MODE_EXISTING, args.customer)
+        research_future = pool.submit(
+            contextvars.copy_context().run,
+            research_subskill.run,
+            ctx,
+            MODE_EXISTING,
+            args.customer,
+        )
         # FIXED consumption order (doc 02 section 4.1's own numbering:
         # contextualize before research) regardless of which future's
         # worker actually finished first -- see the module docstring's

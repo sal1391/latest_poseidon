@@ -217,11 +217,13 @@ be defensible; the final numbers are an **owner decision** and are recorded per 
 **Deletion resolves the audit tension explicitly.** `DELETE /api/conversations/{id}` hard-deletes
 the conversation, its messages, and its conversation state — the user's content is gone, not
 flagged. The `turn_run` rows and their `llm_calls`/`tool_calls` children are **retained with their
-payload columns redacted**: `question`, `answer_summary`, `parsed`, and `tool_calls.args` are
-nulled and the row is stamped `redacted_at`; ids, timestamps, model/provider, token counts,
-latency, and status survive. The audit trail keeps its shape (who ran what, when, at what cost)
-and loses its content. Deletion is what the UI copy promises, so the copy states this in one
-sentence.
+payload columns redacted**: `question`, `answer_summary`, `parsed`, `tool_calls.args`, and
+`tool_calls.result_digest` (added to this enumerated list by the phase's final-review wave —
+`result_digest` carries the same content-bearing proof text, entity/period/filter values verbatim,
+that this section's own governing rule below already covers) are nulled and the row is stamped
+`redacted_at`; ids, timestamps, model/provider, token counts, latency, and status survive. The
+audit trail keeps its shape (who ran what, when, at what cost) and loses its content. Deletion is
+what the UI copy promises, so the copy states this in one sentence.
 
 **Admin access boundary.** An `admin` database role may read `turn_run`/`llm_calls`/`tool_calls`
 across users — this is the role that runs harvest, cost roll-ups, and incident review. It is

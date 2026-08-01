@@ -210,10 +210,19 @@ _REDACT_TURN_RUN_SQL = text(
     """
 )
 
+# I-2 (P11 whole-branch final-review wave, 2026-08-01): result_digest is
+# nulled alongside args -- it is written as tool_result_digest's own proof
+# text VERBATIM (core/llm/loop.py's docstring), which embeds the entity
+# FQN, period window, and filter values a deleted conversation was about;
+# doc 05 section 7's own governing sentence ("the audit trail keeps its
+# shape ... and loses its content") already covers it, only the doc's own
+# ENUMERATED list omitted it (corrected in the same wave, doc 05 section
+# 7). Already nullable since migration 0003 -- unlike args, this column
+# never needed a migration 0005 ALTER COLUMN to permit NULL at redact time.
 _REDACT_TOOL_CALLS_SQL = text(
     """
     UPDATE tool_calls
-    SET args = NULL
+    SET args = NULL, result_digest = NULL
     WHERE turn_run_id IN (SELECT id FROM turn_run WHERE conversation_id = :conversation_id)
     """
 )
@@ -549,14 +558,29 @@ class RunLogWriter:
 def redact_turns_for_conversation(conn: Connection, conversation_id: str) -> int:
     """Doc 05 section 7's deletion contract, runtime half (migration 0005 is
     the schema half): null ``turn_run.question``/``answer_summary``, reset
-    ``turn_run.parsed`` to ``'{}'::jsonb``, null every linked ``tool_calls.
-    args``, and stamp ``turn_run.redacted_at`` -- for every ``turn_run`` row
-    naming ``conversation_id`` that has not already been redacted. Returns
-    the number of ``turn_run`` rows newly redacted (0 on a repeat call for
-    the same conversation, or a conversation with no turns at all -- both
-    honest, not exceptional, outcomes). ``llm_calls`` is never touched: it
-    carries no payload columns (doc 06 section 1's own schema), so there is
-    nothing on it for doc 05 section 7's contract to redact.
+    ``turn_run.parsed`` to ``'{}'::jsonb``, and stamp ``turn_run.
+    redacted_at`` -- for every ``turn_run`` row naming ``conversation_id``
+    that has not already been redacted (``_REDACT_TURN_RUN_SQL``'s own
+    ``redacted_at IS NULL`` guard). Returns the number of ``turn_run`` rows
+    NEWLY redacted by THIS call (0 on a repeat call for the same
+    conversation, or a conversation with no turns at all -- both honest,
+    not exceptional, outcomes) -- the only rowcount this function returns.
+
+    Also nulls every linked ``tool_calls.args``/``result_digest`` (I-2, P11
+    final-review wave: ``result_digest`` joined ``args`` in the same edit
+    that added it). **Corrected overstatement (triage T1-M3):** unlike the
+    ``turn_run`` UPDATE above, ``_REDACT_TOOL_CALLS_SQL`` carries NO
+    ``redacted_at`` guard of its own -- it runs unconditionally against
+    every ``tool_calls`` row linked to ANY ``turn_run`` naming
+    ``conversation_id``, already redacted or not, and its own rowcount is
+    discarded (never folded into this function's return value). Harmless in
+    practice, since nulling an already-null column changes nothing, but it
+    is not a no-op in the same GATED sense the ``turn_run`` UPDATE is, and
+    an earlier revision of this docstring blurred that distinction.
+
+    ``llm_calls`` is never touched: it carries no payload columns (doc 06
+    section 1's own schema), so there is nothing on it for doc 05 section
+    7's contract to redact.
 
     Runs on ``conn``, a connection the CALLER already opened via
     :func:`rls_transaction` -- this function opens no transaction of its
