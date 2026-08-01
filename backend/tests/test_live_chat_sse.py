@@ -662,6 +662,35 @@ async def test_get_conversations_lists_newest_first(pg_database_url):
     assert [c["id"] for c in body["items"][:2]] == [c2, c1]
 
 
+@pytest.mark.pg
+@pytest.mark.anyio
+async def test_get_conversations_limit_out_of_range_is_422_not_500(pg_database_url):
+    """Final-review wave, I-1: limit<=0 used to reach history.py's own
+    keyset-pagination slicing with an EMPTY page while `rows` came back
+    non-empty, raising an unhandled IndexError on `page[-1]` -- a bare 500
+    with no RFC-7807 body (see UserHistory.list_conversations). limit=0
+    needs at least one visible conversation to trip `len(rows) > limit`;
+    limit=-1 trips the identical branch UNCONDITIONALLY (`LIMIT 0` always
+    returns zero rows, and `0 > -1` is True regardless of table content).
+    limit=201 exercises the new upper bound (the old code accepted any
+    int, unbounded). FastAPI's own Query(ge=1, le=200) now rejects all
+    three before the route body ever runs -- 422, never 500."""
+    app = _live_app(database_url=pg_database_url)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        await client.post("/api/conversations")  # >=1 row, for limit=0's own branch
+
+        responses = [
+            await client.get("/api/conversations", params={"limit": bad_limit})
+            for bad_limit in (0, -1, 201)
+        ]
+
+    for response in responses:
+        assert response.status_code == 422
+        offending = {err["loc"][-1] for err in response.json()["detail"]}
+        assert "limit" in offending
+
+
 @pytest.mark.anyio
 async def test_get_messages_404_for_a_conversation_id_never_seen():
     app = _live_app()
@@ -685,6 +714,31 @@ async def test_get_messages_returns_the_opener_right_after_create(pg_database_ur
     body = r.json()
     assert set(body) == {"items", "next_cursor"}
     assert [m["role"] for m in body["items"]] == ["assistant"]
+
+
+@pytest.mark.pg
+@pytest.mark.anyio
+async def test_get_messages_limit_out_of_range_is_422_not_500(pg_database_url):
+    """Final-review wave, I-1: the same page[-1] defect in
+    UserHistory.get_messages, reached through the OTHER paginated route.
+    limit=0 needs the conversation's own opener message (created for free
+    by POST /api/conversations) to trip `len(rows) > limit`; limit=-1
+    trips it unconditionally; limit=501 exercises the new upper bound --
+    same three-value matrix as the conversations-list case above."""
+    app = _live_app(database_url=pg_database_url)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
+
+        responses = [
+            await client.get(f"/api/conversations/{cid}/messages", params={"limit": bad_limit})
+            for bad_limit in (0, -1, 501)
+        ]
+
+    for response in responses:
+        assert response.status_code == 422
+        offending = {err["loc"][-1] for err in response.json()["detail"]}
+        assert "limit" in offending
 
 
 @pytest.mark.pg

@@ -265,7 +265,7 @@ from datetime import date
 from time import monotonic
 
 import anyio
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -482,7 +482,21 @@ def create_conversation(request: Request) -> dict:
 
 
 @router.get("/conversations", dependencies=[Depends(require_sales)])
-def list_conversations(request: Request, limit: int = 50, cursor: str | None = None) -> dict:
+def list_conversations(
+    request: Request,
+    limit: int = Query(
+        50,
+        ge=1,
+        le=200,
+        description=(
+            "Page size, 1-200. 200 is a generous ceiling for a conversations "
+            "sidebar -- no UI ever needs more per page. Out-of-range values "
+            "422 (final-review wave, I-1: limit<=0 used to 500 via an "
+            "IndexError in history.py's own pagination slicing)."
+        ),
+    ),
+    cursor: str | None = None,
+) -> dict:
     """``{"items": [...], "next_cursor": str|null}`` -- Phase 10 Task 3's
     breaking change from the old bare ``{"conversations": [...]}`` array
     (Task 4, the frontend, follows immediately). ``MalformedCursor`` from a
@@ -500,7 +514,22 @@ def list_conversations(request: Request, limit: int = 50, cursor: str | None = N
 
 
 @router.get("/conversations/{cid}/messages", dependencies=[Depends(require_sales)])
-def get_messages(cid: str, request: Request, limit: int = 200, cursor: str | None = None) -> dict:
+def get_messages(
+    cid: str,
+    request: Request,
+    limit: int = Query(
+        200,
+        ge=1,
+        le=500,
+        description=(
+            "Page size, 1-500. 500 is a generous ceiling for a single "
+            "transcript page -- larger than any realistic turn count. "
+            "Out-of-range values 422 (final-review wave, I-1: same "
+            "IndexError defect as list_conversations' own limit)."
+        ),
+    ),
+    cursor: str | None = None,
+) -> dict:
     """``{"items": [...], "next_cursor": str|null}`` -- same envelope as
     :func:`list_conversations`. ``None`` from ``UserHistory.get_messages``
     (``cid`` absent, malformed, or another user's -- RLS makes the three
@@ -577,8 +606,26 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
     # malformed, or belongs to someone else raises LookupError here (module
     # docstring's "A conversation that does not exist... now 404s at send
     # time too") -- mapped to the SAME 404 GET .../messages already uses.
+    #
+    # Final-review wave, I-3: this is a synchronous engine.begin() transaction
+    # (pool checkout, connect on first use, two statements, commit) called
+    # directly in THIS route's own async def body -- unlike every write below,
+    # which runs inside run_turn_sync, already bridged onto a worker thread
+    # via anyio.to_thread.run_sync (module docstring's "Bridging a synchronous
+    # orchestrator into an async stream"). Left synchronous here, it would run
+    # on the event loop thread itself: under concurrent turns holding
+    # connections from the same QueuePool, a checkout can block for up to the
+    # pool's 30-second timeout, freezing every other request in the process
+    # (including /health/*) for that whole window. Off-loaded the identical
+    # way run_turn_sync itself is, via await anyio.to_thread.run_sync(...),
+    # keeping the except LookupError -> 404 mapping around the await: a
+    # single to_thread.run_sync call re-raises the wrapped function's own
+    # exception to the awaiter directly, never wrapped in an ExceptionGroup
+    # (that only happens inside a task group, which this is not).
     try:
-        user_history.append_user_message(cid, user_message_id, body.text, turn_id)
+        await anyio.to_thread.run_sync(
+            user_history.append_user_message, cid, user_message_id, body.text, turn_id
+        )
     except LookupError as exc:
         raise HTTPException(404, detail="unknown conversation") from exc
 
@@ -586,7 +633,14 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
     assistant = buffer.start_assistant_message(message_id)
 
     if settings.data_backend != _SYNTHETIC_DATA_BACKEND:
-        _persist_assistant_message(user_history, cid, assistant, turn_id)
+        # Final-review wave, I-3: the SAME class of defect as the call above
+        # -- _persist_assistant_message's own write_assistant_message call is
+        # a second synchronous transaction reachable directly from this async
+        # body (the snowflake-guard path returns before run_turn_sync/the
+        # worker-thread bridge is ever set up), so it gets the identical fix.
+        await anyio.to_thread.run_sync(
+            _persist_assistant_message, user_history, cid, assistant, turn_id
+        )
         return _snowflake_guard_response(
             turn_id=turn_id,
             message_id=message_id,

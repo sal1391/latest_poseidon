@@ -396,6 +396,35 @@ def test_malformedcursor_is_a_valueerror_subclass():
 
 
 # ===========================================================================
+# offline: limit < 1 -- final-review wave, I-1. Same "no engine touched"
+# proof as the MalformedCursor cases above: the guard runs in pure Python
+# before either method ever opens a transaction, so an object() engine
+# proves it -- if the raise happened any later, these would blow up on a
+# real attribute access against a non-engine object instead of cleanly
+# raising ValueError. The HTTP route layer (api/live_chat.py) already
+# bounds `limit` with FastAPI's own Query(ge=1, ...), so this is the
+# "belt" for a caller of UserHistory directly, closing the IndexError
+# history.py's own page[-1] lines used to raise for limit <= 0.
+# ===========================================================================
+
+
+@pytest.mark.parametrize("bad_limit", [0, -1, -100], ids=["zero", "negative-one", "very-negative"])
+def test_list_conversations_raises_valueerror_for_limit_less_than_1(bad_limit):
+    user_history = _offline_user_history()
+
+    with pytest.raises(ValueError, match="limit"):
+        user_history.list_conversations(limit=bad_limit)
+
+
+@pytest.mark.parametrize("bad_limit", [0, -1, -100], ids=["zero", "negative-one", "very-negative"])
+def test_get_messages_raises_valueerror_for_limit_less_than_1(bad_limit):
+    user_history = _offline_user_history()
+
+    with pytest.raises(ValueError, match="limit"):
+        user_history.get_messages(str(uuid.uuid4()), limit=bad_limit)
+
+
+# ===========================================================================
 # pg fixtures -- mirrors test_rls_policies.py's own guard/role computation,
 # adapted to a fixture (test_runlog_writer.py's shape) since this file also
 # holds offline tests that must always run.

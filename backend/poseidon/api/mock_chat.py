@@ -62,14 +62,22 @@ def create_conversation() -> dict:
 
 @router.get("/conversations")
 def list_conversations() -> dict:
-    return {"conversations": list(reversed(list(_conversations.values())))}
+    """``{"items": [...], "next_cursor": null}`` -- final-review wave, I-2:
+    matches live_chat.py's real envelope (Phase 10 Task 3) so the frontend
+    works against EITHER backend. This mock has exactly one page of
+    conversations (everything ever created this process, held in memory);
+    ``next_cursor`` is therefore always null -- no real pagination is
+    built here, unlike live_chat.py's cursor-encoded next page."""
+    return {"items": list(reversed(list(_conversations.values()))), "next_cursor": None}
 
 
 @router.get("/conversations/{cid}/messages")
 def get_messages(cid: str) -> dict:
+    """Same envelope change as :func:`list_conversations` above, same
+    reason: exactly one page, ``next_cursor`` always null."""
     if cid not in _messages:
         raise HTTPException(404, detail="unknown conversation")
-    return {"messages": _messages[cid]}
+    return {"items": _messages[cid], "next_cursor": None}
 
 
 @router.post("/conversations/{cid}/messages")

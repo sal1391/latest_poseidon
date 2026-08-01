@@ -54,8 +54,9 @@ support for a genuinely absent or genuinely invisible row -- never an
 unhandled ``DataError`` escaping from the database driver as a raw 500.
 
 **Reads fail closed to a harmless default for a bad ID; most writes fail
-closed to a silent no-op; three operations raise -- two writes, and (Fix
-round 1) one read-side carve-out for a bad CURSOR.**
+closed to a silent no-op; four operations raise -- two writes, one
+read-side carve-out for a bad CURSOR (Fix round 1), and one read-side
+carve-out for a bad LIMIT (final-review wave, I-1).**
 :meth:`~UserHistory.get_messages`, :meth:`~UserHistory.read_state`,
 :meth:`~DbStateStore.get`, and :meth:`~DbStateStore.get_brief_done` all
 return the documented "nothing here" value (``None``/``{}``/the
@@ -65,7 +66,7 @@ UPDATEs (:meth:`~UserHistory.set_title`, :meth:`~UserHistory.write_state`,
 :meth:`~DbStateStore.put`, :meth:`~DbStateStore.set_brief_done`) are
 ALREADY fully protected by RLS's own per-row predicate on the UPDATE
 itself, so a zero-row match there is simply the correct outcome already --
-these no-op silently, adding no bookkeeping of their own. Three operations
+these no-op silently, adding no bookkeeping of their own. Four operations
 differ, each for its own disclosed reason:
 
 0. :meth:`~UserHistory.list_conversations` and :meth:`~UserHistory.get_
@@ -112,6 +113,17 @@ differ, each for its own disclosed reason:
    on a conversation id that was never created (or belongs to someone
    else) -- never a real path once a conversation is always created before
    any turn against it runs.
+3. :meth:`~UserHistory.list_conversations` and :meth:`~UserHistory.get_
+   messages` ALSO raise a plain ``ValueError`` (final-review wave, I-1)
+   when ``limit`` is less than 1 -- checked in pure Python before either
+   method ever opens a transaction, so the guard is cheap. This is the one
+   place this module raises for a bad NUMBER rather than a bad ID/cursor:
+   the HTTP route layer already bounds ``limit`` with FastAPI's own
+   ``Query(ge=1, ...)``, so this is a belt for a caller of ``UserHistory``
+   directly (this module's own test suite, or any future non-HTTP
+   caller) -- without it, ``limit < 1`` would reach either method's own
+   ``page[-1]`` line with an EMPTY ``page``, raising an opaque
+   ``IndexError`` instead of a clear, named failure.
 
 **FeedbackStubStore is exactly what its name says: a stub.** It extracts
 today's ``TranscriptStore._feedback`` dict and lock verbatim, with the
@@ -411,7 +423,19 @@ class UserHistory:
         Raises :class:`MalformedCursor` if ``cursor`` fails to decode --
         see the module docstring's numbered item 0 for why this is the one
         read in this module that does NOT fail closed to a harmless
-        default."""
+        default.
+
+        Raises ``ValueError`` if ``limit`` is less than 1 (final-review
+        wave, I-1) -- checked BEFORE any query runs, so this is cheap:
+        the HTTP route already bounds ``limit`` with FastAPI's own
+        ``Query(ge=1, ...)``, but a non-HTTP caller of this method
+        directly (this module's own test suite, or anything else that
+        imports ``UserHistory``) has no such gate. Without this check, a
+        ``limit`` of zero or less reaches the ``page[-1]`` line below with
+        an EMPTY ``page``, raising an opaque ``IndexError`` instead of a
+        clear, named failure."""
+        if limit < 1:
+            raise ValueError(f"limit must be >= 1, got {limit!r}")
         fetch_limit = limit + 1
         params: dict[str, object] = {"fetch_limit": fetch_limit}
         if cursor is None:
@@ -445,7 +469,15 @@ class UserHistory:
         someone else's (or a nonexistent) conversation still raises rather
         than returning ``None`` -- the two failure modes are orthogonal,
         and a client sending garbage on both counts should hear about the
-        cursor, since that is the input it built itself."""
+        cursor, since that is the input it built itself.
+
+        Raises ``ValueError`` if ``limit`` is less than 1 -- same
+        final-review wave, I-1 guard as :meth:`list_conversations`, for
+        the identical reason (this method's own ``page[-1]`` line below).
+        Checked first, ahead of even the ``cid`` parse, since a bad
+        ``limit`` is a caller-programming-error independent of ``cid``."""
+        if limit < 1:
+            raise ValueError(f"limit must be >= 1, got {limit!r}")
         parsed_cid = _parse_uuid(cid)
         if parsed_cid is None:
             return None

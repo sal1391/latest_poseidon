@@ -70,7 +70,7 @@ async def test_mock_turn_streams_tools_tokens_done(app):
         assert seqs[0] == 1 and seqs == sorted(seqs) and len(set(seqs)) == len(seqs)
         assert len({d["turn_id"] for d in payloads}) == 1
         # transcript persisted: user + assistant with tool_event + text parts
-        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["messages"]
+        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["items"]
         assert msgs[-1]["role"] == "assistant"
         assert [p["kind"] for p in msgs[-1]["parts"]].count("tool_event") == 2
 
@@ -94,7 +94,7 @@ async def test_feedback_upsert_roundtrip(app):
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
         await read_sse(client, cid, "hello")
-        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["messages"]
+        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["items"]
         mid = msgs[-1]["id"]
         r = await client.post(f"/api/messages/{mid}/feedback",
                               json={"verdict": "down", "comment": "wrong port"})
@@ -128,14 +128,14 @@ async def test_feedback_mid_stream_is_stored_not_404(app):
         r = await client.post(f"/api/messages/{mid}/feedback", json={"verdict": "up"})
         assert r.status_code == 204
         # ...and the turn really is still mid-flight: known id, no parts yet.
-        partial = (await client.get(f"/api/conversations/{cid}/messages")).json()["messages"]
+        partial = (await client.get(f"/api/conversations/{cid}/messages")).json()["items"]
         assert partial[-1]["id"] == mid and partial[-1]["parts"] == []
 
         async for _ in frames:  # finish the turn
             pass
         assert (await client.get(f"/api/messages/{mid}/feedback")).json()["verdict"] == "up"
         # ...and the completed transcript is still one message of the usual shape
-        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["messages"]
+        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["items"]
         assert [m["id"] for m in msgs].count(mid) == 1
         assert [p["kind"] for p in msgs[-1]["parts"]] == ["tool_event", "tool_event", "text"]
 
@@ -146,7 +146,7 @@ async def test_list_conversations_newest_first(app):
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         c1 = (await client.post("/api/conversations")).json()["conversation"]["id"]
         c2 = (await client.post("/api/conversations")).json()["conversation"]["id"]
-        listing = (await client.get("/api/conversations")).json()["conversations"]
+        listing = (await client.get("/api/conversations")).json()["items"]
         assert [c["id"] for c in listing[:2]] == [c2, c1]
 
 
