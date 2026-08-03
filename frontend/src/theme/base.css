@@ -42,11 +42,14 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* App shell: fixed sidebar + fluid chat column. */
+/* App shell: fixed sidebar + fluid chat column. Capped at the viewport
+   (not min-height) so the thread scrolls internally instead of the whole
+   page growing with message count and sinking the composer below the fold. */
 .app-shell {
   display: grid;
   grid-template-columns: 260px 1fr;
-  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
   background: var(--surface);
   color: var(--ink);
   font-family: var(--font-body);
@@ -57,6 +60,7 @@ body {
   flex-direction: column;
   gap: 1rem;
   padding: 1.25rem 1rem;
+  min-height: 0;
   background: var(--surface-raised);
   border-right: 1px solid var(--border);
 }
@@ -96,12 +100,15 @@ body {
 /* Conversation list: quiet rows, the active one lifted onto the base surface. */
 .conversation-list {
   display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 0.125rem;
+  min-height: 0;
   overflow-y: auto;
 }
 
 .conversation-item {
+  flex-shrink: 0;
   overflow: hidden;
   padding: 0.5rem 0.625rem;
   border: none;
@@ -133,7 +140,8 @@ body {
 .chat-column {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
   background: var(--surface);
 }
 
