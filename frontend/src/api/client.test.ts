@@ -1,5 +1,12 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { ApiError, getMe, getMessages, listConversations, setAuthTokenProvider } from "./client";
+import {
+  ApiError,
+  getFeedback,
+  getMe,
+  getMessages,
+  listConversations,
+  setAuthTokenProvider,
+} from "./client";
 import { streamTurn } from "./sse";
 
 function jsonResponse(body: unknown, init?: ResponseInit): Response {
@@ -188,6 +195,34 @@ test("getMessages returns the {items, next_cursor} envelope and forwards a given
     items: [{ id: "m1", role: "assistant", parts: [] }],
     next_cursor: null,
   });
+});
+
+// Phase 12 Task 2: GET /api/messages/{mid}/feedback -- 200 with the recorded
+// verdict, or 404 (no distinction made in the body between "no feedback
+// yet" and "message invisible" -- task-2-brief's own note; the caller,
+// chatStore's hydrateFeedback, is the one that treats any 404 as a no-op).
+test("getFeedback returns the parsed {verdict, comment} body on 200", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => jsonResponse({ verdict: "up", comment: null })),
+  );
+
+  const result = await getFeedback("a1");
+
+  expect(result).toEqual({ verdict: "up", comment: null });
+});
+
+test("getFeedback throws an ApiError on a 404 -- the caller decides what that means", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      jsonResponse(
+        { type: "about:blank", title: "unknown message", detail: "", status: 404 },
+        { status: 404 },
+      )),
+  );
+
+  await expect(getFeedback("a1")).rejects.toMatchObject({ status: 404 });
 });
 
 test("streamTurn sends the caller-supplied client_turn_key verbatim, never minting its own", async () => {

@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { Conversation, Message, MessagePart, SseEvent } from "../api/types";
 import * as api from "./../api/client";
 import { StreamError, streamTurn } from "../api/sse";
+import { isTurnBackedAssistantMessage } from "../features/feedback/turnBacked";
 
 export function applyEventTo(messages: Message[], e: SseEvent): Message[] {
   const { message_id, event_seq } = e.data;
@@ -76,9 +77,26 @@ export interface ChatState {
   messages: Record<string, Message[]>;
   streamingByConv: Record<string, boolean>;
   feedback: Record<string, { verdict: "up" | "down"; comment?: string }>;
+  // Phase 12 Task 2: the opener (messages[cid][0] for the lifetime of a
+  // conversation open this session -- see turnBacked.ts's own docstring for
+  // why this positional signal is safe absent a backend turnId field) is the
+  // one assistant message that must never be offered feedback. Set together
+  // with `messages` at every one of the three places a conversation's first
+  // page gets loaded (bootstrap's create branch, newConversation,
+  // openConversation), never independently -- so a cid present in `messages`
+  // always has a matching entry here too.
+  openerIdByConv: Record<string, string>;
   bootstrap: () => Promise<void>;
   newConversation: () => Promise<string>;
   openConversation: (cid: string) => Promise<void>;
+  // Fires one GET per turn-backed assistant message currently loaded for
+  // `cid`, hydrating `feedback` with whatever verdict is already recorded.
+  // Best-effort: a 404 (nothing recorded, or the route's other 404 reason --
+  // task-2-brief's own note that hydration treats both alike) or any other
+  // per-message failure is swallowed, never thrown -- called from
+  // `openConversation` below, so a hydration hiccup must not block a
+  // conversation from opening.
+  hydrateFeedback: (cid: string) => Promise<void>;
   // clientTurnKey: omitted for a brand-new logical send (one is minted);
   // passed explicitly to RETRY that same send with the backend's own
   // (user_sub, client_turn_key) idempotency short-circuit intact -- see
@@ -100,6 +118,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   messages: {},
   streamingByConv: {},
   feedback: {},
+  openerIdByConv: {},
 
   bootstrap: () => {
     // Re-entrant: StrictMode's double effect, or a send issued before the first
@@ -113,6 +132,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           conversationsNextCursor: null,
           activeId: conversation.id,
           messages: { ...s.messages, [conversation.id]: [opener] },
+          openerIdByConv: { ...s.openerIdByConv, [conversation.id]: opener.id },
         }));
         return;
       }
@@ -132,6 +152,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       conversations: [conversation, ...s.conversations],
       activeId: conversation.id,
       messages: { ...s.messages, [conversation.id]: [opener] },
+      openerIdByConv: { ...s.openerIdByConv, [conversation.id]: opener.id },
     }));
     return conversation.id;
   },
@@ -139,7 +160,48 @@ export const useChatStore = create<ChatState>((set, get) => ({
   openConversation: async (cid) => {
     set({ activeId: cid });
     const page = await api.getMessages(cid);
-    set((s) => ({ messages: { ...s.messages, [cid]: page.items } }));
+    set((s) => ({
+      messages: { ...s.messages, [cid]: page.items },
+      openerIdByConv:
+        page.items.length > 0
+          ? { ...s.openerIdByConv, [cid]: page.items[0].id }
+          : s.openerIdByConv,
+    }));
+    // Awaited (not fire-and-forget): every per-message request inside
+    // hydrateFeedback already swallows its own failure, so this can never
+    // reject and never leaves openConversation's own caller waiting on
+    // anything that could hang the UI -- see hydrateFeedback's own
+    // docstring. Awaiting here (rather than `void`-ing it) is what lets
+    // `await bootstrap()`/`await openConversation()` callers -- tests
+    // included -- observe hydrated feedback deterministically, with no
+    // extra polling.
+    await get().hydrateFeedback(cid);
+  },
+
+  hydrateFeedback: async (cid) => {
+    const messages = get().messages[cid] ?? [];
+    const openerId = get().openerIdByConv[cid];
+    const targets = messages.filter((m) => isTurnBackedAssistantMessage(m, openerId));
+    await Promise.all(
+      targets.map(async (m) => {
+        try {
+          const result = await api.getFeedback(m.id);
+          set((s) => ({
+            feedback: {
+              ...s.feedback,
+              [m.id]: { verdict: result.verdict, comment: result.comment ?? undefined },
+            },
+          }));
+        } catch {
+          // A 404 (nothing recorded yet, the common case) is expected, not
+          // exceptional -- task-2-brief's own "treat any 404 as simply
+          // nothing to hydrate." Any other failure is swallowed too:
+          // hydration is best-effort enrichment of an already-rendered
+          // conversation, never something that should surface an error or
+          // block the rest of this fan-out.
+        }
+      }),
+    );
   },
 
   loadMoreConversations: async () => {
@@ -298,5 +360,6 @@ export function resetChatStore(): void {
     messages: {},
     streamingByConv: {},
     feedback: {},
+    openerIdByConv: {},
   });
 }

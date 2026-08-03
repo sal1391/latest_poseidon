@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { setupServer } from "msw/node";
 import { http, HttpResponse } from "msw";
 import { vi, beforeAll, beforeEach, afterAll, afterEach, test, expect } from "vitest";
-import { handlers } from "../../mocks/handlers";
+import { handlers, mockOpener } from "../../mocks/handlers";
 import { resetChatStore, useChatStore } from "../../state/chatStore";
 import { streamTurn } from "../../api/sse";
 import type { SseEvent } from "../../api/types";
@@ -52,7 +52,14 @@ test("send → streamed answer with visible tool step", async () => {
   expect(screen.getByText(/Three customers drove April./)).toBeInTheDocument();
 });
 
-test("thumbs down opens the comment prompt and submits", async () => {
+test("thumbs down opens the comment prompt and submits the real verdict+comment body", async () => {
+  let seenBody: unknown;
+  server.use(
+    http.post("/api/messages/:mid/feedback", async ({ request }) => {
+      seenBody = await request.json();
+      return new HttpResponse(null, { status: 204 });
+    }),
+  );
   render(<ChatScreen />);
   const input = await screen.findByPlaceholderText(/message poseidon/i);
   await userEvent.type(input, "hello{Enter}");
@@ -67,6 +74,137 @@ test("thumbs down opens the comment prompt and submits", async () => {
   await userEvent.click(screen.getByRole("button", { name: /send feedback/i }));
   await waitFor(() =>
     expect(screen.queryByPlaceholderText(/what went wrong/i)).not.toBeInTheDocument());
+  expect(seenBody).toEqual({ verdict: "down", comment: "numbers look off" });
+});
+
+// Phase 12 Task 2 (task-2-brief Step 1): the opener (the first message of
+// every conversation) carries no linked turn, so the backend 422s feedback
+// on it -- the UI must never even offer thumbs there. Before any turn the
+// only assistant message loaded IS the opener, so zero thumbs rows is the
+// gating proof; after one real turn exactly one turn-backed assistant
+// message exists, so exactly one thumbs row -- never two.
+test("thumbs render only on turn-backed assistant messages, never on the opener", async () => {
+  render(<ChatScreen />);
+  await screen.findByText(/Ask about your data/);
+  expect(screen.queryAllByLabelText("Good response")).toHaveLength(0);
+
+  const input = screen.getByPlaceholderText(/message poseidon/i);
+  await userEvent.type(input, "hello{Enter}");
+  await waitFor(() => screen.getByText(/Three customers drove April./));
+
+  expect(screen.getAllByLabelText("Good response")).toHaveLength(1);
+});
+
+test("thumbs-up POSTs {verdict: 'up'} and the button reflects the recorded state", async () => {
+  let seenBody: unknown;
+  server.use(
+    http.post("/api/messages/:mid/feedback", async ({ request }) => {
+      seenBody = await request.json();
+      return new HttpResponse(null, { status: 204 });
+    }),
+  );
+  render(<ChatScreen />);
+  const input = await screen.findByPlaceholderText(/message poseidon/i);
+  await userEvent.type(input, "hello{Enter}");
+  await waitFor(() => screen.getByText(/Three customers drove April./));
+
+  const upButton = screen.getByLabelText("Good response");
+  expect(upButton).toHaveAttribute("aria-pressed", "false");
+  await userEvent.click(upButton);
+
+  await waitFor(() => expect(upButton).toHaveAttribute("aria-pressed", "true"));
+  expect(seenBody).toEqual({ verdict: "up", comment: null });
+});
+
+test("re-voting from up to down amends the verdict and the UI reflects the flip", async () => {
+  const seenBodies: unknown[] = [];
+  server.use(
+    http.post("/api/messages/:mid/feedback", async ({ request }) => {
+      seenBodies.push(await request.json());
+      return new HttpResponse(null, { status: 204 });
+    }),
+  );
+  render(<ChatScreen />);
+  const input = await screen.findByPlaceholderText(/message poseidon/i);
+  await userEvent.type(input, "hello{Enter}");
+  await waitFor(() => screen.getByText(/Three customers drove April./));
+
+  await userEvent.click(screen.getByLabelText("Good response"));
+  await waitFor(() =>
+    expect(screen.getByLabelText("Good response")).toHaveAttribute("aria-pressed", "true"));
+
+  await userEvent.click(screen.getByLabelText("Bad response"));
+  const skip = await screen.findByRole("button", { name: /skip/i });
+  await userEvent.click(skip); // Skip still records the down verdict, with no comment.
+
+  await waitFor(() =>
+    expect(screen.getByLabelText("Bad response")).toHaveAttribute("aria-pressed", "true"));
+  expect(screen.getByLabelText("Good response")).toHaveAttribute("aria-pressed", "false");
+  expect(seenBodies).toEqual([
+    { verdict: "up", comment: null },
+    { verdict: "down", comment: null },
+  ]);
+});
+
+test("GET hydrates an existing verdict when a conversation with a prior turn-backed message is opened", async () => {
+  server.use(
+    http.get("/api/conversations", () =>
+      HttpResponse.json({ items: [{ id: "c9", title: "Prior chat" }], next_cursor: null })),
+    http.get("/api/conversations/c9/messages", () =>
+      HttpResponse.json({
+        items: [
+          mockOpener,
+          { id: "u1", role: "user", parts: [{ kind: "text", payload: { markdown: "hi" } }] },
+          {
+            id: "a9",
+            role: "assistant",
+            parts: [{ kind: "text", payload: { markdown: "prior answer" } }],
+          },
+        ],
+        next_cursor: null,
+      })),
+    http.get("/api/messages/:mid/feedback", ({ params }) =>
+      params.mid === "a9"
+        ? HttpResponse.json({ verdict: "up", comment: null })
+        : new HttpResponse(null, { status: 404 })),
+  );
+
+  render(<ChatScreen />);
+
+  await screen.findByText(/prior answer/);
+  await waitFor(() =>
+    expect(screen.getByLabelText("Good response")).toHaveAttribute("aria-pressed", "true"));
+  // The opener still gets no thumbs row at all -- exactly one, for a9.
+  expect(screen.getAllByLabelText("Good response")).toHaveLength(1);
+});
+
+// Defensive (task-2-brief: "pin both layers"): the UI never offers thumbs on
+// a message a 422 is possible for, but if the backend ever disagreed with
+// that gating, a rejected POST must still roll the optimistic UI back
+// cleanly rather than leaving a stuck "pressed" state or crashing the
+// screen.
+test("a 422 from POST rolls the optimistic thumbs-up back rather than leaving it stuck pressed", async () => {
+  server.use(
+    http.post("/api/messages/:mid/feedback", () =>
+      HttpResponse.json(
+        {
+          type: "about:blank",
+          title: "feedback_not_applicable",
+          detail: "message has no linked turn",
+          status: 422,
+        },
+        { status: 422 },
+      )),
+  );
+  render(<ChatScreen />);
+  const input = await screen.findByPlaceholderText(/message poseidon/i);
+  await userEvent.type(input, "hello{Enter}");
+  await waitFor(() => screen.getByText(/Three customers drove April./));
+
+  const upButton = screen.getByLabelText("Good response");
+  await userEvent.click(upButton);
+
+  await waitFor(() => expect(upButton).toHaveAttribute("aria-pressed", "false"));
 });
 
 test("composer is disabled while a send waits on the bootstrap window", async () => {

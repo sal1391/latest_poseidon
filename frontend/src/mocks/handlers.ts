@@ -68,6 +68,18 @@ export const handlers = [
 
   http.post("/api/messages/:mid/feedback", () => new HttpResponse(null, { status: 204 })),
 
+  // Phase 12 Task 2: GET /api/messages/{mid}/feedback's real shape --
+  // 200 with the recorded verdict, or 404. This mock is stateless (unlike a
+  // real backend, it never actually remembers what the POST handler above
+  // was just sent) and defaults to "nothing recorded" for every id -- the
+  // correct default for this file's own single-opener fixture, since a
+  // freshly-created mock conversation has no turn-backed messages at all to
+  // have recorded feedback on yet. A test that needs hydration to find
+  // something overrides this handler with `server.use(...)` for the
+  // specific message id it cares about, the same convention every other
+  // per-test override in this codebase already follows.
+  http.get("/api/messages/:mid/feedback", () => new HttpResponse(null, { status: 404 })),
+
   // GET /api/skills is live-chat-only (poseidon.api.live_chat's own module
   // docstring); mock mode genuinely has no such route, so the mock handler
   // set answers 404 here too -- what makes SkillsPicker's fallback-to-

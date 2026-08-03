@@ -3,6 +3,7 @@ import { useChatStore } from "../../state/chatStore";
 import { PartRenderer } from "../../ui/message-parts/registry";
 import { Feedback } from "../../ui/primitives/Feedback";
 import { Sidebar } from "../conversations/Sidebar";
+import { isTurnBackedAssistantMessage } from "../feedback/turnBacked";
 import { Composer } from "./Composer";
 
 export default function ChatScreen() {
@@ -10,6 +11,7 @@ export default function ChatScreen() {
   const messagesByConv = useChatStore((s) => s.messages);
   const streamingByConv = useChatStore((s) => s.streamingByConv);
   const feedback = useChatStore((s) => s.feedback);
+  const openerIdByConv = useChatStore((s) => s.openerIdByConv);
   const bootstrap = useChatStore((s) => s.bootstrap);
   const newConversation = useChatStore((s) => s.newConversation);
   const sendMessage = useChatStore((s) => s.sendMessage);
@@ -45,6 +47,10 @@ export default function ChatScreen() {
 
   const messages = activeId ? (messagesByConv[activeId] ?? []) : [];
   const streaming = activeId ? streamingByConv[activeId] === true : false;
+  // The opener (the first message of every conversation) carries no linked
+  // turn and 422s if feedback is attempted on it -- see turnBacked.ts's own
+  // docstring for why this is the safe positional signal to gate on.
+  const openerId = activeId ? openerIdByConv[activeId] : undefined;
   // A pre-bootstrap send (`null`) has no home yet, so it blocks everywhere until
   // it settles; once a send is tied to a conversation it blocks only that one.
   const blocked = sendingFor !== undefined && (sendingFor === null || sendingFor === activeId);
@@ -113,7 +119,7 @@ export default function ChatScreen() {
                   disabled={blocked || streaming}
                 />
               ))}
-              {message.role === "assistant" ? (
+              {isTurnBackedAssistantMessage(message, openerId) ? (
                 <Feedback
                   verdict={feedback[message.id]?.verdict}
                   onSubmit={(verdict, comment) => {

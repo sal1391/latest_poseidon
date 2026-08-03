@@ -133,6 +133,20 @@ export async function postFeedback(
   });
 }
 
+/** GET /api/messages/{mid}/feedback's wire shape (poseidon.api.live_chat.
+ * get_feedback, Phase 12 Task 1): 200 with the recorded verdict, or a 404
+ * this function does not special-case -- like every other reader in this
+ * file, a non-2xx becomes a thrown `ApiError` and the CALLER decides what it
+ * means. `chatStore.ts`'s `hydrateFeedback` is the one caller today, and it
+ * treats any 404 (the route does not distinguish "no feedback yet" from
+ * "message invisible" in the body) as simply nothing to hydrate. */
+export async function getFeedback(
+  mid: string,
+): Promise<{ verdict: "up" | "down"; comment: string | null }> {
+  const r = await apiFetch(`/api/messages/${mid}/feedback`);
+  return (await r.json()) as { verdict: "up" | "down"; comment: string | null };
+}
+
 /** Live-chat-only (poseidon.api.live_chat's own module docstring) -- mock
  * mode has no such route, so a 404 here is expected, not exceptional; the
  * caller (SkillsPicker) is the one that decides what "no answer" means. */
