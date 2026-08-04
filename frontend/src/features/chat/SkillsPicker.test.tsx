@@ -137,6 +137,30 @@ test("closing via outside click returns focus to the trigger", async () => {
   expect(trigger).toHaveFocus();
 });
 
+// Review fix round 1, Important #1: the composer's own `<input>` is a
+// SIBLING of SkillsPicker (Composer.tsx), not a descendant, so it counts
+// as "outside" the popover's own container -- but it is a REAL focusable
+// control, not inert page chrome. A click meant to move on to typing must
+// not get silently redirected back onto the Skills trigger.
+test("clicking a different focusable control closes the popover and lets THAT control receive focus, not the trigger", async () => {
+  render(
+    <div>
+      <SkillsPicker onPick={vi.fn()} />
+      <input aria-label="Message Poseidon" />
+    </div>,
+  );
+  const trigger = screen.getByRole("button", { name: /skills/i });
+  await userEvent.click(trigger);
+  expect(screen.getByRole("group", { name: /skills/i })).toBeInTheDocument();
+
+  const composerInput = screen.getByRole("textbox", { name: /message poseidon/i });
+  await userEvent.click(composerInput);
+
+  expect(screen.queryByRole("group", { name: /skills/i })).not.toBeInTheDocument();
+  expect(composerInput).toHaveFocus();
+  expect(trigger).not.toHaveFocus();
+});
+
 test("closing via Escape returns focus to the trigger", async () => {
   render(<SkillsPicker onPick={vi.fn()} />);
   const trigger = screen.getByRole("button", { name: /skills/i });

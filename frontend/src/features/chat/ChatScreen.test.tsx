@@ -463,6 +463,57 @@ test("Load earlier is disabled and busy while its own fetch is in flight, and a 
   expect(cursoredCalls).toBe(1);
 });
 
+// Review fix round 1, Important #2: a FAILED "Load earlier" fetch must not
+// leave the scroll-anchor suppression armed for the next, wholly unrelated
+// messages change (e.g. the next chat turn arriving) -- that change would
+// otherwise have its normal scroll-to-newest silently skipped once, using a
+// long-stale anchor measurement. `messages` state never changes on this
+// failure path, so nothing else would ever clear the leaked refs.
+test("a failed Load earlier does not leak scroll-anchor suppression into the next unrelated messages change", async () => {
+  server.use(
+    http.get("/api/conversations", () =>
+      HttpResponse.json({ items: [{ id: "c9", title: "Long chat" }], next_cursor: null })),
+    http.get("/api/conversations/c9/messages", ({ request }) => {
+      const url = new URL(request.url);
+      if (url.searchParams.get("cursor")) {
+        return new HttpResponse(null, { status: 500 }); // "Load earlier" fails
+      }
+      return HttpResponse.json({
+        items: [
+          {
+            id: "recent1",
+            role: "assistant",
+            parts: [{ kind: "text", payload: { markdown: "recent reply" } }],
+          },
+        ],
+        next_cursor: "opaque-cursor-1",
+      });
+    }),
+  );
+  const scrollSpy = vi.spyOn(Element.prototype, "scrollIntoView");
+
+  render(<ChatScreen />);
+  await screen.findByText(/recent reply/);
+  const loadEarlier = screen.getByRole("button", { name: /load earlier/i });
+
+  await userEvent.click(loadEarlier);
+  // The failed fetch settled: the control returns to its normal (non-busy)
+  // state since messagesNextCursor never changed on a rejected fetch.
+  await waitFor(() => expect(loadEarlier).not.toBeDisabled());
+  scrollSpy.mockClear(); // ignore whatever scrolling happened up to this point
+
+  // An UNRELATED messages change: a brand new chat turn.
+  const input = screen.getByPlaceholderText(/message poseidon/i);
+  await userEvent.type(input, "hello{Enter}");
+  await waitFor(() =>
+    expect(screen.getByText(/Three customers drove April./)).toBeInTheDocument());
+
+  // Normal scroll-to-newest fired for this new turn -- proving the earlier
+  // failure did not leave `suppressAutoScrollRef` stuck true.
+  expect(scrollSpy).toHaveBeenCalled();
+  scrollSpy.mockRestore();
+});
+
 test("backend-unreachable bootstrap surfaces a retry banner instead of a silent no-op", async () => {
   // Both requests bootstrap can issue (list, then create-if-empty) fail, so the
   // banner has to come from the catch path rather than from a specific request.

@@ -61,6 +61,26 @@ function bareSkillName(id: string): string {
   return dot === -1 ? id : id.slice(dot + 1);
 }
 
+// Review fix round 1, Important #1: whether `target` (or an ancestor, up to
+// but excluding `document.body`) is itself a normally-focusable element --
+// i.e. something a real mousedown's own native default action would hand
+// focus to (a `<button>`, the composer's `<input>`, another sidebar row,
+// ...). `HTMLElement.tabIndex` reports 0+ for every element the browser
+// treats as focusable-by-default (form controls, links with `href`, or
+// anything carrying an explicit `tabindex`), and -1 for everything else
+// (a plain `<div>`, page chrome) -- checked up the ancestor chain rather
+// than on `target` alone since a click often lands on an inner child (an
+// icon, a text node's containing span) of the real focusable element, not
+// that element itself.
+function isOrContainsFocusable(target: EventTarget | null): boolean {
+  let el = target instanceof Element ? target : null;
+  while (el && el !== document.body) {
+    if (el instanceof HTMLElement && el.tabIndex >= 0) return true;
+    el = el.parentElement;
+  }
+  return false;
+}
+
 export interface SkillsPickerProps {
   /** Receives the chosen skill's example prompt (or, for a registry-backed
    * skill with no curated example, its label) as a composer starter. */
@@ -112,11 +132,26 @@ export function SkillsPicker({ onPick }: SkillsPickerProps) {
     // the trigger is simply never blurred in the first place, and the
     // explicit `.focus()` in `closeAndReturnFocus` above is then just a
     // (harmless, and for Escape's keyboard-only path, load-bearing) belt.
+    //
+    // Review fix round 1, Important #1: that `preventDefault()` must NOT
+    // fire for an outside target that is ITSELF a real focusable control
+    // (the composer's `<input>` is a SIBLING of this component, not a
+    // descendant -- Composer.tsx -- so it counts as "outside" `containerRef`
+    // too). Cancelling the mousedown's default action there would cancel
+    // the composer's own native focus-transfer along with it, silently
+    // stealing a click meant to focus the composer back onto the Skills
+    // trigger instead. `isOrContainsFocusable` draws that line: only page
+    // chrome that the browser was never going to focus anyway gets the
+    // preventDefault treatment; a click on another real control just closes
+    // the popover and lets that control receive focus normally.
     function handleOutsideMouseDown(event: MouseEvent): void {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-        event.preventDefault();
-        closeAndReturnFocus();
+      if (!containerRef.current || containerRef.current.contains(event.target as Node)) return;
+      if (isOrContainsFocusable(event.target)) {
+        setOpen(false);
+        return;
       }
+      event.preventDefault();
+      closeAndReturnFocus();
     }
     document.addEventListener("mousedown", handleOutsideMouseDown);
     return () => document.removeEventListener("mousedown", handleOutsideMouseDown);

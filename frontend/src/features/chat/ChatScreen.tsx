@@ -175,7 +175,21 @@ export default function ChatScreen() {
         topBefore: anchorEl.getBoundingClientRect().top,
       };
     }
-    void loadEarlierMessages(activeId).catch(() => undefined);
+    // Review fix round 1, Important #2: both refs above are armed
+    // synchronously, BEFORE `loadEarlierMessages`'s own fetch even starts --
+    // correct for the success path, where the `messages` state change that
+    // follows is exactly what the two effects above are waiting to consume
+    // and clear. On FAILURE (a rejected `ApiError`, e.g. a 5xx or network
+    // drop), `messages` never changes, so neither effect ever re-fires to
+    // clear them -- both refs would stay armed indefinitely, silently
+    // corrupting the NEXT, wholly unrelated messages change (e.g. the next
+    // chat turn arriving): its normal scroll-to-newest would be suppressed
+    // once, and a stale, long-outdated anchor measurement could get applied
+    // to it. Clearing both here, on failure specifically, closes that leak.
+    void loadEarlierMessages(activeId).catch(() => {
+      suppressAutoScrollRef.current = false;
+      pendingScrollAnchorRef.current = null;
+    });
   }, [activeId, loadEarlierMessages, messagesByConv]);
 
   const insert = useCallback((text: string) => {
