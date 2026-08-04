@@ -1,6 +1,7 @@
+import { waitFor } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
-import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { handlers } from "../mocks/handlers";
 import { resetChatStore, useChatStore } from "./chatStore";
 
@@ -56,11 +57,101 @@ test("openConversation hydrates GET feedback for turn-backed assistant messages,
     }),
   );
 
+  // `openConversation` no longer awaits hydration internally (final-review
+  // finding, Phase 12 whole-phase review: the fan-out must not block
+  // `bootstrap()`'s critical path) -- so this test needs its own `waitFor`
+  // rather than asserting immediately once `openConversation` resolves.
   await useChatStore.getState().openConversation("c1");
+
+  await waitFor(() => expect(getCalls).toEqual(["a1"]));
+  expect(useChatStore.getState().feedback.a1).toEqual({ verdict: "up", comment: undefined });
+  expect(useChatStore.getState().feedback["opener-1"]).toBeUndefined();
+});
+
+// Final-review finding (Phase 12 whole-phase review, Finding 1): Task 4's
+// page-order amendment means `openerIdByConv[cid]` stays undefined for any
+// conversation over `limit` messages until the user pages all the way back
+// -- before this fix, `isTurnBackedAssistantMessage`'s "unknown opener ->
+// withhold" default made THIS state fire zero GETs, silently hiding every
+// previously-recorded verdict on a long conversation. `next_cursor`
+// non-null is what proves the opener isn't among the loaded messages, so
+// hydration must still fire here.
+test("hydrateFeedback fires GET for a turn-backed assistant message when the opener is unknown but next_cursor is non-null (long conversation)", async () => {
+  const getCalls: string[] = [];
+  server.use(
+    http.get("/api/messages/:mid/feedback", ({ params }) => {
+      getCalls.push(params.mid as string);
+      return HttpResponse.json({ verdict: "up", comment: null });
+    }),
+  );
+  useChatStore.setState({
+    messages: { c1: [{ id: "a1", role: "assistant", parts: [] }] },
+    // Non-null: there IS an older page not yet loaded, so the true opener is
+    // provably not "a1" (or anything else currently loaded).
+    messagesNextCursor: { c1: "cursor-1" },
+    openerIdByConv: {}, // opener genuinely not yet known for c1
+  });
+
+  await useChatStore.getState().hydrateFeedback("c1");
 
   expect(getCalls).toEqual(["a1"]);
   expect(useChatStore.getState().feedback.a1).toEqual({ verdict: "up", comment: undefined });
-  expect(useChatStore.getState().feedback["opener-1"]).toBeUndefined();
+});
+
+// Same long-conversation state, but confirming the WITHHOLD side stays
+// correct too: when `next_cursor` IS null (nothing further back to load, so
+// the loaded page's own first item -- separately tracked in
+// `openerIdByConv` by `openConversation`/`loadEarlierMessages` -- is where
+// the opener question gets settled), an opener that is still `undefined`
+// here would only mean a genuinely unresolved state, so hydration must not
+// fire blindly.
+test("hydrateFeedback withholds when the opener is unknown and next_cursor is null", async () => {
+  const getCalls: string[] = [];
+  server.use(
+    http.get("/api/messages/:mid/feedback", ({ params }) => {
+      getCalls.push(params.mid as string);
+      return HttpResponse.json({ verdict: "up", comment: null });
+    }),
+  );
+  useChatStore.setState({
+    messages: { c1: [{ id: "a1", role: "assistant", parts: [] }] },
+    messagesNextCursor: { c1: null },
+    openerIdByConv: {},
+  });
+
+  await useChatStore.getState().hydrateFeedback("c1");
+
+  expect(getCalls).toEqual([]);
+});
+
+// Finding 3 (same final-review wave): hydration is the ONLY path by which a
+// persisted verdict ever reaches the UI, so a silent non-404 failure would
+// make a user's real recorded verdict vanish with zero diagnostics. A 404
+// (nothing recorded yet) must stay silent -- it is the expected, common case.
+test("hydrateFeedback warns on a non-404 failure but stays silent on a 404", async () => {
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  server.use(
+    http.get("/api/messages/:mid/feedback", ({ params }) =>
+      params.mid === "a1"
+        ? new HttpResponse(null, { status: 500 })
+        : new HttpResponse(null, { status: 404 })),
+  );
+  useChatStore.setState({
+    messages: {
+      c1: [
+        { id: "a1", role: "assistant", parts: [] },
+        { id: "a2", role: "assistant", parts: [] },
+      ],
+    },
+    messagesNextCursor: { c1: "cursor-1" },
+    openerIdByConv: {},
+  });
+
+  await useChatStore.getState().hydrateFeedback("c1");
+
+  expect(warnSpy).toHaveBeenCalledTimes(1);
+  expect(warnSpy.mock.calls[0][0]).toContain("a1");
+  warnSpy.mockRestore();
 });
 
 test("hydration treats a 404 as nothing-to-hydrate, not a thrown error -- openConversation still resolves", async () => {

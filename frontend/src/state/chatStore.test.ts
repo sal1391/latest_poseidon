@@ -19,15 +19,35 @@ vi.mock("../api/sse", async (importOriginal) => {
 // backend/tests/test_history_cutover.py), not a bare array -- these
 // defaults mirror that shape so `bootstrap`/`openConversation` see exactly
 // what the real `api/client.ts` hands them.
-vi.mock("../api/client", () => ({
-  listConversations: vi.fn(async () => ({ items: [], next_cursor: null })),
-  createConversation: vi.fn(async () => ({
-    conversation: { id: "c1", title: "New chat" },
-    opener: { id: "m0", role: "assistant" as const, parts: [] },
-  })),
-  getMessages: vi.fn(async () => ({ items: [], next_cursor: null })),
-  postFeedback: vi.fn(async () => undefined),
-}));
+//
+// `getFeedback`/`ApiError` (final-review wave, Phase 12 whole-phase review):
+// with the Finding-1 fix, `hydrateFeedback` now treats an assistant message
+// as turn-backed whenever `messagesNextCursor[cid]` is non-null even with no
+// opener recorded yet -- several `loadEarlierMessages` tests below set
+// exactly that state, so `hydrateFeedback`'s own fire-and-forget fan-out now
+// genuinely calls `getFeedback` where it previously found zero targets and
+// never did. `ApiError` stays the REAL class (via `importOriginal`, same
+// technique as the `../api/sse` mock's `StreamError` above) so
+// `hydrateFeedback`'s `err instanceof api.ApiError` check keeps working
+// against a real instance rather than `undefined`.
+vi.mock("../api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/client")>();
+  return {
+    ApiError: actual.ApiError,
+    listConversations: vi.fn(async () => ({ items: [], next_cursor: null })),
+    createConversation: vi.fn(async () => ({
+      conversation: { id: "c1", title: "New chat" },
+      opener: { id: "m0", role: "assistant" as const, parts: [] },
+    })),
+    getMessages: vi.fn(async () => ({ items: [], next_cursor: null })),
+    postFeedback: vi.fn(async () => undefined),
+    // Best-effort hydration's default "nothing recorded yet" outcome --
+    // matches the real backend's 404 for a message with no feedback.
+    getFeedback: vi.fn(async () => {
+      throw new actual.ApiError(404, null);
+    }),
+  };
+});
 
 const env = (event_seq: number) => ({ turn_id: "t1", message_id: "a1", event_seq });
 

@@ -267,7 +267,7 @@ export default function ChatScreen() {
                   disabled={blocked || streaming}
                 />
               ))}
-              {isTurnBackedAssistantMessage(message, openerId) ? (
+              {isTurnBackedAssistantMessage(message, openerId, messagesNextCursor !== null) ? (
                 <Feedback
                   verdict={feedback[message.id]?.verdict}
                   onSubmit={(verdict, comment) => {

@@ -401,6 +401,62 @@ test("Load earlier messages appears only when next_cursor is non-null, fetches t
   expect(screen.queryByRole("button", { name: /load earlier/i })).not.toBeInTheDocument();
 });
 
+// Final-review finding (Phase 12 whole-phase review, Finding 1): before this
+// fix, `openerId === undefined` (the ROUTINE state for any conversation over
+// `limit` messages, until "Load earlier" walks all the way back) withheld
+// thumbs from EVERY loaded message, including the most recent answer on
+// screen -- and `hydrateFeedback` filtered through the same predicate, so it
+// fired zero GETs too, hiding any already-recorded verdict. `next_cursor`
+// being non-null on this conversation's very FIRST page is what proves the
+// true opener is NOT "recent1" -- so both a thumbs row AND its hydration GET
+// must fire here, before the user ever clicks "Load earlier."
+test("thumbs render and hydration fires on a loaded message before the opener is known, proven safe by a non-null next_cursor (long conversation)", async () => {
+  const getCalls: string[] = [];
+  server.use(
+    http.get("/api/conversations", () =>
+      HttpResponse.json({ items: [{ id: "c9", title: "Long chat" }], next_cursor: null })),
+    http.get("/api/conversations/c9/messages", ({ request }) => {
+      const url = new URL(request.url);
+      if (url.searchParams.get("cursor")) {
+        return HttpResponse.json({
+          items: [
+            {
+              id: "old1",
+              role: "assistant",
+              parts: [{ kind: "text", payload: { markdown: "ancient reply" } }],
+            },
+          ],
+          next_cursor: null,
+        });
+      }
+      return HttpResponse.json({
+        items: [
+          {
+            id: "recent1",
+            role: "assistant",
+            parts: [{ kind: "text", payload: { markdown: "recent reply" } }],
+          },
+        ],
+        next_cursor: "opaque-cursor-1", // proves the true opener is further back, not "recent1"
+      });
+    }),
+    http.get("/api/messages/:mid/feedback", ({ params }) => {
+      getCalls.push(params.mid as string);
+      return new HttpResponse(null, { status: 404 });
+    }),
+  );
+
+  render(<ChatScreen />);
+  await screen.findByText(/recent reply/);
+
+  // Withheld before this fix: openerIdByConv.c9 is genuinely undefined at
+  // this point (the opener hasn't been walked back to), so only
+  // `messagesNextCursor.c9 !== null` makes this row -- and its hydration GET
+  // -- safe to offer.
+  await waitFor(() => expect(screen.getAllByLabelText("Good response")).toHaveLength(1));
+  await waitFor(() => expect(getCalls).toEqual(["recent1"]));
+});
+
 test("no Load earlier control renders when the loaded conversation's next_cursor is null", async () => {
   render(<ChatScreen />);
   await screen.findByText(/Ask about your data/);

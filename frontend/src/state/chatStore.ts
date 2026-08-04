@@ -100,11 +100,11 @@ export interface ChatState {
   // openConversation, loadEarlierMessages) ONLY when that page's own
   // `next_cursor` is `null`, i.e. only when that page's own first item is
   // genuinely known to be the conversation's first-ever message. A cid
-  // present in `messages` with no entry here yet simply means the true
-  // opener has not been walked back to -- `isTurnBackedAssistantMessage`'s
-  // own `openerId === undefined -> withhold` fail-closed default
-  // (turnBacked.ts) already makes that the SAFE state (no thumbs offered
-  // anywhere in that conversation) rather than a guess that could be wrong.
+  // present in `messages` with no entry here yet means the true opener has
+  // not been walked back to -- `isTurnBackedAssistantMessage` (turnBacked.ts)
+  // covers that state too, via `messagesNextCursor[cid] !== null`: a
+  // non-null cursor proves the opener isn't among the currently-loaded
+  // messages, so every one of them is safe to offer thumbs on regardless.
   openerIdByConv: Record<string, string>;
   bootstrap: () => Promise<void>;
   newConversation: () => Promise<string>;
@@ -209,21 +209,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ? { ...s.openerIdByConv, [cid]: page.items[0].id }
           : s.openerIdByConv,
     }));
-    // Awaited (not fire-and-forget): every per-message request inside
-    // hydrateFeedback already swallows its own failure, so this can never
-    // reject and never leaves openConversation's own caller waiting on
-    // anything that could hang the UI -- see hydrateFeedback's own
-    // docstring. Awaiting here (rather than `void`-ing it) is what lets
-    // `await bootstrap()`/`await openConversation()` callers -- tests
-    // included -- observe hydrated feedback deterministically, with no
-    // extra polling.
-    await get().hydrateFeedback(cid);
+    // Fire-and-forget (final-review finding, Phase 12 whole-phase review):
+    // every per-message request inside hydrateFeedback already swallows its
+    // own failure, so this can never reject -- but AWAITING it here used to
+    // put the entire fan-out (up to ~100 concurrent GETs, one per
+    // turn-backed assistant message on a full `limit`-message page) on
+    // `bootstrap()`'s own critical path, blocking the UI on best-effort
+    // enrichment of an already-rendered conversation. `void`-ing it means a
+    // slow or large hydration fan-out no longer delays opening a
+    // conversation; tests that used to rely on this promise settling before
+    // asserting hydrated `feedback` state now need their own `waitFor`.
+    void get().hydrateFeedback(cid);
   },
 
   hydrateFeedback: async (cid) => {
     const messages = get().messages[cid] ?? [];
     const openerId = get().openerIdByConv[cid];
-    const targets = messages.filter((m) => isTurnBackedAssistantMessage(m, openerId));
+    // `messagesNextCursor[cid] !== null` mirrors ChatScreen's own render-
+    // gating call: a non-null cursor means the true opener provably is NOT
+    // among the currently-loaded messages, so hydration is safe to fire for
+    // all of them even before the opener has been walked back to (see
+    // turnBacked.ts's own docstring, state 2).
+    const hasOlderPages = get().messagesNextCursor[cid] !== null;
+    const targets = messages.filter((m) =>
+      isTurnBackedAssistantMessage(m, openerId, hasOlderPages));
     await Promise.all(
       targets.map(async (m) => {
         try {
@@ -234,13 +243,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
               [m.id]: { verdict: result.verdict, comment: result.comment ?? undefined },
             },
           }));
-        } catch {
+        } catch (err) {
           // A 404 (nothing recorded yet, the common case) is expected, not
           // exceptional -- task-2-brief's own "treat any 404 as simply
-          // nothing to hydrate." Any other failure is swallowed too:
-          // hydration is best-effort enrichment of an already-rendered
-          // conversation, never something that should surface an error or
-          // block the rest of this fan-out.
+          // nothing to hydrate," so it stays silent. Any other failure
+          // (e.g. a real 500 or network error) is still swallowed -- this
+          // fan-out remains best-effort and must never block or surface an
+          // error for the rest of it -- but is now logged: hydration is the
+          // ONLY path by which a persisted verdict ever reaches the UI, so a
+          // silent non-404 failure here would otherwise make a user's real
+          // recorded verdict vanish with zero diagnostics.
+          const status = err instanceof api.ApiError ? err.status : undefined;
+          if (status !== 404) {
+            console.warn(`hydrateFeedback: GET feedback failed for message ${m.id}`, err);
+          }
         }
       }),
     );
