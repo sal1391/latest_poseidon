@@ -1,7 +1,7 @@
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from poseidon.api import auth, dev_runner, health, live_chat, mock_chat, turns
+from poseidon.api import auth, dev_runner, health, live_chat, me, mock_chat, turns
 from poseidon.core.artifacts import ArtifactStore
 from poseidon.core.chat.dev_router import DevDeterministicRouter
 from poseidon.core.chat.feedback import FeedbackStore
@@ -485,6 +485,14 @@ def _wire_live_chat(app: FastAPI) -> None:
     # which only exists once this function has run (see turns.py's own
     # module docstring).
     app.include_router(turns.router)
+    # Phase 13 Task 3 (doc 05 section 5, doc 01 section 9): the settings-
+    # panel HTTP surface (GET/PUT /api/me/settings, GET/PUT /api/me/memory,
+    # GET /api/me/memory/versions, POST /api/me/memory/versions/{v}/restore)
+    # -- mounted here, alongside live_chat.router/turns.router, rather than
+    # unconditionally in create_app, since it reads app.state.profile_store/
+    # app.state.memory_store, both constructed above in this same function
+    # (see me.py's own module docstring).
+    app.include_router(me.router)
 
 
 def _build_chat_rate_limiter(settings: Settings) -> auth.ChatRateLimiter | None:
