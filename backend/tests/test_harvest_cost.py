@@ -83,28 +83,33 @@ import yaml
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from poseidon.core.chat.feedback import FeedbackStore
+from poseidon.core.chat.history import HistoryStore
 from poseidon.core.config import Settings, get_settings
 from poseidon.core.data.synthetic_client import normalize_dsn
 from poseidon.core.db import build_engine, rls_transaction
 from poseidon.core.runlog import RunLogWriter, redact_turns_for_conversation
-from poseidon.scripts import cost_rollup, export_router_cases
+from poseidon.core.util.uuid7 import uuid7
+from poseidon.scripts import cost_rollup, export_router_cases, feedback_rollup
 from tests.test_llm_loop import yaml as _router_suite_yaml
 
 pytestmark = pytest.mark.pg
 
 CONNECT_TIMEOUT_SECONDS = 2
 _UP_HINT = "start it with `docker compose -f infra/docker-compose.yml up -d db`"
-_MIGRATE_HINT = "migrate it with `python -m alembic upgrade head` (revision 0005)"
+_MIGRATE_HINT = "migrate it with `python -m alembic upgrade head` (revision 0006)"
 
 _DSN = os.environ.get("DATABASE_URL", "")
 if not _DSN:
     pytest.skip(
-        f"DATABASE_URL is not set - pg harvest/cost-rollup tests need a Postgres: "
-        f"{_UP_HINT}, {_MIGRATE_HINT}",
+        f"DATABASE_URL is not set - pg harvest/cost-rollup/feedback-rollup tests need a "
+        f"Postgres: {_UP_HINT}, {_MIGRATE_HINT}",
         allow_module_level=True,
     )
 
-# Mirrors test_runlog_rls.py's own module-level probe exactly.
+# Mirrors test_runlog_rls.py's own module-level probe exactly, extended
+# (Phase 12 Task 3) to also require message_feedback (migration 0006) --
+# mirrors test_feedback_store.py's own identical extension.
 _DSN_ROLE_IS_SUPERUSER = False
 try:
     with psycopg.connect(normalize_dsn(_DSN), connect_timeout=CONNECT_TIMEOUT_SECONDS) as _conn:
@@ -116,6 +121,14 @@ try:
             if _cur.fetchone() is None:
                 pytest.skip(
                     f"turn_run.redacted_at does not exist - {_MIGRATE_HINT}",
+                    allow_module_level=True,
+                )
+            _cur.execute(
+                "SELECT 1 FROM information_schema.tables WHERE table_name = 'message_feedback'"
+            )
+            if _cur.fetchone() is None:
+                pytest.skip(
+                    f"message_feedback does not exist - {_MIGRATE_HINT}",
                     allow_module_level=True,
                 )
             _cur.execute("SELECT rolsuper FROM pg_roles WHERE rolname = current_user")
@@ -788,6 +801,662 @@ def test_spike_check_threshold_zero_is_disabled_and_never_touches_the_database(m
     )
     assert exit_code == 0
     assert lines == [{"spike_check": "disabled", "threshold": 0}]
+
+
+# ---------------------------------------------------------------------------
+# Phase 12 Task 3: thumbs-down-first harvest + verdict roll-up
+#
+# **Skill attribution, disclosed (per this task's own brief requirement):**
+# a real turn's ROUTED skill is recorded on ``tool_calls.tool`` -- literally
+# ``ToolRecord.skill_id`` (``core/llm/loop.py``), written by ``orchestrator.
+# py``'s ``_append_records`` as ``tool=record.skill_id`` -- never on
+# ``turn_run.parsed``, which carries only ``_parsed_to_loggable_dict``'s
+# slot/entity state (mode, customer, periods -- see that function's own
+# docstring) and has no skill-id field at all. Confirmed by reading both
+# modules directly, not assumed; ``test_feedback_rollup_by_skill_reads_
+# tool_calls_tool_not_turn_run_parsed`` below pins this with a DECOY value
+# in ``parsed`` that must NEVER surface as a rollup group.
+#
+# Every seeded turn here goes through the SAME real write path Task 1/2
+# ship: ``HistoryStore.write_assistant_message`` for the ``messages`` row,
+# ``RunLogWriter`` for ``turn_run``/``llm_calls``/``tool_calls``, and
+# ``FeedbackStore.upsert`` for ``message_feedback`` -- never a bare INSERT
+# for any of the four (this suite's own established discipline, see the
+# module docstring). ``_seed_feedback_turn`` below is the one helper that
+# does all four, mirroring ``test_feedback_store.py``'s own ``_full_message_
+# with_run`` extended with the run-log children this task's scripts read.
+# ---------------------------------------------------------------------------
+
+_SENTINEL_PROMPT_HASH = "SENTINEL-PROMPT-HASH-MUST-NEVER-APPEAR-IN-CANDIDATE-YAML"
+_SENTINEL_ARG_KEY = "sentinel_arg_key"
+_SENTINEL_ARG_VALUE = "SENTINEL-ARG-VALUE-MUST-NEVER-APPEAR-IN-CANDIDATE-YAML"
+
+
+def _seed_feedback_turn(
+    engine: Engine,
+    *,
+    user_sub: str,
+    question: str,
+    skill_id: str | None,
+    role: str | None,
+    prompt_version: str | None = None,
+    verdict: str | None,
+    comment: str | None = None,
+    answer_summary: str = "the answer",
+    kind: str = "chat_turn",
+) -> tuple[str, str]:
+    """One full, real-path turn: a fresh conversation, a linked ``messages``
+    row, a ``turn_run`` row at the SAME id, one ``llm_calls`` row (when
+    ``role`` is given, carrying the SENTINEL ``prompt_hash`` above) and one
+    ``tool_calls`` row (when ``skill_id`` is given, carrying the SENTINEL
+    ``args`` above) -- the two sentinels exist so a candidate export can be
+    asserted to NEVER contain either (the P11 exclusion rule, re-asserted on
+    this new feedback path) -- and, when ``verdict`` is given, a real
+    ``message_feedback`` row written through :class:`FeedbackStore`. Returns
+    ``(turn_run_id, message_id)``.
+    """
+    history = HistoryStore(engine, app_role=_EFFECTIVE_APP_ROLE).for_user(user_sub)
+    conversation, _opener = history.create_conversation()
+    writer = _writer(engine)
+    turn_id = str(uuid7())
+    message_id = str(uuid7())
+
+    handle = writer.start_turn(
+        user_sub=user_sub,
+        conversation_id=conversation["id"],
+        client_turn_key=str(uuid.uuid4()),
+        turn_index=1,
+        question=question,
+        mode="default",
+        parsed={"subject_text": question},
+        kind=kind,
+        turn_run_id=turn_id,
+    )
+    assert handle is not None and handle.created is True, "writer.start_turn must succeed"
+
+    if role is not None:
+        writer.append_llm_call(
+            turn_run_id=turn_id,
+            user_sub=user_sub,
+            seq=1,
+            provider="stub",
+            model_id="model-" + role,
+            role=role,
+            prompt_version=prompt_version,
+            prompt_hash=_SENTINEL_PROMPT_HASH,
+            input_tokens=11,
+            output_tokens=7,
+            latency_ms=5,
+            status="ok",
+        )
+    if skill_id is not None:
+        writer.append_tool_call(
+            turn_run_id=turn_id,
+            user_sub=user_sub,
+            seq=1,
+            tool=skill_id,
+            server=None,
+            args={_SENTINEL_ARG_KEY: _SENTINEL_ARG_VALUE},
+            result_digest=None,
+            status="ok",
+            latency_ms=5,
+        )
+
+    history.write_assistant_message(
+        conversation["id"],
+        {
+            "id": message_id,
+            "role": "assistant",
+            "parts": [{"kind": "text", "payload": {"markdown": answer_summary}}],
+        },
+        turn_id,
+    )
+    writer.finalize(
+        turn_run_id=turn_id,
+        user_sub=user_sub,
+        status="ok",
+        message_id=message_id,
+        answer_summary=answer_summary,
+        input_tokens=11,
+        output_tokens=7,
+        latency_ms=20,
+    )
+
+    if verdict is not None:
+        FeedbackStore(engine, app_role=_EFFECTIVE_APP_ROLE).for_user(user_sub).upsert(
+            message_id, verdict, comment
+        )
+
+    return turn_id, message_id
+
+
+def _conversation_id_of(engine: Engine, turn_run_id: str) -> str:
+    with engine.connect() as conn:
+        return str(
+            conn.execute(
+                text("SELECT conversation_id FROM turn_run WHERE id = :id"), {"id": turn_run_id}
+            ).scalar_one()
+        )
+
+
+def test_export_thumbs_down_candidates_are_selected_before_others_under_a_tight_limit(
+    pg_engine, monkeypatch
+):
+    """Priority proof (doc 06 section 7 / D25): under a ``--limit`` tighter
+    than the total eligible pool, thumbs-down turns fill the budget FIRST,
+    regardless of how they interleave in time with non-down turns. ``down2``
+    is seeded AFTER ``up_old`` on purpose -- a recency-only ordering would
+    pick ``up_old`` over ``down2``; this proves priority wins instead. Three
+    sequential export runs at increasing ``--limit`` also prove the
+    remaining budget still falls back to the existing oldest-first order
+    once every down candidate is placed.
+    """
+    user = _fresh_user_sub()
+    tag = uuid.uuid4().hex[:8]
+    with pg_engine.connect() as conn:
+        since_iso = conn.execute(text("SELECT now()")).scalar_one().isoformat()
+
+    down1_id, _ = _seed_feedback_turn(
+        pg_engine,
+        user_sub=user,
+        question=_label("q-down1", tag),
+        skill_id=_label("skill-a", tag),
+        role=_label("role-a", tag),
+        prompt_version="v1",
+        verdict="down",
+        comment="bad",
+    )
+    up_old_id, _ = _seed_feedback_turn(
+        pg_engine,
+        user_sub=user,
+        question=_label("q-up-old", tag),
+        skill_id=_label("skill-a", tag),
+        role=_label("role-a", tag),
+        prompt_version="v1",
+        verdict="up",
+    )
+    down2_id, _ = _seed_feedback_turn(
+        pg_engine,
+        user_sub=user,
+        question=_label("q-down2", tag),
+        skill_id=_label("skill-b", tag),
+        role=_label("role-b", tag),
+        prompt_version="v1",
+        verdict="down",
+        comment="also bad",
+    )
+    plain_new_id, _ = _seed_feedback_turn(
+        pg_engine,
+        user_sub=user,
+        question=_label("q-plain-new", tag),
+        skill_id=_label("skill-b", tag),
+        role=_label("role-b", tag),
+        prompt_version="v1",
+        verdict=None,
+    )
+    all_ids = {down1_id, up_old_id, down2_id, plain_new_id}
+
+    def _produced_of_interest() -> set[str]:
+        return {p.stem for p in _CANDIDATES_DIR.glob("*.yml")} & all_ids
+
+    try:
+        exit_code = _run_export(
+            monkeypatch, ["--since", since_iso, "--limit", "2"], database_url=_DSN
+        )
+        assert exit_code == 0
+        assert _produced_of_interest() == {down1_id, down2_id}, (
+            "both down-verdict turns must fill a tight 2-slot budget before "
+            "either non-down turn, even though up_old is chronologically "
+            "older than down2"
+        )
+
+        exit_code = _run_export(
+            monkeypatch, ["--since", since_iso, "--limit", "3"], database_url=_DSN
+        )
+        assert exit_code == 0
+        assert _produced_of_interest() == {down1_id, down2_id, up_old_id}, (
+            "the third slot goes to the oldest remaining non-down turn"
+        )
+
+        exit_code = _run_export(
+            monkeypatch, ["--since", since_iso, "--limit", "10"], database_url=_DSN
+        )
+        assert exit_code == 0
+        assert _produced_of_interest() == all_ids
+    finally:
+        for turn_id in all_ids:
+            (_CANDIDATES_DIR / f"{turn_id}.yml").unlink(missing_ok=True)
+
+
+def test_export_thumbs_down_candidate_carries_feedback_block_and_reasserts_exclusions(
+    pg_engine, monkeypatch
+):
+    """The extended candidate shape (doc 06 section 7 / D25): schema stays
+    ``question``/``expected: TODO-human-review`` (the eb67500 ruling),
+    extended with exactly one new top-level ``feedback:`` block carrying the
+    verdict, comment, and full run context (answer_summary, parsed, and the
+    turn's tool/LLM calls by name/role + status only) -- and the source
+    message id as a YAML COMMENT, matching turn_id/trace_id's own existing
+    comment-not-data convention. Args and prompt_hash (the P11 exclusion
+    rule) must never reach the file, proven here by asserting the sentinel
+    values seeded specifically to catch a regression are absent.
+    """
+    user = _fresh_user_sub()
+    tag = uuid.uuid4().hex[:8]
+    skill_id = _label("skill-content", tag)
+    role = _label("role-content", tag)
+    question = _label("content-question", tag)
+    with pg_engine.connect() as conn:
+        since_iso = conn.execute(text("SELECT now()")).scalar_one().isoformat()
+
+    turn_id, message_id = _seed_feedback_turn(
+        pg_engine,
+        user_sub=user,
+        question=question,
+        skill_id=skill_id,
+        role=role,
+        prompt_version="pv-content",
+        verdict="down",
+        comment="the port name is wrong",
+        answer_summary="Answer: some summary text",
+    )
+
+    try:
+        exit_code = _run_export(
+            monkeypatch, ["--since", since_iso, "--limit", "50"], database_url=_DSN
+        )
+        assert exit_code == 0
+
+        candidate_text = (_CANDIDATES_DIR / f"{turn_id}.yml").read_text(encoding="utf-8")
+        assert not any(ord(ch) > 0x7F for ch in candidate_text), (
+            "candidate YAML must be pure ASCII on disk"
+        )
+
+        # P11 exclusion rule, re-asserted on the feedback path.
+        assert _SENTINEL_ARG_VALUE not in candidate_text
+        assert _SENTINEL_ARG_KEY not in candidate_text
+        assert _SENTINEL_PROMPT_HASH not in candidate_text
+
+        assert f"# source message_id: {message_id}" in candidate_text
+
+        loaded = _router_suite_yaml.safe_load(candidate_text)
+        assert loaded == {
+            "question": question,
+            "expected": "TODO-human-review",
+            "feedback": {
+                "verdict": "down",
+                "comment": "the port name is wrong",
+                "answer_summary": "Answer: some summary text",
+                "parsed": {"subject_text": question},
+                "tool_calls": [{"tool": skill_id, "status": "ok"}],
+                "llm_calls": [{"role": role, "status": "ok"}],
+            },
+        }
+    finally:
+        (_CANDIDATES_DIR / f"{turn_id}.yml").unlink(missing_ok=True)
+
+
+def test_export_thumbs_down_still_excludes_redacted_turns(pg_engine, monkeypatch):
+    """Re-asserts the redaction exclusion on the NEW feedback path: a
+    thumbs-down verdict does not exempt its turn from doc 05 section 7's
+    deletion contract -- once redacted, the turn must never be exported,
+    priority candidate or not. (``kind='memory_update'`` is not separately
+    re-tested here: that combination cannot be constructed through any real
+    write path at all -- a memory_update turn never produces a message
+    (``_seed_turn``'s own ``produced_message`` gate; ``FeedbackStore.
+    upsert`` requires a real, visible message), so there is no route by
+    which one could ever receive feedback in the first place. The base
+    ``kind = 'chat_turn'`` filter stays on the down-priority query
+    regardless -- see the implementation -- but exercising it here would
+    need a hand-crafted, unreachable-in-practice row.)
+    """
+    user = _fresh_user_sub()
+    tag = uuid.uuid4().hex[:8]
+    with pg_engine.connect() as conn:
+        since_iso = conn.execute(text("SELECT now()")).scalar_one().isoformat()
+
+    turn_id, _message_id = _seed_feedback_turn(
+        pg_engine,
+        user_sub=user,
+        question=_label("will-be-redacted", tag),
+        skill_id=_label("skill-r", tag),
+        role=_label("role-r", tag),
+        prompt_version="v1",
+        verdict="down",
+        comment="wrong",
+    )
+    conversation_id = _conversation_id_of(pg_engine, turn_id)
+    with rls_transaction(pg_engine, user, app_role=_EFFECTIVE_APP_ROLE) as conn:
+        assert redact_turns_for_conversation(conn, conversation_id) == 1
+
+    try:
+        exit_code = _run_export(
+            monkeypatch, ["--since", since_iso, "--limit", "50"], database_url=_DSN
+        )
+        assert exit_code == 0
+        produced = {p.stem for p in _CANDIDATES_DIR.glob("*.yml")}
+        assert turn_id not in produced, "a redacted turn must never be exported, down-voted or not"
+    finally:
+        (_CANDIDATES_DIR / f"{turn_id}.yml").unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# feedback_rollup.py -- verdict rates by skill/role/prompt_version
+# ---------------------------------------------------------------------------
+
+
+def _run_feedback_rollup(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+    argv: list[str],
+    *,
+    database_url: str,
+) -> tuple[int, list[dict]]:
+    """Runs ``feedback_rollup.main(argv)`` through its real, public entry
+    point -- same discipline as ``_run_export``/``_run_cost_rollup`` above.
+    No ``Settings`` hermeticity dance needed here (unlike ``_run_cost_
+    rollup``): this script reads ``DATABASE_URL`` straight from the process
+    environment, like ``export_router_cases.py`` does, and never touches
+    ``Settings`` at all -- see the implementation's own module docstring for
+    why."""
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    exit_code = feedback_rollup.main(argv)
+    out = capsys.readouterr().out
+    lines = [json.loads(line) for line in out.splitlines() if line.strip()]
+    return exit_code, lines
+
+
+def _seed_feedback_rollup_dataset(engine: Engine) -> tuple[str, str]:
+    """Seeds the 7-turn fixture ``_expected_feedback_by_dimension`` is hand-
+    computed from. Returns ``(tag, since_iso)``."""
+    tag = uuid.uuid4().hex[:8]
+    user = _fresh_user_sub()
+    with engine.connect() as conn:
+        since_iso = conn.execute(text("SELECT now()")).scalar_one().isoformat()
+
+    # (skill, role, prompt_version, verdict) -- see
+    # _expected_feedback_by_dimension's own docstring for the hand-summed
+    # per-group counts these seven turns are added up from.
+    specs = [
+        ("a", "x", "p1", "down"),
+        ("a", "x", "p1", "down"),
+        ("a", "y", "p2", "up"),
+        ("b", "y", "p2", "down"),
+        ("b", "z", "p3", "down"),
+        ("b", "z", "p3", "down"),
+        ("b", "z", "p3", "up"),
+    ]
+    for i, (skill, role, pv, verdict) in enumerate(specs):
+        _seed_feedback_turn(
+            engine,
+            user_sub=user,
+            question=f"rollup-q-{tag}-{i}",
+            skill_id=_label(f"skill-{skill}", tag),
+            role=_label(f"role-{role}", tag),
+            prompt_version=_label(f"pv-{pv}", tag),
+            verdict=verdict,
+            comment="bad" if verdict == "down" else None,
+        )
+    return tag, since_iso
+
+
+def _expected_feedback_by_dimension(tag: str) -> dict[str, dict[str, tuple[int, int, float]]]:
+    """Hand-computed ``(up, down, down_rate)`` per group, added up BY HAND
+    from ``_seed_feedback_rollup_dataset``'s own seven turns (numbered 1-7
+    in seeding order), independently of any SQL:
+
+    skill-a = turns 1,2 (down) + 3 (up)          -> up=1 down=2 rate=2/3=0.6667
+    skill-b = turns 4,5,6 (down) + 7 (up)        -> up=1 down=3 rate=3/4=0.75
+
+    role-x  = turns 1,2 (both down)              -> up=0 down=2 rate=1.0
+    role-y  = turns 3 (up) + 4 (down)            -> up=1 down=1 rate=0.5
+    role-z  = turns 5,6 (down) + 7 (up)          -> up=1 down=2 rate=2/3=0.6667
+
+    prompt_version partitions identically to role in this fixture (pv-p1/p2/
+    p3 each carry the exact same turns role-x/y/z do) -- a deliberate,
+    harmless coincidence, exactly like cost_rollup's own test dataset (see
+    ``_expected_by_dimension``'s identical disclosure above): still
+    independently proven correct because the assertions key on the LABEL
+    STRINGS, which a column mix-up would visibly fail on regardless.
+    """
+    return {
+        "skill": {
+            _label("skill-a", tag): (1, 2, 0.6667),
+            _label("skill-b", tag): (1, 3, 0.75),
+        },
+        "role": {
+            _label("role-x", tag): (0, 2, 1.0),
+            _label("role-y", tag): (1, 1, 0.5),
+            _label("role-z", tag): (1, 2, 0.6667),
+        },
+        "prompt_version": {
+            _label("pv-p1", tag): (0, 2, 1.0),
+            _label("pv-p2", tag): (1, 1, 0.5),
+            _label("pv-p3", tag): (1, 2, 0.6667),
+        },
+    }
+
+
+def test_feedback_rollup_hand_computed_rates_per_dimension(pg_engine, monkeypatch, capsys):
+    tag, since_iso = _seed_feedback_rollup_dataset(pg_engine)
+    expected = _expected_feedback_by_dimension(tag)
+
+    for by, expected_groups in expected.items():
+        exit_code, lines = _run_feedback_rollup(
+            monkeypatch, capsys, ["--by", by, "--since", since_iso], database_url=_DSN
+        )
+        assert exit_code == 0
+        by_group = {line["group"]: (line["up"], line["down"], line["down_rate"]) for line in lines}
+        for group_name, expected_tuple in expected_groups.items():
+            assert by_group.get(group_name) == expected_tuple, (by, group_name, by_group)
+
+
+def test_feedback_rollup_by_skill_reads_tool_calls_tool_not_turn_run_parsed(
+    pg_engine, monkeypatch, capsys
+):
+    """Skill-attribution disclosure, pinned (this task's own required
+    check): a real turn's routed skill lives on ``tool_calls.tool``, never
+    on ``turn_run.parsed`` -- see the section banner above for the full
+    reading. This turn's own ``parsed`` JSON carries a DECOY value that
+    merely looks like a skill id; if ``feedback_rollup.py`` ever read
+    ``parsed`` instead of ``tool_calls.tool``, this test would see the decoy
+    string as a rollup group and fail.
+    """
+    tag = uuid.uuid4().hex[:8]
+    user = _fresh_user_sub()
+    real_skill = _label("real-skill", tag)
+    decoy_skill = _label("decoy-parsed-skill", tag)
+    with pg_engine.connect() as conn:
+        since_iso = conn.execute(text("SELECT now()")).scalar_one().isoformat()
+
+    history = HistoryStore(pg_engine, app_role=_EFFECTIVE_APP_ROLE).for_user(user)
+    conversation, _opener = history.create_conversation()
+    writer = _writer(pg_engine)
+    turn_id = str(uuid7())
+    message_id = str(uuid7())
+    handle = writer.start_turn(
+        user_sub=user,
+        conversation_id=conversation["id"],
+        client_turn_key=str(uuid.uuid4()),
+        turn_index=1,
+        question="decoy test",
+        mode="default",
+        # The decoy: a plausible-looking key that is NOT what
+        # feedback_rollup.py is supposed to read.
+        parsed={"skill_id": decoy_skill},
+        turn_run_id=turn_id,
+    )
+    assert handle is not None and handle.created is True
+    writer.append_tool_call(
+        turn_run_id=turn_id,
+        user_sub=user,
+        seq=1,
+        tool=real_skill,
+        server=None,
+        args={},
+        result_digest=None,
+        status="ok",
+        latency_ms=1,
+    )
+    history.write_assistant_message(
+        conversation["id"],
+        {
+            "id": message_id,
+            "role": "assistant",
+            "parts": [{"kind": "text", "payload": {"markdown": "a"}}],
+        },
+        turn_id,
+    )
+    writer.finalize(
+        turn_run_id=turn_id,
+        user_sub=user,
+        status="ok",
+        message_id=message_id,
+        answer_summary="a",
+        input_tokens=1,
+        output_tokens=1,
+        latency_ms=1,
+    )
+    FeedbackStore(pg_engine, app_role=_EFFECTIVE_APP_ROLE).for_user(user).upsert(
+        message_id, "down", "bad"
+    )
+
+    exit_code, lines = _run_feedback_rollup(
+        monkeypatch, capsys, ["--by", "skill", "--since", since_iso], database_url=_DSN
+    )
+    assert exit_code == 0
+    groups = {line["group"] for line in lines}
+    assert real_skill in groups
+    assert decoy_skill not in groups
+
+
+def test_feedback_rollup_does_not_double_count_a_turn_with_multiple_calls_of_the_same_role(
+    pg_engine, monkeypatch, capsys
+):
+    """A real routed turn can issue MORE THAN ONE ``llm_calls`` row (the
+    agent loop iterates: route -> tool -> route again -> end_turn) --
+    confirmed directly against this environment's own compose Postgres
+    while validating this task (two ``role='router'`` rows recorded for one
+    genuine turn). A naive join straight against ``llm_calls`` would count
+    that ONE verdict twice for the same group; ``COUNT(DISTINCT message_
+    feedback.id)`` is what keeps it at one."""
+    tag = uuid.uuid4().hex[:8]
+    user = _fresh_user_sub()
+    role = _label("multi-call-role", tag)
+    with pg_engine.connect() as conn:
+        since_iso = conn.execute(text("SELECT now()")).scalar_one().isoformat()
+
+    history = HistoryStore(pg_engine, app_role=_EFFECTIVE_APP_ROLE).for_user(user)
+    conversation, _opener = history.create_conversation()
+    writer = _writer(pg_engine)
+    turn_id = str(uuid7())
+    message_id = str(uuid7())
+    handle = writer.start_turn(
+        user_sub=user,
+        conversation_id=conversation["id"],
+        client_turn_key=str(uuid.uuid4()),
+        turn_index=1,
+        question="multi-call",
+        mode="default",
+        parsed={},
+        turn_run_id=turn_id,
+    )
+    assert handle is not None and handle.created is True
+    for seq in (1, 2):
+        writer.append_llm_call(
+            turn_run_id=turn_id,
+            user_sub=user,
+            seq=seq,
+            provider="stub",
+            model_id="m",
+            role=role,
+            prompt_version="v1",
+            prompt_hash="h",
+            input_tokens=1,
+            output_tokens=1,
+            latency_ms=1,
+            status="ok",
+        )
+    history.write_assistant_message(
+        conversation["id"],
+        {
+            "id": message_id,
+            "role": "assistant",
+            "parts": [{"kind": "text", "payload": {"markdown": "a"}}],
+        },
+        turn_id,
+    )
+    writer.finalize(
+        turn_run_id=turn_id,
+        user_sub=user,
+        status="ok",
+        message_id=message_id,
+        answer_summary="a",
+        input_tokens=2,
+        output_tokens=2,
+        latency_ms=2,
+    )
+    FeedbackStore(pg_engine, app_role=_EFFECTIVE_APP_ROLE).for_user(user).upsert(
+        message_id, "down", "x"
+    )
+
+    exit_code, lines = _run_feedback_rollup(
+        monkeypatch, capsys, ["--by", "role", "--since", since_iso], database_url=_DSN
+    )
+    assert exit_code == 0
+    by_group = {line["group"]: (line["up"], line["down"]) for line in lines}
+    assert by_group.get(role) == (0, 1), "one verdict must count once, not once per llm_calls row"
+
+
+def test_feedback_rollup_includes_feedback_from_redacted_turns(pg_engine, monkeypatch, capsys):
+    """The opposite rule from ``export_router_cases.py``'s own thumbs-down
+    path (which excludes redacted turns entirely, re-asserted above):
+    redaction erases CONTENT (doc 05 section 7), not the fact that a verdict
+    was cast. ``tool_calls.tool``/``status`` and ``llm_calls.role``/
+    ``prompt_version``/``status`` all survive redaction untouched (only
+    ``args``/``result_digest`` on ``tool_calls`` and ``question``/``answer_
+    summary``/``parsed`` on ``turn_run`` are nulled -- ``runlog.py``'s own
+    ``_REDACT_TOOL_CALLS_SQL``/``_REDACT_TURN_RUN_SQL``), so a redacted
+    turn's verdict still counts here -- mirrors ``cost_rollup.py``'s own
+    identical stance for token spend."""
+    tag = uuid.uuid4().hex[:8]
+    user = _fresh_user_sub()
+    skill = _label("redacted-skill", tag)
+    with pg_engine.connect() as conn:
+        since_iso = conn.execute(text("SELECT now()")).scalar_one().isoformat()
+
+    turn_id, _message_id = _seed_feedback_turn(
+        pg_engine,
+        user_sub=user,
+        question="will be redacted",
+        skill_id=skill,
+        role=_label("redacted-role", tag),
+        prompt_version="v1",
+        verdict="down",
+        comment="wrong",
+    )
+    conversation_id = _conversation_id_of(pg_engine, turn_id)
+    with rls_transaction(pg_engine, user, app_role=_EFFECTIVE_APP_ROLE) as conn:
+        assert redact_turns_for_conversation(conn, conversation_id) == 1
+
+    exit_code, lines = _run_feedback_rollup(
+        monkeypatch, capsys, ["--by", "skill", "--since", since_iso], database_url=_DSN
+    )
+    assert exit_code == 0
+    by_group = {line["group"]: (line["up"], line["down"]) for line in lines}
+    assert by_group.get(skill) == (0, 1)
+
+
+def test_feedback_rollup_module_is_ascii_on_disk():
+    """Matches this file's own ``test_harvest_cost_module_is_ascii_on_disk``
+    convention, extended to the new sibling module (``test_feedback_store.
+    py``'s own ``test_feedback_module_and_this_test_module_are_ascii_on_
+    disk`` is the precedent for checking a PRODUCTION module's bytes from a
+    test file, not only the test file's own)."""
+    offending = sorted(
+        {byte for byte in Path(feedback_rollup.__file__).read_bytes() if byte > 0x7F}
+    )
+    assert not offending, "feedback_rollup.py holds non-ASCII bytes: " + repr(offending)
 
 
 def test_harvest_cost_module_is_ascii_on_disk():
