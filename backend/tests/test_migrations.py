@@ -23,13 +23,15 @@ def test_upgrade_head_on_sqlite(tmp_path, monkeypatch):
     # command's own return code alone. Phase 11 Task 1 extended this same
     # check from 0004 to 0005 (run-log RLS, admin role, redaction support);
     # Phase 12 Task 1 extended it again, 0005 to 0006 (message_feedback); the
-    # un-vote follow-up extends it once more, 0006 to 0007 (verdict becomes
-    # nullable) -- `alembic current` reports only the single revision at the
-    # tip, so this assertion always names the CURRENT head, not every
-    # revision the chain passed through on the way there.
+    # un-vote follow-up extended it once more, 0006 to 0007 (verdict becomes
+    # nullable); Phase 13 Task 1 extends it again, 0007 to 0008
+    # (personalization: user_profile/user_memory/memory_outbox) --
+    # `alembic current` reports only the single revision at the tip, so this
+    # assertion always names the CURRENT head, not every revision the chain
+    # passed through on the way there.
     current = subprocess.run(
         [sys.executable, "-m", "alembic", "current"],
         cwd=BACKEND, capture_output=True, text=True,
     )
     assert current.returncode == 0, current.stderr
-    assert "0007" in current.stdout, current.stdout
+    assert "0008" in current.stdout, current.stdout
