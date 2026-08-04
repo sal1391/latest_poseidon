@@ -295,6 +295,9 @@ from poseidon.core.ontology.loader import get_ontology
 from poseidon.core.parsing import customer_resolver
 from poseidon.core.parsing.pipeline import DEFAULT_ENTITY, parse_turn
 from poseidon.core.parsing.types import ParsedTurn, ParseIssue
+from poseidon.core.personalization.memory import MemoryStore
+from poseidon.core.personalization.outbox import OutboxStore
+from poseidon.core.personalization.profile import ProfileStore
 from poseidon.core.runlog import RunLogWriter
 from poseidon.core.skills.context import ConversationSlots, SkillContext
 from poseidon.core.skills.registry import SkillRegistry
@@ -381,12 +384,6 @@ _DUPLICATE_TURN_DETAIL = (
     "this turn was already processed " + _EM_DASH + " refresh to load the conversation"
 )
 
-# Phase 6 does not populate either section yet (Self-Review Notes: "no auth
-# (P9)... no memory distillation (P13)") -- both empty strings, contributing
-# no section at all (assemble_system's own "empty is empty" rule).
-_USER_INSTRUCTION = ""
-_MEMORY_DOC = ""
-
 
 @dataclass(frozen=True)
 class TurnOutcome:
@@ -427,6 +424,9 @@ def execute_turn(
     sink: SseEnvelopeSink,
     reference_date: date,
     tools: object | None = None,
+    profile_store: ProfileStore | None = None,
+    memory_store: MemoryStore | None = None,
+    outbox_store: OutboxStore | None = None,
 ) -> TurnOutcome:
     """Run one chat turn to completion. See the module docstring for the
     full pinned order and the three terminal-state disciplines.
@@ -437,6 +437,30 @@ def execute_turn(
     own ``start_turn`` failed, per its never-raises contract -- see
     ``runlog.py``): the turn produces the identical stream and state-store
     behavior either way, only the run log gains no rows.
+
+    ``profile_store``/``memory_store``/``outbox_store`` (Phase 13 Task 2,
+    all additive -- default ``None`` so every call site before this task
+    (including every test in ``test_chat_orchestrator.py``) keeps working
+    unchanged) are the real per-user stores behind this turn's system
+    instruction, memory document, and idle-distillation outbox row. A
+    ``None`` store degrades to exactly Phase 6's old placeholder behavior
+    for the piece it covers -- ``""`` (no section at all, ``assemble_
+    system``'s own "empty is empty" rule) for a missing ``profile_store``/
+    ``memory_store``, a silent no-op touch for a missing ``outbox_store`` --
+    the same "optional dependency, degrade rather than fail" shape
+    ``writer`` above already established. ``profile_store.for_user(user.
+    sub).get()["system_instruction"]``/``memory_store.for_user(user.sub).
+    render_markdown()`` are each read exactly ONCE per turn, below, and the
+    same two strings are threaded into both ``run_turn``'s real system
+    prompt and ``_router_prompt_provenance``'s own duplicate render for
+    ``prompt_hash`` -- never re-fetched per agent-loop iteration (the loop
+    can call the provider more than once per turn) and never re-fetched
+    between the two renders, so the two can never disagree and a mid-turn
+    memory write can never race a mid-turn re-fetch. ``outbox_store.
+    for_user(user.sub).touch(conversation_id)`` runs at every turn-
+    completion site that also calls ``state.put`` (see :func:`_touch_
+    outbox`), best-effort exactly like ``RunLogWriter``'s own writes --
+    never allowed to fail the turn.
 
     ``tools`` (Phase 7 Task 4, additive -- defaults to ``None`` so every
     call site before this task keeps working unchanged) is threaded
@@ -489,6 +513,7 @@ def execute_turn(
             state=state,
             writer=writer,
             sink=sink,
+            outbox_store=outbox_store,
         )
 
     # D19, branch 2: the subject turn following a successful entry branch
@@ -509,6 +534,7 @@ def execute_turn(
             role_client=role_client,
             sink=sink,
             tools=tools,
+            outbox_store=outbox_store,
         )
 
     # Phase 11 Task 2 (doc 06 section 3): a pure span() wrapper around this
@@ -548,6 +574,7 @@ def execute_turn(
             conversation_id=conversation_id,
             user=user,
             started=started,
+            outbox_store=outbox_store,
         )
 
     context = SkillContext(
@@ -628,12 +655,28 @@ def execute_turn(
         # remains genuinely out of this phase's sanctioned edit.
         emit_part=sink.part_emitter(1),
     )
+    # Phase 13 Task 2: fetched ONCE per turn, not once per _router_prompt_
+    # provenance/run_turn render -- see execute_turn's own docstring for why
+    # ("the loop can call the provider more than once per turn... a mid-turn
+    # memory write can never race a mid-turn re-fetch"). Both renders below
+    # receive these SAME two strings, so they stay byte-identical -- see the
+    # module docstring's "Why the system prompt is rendered TWICE".
+    user_instruction = (
+        profile_store.for_user(user.sub).get()["system_instruction"]
+        if profile_store is not None
+        else ""
+    )
+    memory_doc = (
+        memory_store.for_user(user.sub).render_markdown() if memory_store is not None else ""
+    )
     router_version, router_hash = _router_prompt_provenance(
         settings=settings,
         prompt_registry=prompt_registry,
         registry=registry,
         context=context,
         parsed=parsed,
+        user_instruction=user_instruction,
+        memory_doc=memory_doc,
     )
 
     window = [{"role": "user", "content": [{"text": text}]}]
@@ -650,8 +693,8 @@ def execute_turn(
             registry=registry,
             context=context,
             prompt_registry=prompt_registry,
-            user_instruction=_USER_INSTRUCTION,
-            memory_doc=_MEMORY_DOC,
+            user_instruction=user_instruction,
+            memory_doc=memory_doc,
             parsed=parsed,
             window=window,
             sink=sink,
@@ -714,6 +757,9 @@ def execute_turn(
         try:
             final_slots = _repopulate_pass_through(parsed.slots, turn_result.tool_records, sink)
             state.put(conversation_id, final_slots)
+            _touch_outbox(
+                outbox_store=outbox_store, user_sub=user.sub, conversation_id=conversation_id
+            )
         except Exception as exc:  # noqa: BLE001 - a second failure must never re-terminate a finished turn
             logger.error(
                 "pass-through repopulation failed: conversation_id=%s turn_run_id=%s: %s: %s",
@@ -729,6 +775,43 @@ def execute_turn(
     )
 
 
+def _touch_outbox(*, outbox_store: OutboxStore | None, user_sub: str, conversation_id: str) -> None:
+    """Best-effort re-arm of this conversation's ``memory_outbox`` row
+    (Phase 13 Task 2, Global Constraints) -- called immediately after every
+    ``state.put`` at each of this module's four turn-completion sites, so a
+    completed turn's idle clock resets whether or not anything else about
+    the turn changed.
+
+    Two independent reasons a call here can quietly do nothing, both
+    deliberate, matching ``writer``'s own established "optional dependency"
+    shape elsewhere in this module:
+
+    - ``outbox_store is None`` (no store wired at this call site yet, e.g.
+      any pre-Task-3 caller of ``execute_turn`` that does not pass one) --
+      a silent no-op, not a degraded-but-attempted call.
+    - ``touch()`` itself raises -- caught here, logged at WARNING, never
+      re-raised. This mirrors ``RunLogWriter``'s own docstring-stated
+      contract for its four write methods ("never raises" -- see
+      ``core/runlog.py``): the failure mode this accepts is that ONE turn's
+      idle-clock bump is lost, at worst delaying that conversation's next
+      distillation by one turn -- never a reason to fail an otherwise-
+      complete turn whose ``done``/``finalize``/``state.put`` already went
+      out.
+    """
+    if outbox_store is None:
+        return
+    try:
+        outbox_store.for_user(user_sub).touch(conversation_id)
+    except Exception as exc:  # noqa: BLE001 - an outbox touch must never fail the turn
+        logger.warning(
+            "outbox touch failed: conversation_id=%s user_sub=%s: %s: %s",
+            conversation_id,
+            user_sub,
+            type(exc).__name__,
+            exc,
+        )
+
+
 def _finish_clarify(
     *,
     ambiguous_issue,
@@ -740,6 +823,7 @@ def _finish_clarify(
     conversation_id: str,
     user: UserContext,
     started: float,
+    outbox_store: OutboxStore | None = None,
 ) -> TurnOutcome:
     """The clarify short-circuit: chips + text parts, done, finalize,
     carry-updated state.put -- see the module docstring's "clarify"
@@ -756,6 +840,11 @@ def _finish_clarify(
     supply it -- threaded straight from ``execute_turn``'s own ``user``
     parameter, unexamined otherwise, the same "argument-addition-only"
     change this task's brief sanctions for every writer call site here.
+
+    ``outbox_store`` (Phase 13 Task 2, additive): threaded straight from
+    ``execute_turn``'s own parameter of the same name, unexamined here any
+    more than ``user`` is -- see :func:`_touch_outbox`, called immediately
+    after this function's own ``state.put`` below.
     """
     sink.push_part(
         "chips",
@@ -800,6 +889,7 @@ def _finish_clarify(
         )
 
     state.put(conversation_id, parsed.slots)
+    _touch_outbox(outbox_store=outbox_store, user_sub=user.sub, conversation_id=conversation_id)
     return TurnOutcome(status="clarify", message_id=sink.message_id, turn_run_id=turn_run_id)
 
 
@@ -929,11 +1019,17 @@ def _finish_entry(
     state: ConversationStateStore,
     writer: RunLogWriter | None,
     sink: SseEnvelopeSink,
+    outbox_store: OutboxStore | None = None,
 ) -> TurnOutcome:
     """D19 branch 1: the bubble-entry phrase itself -- see the module
     docstring's "D19 entry orchestration" for the full contract. Mode set
     via ``dataclasses.replace`` (the P6 pass_through precedent), one text
     part asking the subject, ``clarify`` finalize, no dispatch, no router.
+
+    ``outbox_store`` (Phase 13 Task 2, additive): threaded straight from
+    ``execute_turn``'s own parameter of the same name -- see :func:`_touch_
+    outbox`, called immediately after this function's own ``state.put``
+    below.
     """
     new_slots = dataclasses.replace(prior_slots, mode=entry_mode)
     turn_index, turn_run_id, retry_outcome = _begin_turn(
@@ -970,6 +1066,7 @@ def _finish_entry(
         )
 
     state.put(conversation_id, new_slots)
+    _touch_outbox(outbox_store=outbox_store, user_sub=user.sub, conversation_id=conversation_id)
     # A second flow-chip click starts a SECOND brief in the same
     # conversation -- never blocked by an earlier one's completion.
     state.set_brief_done(conversation_id, False)
@@ -991,10 +1088,20 @@ def _finish_subject_turn(
     role_client: RoleClient,
     sink: SseEnvelopeSink,
     tools: object | None,
+    outbox_store: OutboxStore | None = None,
 ) -> TurnOutcome:
     """D19 branch 2: the subject turn -- see the module docstring's "D19
     entry orchestration" for the full contract (resolution rules, the
     deterministic-dispatch shape, the ``brief_done`` gating).
+
+    ``outbox_store`` (Phase 13 Task 2, additive): threaded straight from
+    ``execute_turn``'s own parameter of the same name -- see :func:`_touch_
+    outbox`, called immediately after this function's own ``state.put``
+    below (the "ok" dispatch path only -- the "error" path below never
+    calls ``state.put``, so it never touches the outbox either, the same
+    "slots unchanged means state.put is simply never called" discipline
+    ``execute_turn``'s own module docstring states for its "error" terminal
+    state).
     """
     mode = prior_slots.mode
     turn_index, turn_run_id, retry_outcome = _begin_turn(
@@ -1179,6 +1286,7 @@ def _finish_subject_turn(
     try:
         final_slots = _repopulate_pass_through(carried_slots, (tool_record,), sink)
         state.put(conversation_id, final_slots)
+        _touch_outbox(outbox_store=outbox_store, user_sub=user.sub, conversation_id=conversation_id)
     except Exception as exc:  # noqa: BLE001 - a second failure must never re-terminate a finished turn
         logger.error(
             "pass-through repopulation failed: conversation_id=%s turn_run_id=%s: %s: %s",
@@ -1286,9 +1394,22 @@ def _router_prompt_provenance(
     registry: SkillRegistry,
     context: SkillContext,
     parsed: ParsedTurn,
+    user_instruction: str,
+    memory_doc: str,
 ) -> tuple[str, str]:
     """``(prompt_version, prompt_hash)`` for ``router/system`` -- see the
-    module docstring's "Why the system prompt is rendered TWICE"."""
+    module docstring's "Why the system prompt is rendered TWICE".
+
+    ``user_instruction``/``memory_doc`` (Phase 13 Task 2, additive): the
+    SAME two strings ``execute_turn`` fetched once and fed to its own
+    ``run_turn`` call -- never re-fetched here. A second, independent fetch
+    at this call site would risk observing a different value than the one
+    ``run_turn`` actually rendered into the real prompt (e.g. a memory
+    write landing between the two fetches), which would silently break the
+    very ``prompt_hash`` provenance this function exists to compute -- see
+    execute_turn's own docstring for the full "fetch once, thread through
+    both renders" rationale.
+    """
     entity = get_ontology().entity(ROUTER_GUARDRAIL_ENTITY)
     base = prompt_registry.render(
         _ROUTER_SYSTEM_PROMPT_NAME,
@@ -1297,7 +1418,7 @@ def _router_prompt_provenance(
         skill_lines=skill_lines_block(registry),
     )
     system_text = assemble_system(
-        base, _USER_INSTRUCTION, _MEMORY_DOC, render_state_block(context.state, parsed)
+        base, user_instruction, memory_doc, render_state_block(context.state, parsed)
     )
     prompts_dir = settings.prompts_dir if settings.prompts_dir is not None else DEFAULT_PROMPTS_DIR
     version = prompt_version(prompts_dir, _ROUTER_SYSTEM_PROMPT_NAME)
