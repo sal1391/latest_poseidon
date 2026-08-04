@@ -55,6 +55,37 @@ rather than captured at construction time, since :class:`MemoryStore` is
 built once per process (``api/app.py``'s own wiring, mirroring
 ``history_store``/``feedback_store``) and a live deploy's configuration
 should never require a restart to take effect for these two values.
+
+**Version allocation is serialized per user, not merely computed --
+round-0 review fix.** ``next_version = MAX(version) + 1`` followed by a
+separate ``INSERT`` is a textbook read-then-write race: two concurrent
+:meth:`write_version` calls for the SAME ``user_sub`` (plausible once a
+later task's background distiller writes a new version around the same
+time the user restores/edits their own memory) could both read the same
+``MAX(version)`` and both attempt to insert the same ``(user_sub,
+version)`` primary key, the second raising an unhandled
+``IntegrityError``. Unlike ``core/chat/history.py``'s ``next_turn_index``
+(``UPDATE ... RETURNING`` -- a single atomic statement, because that
+counter lives IN an existing row this module can just as well lock),
+``user_memory`` has no such row to update: EVERY version is a brand-new
+row, so there is no existing row to anchor a single atomic
+``UPDATE ... RETURNING`` on for a user's very FIRST version. Instead,
+:meth:`write_version` opens its transaction with
+``SELECT pg_advisory_xact_lock(hashtext(:user_sub))`` -- a
+transaction-scoped advisory lock keyed by a hash of ``user_sub``,
+acquired BEFORE reading ``MAX(version)``. A second concurrent
+:meth:`write_version` call for the same user blocks at that same
+statement until the first transaction commits or rolls back (the lock is
+released automatically then -- ``_xact`` locks need no explicit unlock),
+at which point its own ``MAX(version)`` read correctly observes the
+first transaction's committed insert. This fully serializes version
+allocation per user without a retry loop or a raised-then-caught
+``IntegrityError`` on the unlucky loser. ``hashtext`` collisions between
+two DIFFERENT users' ``user_sub`` values are possible in principle
+(a 32-bit hash) -- the cost of a false collision is two unrelated users'
+writes occasionally serializing against each other rather than running
+concurrently, never a correctness issue, since the lock only ever
+narrows concurrency, it never widens what a query can see or write.
 """
 
 import json
@@ -146,6 +177,14 @@ def _row_to_version_dict(row) -> dict:
         "created_at": row.created_at.isoformat(),
     }
 
+
+# Serializes concurrent write_version calls for the SAME user_sub -- see the
+# module docstring's "Version allocation is serialized per user" section.
+# Transaction-scoped (`_xact`): released automatically on commit/rollback,
+# never needs an explicit unlock call. Cast to bigint: pg_advisory_xact_lock
+# has both a bigint-argument and a two-int-argument overload; hashtext's own
+# int4 result is passed through the single-bigint form.
+_LOCK_USER_MEMORY_SQL = text("SELECT pg_advisory_xact_lock(hashtext(:user_sub)::bigint)")
 
 _GET_CURRENT_SQL = text(
     "SELECT version, entries, created_by, created_at FROM user_memory "
@@ -257,6 +296,14 @@ class UserMemory:
         / :class:`MemoryTooLarge` respectively), and for why retention
         pruning runs AFTER the insert, in the same transaction.
 
+        The transaction's FIRST statement is
+        ``pg_advisory_xact_lock(hashtext(user_sub))`` -- see the module
+        docstring's "Version allocation is serialized per user" section for
+        why this runs before ``MAX(version)`` is ever read: without it, two
+        concurrent calls for the same user could both compute the same
+        ``next_version`` and race on the ``(user_sub, version)`` primary
+        key.
+
         ``cutoff = next_version - settings.memory_keep_versions``: rows
         with ``version <= cutoff`` are exactly the ones older than the
         newest ``memory_keep_versions`` as of THIS write (the version just
@@ -276,6 +323,7 @@ class UserMemory:
                 f"settings.memory_max_chars={settings.memory_max_chars}"
             )
         with self._transaction() as conn:
+            conn.execute(_LOCK_USER_MEMORY_SQL, {"user_sub": self._user_sub})
             max_version = conn.execute(
                 _MAX_VERSION_SQL, {"user_sub": self._user_sub}
             ).scalar_one()

@@ -21,6 +21,7 @@ migration diff.
 
 import json
 import os
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -456,6 +457,64 @@ def test_memory_write_version_over_a_tiny_max_chars_raises_memory_too_large_and_
             text("SELECT COUNT(*) FROM user_memory WHERE user_sub = :u"), {"u": user_sub}
         ).scalar_one()
     assert count == 0, "an oversized write must insert nothing"
+
+
+def test_memory_write_version_allocates_versions_atomically_under_concurrent_writers(
+    pg_engine,
+):
+    """Round-0 review fix regression test: ``next_version = MAX(version) +
+    1`` computed in Python, followed by a separate INSERT, is a read-then-
+    write race -- two concurrent write_version calls for the SAME user_sub
+    could both read the same MAX and both attempt to insert the same
+    (user_sub, version) primary key, the second raising an unhandled
+    IntegrityError instead of landing a distinct, correctly-allocated
+    version. write_version now opens each transaction with
+    ``pg_advisory_xact_lock(hashtext(user_sub))`` BEFORE reading
+    MAX(version), serializing concurrent writers for the same user.
+
+    Drives several threads at the SAME user's memory concurrently (each on
+    its own DB connection, checked out from the shared engine's pool --
+    genuine concurrent transactions, not merely interleaved Python
+    bytecode) and asserts every one succeeds, with a DISTINCT, gap-free
+    version number and no exception -- proving the allocation is atomic
+    rather than read-then-write, not merely hoping a lucky interleaving
+    reveals the bug."""
+    user_sub = _fresh_user_sub()
+    store = MemoryStore(pg_engine, app_role=_EFFECTIVE_APP_ROLE).for_user(user_sub)
+    writer_count = 8
+    barrier = threading.Barrier(writer_count)
+    results: list[int] = []
+    errors: list[Exception] = []
+    results_lock = threading.Lock()
+
+    def _write(i: int) -> None:
+        barrier.wait()  # line every thread up to call write_version near-simultaneously
+        try:
+            written = store.write_version(
+                [_entry("fact", f"concurrent statement {i}")], created_by="user"
+            )
+            with results_lock:
+                results.append(written["version"])
+        except Exception as exc:  # captured for the assertion below, not swallowed
+            with results_lock:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=_write, args=(i,)) for i in range(writer_count)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == [], f"no concurrent writer should raise -- got: {errors}"
+    assert sorted(results) == list(range(1, writer_count + 1)), (
+        f"every writer must land a DISTINCT, gap-free version -- got: {sorted(results)}"
+    )
+    with pg_engine.connect() as conn:
+        db_versions = conn.execute(
+            text("SELECT version FROM user_memory WHERE user_sub = :u ORDER BY version"),
+            {"u": user_sub},
+        ).all()
+    assert [v.version for v in db_versions] == list(range(1, writer_count + 1))
 
 
 def test_memory_restore_creates_a_new_version_forcing_created_by_user(pg_engine):
