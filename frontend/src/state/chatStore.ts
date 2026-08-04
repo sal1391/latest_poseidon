@@ -75,20 +75,49 @@ export interface ChatState {
   loadingMoreConversations: boolean;
   activeId: string | null;
   messages: Record<string, Message[]>;
+  // Phase 12 Task 4 (page-order amendment, 2026-08-04): the cursor for the
+  // NEXT (i.e. OLDER, since the backend flip -- history.py's own amendment
+  // docstring) page of a conversation's messages, or `null` when there is
+  // nothing further back to load. `ChatScreen`'s "Load earlier messages"
+  // control renders exactly when this is non-null, mirroring
+  // `conversationsNextCursor`/Sidebar's own load-more contract.
+  messagesNextCursor: Record<string, string | null>;
+  // In-flight guard for `loadEarlierMessages`, keyed by conversation id (the
+  // P10 lesson, review finding I-1, that `loadMoreConversations` below
+  // already carries -- see that action's own comment) -- keyed rather than a
+  // single flag since a load in ONE conversation must not block another's.
+  loadingEarlierMessages: Record<string, boolean>;
   streamingByConv: Record<string, boolean>;
   feedback: Record<string, { verdict: "up" | "down"; comment?: string }>;
-  // Phase 12 Task 2: the opener (messages[cid][0] for the lifetime of a
-  // conversation open this session -- see turnBacked.ts's own docstring for
-  // why this positional signal is safe absent a backend turnId field) is the
-  // one assistant message that must never be offered feedback. Set together
-  // with `messages` at every one of the three places a conversation's first
-  // page gets loaded (bootstrap's create branch, newConversation,
-  // openConversation), never independently -- so a cid present in `messages`
-  // always has a matching entry here too.
+  // Phase 12 Task 2: the opener (the conversation's first-ever message --
+  // see turnBacked.ts's own docstring for why this positional signal is
+  // safe absent a backend turnId field) is the one assistant message that
+  // must never be offered feedback. Phase 12 Task 4's page-order amendment
+  // means a conversation's FIRST-LOADED page is no longer necessarily its
+  // earliest (a >`limit`-message conversation's first page is its LATEST
+  // window) -- so this is set at every one of the four places a page of
+  // messages loads (bootstrap's create branch, newConversation,
+  // openConversation, loadEarlierMessages) ONLY when that page's own
+  // `next_cursor` is `null`, i.e. only when that page's own first item is
+  // genuinely known to be the conversation's first-ever message. A cid
+  // present in `messages` with no entry here yet simply means the true
+  // opener has not been walked back to -- `isTurnBackedAssistantMessage`'s
+  // own `openerId === undefined -> withhold` fail-closed default
+  // (turnBacked.ts) already makes that the SAFE state (no thumbs offered
+  // anywhere in that conversation) rather than a guess that could be wrong.
   openerIdByConv: Record<string, string>;
   bootstrap: () => Promise<void>;
   newConversation: () => Promise<string>;
   openConversation: (cid: string) => Promise<void>;
+  // "Load earlier messages": fetches the next (older) page via
+  // `messagesNextCursor[cid]` and PREPENDS it to `messages[cid]` -- the
+  // fetched page is already oldest-to-newest within itself (the wire
+  // contract get_messages still honors -- history.py's own amendment
+  // docstring) and is chronologically older than everything already
+  // loaded, so no reordering is needed beyond prepending it whole. No-ops
+  // when there is nothing more to load or a load is already in flight for
+  // this cid (mirrors `loadMoreConversations`'s own guard below).
+  loadEarlierMessages: (cid: string) => Promise<void>;
   // Fires one GET per turn-backed assistant message currently loaded for
   // `cid`, hydrating `feedback` with whatever verdict is already recorded.
   // Best-effort: a 404 (nothing recorded, or the route's other 404 reason --
@@ -116,6 +145,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   loadingMoreConversations: false,
   activeId: null,
   messages: {},
+  messagesNextCursor: {},
+  loadingEarlierMessages: {},
   streamingByConv: {},
   feedback: {},
   openerIdByConv: {},
@@ -132,6 +163,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
           conversationsNextCursor: null,
           activeId: conversation.id,
           messages: { ...s.messages, [conversation.id]: [opener] },
+          // A brand-new conversation's only message IS the opener -- there
+          // is nothing older to page in, so next_cursor is null from the
+          // start and openerIdByConv is set unconditionally (contrast
+          // openConversation/loadEarlierMessages below, which have to check).
+          messagesNextCursor: { ...s.messagesNextCursor, [conversation.id]: null },
           openerIdByConv: { ...s.openerIdByConv, [conversation.id]: opener.id },
         }));
         return;
@@ -152,6 +188,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       conversations: [conversation, ...s.conversations],
       activeId: conversation.id,
       messages: { ...s.messages, [conversation.id]: [opener] },
+      messagesNextCursor: { ...s.messagesNextCursor, [conversation.id]: null },
       openerIdByConv: { ...s.openerIdByConv, [conversation.id]: opener.id },
     }));
     return conversation.id;
@@ -162,8 +199,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const page = await api.getMessages(cid);
     set((s) => ({
       messages: { ...s.messages, [cid]: page.items },
+      messagesNextCursor: { ...s.messagesNextCursor, [cid]: page.next_cursor },
+      // Only when this first page is the WHOLE history (no next_cursor --
+      // see the interface's own doc comment above for why a >limit-message
+      // conversation's first page cannot be trusted to start with the
+      // opener since the page-order amendment).
       openerIdByConv:
-        page.items.length > 0
+        page.items.length > 0 && page.next_cursor === null
           ? { ...s.openerIdByConv, [cid]: page.items[0].id }
           : s.openerIdByConv,
     }));
@@ -202,6 +244,48 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
       }),
     );
+  },
+
+  loadEarlierMessages: async (cid) => {
+    const cursor = get().messagesNextCursor[cid];
+    // Guards two things, keyed by `cid`: nothing more to load (mirrors the
+    // control's own conditional render), and a load already in flight for
+    // THIS conversation -- a double-click firing a second call before the
+    // first's `await` below resolves would otherwise read this SAME cursor
+    // and prepend this SAME page twice (the P10 lesson, review finding
+    // I-1, `loadMoreConversations`'s own comment below). Set synchronously,
+    // before the first `await`, so a second call arriving in the same tick
+    // already sees it.
+    if (!cursor || get().loadingEarlierMessages[cid]) return;
+    set((s) => ({ loadingEarlierMessages: { ...s.loadingEarlierMessages, [cid]: true } }));
+    try {
+      const page = await api.getMessages(cid, cursor);
+      set((s) => ({
+        // PREPEND, not append: `page.items` is already oldest-to-newest
+        // within itself (the wire contract get_messages still honors) and
+        // is chronologically OLDER than every message already in
+        // `messages[cid]` (the backend's next-page predicate now walks
+        // strictly backward in time -- history.py's own amendment
+        // docstring), so it goes whole at the front.
+        messages: { ...s.messages, [cid]: [...page.items, ...(s.messages[cid] ?? [])] },
+        messagesNextCursor: { ...s.messagesNextCursor, [cid]: page.next_cursor },
+        // The true opener becomes knowable the instant next_cursor goes
+        // null: this fetch just returned the OLDEST remaining page, so its
+        // own first item is genuinely the conversation's first-ever
+        // message (same reasoning as openConversation's own check above).
+        openerIdByConv:
+          page.next_cursor === null && page.items.length > 0
+            ? { ...s.openerIdByConv, [cid]: page.items[0].id }
+            : s.openerIdByConv,
+      }));
+      // Best-effort, same as openConversation's own call: covers both a
+      // just-discovered opener (newly-eligible messages that were withheld
+      // a moment ago) and, on every call, whatever turn-backed assistant
+      // messages this page itself just added.
+      await get().hydrateFeedback(cid);
+    } finally {
+      set((s) => ({ loadingEarlierMessages: { ...s.loadingEarlierMessages, [cid]: false } }));
+    }
   },
 
   loadMoreConversations: async () => {
@@ -358,6 +442,8 @@ export function resetChatStore(): void {
     loadingMoreConversations: false,
     activeId: null,
     messages: {},
+    messagesNextCursor: {},
+    loadingEarlierMessages: {},
     streamingByConv: {},
     feedback: {},
     openerIdByConv: {},

@@ -173,6 +173,88 @@ test("a done event carrying a title updates the matching conversation in place",
   ]);
 });
 
+// Phase 12 Task 4 (page-order amendment, 2026-08-04): "Load earlier
+// messages" -- consumes messagesNextCursor[cid], PREPENDS the fetched
+// (older) page in front of what is already loaded, since get_messages now
+// walks strictly backward in time on every subsequent page.
+test("loadEarlierMessages does nothing when there is no cursor for the conversation", async () => {
+  useChatStore.setState({
+    messages: { c1: [{ id: "m1", role: "assistant", parts: [] }] },
+    messagesNextCursor: { c1: null },
+  });
+
+  await useChatStore.getState().loadEarlierMessages("c1");
+
+  expect(api.getMessages).not.toHaveBeenCalled();
+  expect(useChatStore.getState().messages.c1).toHaveLength(1);
+});
+
+test("loadEarlierMessages prepends the fetched older page and advances the cursor", async () => {
+  const existing: Message = { id: "m3", role: "user", parts: [] };
+  const older1: Message = { id: "m1", role: "assistant", parts: [] };
+  const older2: Message = { id: "m2", role: "user", parts: [] };
+  useChatStore.setState({
+    messages: { c1: [existing] },
+    messagesNextCursor: { c1: "cursor-1" },
+  });
+  vi.mocked(api.getMessages).mockResolvedValueOnce({
+    items: [older1, older2],
+    next_cursor: "cursor-2",
+  });
+
+  await useChatStore.getState().loadEarlierMessages("c1");
+
+  expect(api.getMessages).toHaveBeenCalledWith("c1", "cursor-1");
+  // Older page goes IN FRONT, in the order it arrived (already oldest-to-
+  // newest within itself), never appended and never reordered.
+  expect(useChatStore.getState().messages.c1).toEqual([older1, older2, existing]);
+  expect(useChatStore.getState().messagesNextCursor.c1).toBe("cursor-2");
+});
+
+test("loadEarlierMessages sets the opener once the fetched page's own next_cursor goes null", async () => {
+  const existing: Message = { id: "m2", role: "user", parts: [] };
+  const trueOpener: Message = { id: "m1", role: "assistant", parts: [] };
+  useChatStore.setState({
+    messages: { c1: [existing] },
+    messagesNextCursor: { c1: "cursor-1" },
+    openerIdByConv: {},
+  });
+  vi.mocked(api.getMessages).mockResolvedValueOnce({
+    items: [trueOpener],
+    next_cursor: null, // this was the last (oldest) page -- trueOpener really is the opener
+  });
+
+  await useChatStore.getState().loadEarlierMessages("c1");
+
+  expect(useChatStore.getState().openerIdByConv.c1).toBe("m1");
+});
+
+// The P10 lesson (review finding I-1, `loadMoreConversations`'s own
+// in-flight guard) applied to loadEarlierMessages: a second call arriving
+// before the first's fetch resolves must not read the same (stale) cursor
+// and prepend the same page twice.
+test("loadEarlierMessages in-flight guard: a second call before the first resolves is dropped", async () => {
+  let release!: () => void;
+  const held = new Promise<{ items: Message[]; next_cursor: string | null }>((resolve) => {
+    release = () => resolve({ items: [{ id: "m1", role: "assistant", parts: [] }], next_cursor: null });
+  });
+  vi.mocked(api.getMessages).mockReturnValueOnce(held);
+  useChatStore.setState({
+    messages: { c1: [{ id: "m2", role: "user", parts: [] }] },
+    messagesNextCursor: { c1: "cursor-1" },
+  });
+
+  const first = useChatStore.getState().loadEarlierMessages("c1");
+  const second = useChatStore.getState().loadEarlierMessages("c1"); // fired mid-fetch, must no-op
+
+  expect(api.getMessages).toHaveBeenCalledTimes(1);
+  release();
+  await Promise.all([first, second]);
+
+  expect(useChatStore.getState().messages.c1).toHaveLength(2); // prepended exactly once
+  expect(useChatStore.getState().loadingEarlierMessages.c1).toBe(false);
+});
+
 test("a done event with a null title (every turn after the first) leaves conversation titles alone", () => {
   useChatStore.setState({ conversations: [{ id: "c1", title: "Atlas Bunkering follow-up" }] });
 

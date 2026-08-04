@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useChatStore } from "../../state/chatStore";
 import { PartRenderer } from "../../ui/message-parts/registry";
 import { Feedback } from "../../ui/primitives/Feedback";
@@ -24,12 +24,15 @@ const statusRegionStyle = {
 export default function ChatScreen() {
   const activeId = useChatStore((s) => s.activeId);
   const messagesByConv = useChatStore((s) => s.messages);
+  const messagesNextCursorByConv = useChatStore((s) => s.messagesNextCursor);
+  const loadingEarlierByConv = useChatStore((s) => s.loadingEarlierMessages);
   const streamingByConv = useChatStore((s) => s.streamingByConv);
   const feedback = useChatStore((s) => s.feedback);
   const openerIdByConv = useChatStore((s) => s.openerIdByConv);
   const bootstrap = useChatStore((s) => s.bootstrap);
   const newConversation = useChatStore((s) => s.newConversation);
   const sendMessage = useChatStore((s) => s.sendMessage);
+  const loadEarlierMessages = useChatStore((s) => s.loadEarlierMessages);
   const submitFeedback = useChatStore((s) => s.submitFeedback);
 
   const [draft, setDraft] = useState("");
@@ -42,6 +45,21 @@ export default function ChatScreen() {
   const [connectionError, setConnectionError] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  // Phase 12 Task 4 (page-order amendment, 2026-08-04): the scrollable
+  // thread itself, and the two refs "Load earlier messages" coordinates
+  // through -- see handleLoadEarlier/the two effects below for how they
+  // cooperate to keep the user's current view stable while older messages
+  // are prepended ABOVE it, instead of either the default "jump to newest"
+  // behavior (the effect below this one) or a visual jump caused by new
+  // content appearing above the current scroll position.
+  const threadRef = useRef<HTMLDivElement>(null);
+  const suppressAutoScrollRef = useRef(false);
+  // Anchored on a SPECIFIC message's own DOM node (via `data-message-id`
+  // below), not an aggregate `scrollHeight` delta -- see handleLoadEarlier's
+  // own comment for why: `scrollHeight` alone is not a reliable proxy for
+  // "how much content was added above the anchor" once other, unrelated
+  // layout changes can land anywhere in the list at the same time.
+  const pendingScrollAnchorRef = useRef<{ messageId: string; topBefore: number } | null>(null);
 
   const runBootstrap = useCallback(
     () => bootstrap().then(() => setConnectionError(false)).catch(() => setConnectionError(true)),
@@ -62,6 +80,11 @@ export default function ChatScreen() {
 
   const messages = activeId ? (messagesByConv[activeId] ?? []) : [];
   const streaming = activeId ? streamingByConv[activeId] === true : false;
+  // "Load earlier messages" renders exactly when there is an older page to
+  // fetch -- mirrors Sidebar's own `nextCursor !== null` contract for its
+  // load-more control.
+  const messagesNextCursor = activeId ? (messagesNextCursorByConv[activeId] ?? null) : null;
+  const loadingEarlier = activeId ? loadingEarlierByConv[activeId] === true : false;
 
   // Phase 12 Task 4 (a11y carry-list, verbatim): the thread used to carry
   // `aria-live="polite"` directly, so every streamed token re-announced the
@@ -93,8 +116,67 @@ export default function ChatScreen() {
   const blocked = sendingFor !== undefined && (sendingFor === null || sendingFor === activeId);
 
   useEffect(() => {
+    // Skipped for exactly the one render that just prepended an older page
+    // (handleLoadEarlier below sets this synchronously before the fetch
+    // that causes it) -- jumping to the newest message on every messages
+    // change is right for a new turn arriving, but wrong here: it would
+    // undo the scroll-anchor restoration the layout effect below performs
+    // for a "Load earlier" prepend.
+    if (suppressAutoScrollRef.current) {
+      suppressAutoScrollRef.current = false;
+      return;
+    }
     endRef.current?.scrollIntoView({ block: "end" });
   }, [messagesByConv, activeId]);
+
+  // Restores the user's visual scroll position after older messages are
+  // prepended above it: a `useLayoutEffect` (not `useEffect`) so it runs
+  // BEFORE the browser paints the newly taller thread, and before the
+  // sibling effect above would otherwise be free to scroll it. Re-measures
+  // the SAME anchor message's own `getBoundingClientRect().top` (found via
+  // its `data-message-id`, set on every `<article>` below) and nudges
+  // `scrollTop` by exactly however far THAT element moved -- deliberately
+  // NOT inferred from a `scrollHeight` delta (an earlier version of this
+  // effect did that, live-verified via Playwright against a real seeded
+  // long conversation to be WRONG here specifically: the very click that
+  // first reveals a conversation's true opener also retroactively makes
+  // every already-loaded assistant message eligible for a Feedback row for
+  // the first time -- turnBacked.ts's own "openerId unknown -> withhold"
+  // fail-closed default, from earlier in this same task, means thumbs were
+  // withheld everywhere in a long conversation until this exact moment --
+  // adding height throughout the ALREADY-loaded list, not only above the
+  // anchor, so "total height added" and "height added above the anchor"
+  // are two different numbers on that specific click). Measuring the
+  // anchor element's own before/after position directly is correct
+  // regardless of WHY or WHERE other height changed.
+  useLayoutEffect(() => {
+    const el = threadRef.current;
+    const anchor = pendingScrollAnchorRef.current;
+    if (el && anchor) {
+      const anchorEl = el.querySelector(`[data-message-id="${anchor.messageId}"]`);
+      if (anchorEl) {
+        el.scrollTop += anchorEl.getBoundingClientRect().top - anchor.topBefore;
+      }
+      pendingScrollAnchorRef.current = null;
+    }
+  }, [messagesByConv]);
+
+  const handleLoadEarlier = useCallback(() => {
+    if (!activeId) return;
+    const el = threadRef.current;
+    const currentFirst = (messagesByConv[activeId] ?? [])[0];
+    const anchorEl = el && currentFirst
+      ? el.querySelector(`[data-message-id="${currentFirst.id}"]`)
+      : null;
+    if (anchorEl) {
+      suppressAutoScrollRef.current = true;
+      pendingScrollAnchorRef.current = {
+        messageId: currentFirst.id,
+        topBefore: anchorEl.getBoundingClientRect().top,
+      };
+    }
+    void loadEarlierMessages(activeId).catch(() => undefined);
+  }, [activeId, loadEarlierMessages, messagesByConv]);
 
   const insert = useCallback((text: string) => {
     setDraft(text);
@@ -145,10 +227,22 @@ export default function ChatScreen() {
         <div role="status" aria-live="polite" aria-atomic="true" style={statusRegionStyle}>
           {turnStatus}
         </div>
-        <div className="thread">
+        <div className="thread" ref={threadRef}>
+          {messagesNextCursor !== null ? (
+            <button
+              type="button"
+              className="load-earlier"
+              disabled={loadingEarlier}
+              aria-busy={loadingEarlier}
+              onClick={handleLoadEarlier}
+            >
+              {loadingEarlier ? "Loading..." : "Load earlier messages"}
+            </button>
+          ) : null}
           {messages.map((message) => (
             <article
               key={message.id}
+              data-message-id={message.id}
               className={message.role === "user" ? "msg-user" : "msg-assistant"}
             >
               {message.parts.map((part, index) => (

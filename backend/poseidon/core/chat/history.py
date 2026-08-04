@@ -274,16 +274,29 @@ _LIST_CONVERSATIONS_NEXT_PAGE_SQL = text(
 
 _CONVERSATION_EXISTS_SQL = text("SELECT 1 FROM conversations WHERE id = :id")
 
+#: Phase 12 Task 4 amendment (2026-08-04, Carlos-directed): DESC, not ASC --
+#: mirrors _LIST_CONVERSATIONS_FIRST_PAGE_SQL/_NEXT_PAGE_SQL above byte-for-
+#: byte in shape (same "DESC order + a strict inequality against the last
+#: row's own sort key" keyset pattern), so a cursor-less call now returns
+#: the LATEST `fetch_limit` messages, not the earliest. See :meth:`UserHistory.
+#: get_messages`'s own docstring for how the fetched (newest-first) page is
+#: reversed back to oldest-first before it reaches `items` -- this SQL
+#: constant only fetches; it does not by itself determine wire order.
 _GET_MESSAGES_FIRST_PAGE_SQL = text(
     "SELECT id, role, parts, created_at FROM messages "
     "WHERE conversation_id = :conversation_id "
-    "ORDER BY created_at ASC, id ASC LIMIT :fetch_limit"
+    "ORDER BY created_at DESC, id DESC LIMIT :fetch_limit"
 )
 
+#: The next OLDER chunk: strictly BEFORE the cursor row (`<`, not `>`) --
+#: the cursor anchors on the OLDEST row of the previously-returned page
+#: (:meth:`UserHistory.get_messages` computes it from the reversed `page`'s
+#: `page[0]`, not `page[-1]`), so "less than that" is exactly "further into
+#: the past than anything already shown."
 _GET_MESSAGES_NEXT_PAGE_SQL = text(
     "SELECT id, role, parts, created_at FROM messages "
-    "WHERE conversation_id = :conversation_id AND (created_at, id) > (:cursor_c, :cursor_i) "
-    "ORDER BY created_at ASC, id ASC LIMIT :fetch_limit"
+    "WHERE conversation_id = :conversation_id AND (created_at, id) < (:cursor_c, :cursor_i) "
+    "ORDER BY created_at DESC, id DESC LIMIT :fetch_limit"
 )
 
 _BUMP_UPDATED_AT_SQL = text("UPDATE conversations SET updated_at = now() WHERE id = :id")
@@ -463,10 +476,29 @@ class UserHistory:
     def get_messages(
         self, cid: str, limit: int = 200, cursor: str | None = None
     ) -> tuple[list[dict], str | None] | None:
-        """``(items, next_cursor)`` ordered ``created_at ASC, id ASC``, or
-        ``None`` when ``cid`` is absent, malformed, or another user's --
-        RLS makes the three indistinguishable ON PURPOSE (module
-        docstring); the route above 404s all three alike.
+        """``(items, next_cursor)``, or ``None`` when ``cid`` is absent,
+        malformed, or another user's -- RLS makes the three indistinguishable
+        ON PURPOSE (module docstring); the route above 404s all three alike.
+
+        Phase 12 Task 4 amendment (2026-08-04, Carlos-directed): a
+        cursor-less call (the first page) now returns the conversation's
+        LATEST ``limit`` messages, not its earliest -- ``_GET_MESSAGES_
+        FIRST_PAGE_SQL``/``_NEXT_PAGE_SQL`` fetch ``created_at DESC, id
+        DESC`` (mirroring :meth:`list_conversations`'s own already-DESC
+        shape byte-for-byte), each subsequent ``cursor`` walking FURTHER
+        INTO THE PAST (the frontend's "Load earlier messages" control).
+        ``items`` itself still reads oldest-to-newest WITHIN one page --
+        the wire contract is unchanged, only which page is "first" changed
+        -- via ``reversed(page)`` below, applied only to the list ``items``
+        is built from; ``page`` itself (DESC order) is left alone because
+        ``next_cursor``'s own anchor (below) still needs ``page[-1]``, which
+        in DESC order is exactly the OLDEST row of this page -- the correct
+        "give me the chunk before this one" continuation point, unchanged
+        code, no special-casing needed. For any conversation whose total
+        message count is <= ``limit`` (every existing fixture, and the
+        overwhelming majority of real conversations), this is a byte-for-
+        byte no-op: DESC-fetched-then-reversed equals the old ASC output
+        whenever there is only one page.
 
         Raises :class:`MalformedCursor` if ``cursor`` fails to decode --
         same carve-out as :meth:`list_conversations`, and checked BEFORE
@@ -504,7 +536,13 @@ class UserHistory:
                 return None
             rows = conn.execute(sql, params).all()
         page = rows[:limit]
-        items = [{"id": str(row.id), "role": row.role, "parts": row.parts} for row in page]
+        # `page` is DESC (newest-first) -- `items` reverses it back to the
+        # oldest-to-newest wire order every caller already expects; `page`
+        # itself is left untouched so `page[-1]` below still means "the
+        # oldest row of this page" for the cursor anchor (method docstring).
+        items = [
+            {"id": str(row.id), "role": row.role, "parts": row.parts} for row in reversed(page)
+        ]
         next_cursor = None
         if len(rows) > limit:
             last = page[-1]

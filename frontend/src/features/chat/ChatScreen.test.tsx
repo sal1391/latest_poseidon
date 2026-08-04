@@ -351,6 +351,118 @@ test("the message thread carries no aria-live of its own", async () => {
   expect(thread).not.toHaveAttribute("aria-live");
 });
 
+// Phase 12 Task 4 (page-order amendment, 2026-08-04): "Load earlier
+// messages" -- appears only when the loaded conversation's own
+// messagesNextCursor is non-null, fetches the older page on click, and
+// PREPENDS it above what is already shown (never appended, never
+// reordered -- get_messages now walks strictly backward in time).
+test("Load earlier messages appears only when next_cursor is non-null, fetches the older page, and prepends it", async () => {
+  server.use(
+    http.get("/api/conversations", () =>
+      HttpResponse.json({ items: [{ id: "c9", title: "Long chat" }], next_cursor: null })),
+    http.get("/api/conversations/c9/messages", ({ request }) => {
+      const url = new URL(request.url);
+      if (url.searchParams.get("cursor")) {
+        return HttpResponse.json({
+          items: [
+            {
+              id: "old1",
+              role: "assistant",
+              parts: [{ kind: "text", payload: { markdown: "ancient reply" } }],
+            },
+          ],
+          next_cursor: null,
+        });
+      }
+      return HttpResponse.json({
+        items: [
+          {
+            id: "recent1",
+            role: "assistant",
+            parts: [{ kind: "text", payload: { markdown: "recent reply" } }],
+          },
+        ],
+        next_cursor: "opaque-cursor-1",
+      });
+    }),
+  );
+
+  render(<ChatScreen />);
+  await screen.findByText(/recent reply/);
+  const loadEarlier = screen.getByRole("button", { name: /load earlier/i });
+
+  await userEvent.click(loadEarlier);
+
+  await waitFor(() => expect(screen.getByText(/ancient reply/)).toBeInTheDocument());
+  const texts = screen.getAllByText(/reply/).map((el) => el.textContent);
+  expect(texts).toEqual(["ancient reply", "recent reply"]); // older ABOVE newer, not below
+  // The just-fetched page's own next_cursor was null -- nothing further back
+  // to load, so the control is gone.
+  expect(screen.queryByRole("button", { name: /load earlier/i })).not.toBeInTheDocument();
+});
+
+test("no Load earlier control renders when the loaded conversation's next_cursor is null", async () => {
+  render(<ChatScreen />);
+  await screen.findByText(/Ask about your data/);
+
+  expect(screen.queryByRole("button", { name: /load earlier/i })).not.toBeInTheDocument();
+});
+
+test("Load earlier is disabled and busy while its own fetch is in flight, and a second click is a no-op", async () => {
+  let releaseOlderPage!: () => void;
+  const olderPage = new Promise<Response>((resolve) => {
+    releaseOlderPage = () =>
+      resolve(
+        HttpResponse.json({
+          items: [
+            {
+              id: "old1",
+              role: "assistant",
+              parts: [{ kind: "text", payload: { markdown: "ancient reply" } }],
+            },
+          ],
+          next_cursor: null,
+        }),
+      );
+  });
+  let cursoredCalls = 0;
+  server.use(
+    http.get("/api/conversations", () =>
+      HttpResponse.json({ items: [{ id: "c9", title: "Long chat" }], next_cursor: null })),
+    http.get("/api/conversations/c9/messages", ({ request }) => {
+      const url = new URL(request.url);
+      if (url.searchParams.get("cursor")) {
+        cursoredCalls += 1;
+        return olderPage;
+      }
+      return HttpResponse.json({
+        items: [
+          {
+            id: "recent1",
+            role: "assistant",
+            parts: [{ kind: "text", payload: { markdown: "recent reply" } }],
+          },
+        ],
+        next_cursor: "opaque-cursor-1",
+      });
+    }),
+  );
+
+  render(<ChatScreen />);
+  await screen.findByText(/recent reply/);
+  const loadEarlier = screen.getByRole("button", { name: /load earlier/i });
+
+  await userEvent.click(loadEarlier);
+  expect(loadEarlier).toBeDisabled();
+  expect(loadEarlier).toHaveAttribute("aria-busy", "true");
+
+  await userEvent.click(loadEarlier); // fired mid-fetch, must not issue a second request
+
+  releaseOlderPage();
+  await waitFor(() => expect(screen.getByText(/ancient reply/)).toBeInTheDocument());
+  expect(cursoredCalls).toBe(1);
+});
+
 test("backend-unreachable bootstrap surfaces a retry banner instead of a silent no-op", async () => {
   // Both requests bootstrap can issue (list, then create-if-empty) fail, so the
   // banner has to come from the catch path rather than from a specific request.

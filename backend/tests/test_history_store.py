@@ -586,6 +586,14 @@ def test_list_conversations_with_a_well_formed_but_absurd_cursor_returns_an_empt
 
 @pytest.mark.pg
 def test_get_messages_pagination_seven_rows_page_size_three(history_store):
+    """Phase 12 Task 4 amendment (2026-08-04): page 1 (no cursor) is now the
+    LATEST 3 messages, not the earliest 3 -- ``expected_order[4:7]`` (the
+    opener plus 6 appended messages, oldest to newest, so the last 3 are the
+    newest 3). Each subsequent cursor walks further into the past:
+    ``expected_order[1:4]``, then ``expected_order[0:1]`` (just the
+    opener). WITHIN each page, ``items`` still reads oldest-to-newest (the
+    wire contract this pins is unchanged) -- only which page is "first",
+    and which direction subsequent pages walk, changed."""
     user_history = history_store.for_user(_fresh_user_sub())
     conversation, opener = user_history.create_conversation()
     cid = conversation["id"]
@@ -599,9 +607,9 @@ def test_get_messages_pagination_seven_rows_page_size_three(history_store):
     page2, cursor2 = user_history.get_messages(cid, limit=3, cursor=cursor1)
     page3, cursor3 = user_history.get_messages(cid, limit=3, cursor=cursor2)
 
-    assert [m["id"] for m in page1] == expected_order[0:3]
-    assert [m["id"] for m in page2] == expected_order[3:6]
-    assert [m["id"] for m in page3] == expected_order[6:7]
+    assert [m["id"] for m in page1] == expected_order[4:7]
+    assert [m["id"] for m in page2] == expected_order[1:4]
+    assert [m["id"] for m in page3] == expected_order[0:1]
     assert cursor1 is not None
     assert cursor2 is not None
     assert cursor3 is None
@@ -609,14 +617,21 @@ def test_get_messages_pagination_seven_rows_page_size_three(history_store):
 
 @pytest.mark.pg
 def test_get_messages_with_a_well_formed_but_absurd_cursor_returns_an_empty_page(history_store):
-    """Mirrors test_list_conversations_with_a_well_formed_but_absurd_cursor_
-    returns_an_empty_page for the ASC-ordered side: a cursor timestamped
-    far in the future decodes and parses cleanly, but no message's
-    created_at is greater than it, so the "after cursor" predicate matches
-    nothing -- an empty, legitimate page, not a MalformedCursor."""
+    """Phase 12 Task 4 amendment (2026-08-04): now mirrors
+    test_list_conversations_with_a_well_formed_but_absurd_cursor_returns_an_
+    empty_page EXACTLY (both sides are DESC + a `<` predicate now) rather
+    than merely being analogous to it -- the absurd cursor flips from a
+    FAR-FUTURE timestamp (which matched nothing under the old `>` "after
+    cursor" predicate) to a timestamp from before this fresh user_sub ever
+    created anything: no message's created_at is less than 1900, so the
+    DESC "less than cursor" predicate matches nothing, and the page comes
+    back empty rather than raising. (A far-future cursor would, under the
+    NEW predicate, match everything and return a full page -- which is why
+    this test would have quietly asserted the wrong thing, unchanged, if
+    only the SQL had been flipped without also flipping the cursor here.)"""
     user_history = history_store.for_user(_fresh_user_sub())
     conversation, _opener = user_history.create_conversation()
-    absurd_cursor = _b64_json({"c": "2099-01-01T00:00:00", "i": str(uuid.uuid4())})
+    absurd_cursor = _b64_json({"c": "1900-01-01T00:00:00", "i": str(uuid.uuid4())})
 
     result = user_history.get_messages(conversation["id"], cursor=absurd_cursor)
 
