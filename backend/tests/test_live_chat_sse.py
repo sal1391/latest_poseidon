@@ -51,9 +51,13 @@ import os
 import httpx
 import psycopg
 import pytest
+from sqlalchemy import text
 
+from poseidon.core.chat.dev_router import DevDeterministicRouter
 from poseidon.core.config import Settings
 from poseidon.core.data.synthetic_client import normalize_dsn
+from poseidon.core.identity import DISABLED_DEFAULT_USER
+from poseidon.core.llm.roles import RoleClient
 from poseidon.core.skills.registry import SkillRegistry
 from tests.test_chat_orchestrator import REGISTRY, FakeDataClient, RecordingWriter
 
@@ -419,6 +423,131 @@ async def test_live_turn_streams_the_flagship_frame_sequence_and_table_and_proof
     assert writer.start_turn_calls[0]["turn_run_id"] == turn_id
     assert len(writer.finalize_calls) == 1
     assert writer.finalize_calls[0]["turn_run_id"] == turn_id
+
+
+class _RecordingRoleClientStub:
+    """Wraps the REAL ``DevDeterministicRouter`` so this test still
+    exercises genuine routing decisions -- only ``system`` is intercepted.
+    Mirrors ``test_chat_orchestrator.py``'s own ``_RecordingStub`` exactly
+    (duplicated, not imported -- a role_client double is new to THIS file,
+    matching the established "each test module owns its own private
+    helpers" convention ``test_entry_orchestration.py``'s module docstring
+    states explicitly for every OTHER small helper it duplicates rather
+    than imports)."""
+
+    def __init__(self) -> None:
+        self._inner = DevDeterministicRouter()
+        self.systems: list[str] = []
+
+    def invoke(self, *, system, messages, tools, model, params):
+        self.systems.append(system)
+        return self._inner.invoke(
+            system=system, messages=messages, tools=tools, model=model, params=params
+        )
+
+
+@pytest.mark.pg
+@pytest.mark.anyio
+async def test_live_turn_injects_real_instruction_and_memory_and_touches_the_outbox(
+    pg_database_url,
+):
+    """Phase 13 Task 2 (plan amendment, commit bf43d34): the one thing
+    ``test_orchestrator_personalization.py``'s offline suite cannot prove on
+    its own -- that a REAL HTTP turn, through ``api/live_chat.py``'s own
+    ``execute_turn(...)`` call (now threading ``app.state.profile_store``/
+    ``.memory_store``/``.outbox_store`` straight through, this same task's
+    amended scope), actually receives the injected instruction/memory in
+    the prompt the provider sees, and actually touches the conversation's
+    ``memory_outbox`` row.
+
+    Mirrors this file's own flagship pg test's app-construction shape
+    exactly (``_live_app`` + a real Postgres ``database_url``), with
+    ``app.state.role_client`` ALSO swapped post-construction -- the same
+    "swap an app.state object after ``create_app`` returns" substitution
+    already established here for ``data_client``/``run_log_writer`` -- for
+    a recording stub that captures the REAL ``system`` text sent to the
+    provider, so this test asserts on captured prompt TEXT (this task's own
+    standard throughout, not "a store method was called").
+
+    ``DISABLED_DEFAULT_USER`` ("dev|local") is the ONLY identity
+    ``identity_mode="disabled"`` (this file's default, like every other pg
+    test here) ever resolves requests to -- there is no way to seed a
+    different user's instruction/memory for an HTTP-level test without a
+    real auth flow this phase does not build. Because that identity is
+    shared by every test in this pg-marked file (and the seeded instruction/
+    memory would otherwise persist in Postgres across test runs), the
+    ``finally`` block below resets both back to their pre-test empty state
+    unconditionally, so this test leaves no residue for any other test
+    against the same database.
+    """
+    writer = RecordingWriter()
+    app = _live_app(data_client=FakeDataClient(), writer=writer, database_url=pg_database_url)
+    stub = _RecordingRoleClientStub()
+    app.state.role_client = RoleClient(app.state.settings, providers={"stub": stub})
+
+    user_sub = DISABLED_DEFAULT_USER.sub
+    instruction = "Always show GP in USD thousands."
+    memory_entry = {
+        "type": "preference",
+        "statement": "Prefers concise, no-fluff answers.",
+        "source_conversation_id": "conv-seed",
+        "at": "2026-01-01T00:00:00",
+    }
+    expected_memory_markdown = (
+        "- [preference] Prefers concise, no-fluff answers. "
+        "(source: conv-seed, at: 2026-01-01T00:00:00)"
+    )
+    app.state.profile_store.for_user(user_sub).put(instruction)
+    app.state.memory_store.for_user(user_sub).write_version([memory_entry], created_by="user")
+
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+            cid = await _create_conversation(client)
+            events = await read_sse(
+                client, cid, "Top GP customers for Port of Singapore in April 2026", "ctk-instr-1"
+            )
+
+        names = [name for name, _data in events]
+        assert names == ["accepted", "tool", "tool", "part", "part", "token", "done"]
+
+        # ``stub.systems`` also captures live_chat.py's OWN turn-one title
+        # generation call (``_finalize_turn``'s own ``title_for(...)``,
+        # role "utility") -- a completely different, unrelated prompt that
+        # never carries assemble_system's own sections at all, since the
+        # SAME ``app.state.role_client`` (now the recording stub) answers
+        # every role, not just "router". ``=== CONVERSATION STATE ===`` is
+        # assemble_system's own last-section header (core/llm/prompts.py) --
+        # present ONLY on a real router/synthesis render, never the title
+        # prompt -- so it is what isolates the calls this assertion cares
+        # about from that unrelated one.
+        router_systems = [s for s in stub.systems if "=== CONVERSATION STATE ===" in s]
+        assert router_systems  # at least one real router call happened
+        assert len(set(router_systems)) == 1  # one system per turn, reused across iterations
+        for system in router_systems:
+            assert f"=== USER INSTRUCTION ===\n{instruction}" in system
+            assert f"=== MEMORY ===\n{expected_memory_markdown}" in system
+
+        # The outbox touch: memory_outbox has no store-level read method
+        # (ConversationOutbox.touch is write-only by design -- Task 1's own
+        # interface), so this reads the row directly, the same raw-query
+        # verification style test_personalization_stores.py's own touch()
+        # tests already use.
+        with app.state.db_engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT status, attempts, last_turn_at FROM memory_outbox "
+                    "WHERE conversation_id = :c"
+                ),
+                {"c": cid},
+            ).first()
+        assert row is not None
+        assert row.status == "pending"
+        assert row.attempts == 0
+        assert row.last_turn_at is not None
+    finally:
+        app.state.profile_store.for_user(user_sub).put("")
+        app.state.memory_store.for_user(user_sub).write_version([], created_by="user")
 
 
 @pytest.mark.pg

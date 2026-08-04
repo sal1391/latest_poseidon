@@ -975,6 +975,17 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
                 sink=sink,
                 reference_date=date.today(),
                 tools=app_state.tool_registry,
+                # Phase 13 Task 2 (plan amendment, commit bf43d34): the
+                # three personalization stores app.py's own _wire_live_chat
+                # already puts on app.state -- threaded straight through,
+                # unexamined here any more than role_client/data/writer
+                # above are, so a real HTTP turn actually gets the real
+                # per-turn instruction/memory injection and outbox touch
+                # execute_turn itself has been capable of since this task's
+                # first commit (fda07f3).
+                profile_store=app_state.profile_store,
+                memory_store=app_state.memory_store,
+                outbox_store=app_state.outbox_store,
             )
         except Exception as exc:  # noqa: BLE001 - a crash mid-turn must still end the stream cleanly
             # execute_turn's own contract only produces a `turn_error` frame

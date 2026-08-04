@@ -439,19 +439,15 @@ def _wire_live_chat(app: FastAPI) -> None:
     # every feedback write this process makes) and the SAME shared engine.
     app.state.feedback_store = FeedbackStore(engine, app_role=settings.database_app_role)
     # Phase 13 Task 1/2: the three personalization stores behind
-    # user_profile/user_memory/memory_outbox (migration 0008) -- Task 2's
-    # own job is wiring these onto app.state here, mirroring history_store/
-    # feedback_store immediately above verbatim (same shared engine, same
-    # app_role rationale: this dev database's DATABASE_URL role is a
-    # superuser, and omitting app_role would silently disable RLS
-    # enforcement for every read/write these three stores make). NOTE: this
-    # task's own sanctioned scope stops at app.state -- live_chat.py's own
-    # execute_turn(...) call (this file's sibling module, not sanctioned
-    # for this task) still does not pass profile_store/memory_store/
-    # outbox_store, so a live HTTP turn does not yet exercise the injection
-    # execute_turn itself is now fully capable of. Disclosed as a known gap
-    # for a follow-up task, not silently left for a later reader to
-    # rediscover.
+    # user_profile/user_memory/memory_outbox (migration 0008), mirroring
+    # history_store/feedback_store immediately above verbatim (same shared
+    # engine, same app_role rationale: this dev database's DATABASE_URL
+    # role is a superuser, and omitting app_role would silently disable RLS
+    # enforcement for every read/write these three stores make).
+    # live_chat.py's own execute_turn(...) call reads these three straight
+    # back off app.state (plan amendment, commit bf43d34) -- so a real HTTP
+    # turn now actually exercises the real per-turn instruction/memory
+    # injection and outbox touch, not just execute_turn's own capability.
     app.state.profile_store = ProfileStore(engine, app_role=settings.database_app_role)
     app.state.memory_store = MemoryStore(engine, app_role=settings.database_app_role)
     app.state.outbox_store = OutboxStore(engine, app_role=settings.database_app_role)
