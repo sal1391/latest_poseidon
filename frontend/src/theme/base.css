@@ -65,6 +65,47 @@ body {
   border-right: 1px solid var(--border);
 }
 
+/* Sidebar footer slot: current user + logout (auth0 mode only). */
+.user-menu {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex: none;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.user-menu-name {
+  overflow: hidden;
+  min-width: 0;
+  color: var(--ink-muted);
+  font-family: var(--font-body);
+  font-size: 0.8125rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-menu-logout {
+  flex: none;
+  padding: 0.25rem 0.625rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--ink-muted);
+  font-family: var(--font-body);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition:
+    border-color var(--motion-fast) ease,
+    color var(--motion-fast) ease;
+}
+
+.user-menu-logout:hover {
+  border-color: var(--ink-muted);
+  color: var(--ink);
+}
+
 .brand {
   padding: 0.5rem 0.25rem;
   font-family: var(--font-display);
