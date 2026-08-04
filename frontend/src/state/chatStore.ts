@@ -133,7 +133,7 @@ export interface ChatState {
   sendMessage: (cid: string, text: string, clientTurnKey?: string) => Promise<void>;
   loadMoreConversations: () => Promise<void>;
   applyEvent: (cid: string, e: SseEvent) => void;
-  submitFeedback: (mid: string, verdict: "up" | "down", comment?: string) => Promise<void>;
+  submitFeedback: (mid: string, verdict: "up" | "down" | null, comment?: string) => Promise<void>;
 }
 
 /** Shared by every concurrent caller so one mount can only open one conversation. */
@@ -431,7 +431,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   submitFeedback: async (mid, verdict, comment) => {
     const prev = get().feedback[mid];
-    set((s) => ({ feedback: { ...s.feedback, [mid]: { verdict, comment } } }));
+    // verdict === null (un-vote): clear the entry outright rather than
+    // storing {verdict: null, comment: undefined} -- keeps local state
+    // consistent with what a fresh GET would now return (404 -> no entry;
+    // UserFeedback.get's own "cleared vote reads back like never-voted"
+    // contract). Mirrors the existing up/down optimistic-write path exactly,
+    // just branching on which write this call is.
+    set((s) => {
+      const next = { ...s.feedback };
+      if (verdict === null) delete next[mid];
+      else next[mid] = { verdict, comment };
+      return { feedback: next };
+    });
     try {
       await api.postFeedback(mid, verdict, comment);
     } catch (err) {

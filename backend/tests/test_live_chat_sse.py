@@ -927,6 +927,51 @@ async def test_feedback_roundtrip_and_unknown_message_404(pg_database_url):
 
 @pytest.mark.pg
 @pytest.mark.anyio
+async def test_feedback_null_verdict_clears_a_recorded_vote_then_get_404s(pg_database_url):
+    """Un-vote follow-up to Phase 12 (migration 0007): POST verdict=null
+    upserts NULL into the SAME row (never a DELETE -- 0006's own D25 NO-
+    DELETE-grant decision stays untouched), which GET then reports exactly
+    like "never voted" -- 404, indistinguishable by design (this route's
+    existing 404-means-no-vote contract, unchanged)."""
+    app = _live_app(data_client=FakeDataClient(), database_url=pg_database_url)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
+        await read_sse(client, cid, "hello", None)
+        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["items"]
+        mid = msgs[-1]["id"]
+
+        r = await client.post(f"/api/messages/{mid}/feedback", json={"verdict": "down"})
+        assert r.status_code == 204
+        r = await client.get(f"/api/messages/{mid}/feedback")
+        assert r.status_code == 200
+
+        r = await client.post(f"/api/messages/{mid}/feedback", json={"verdict": None})
+        assert r.status_code == 204
+
+        r = await client.get(f"/api/messages/{mid}/feedback")
+        assert r.status_code == 404
+
+
+@pytest.mark.pg
+@pytest.mark.anyio
+async def test_feedback_null_verdict_on_a_never_voted_message_is_a_noop_204(pg_database_url):
+    app = _live_app(data_client=FakeDataClient(), database_url=pg_database_url)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
+        await read_sse(client, cid, "hello", None)
+        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["items"]
+        mid = msgs[-1]["id"]
+
+        r = await client.post(f"/api/messages/{mid}/feedback", json={"verdict": None})
+
+        assert r.status_code == 204
+        assert (await client.get(f"/api/messages/{mid}/feedback")).status_code == 404
+
+
+@pytest.mark.pg
+@pytest.mark.anyio
 async def test_feedback_invalid_verdict_returns_422(pg_database_url):
     app = _live_app(
         data_client=FakeDataClient(), writer=RecordingWriter(), database_url=pg_database_url

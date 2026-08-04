@@ -139,14 +139,24 @@ class UserFeedback:
     def _transaction(self):
         return rls_transaction(self._engine, self._user_sub, app_role=self._app_role)
 
-    def upsert(self, message_id: str, verdict: str, comment: str | None) -> None:
+    def upsert(self, message_id: str, verdict: str | None, comment: str | None) -> None:
         """Idempotent upsert keyed on ``(message_id, user_sub)`` -- a second
         call for the same message AMENDS the first (verdict and comment both
         replaceable), never creates a second row. Raises ``LookupError`` when
         ``message_id`` is malformed, absent, or another user's (route: 404);
         raises :class:`FeedbackNotApplicable` when it names a visible message
         with no linked turn, i.e. the opener (route: 422 pinned). See the
-        module docstring for why these two checks are one query, not two."""
+        module docstring for why these two checks are one query, not two.
+
+        ``verdict=None`` is the un-vote path (migration 0007's own docstring:
+        "un-vote... upserts verdict = NULL into the SAME row" -- never a
+        DELETE, migration 0006's own D25 NO-DELETE-grant decision stays
+        untouched). ``comment`` is forced to ``None`` alongside it,
+        regardless of what the caller passed -- a cleared vote must never
+        carry a stale comment forward -- so this is the ONE place that
+        contract is enforced, defensively, for every caller."""
+        if verdict is None:
+            comment = None
         parsed_message_id = _parse_uuid(message_id)
         if parsed_message_id is None:
             raise LookupError(f"message {message_id!r} is not a valid message id")
@@ -178,11 +188,18 @@ class UserFeedback:
 
     def get(self, message_id: str) -> dict | None:
         """``{"verdict": str, "comment": str | None}`` -- the route's
-        existing GET shape -- or ``None`` for a malformed/absent id, or a
-        visible message nobody has recorded a verdict for yet. Does not
-        itself distinguish "invisible message" from "no feedback yet": the
-        route's own pre-existing ``_message_visible`` gate (unchanged by
-        this task) already tells those apart before ever calling this."""
+        existing GET shape -- or ``None`` for a malformed/absent id, a
+        visible message nobody has recorded a verdict for yet, OR (migration
+        0007) a visible message whose ONE row has been cleared back to
+        ``verdict IS NULL`` (the un-vote path -- :meth:`upsert`'s own
+        docstring). A cleared vote and a never-voted message must look
+        IDENTICAL from the outside -- the route's existing 404-means-no-vote
+        contract stays completely unchanged for callers -- so a NULL-verdict
+        row is treated exactly like no row at all, never surfaced as
+        ``{"verdict": None, ...}``. Does not itself distinguish "invisible
+        message" from "no feedback yet": the route's own pre-existing
+        ``_message_visible`` gate (unchanged by this task) already tells
+        those apart before ever calling this."""
         parsed_message_id = _parse_uuid(message_id)
         if parsed_message_id is None:
             return None
@@ -190,7 +207,7 @@ class UserFeedback:
             row = conn.execute(
                 _GET_SQL, {"message_id": str(parsed_message_id), "user_sub": self._user_sub}
             ).first()
-        if row is None:
+        if row is None or row.verdict is None:
             return None
         return {"verdict": row.verdict, "comment": row.comment}
 

@@ -5,7 +5,8 @@ export type Verdict = "up" | "down";
 export interface FeedbackProps {
   /** The verdict already recorded for this message, if any. */
   verdict?: Verdict;
-  onSubmit: (verdict: Verdict, comment?: string) => void;
+  /** `null` is the un-vote/clear signal -- see the up/down button handlers below. */
+  onSubmit: (verdict: Verdict | null, comment?: string) => void;
 }
 
 function ThumbIcon({ down = false, filled = false }: { down?: boolean; filled?: boolean }) {
@@ -43,6 +44,16 @@ export function Feedback({ verdict, onSubmit }: FeedbackProps) {
     setComment("");
   }
 
+  /** Closes the prompt with no submission at all -- the "never mind" fix:
+   * before this, both prompt buttons ("Send feedback"/"Skip") recorded a
+   * down vote, with no way to back out. Never calls `onSubmit`, so an
+   * already-recorded verdict (e.g. reopening the prompt from an existing
+   * down vote) is left completely untouched. */
+  function cancelPrompt() {
+    setPrompting(false);
+    setComment("");
+  }
+
   return (
     <div className="feedback">
       <div className="feedback-row">
@@ -52,7 +63,9 @@ export function Feedback({ verdict, onSubmit }: FeedbackProps) {
           aria-pressed={verdict === "up"}
           onClick={() => {
             setPrompting(false);
-            onSubmit("up");
+            // Toggle: clicking an already-active up vote clears it back to
+            // neutral instead of re-submitting the same verdict.
+            onSubmit(verdict === "up" ? null : "up");
           }}
         >
           <ThumbIcon filled={verdict === "up"} />
@@ -61,7 +74,17 @@ export function Feedback({ verdict, onSubmit }: FeedbackProps) {
           type="button"
           aria-label="Bad response"
           aria-pressed={verdict === "down"}
-          onClick={() => setPrompting(true)}
+          onClick={() => {
+            // Toggle: an already-recorded down vote clears directly, no
+            // re-prompt -- it's already recorded, so there is nothing new
+            // to ask "what went wrong?" about. Not-yet-down still opens the
+            // comment prompt exactly as before.
+            if (verdict === "down") {
+              onSubmit(null);
+            } else {
+              setPrompting(true);
+            }
+          }}
         >
           <ThumbIcon down filled={verdict === "down"} />
         </button>
@@ -86,6 +109,10 @@ export function Feedback({ verdict, onSubmit }: FeedbackProps) {
             {/* Dismissing still records the verdict — the comment is optional. */}
             <button type="button" className="btn-quiet" onClick={() => submitDown(false)}>
               Skip
+            </button>
+            {/* Closes without voting at all -- see cancelPrompt's own docstring. */}
+            <button type="button" className="btn-quiet" onClick={cancelPrompt}>
+              Cancel
             </button>
           </div>
         </div>

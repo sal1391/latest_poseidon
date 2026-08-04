@@ -425,6 +425,79 @@ def test_get_returns_none_for_a_malformed_or_absent_message_id(pg_engine):
 
 
 # ===========================================================================
+# un-vote: verdict=None upserts NULL into the SAME row (never a DELETE --
+# migration 0006's own D25 NO-DELETE-grant decision stays untouched, migration
+# 0007 only drops verdict's NOT NULL). Follow-up to Phase 12, not part of
+# that phase's own plan -- see migration 0007's own docstring for the full
+# rationale, not repeated here.
+# ===========================================================================
+
+
+def test_upsert_none_clears_a_previously_recorded_verdict_and_get_returns_none(pg_engine):
+    user_sub = _fresh_user_sub()
+    conversation, _opener = HistoryStore(pg_engine, app_role=_EFFECTIVE_APP_ROLE).for_user(
+        user_sub
+    ).create_conversation()
+    message_id, _turn_run_id = _full_message_with_run(pg_engine, user_sub, conversation["id"])
+    store = FeedbackStore(pg_engine, app_role=_EFFECTIVE_APP_ROLE).for_user(user_sub)
+    store.upsert(message_id, "down", "wrong port")
+    assert store.get(message_id) == {"verdict": "down", "comment": "wrong port"}
+
+    store.upsert(message_id, None, None)
+
+    assert store.get(message_id) is None, (
+        "a cleared vote must read back exactly like never-voted -- "
+        "get() must not distinguish NULL-verdict-row from no-row-at-all"
+    )
+    with pg_engine.connect() as conn:
+        rows = conn.execute(
+            text("SELECT verdict FROM message_feedback WHERE message_id = :m"), {"m": message_id}
+        ).all()
+    assert len(rows) == 1, "un-vote amends the SAME row (D25: no DELETE grant), never removes it"
+    assert rows[0].verdict is None
+
+
+def test_upsert_none_forces_comment_to_none_even_when_a_comment_is_passed(pg_engine):
+    """A cleared vote must never carry a stale comment forward -- upsert()
+    itself is the one place this is enforced, defensively, regardless of
+    what the caller passes alongside verdict=None."""
+    user_sub = _fresh_user_sub()
+    conversation, _opener = HistoryStore(pg_engine, app_role=_EFFECTIVE_APP_ROLE).for_user(
+        user_sub
+    ).create_conversation()
+    message_id, _turn_run_id = _full_message_with_run(pg_engine, user_sub, conversation["id"])
+    store = FeedbackStore(pg_engine, app_role=_EFFECTIVE_APP_ROLE).for_user(user_sub)
+    store.upsert(message_id, "down", "wrong port")
+
+    store.upsert(message_id, None, "this comment must be discarded")
+
+    with pg_engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT verdict, comment FROM message_feedback WHERE message_id = :m"),
+            {"m": message_id},
+        ).first()
+    assert row.verdict is None
+    assert row.comment is None
+
+
+def test_upsert_none_on_a_message_with_no_prior_vote_is_a_legitimate_noop(pg_engine):
+    """verdict=None on a message nobody has ever voted on is not an error --
+    it upserts a fresh NULL-verdict row (the CHECK constraint's own
+    three-valued-logic pass on NULL, migration 0007's own docstring) and
+    get() still reads back None, identically to the never-touched case."""
+    user_sub = _fresh_user_sub()
+    conversation, _opener = HistoryStore(pg_engine, app_role=_EFFECTIVE_APP_ROLE).for_user(
+        user_sub
+    ).create_conversation()
+    message_id, _turn_run_id = _full_message_with_run(pg_engine, user_sub, conversation["id"])
+    store = FeedbackStore(pg_engine, app_role=_EFFECTIVE_APP_ROLE).for_user(user_sub)
+
+    store.upsert(message_id, None, None)  # must not raise
+
+    assert store.get(message_id) is None
+
+
+# ===========================================================================
 # two-user isolation -- see module docstring for why the second row is
 # seeded directly rather than driven through a second upsert() call
 # ===========================================================================

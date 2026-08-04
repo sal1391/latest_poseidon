@@ -116,6 +116,125 @@ test("thumbs-up POSTs {verdict: 'up'} and the button reflects the recorded state
   expect(seenBody).toEqual({ verdict: "up", comment: null });
 });
 
+// Un-vote follow-up to Phase 12 (live-testing gap 2): clicking an
+// already-active thumb again clears it back to neutral rather than
+// re-submitting the same verdict.
+test("clicking an already-active thumbs-up again clears the vote (toggle off)", async () => {
+  const seenBodies: unknown[] = [];
+  server.use(
+    http.post("/api/messages/:mid/feedback", async ({ request }) => {
+      seenBodies.push(await request.json());
+      return new HttpResponse(null, { status: 204 });
+    }),
+  );
+  render(<ChatScreen />);
+  const input = await screen.findByPlaceholderText(/message poseidon/i);
+  await userEvent.type(input, "hello{Enter}");
+  await waitFor(() => screen.getByText(/Three customers drove April./));
+
+  const upButton = screen.getByLabelText("Good response");
+  await userEvent.click(upButton);
+  await waitFor(() => expect(upButton).toHaveAttribute("aria-pressed", "true"));
+
+  await userEvent.click(upButton);
+
+  await waitFor(() => expect(upButton).toHaveAttribute("aria-pressed", "false"));
+  expect(seenBodies).toEqual([
+    { verdict: "up", comment: null },
+    { verdict: null, comment: null },
+  ]);
+});
+
+// Down's toggle-off is direct (no re-prompt for a comment just to clear an
+// already-recorded down vote) -- distinct from the not-yet-down case, which
+// still opens the "what went wrong?" prompt (covered by the thumbs-down
+// test above).
+test("clicking an already-active thumbs-down again clears the vote directly, with no prompt", async () => {
+  const seenBodies: unknown[] = [];
+  server.use(
+    http.post("/api/messages/:mid/feedback", async ({ request }) => {
+      seenBodies.push(await request.json());
+      return new HttpResponse(null, { status: 204 });
+    }),
+  );
+  render(<ChatScreen />);
+  const input = await screen.findByPlaceholderText(/message poseidon/i);
+  await userEvent.type(input, "hello{Enter}");
+  await waitFor(() => screen.getByText(/Three customers drove April./));
+
+  const downButton = screen.getByLabelText("Bad response");
+  await userEvent.click(downButton);
+  const skip = await screen.findByRole("button", { name: /skip/i });
+  await userEvent.click(skip);
+  await waitFor(() => expect(downButton).toHaveAttribute("aria-pressed", "true"));
+
+  await userEvent.click(downButton);
+
+  await waitFor(() => expect(downButton).toHaveAttribute("aria-pressed", "false"));
+  expect(screen.queryByPlaceholderText(/what went wrong/i)).not.toBeInTheDocument();
+  expect(seenBodies).toEqual([
+    { verdict: "down", comment: null },
+    { verdict: null, comment: null },
+  ]);
+});
+
+// Live-testing gap 1: no way to close the "what went wrong" box without
+// voting -- both existing buttons ("Send feedback", "Skip") recorded a down
+// vote. Cancel must close the prompt, submit nothing, and leave any
+// already-recorded verdict untouched.
+test("Cancel closes the comment prompt without submitting anything", async () => {
+  let postCount = 0;
+  server.use(
+    http.post("/api/messages/:mid/feedback", () => {
+      postCount += 1;
+      return new HttpResponse(null, { status: 204 });
+    }),
+  );
+  render(<ChatScreen />);
+  const input = await screen.findByPlaceholderText(/message poseidon/i);
+  await userEvent.type(input, "hello{Enter}");
+  await waitFor(() => screen.getByText(/Three customers drove April./));
+
+  await userEvent.click(screen.getByLabelText("Bad response"));
+  const box = await screen.findByPlaceholderText(/what went wrong/i);
+  await userEvent.type(box, "numbers look off");
+  await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
+
+  expect(screen.queryByPlaceholderText(/what went wrong/i)).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Bad response")).toHaveAttribute("aria-pressed", "false");
+  expect(postCount).toBe(0);
+});
+
+// Cancel must not touch an ALREADY-recorded verdict either -- opening the
+// down-prompt from an already-up state, then cancelling, must leave the
+// up vote exactly as it was (no second POST, still pressed).
+test("Cancel leaves an already-recorded verdict untouched", async () => {
+  const seenBodies: unknown[] = [];
+  server.use(
+    http.post("/api/messages/:mid/feedback", async ({ request }) => {
+      seenBodies.push(await request.json());
+      return new HttpResponse(null, { status: 204 });
+    }),
+  );
+  render(<ChatScreen />);
+  const input = await screen.findByPlaceholderText(/message poseidon/i);
+  await userEvent.type(input, "hello{Enter}");
+  await waitFor(() => screen.getByText(/Three customers drove April./));
+
+  await userEvent.click(screen.getByLabelText("Good response"));
+  await waitFor(() =>
+    expect(screen.getByLabelText("Good response")).toHaveAttribute("aria-pressed", "true"));
+
+  await userEvent.click(screen.getByLabelText("Bad response"));
+  const box = await screen.findByPlaceholderText(/what went wrong/i);
+  await userEvent.type(box, "changed my mind about typing this");
+  await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
+
+  expect(screen.queryByPlaceholderText(/what went wrong/i)).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Good response")).toHaveAttribute("aria-pressed", "true");
+  expect(seenBodies).toEqual([{ verdict: "up", comment: null }]);
+});
+
 test("re-voting from up to down amends the verdict and the UI reflects the flip", async () => {
   const seenBodies: unknown[] = [];
   server.use(

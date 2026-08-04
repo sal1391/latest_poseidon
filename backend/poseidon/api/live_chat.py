@@ -579,9 +579,15 @@ class SendBody(BaseModel):
 
 
 class FeedbackBody(BaseModel):
-    """Same shape mock_chat.py's own ``FeedbackBody`` accepts."""
+    """Same shape mock_chat.py's own ``FeedbackBody`` accepts.
 
-    verdict: str
+    ``verdict: str | None`` -- un-vote follow-up to Phase 12 (migration
+    0007): ``None`` clears a previously recorded verdict back to neutral
+    (:meth:`~poseidon.core.chat.feedback.UserFeedback.upsert`'s own
+    docstring). ``upsert_feedback``'s validation below accepts it as a
+    third legitimate value alongside ``"up"``/``"down"``, not an error."""
+
+    verdict: str | None
     comment: str | None = None
 
 
@@ -1086,9 +1092,17 @@ def upsert_feedback(mid: str, body: FeedbackBody, request: Request) -> Response:
     ``status_code=204`` (kept here purely as accurate OpenAPI documentation
     of the default/success case) -- the same pass-through behavior
     :func:`malformed_cursor_response`/:func:`send_message` already rely on.
+
+    ``verdict=None`` (un-vote follow-up to Phase 12, migration 0007) is a
+    legitimate request, not an error, on any visible turn-backed message --
+    including one with no prior verdict at all (a no-op amend). Nothing
+    else about this route's 404/422 handling changes: :meth:`~poseidon.
+    core.chat.feedback.UserFeedback.upsert` still raises ``LookupError``/
+    :class:`~poseidon.core.chat.feedback.FeedbackNotApplicable` the same
+    way regardless of which of the three ``verdict`` values was sent.
     """
-    if body.verdict not in ("up", "down"):
-        raise HTTPException(422, detail="verdict must be up or down")
+    if body.verdict not in ("up", "down", None):
+        raise HTTPException(422, detail="verdict must be up, down, or null")
     feedback_store: FeedbackStore = request.app.state.feedback_store
     user_feedback = feedback_store.for_user(request.state.user.sub)
     try:

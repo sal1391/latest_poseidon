@@ -32,7 +32,11 @@ class SendBody(BaseModel):
 
 
 class FeedbackBody(BaseModel):
-    verdict: str
+    # verdict: str | None -- un-vote follow-up to Phase 12: None clears a
+    # previously recorded verdict, kept in sync with live_chat.py's own
+    # FeedbackBody (that module's own docstring: "Same shape mock_chat.py's
+    # own FeedbackBody accepts").
+    verdict: str | None
     comment: str | None = None
 
 
@@ -144,10 +148,20 @@ def send_message(cid: str, body: SendBody) -> StreamingResponse:
 
 @router.post("/messages/{mid}/feedback", status_code=204)
 def upsert_feedback(mid: str, body: FeedbackBody) -> None:
-    if body.verdict not in ("up", "down"):
-        raise HTTPException(422, detail="verdict must be up or down")
+    if body.verdict not in ("up", "down", None):
+        raise HTTPException(422, detail="verdict must be up, down, or null")
     if not _known_message(mid):
         raise HTTPException(404, detail="unknown message")
+    if body.verdict is None:
+        # Un-vote: clear the entry rather than leaving a stale
+        # {"verdict": None, ...} around -- get_feedback's existing
+        # 404-if-absent behavior below stays consistent with the real
+        # backend's new "cleared vote reads back like never-voted" contract
+        # (poseidon.core.chat.feedback.UserFeedback.get's own docstring).
+        # .pop(..., None): clearing a message with no prior entry is a
+        # legitimate no-op, not an error.
+        _feedback.pop(mid, None)
+        return
     _feedback[mid] = {"verdict": body.verdict, "comment": body.comment}
 
 

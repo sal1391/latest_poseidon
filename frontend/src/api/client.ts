@@ -123,7 +123,7 @@ export async function getMessages(cid: string, cursor?: string): Promise<Page<Me
 
 export async function postFeedback(
   mid: string,
-  verdict: "up" | "down",
+  verdict: "up" | "down" | null,
   comment?: string,
 ): Promise<void> {
   await apiFetch(`/api/messages/${mid}/feedback`, {

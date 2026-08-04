@@ -213,6 +213,63 @@ test("a re-vote (amend) sends the new verdict and the store reflects the flip", 
   ]);
 });
 
+// Un-vote follow-up to Phase 12: submitFeedback(mid, null) POSTs
+// {verdict: null, comment: null} and, on success, REMOVES the feedback[mid]
+// entry entirely rather than storing {verdict: null, comment: undefined} --
+// this keeps local state consistent with what a fresh GET would now return
+// (404 -> no entry).
+test("submitFeedback(mid, null) clears an existing feedback entry", async () => {
+  server.use(
+    http.post("/api/messages/:mid/feedback", () => new HttpResponse(null, { status: 204 })),
+  );
+  await useChatStore.getState().submitFeedback("a1", "up");
+  expect(useChatStore.getState().feedback.a1).toEqual({ verdict: "up", comment: undefined });
+
+  const seenBodies: unknown[] = [];
+  server.use(
+    http.post("/api/messages/:mid/feedback", async ({ request }) => {
+      seenBodies.push(await request.json());
+      return new HttpResponse(null, { status: 204 });
+    }),
+  );
+  await useChatStore.getState().submitFeedback("a1", null);
+
+  expect(seenBodies).toEqual([{ verdict: null, comment: null }]);
+  expect(useChatStore.getState().feedback.a1).toBeUndefined();
+  expect("a1" in useChatStore.getState().feedback).toBe(false);
+});
+
+test("submitFeedback(mid, null) rolls back to the previous entry on failure", async () => {
+  server.use(
+    http.post("/api/messages/:mid/feedback", () => new HttpResponse(null, { status: 204 })),
+  );
+  await useChatStore.getState().submitFeedback("a1", "down", "wrong numbers");
+  expect(useChatStore.getState().feedback.a1).toEqual({
+    verdict: "down",
+    comment: "wrong numbers",
+  });
+
+  server.use(
+    http.post("/api/messages/:mid/feedback", () => new HttpResponse(null, { status: 500 })),
+  );
+  await expect(useChatStore.getState().submitFeedback("a1", null)).rejects.toThrow();
+
+  expect(useChatStore.getState().feedback.a1).toEqual({
+    verdict: "down",
+    comment: "wrong numbers",
+  });
+});
+
+test("submitFeedback(mid, null) on a message with no prior entry rolls back to absent on failure", async () => {
+  server.use(
+    http.post("/api/messages/:mid/feedback", () => new HttpResponse(null, { status: 500 })),
+  );
+
+  await expect(useChatStore.getState().submitFeedback("never-voted", null)).rejects.toThrow();
+
+  expect(useChatStore.getState().feedback["never-voted"]).toBeUndefined();
+});
+
 // task-2-brief's "422 quiet no-op" item, proven at the store layer (the
 // UI-layer half -- thumbs never rendering on the opener at all -- is proven
 // in ChatScreen.test.tsx; "pin both layers" per the brief).

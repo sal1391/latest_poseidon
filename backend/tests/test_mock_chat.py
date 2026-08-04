@@ -141,6 +141,44 @@ async def test_feedback_mid_stream_is_stored_not_404(app):
 
 
 @pytest.mark.anyio
+async def test_feedback_null_verdict_clears_a_recorded_vote_then_get_404s(app):
+    """Un-vote follow-up to Phase 12: same wire contract as live_chat.py's
+    real backend (module docstring's own "keep the two FeedbackBody/upsert_
+    feedback shapes in sync") -- verdict=null removes the in-memory
+    `_feedback[mid]` entry rather than leaving a stale `{"verdict": None}`,
+    so GET's existing 404-if-absent behavior stays consistent."""
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
+        await read_sse(client, cid, "hello")
+        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["items"]
+        mid = msgs[-1]["id"]
+        r = await client.post(f"/api/messages/{mid}/feedback", json={"verdict": "down"})
+        assert r.status_code == 204
+        assert (await client.get(f"/api/messages/{mid}/feedback")).status_code == 200
+
+        r = await client.post(f"/api/messages/{mid}/feedback", json={"verdict": None})
+        assert r.status_code == 204
+
+        assert (await client.get(f"/api/messages/{mid}/feedback")).status_code == 404
+
+
+@pytest.mark.anyio
+async def test_feedback_null_verdict_on_a_never_voted_message_is_a_noop_204(app):
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
+        await read_sse(client, cid, "hello")
+        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["items"]
+        mid = msgs[-1]["id"]
+
+        r = await client.post(f"/api/messages/{mid}/feedback", json={"verdict": None})
+
+        assert r.status_code == 204
+        assert (await client.get(f"/api/messages/{mid}/feedback")).status_code == 404
+
+
+@pytest.mark.anyio
 async def test_list_conversations_newest_first(app):
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
