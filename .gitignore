@@ -1,12 +1,13 @@
 # Credentials / secrets
 .env
+backend/.env
 
 # Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 .env
-
+backend/.env
 # IDE
 .vscode/
 .idea/

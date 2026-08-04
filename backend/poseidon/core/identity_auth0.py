@@ -182,6 +182,7 @@ class Auth0Provider:
                 algorithms=["RS256"],
                 audience=self._audience,
                 issuer=self._issuer,
+                leeway=60,
             )
         except jwt.ExpiredSignatureError:
             raise AuthError(401, "token expired", "the token's exp claim is in the past") from None
