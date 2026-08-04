@@ -6,6 +6,21 @@ import { Sidebar } from "../conversations/Sidebar";
 import { isTurnBackedAssistantMessage } from "../feedback/turnBacked";
 import { Composer } from "./Composer";
 
+// Phase 12 Task 4 (a11y carry-list): visually-hidden but screen-reader
+// reachable -- the standard clip-rect pattern, inlined rather than a CSS
+// class since no stylesheet is a sanctioned file for this task.
+const statusRegionStyle = {
+  position: "absolute",
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: "hidden",
+  clip: "rect(0, 0, 0, 0)",
+  whiteSpace: "nowrap",
+  border: 0,
+} as const;
+
 export default function ChatScreen() {
   const activeId = useChatStore((s) => s.activeId);
   const messagesByConv = useChatStore((s) => s.messages);
@@ -47,6 +62,28 @@ export default function ChatScreen() {
 
   const messages = activeId ? (messagesByConv[activeId] ?? []) : [];
   const streaming = activeId ? streamingByConv[activeId] === true : false;
+
+  // Phase 12 Task 4 (a11y carry-list, verbatim): the thread used to carry
+  // `aria-live="polite"` directly, so every streamed token re-announced the
+  // whole growing answer -- see this file's own `.thread` div below, which
+  // no longer does. This status region announces the turn's LIFECYCLE
+  // instead (thinking -> done), derived purely from `streaming`'s own
+  // false->true / true->false edges, so it fires exactly twice per turn
+  // regardless of how many token/tool/part frames land in between. Known,
+  // accepted boundary: switching `activeId` mid-stream can also flip this
+  // boolean (a different conversation's own flag), which is not itself a
+  // turn edge -- out of this task's scope (no reported gap names it).
+  const [turnStatus, setTurnStatus] = useState("");
+  const wasStreamingRef = useRef(false);
+  useEffect(() => {
+    if (streaming && !wasStreamingRef.current) {
+      setTurnStatus("Poseidon is thinking...");
+    } else if (!streaming && wasStreamingRef.current) {
+      setTurnStatus("Poseidon has replied.");
+    }
+    wasStreamingRef.current = streaming;
+  }, [streaming]);
+
   // The opener (the first message of every conversation) carries no linked
   // turn and 422s if feedback is attempted on it -- see turnBacked.ts's own
   // docstring for why this is the safe positional signal to gate on.
@@ -105,7 +142,10 @@ export default function ChatScreen() {
             </button>
           </div>
         ) : null}
-        <div className="thread" aria-live="polite">
+        <div role="status" aria-live="polite" aria-atomic="true" style={statusRegionStyle}>
+          {turnStatus}
+        </div>
+        <div className="thread">
           {messages.map((message) => (
             <article
               key={message.id}

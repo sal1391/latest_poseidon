@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listSkills } from "../../api/client";
 
 interface Skill {
@@ -76,6 +76,51 @@ export interface SkillsPickerProps {
 export function SkillsPicker({ onPick }: SkillsPickerProps) {
   const [open, setOpen] = useState(false);
   const [skills, setSkills] = useState<Skill[]>(FALLBACK_SKILLS);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  // Phase 12 Task 4 (a11y carry-list, verbatim): closing the popover WITHOUT
+  // completing a pick (outside click, Escape) returns focus to the trigger
+  // that opened it, so a keyboard/screen-reader user backing out never loses
+  // their place. A completed PICK is deliberately different: `onPick` below
+  // moves focus into the composer itself (ChatScreen's own `insert`), which
+  // is the more useful place to land once a skill was actually chosen -- so
+  // that path sets `open` false directly, never through this function.
+  const closeAndReturnFocus = useCallback(() => {
+    setOpen(false);
+    triggerRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    // Listens on `mousedown`, and calls `preventDefault()` for an outside
+    // target -- deliberately NOT racing to re-focus the trigger AFTER the
+    // fact. Clicking a non-focusable outside target (e.g. plain page
+    // chrome) carries the browser's OWN default action for that gesture --
+    // moving focus away from whatever currently holds it -- and this is not
+    // merely "done synchronously before listeners finish", so a `.focus()`
+    // call made from ANY listener on this same event, or even queued from
+    // one via a microtask or a `setTimeout(0)` macrotask, still loses the
+    // race and gets clobbered right back to nothing focused. This was
+    // live-verified against a real Chromium build via Playwright, not just
+    // this suite's jsdom (which never reproduced any of it): an
+    // instrumented `HTMLElement.prototype.focus` proved a synchronous call
+    // from inside a listener DOES land (the trigger was still active at the
+    // moment it ran) and is undone regardless. `preventDefault()` on the
+    // mousedown itself is the one thing that works -- it cancels the
+    // browser's blur-on-mousedown-to-non-focusable-target step outright, so
+    // the trigger is simply never blurred in the first place, and the
+    // explicit `.focus()` in `closeAndReturnFocus` above is then just a
+    // (harmless, and for Escape's keyboard-only path, load-bearing) belt.
+    function handleOutsideMouseDown(event: MouseEvent): void {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        event.preventDefault();
+        closeAndReturnFocus();
+      }
+    }
+    document.addEventListener("mousedown", handleOutsideMouseDown);
+    return () => document.removeEventListener("mousedown", handleOutsideMouseDown);
+  }, [open, closeAndReturnFocus]);
 
   async function loadSkills(): Promise<void> {
     try {
@@ -95,14 +140,17 @@ export function SkillsPicker({ onPick }: SkillsPickerProps) {
 
   return (
     <div
+      ref={containerRef}
       className="skills"
       onKeyDown={(event) => {
-        if (event.key === "Escape") setOpen(false);
+        if (event.key === "Escape") closeAndReturnFocus();
       }}
     >
       <button
+        ref={triggerRef}
         type="button"
         className="skills-button"
+        aria-haspopup="true"
         aria-expanded={open}
         onClick={() => {
           const willOpen = !open;

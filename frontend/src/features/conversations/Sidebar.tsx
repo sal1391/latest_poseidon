@@ -10,6 +10,7 @@ export function Sidebar() {
   const newConversation = useChatStore((s) => s.newConversation);
   const openConversation = useChatStore((s) => s.openConversation);
   const loadMoreConversations = useChatStore((s) => s.loadMoreConversations);
+  const loadingMoreConversations = useChatStore((s) => s.loadingMoreConversations);
 
   return (
     <aside className="sidebar">
@@ -46,11 +47,19 @@ export function Sidebar() {
             // this task does no styling pass) with `load-more` as a stable,
             // unstyled hook for tests/future work.
             className="conversation-item load-more"
+            // Phase 12 Task 4 (a11y carry-list): `loadingMoreConversations`
+            // has existed in the store since the P10 in-flight-guard fix but
+            // this control never read it -- disabled (so a second click
+            // during an in-flight load is impossible from the UI, on top of
+            // the store's own guard) and `aria-busy` (so a screen reader
+            // hears that a load is under way, not silence).
+            disabled={loadingMoreConversations}
+            aria-busy={loadingMoreConversations}
             onClick={() => {
               void loadMoreConversations().catch(() => undefined);
             }}
           >
-            Load more
+            {loadingMoreConversations ? "Loading..." : "Load more"}
           </button>
         ) : null}
       </nav>

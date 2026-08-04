@@ -38,6 +38,42 @@ test("renders a load-more control when next_cursor is non-null, and clicking it 
   expect(loadMoreConversations).toHaveBeenCalledTimes(1);
 });
 
+// Phase 12 Task 4 (a11y carry-list, verbatim): `loadingMoreConversations`
+// existed in the store since the P10 in-flight-guard fix (chatStore.ts's own
+// "review finding I-1" comment) but was never read by this component -- the
+// control looked identical whether or not a load was already in flight.
+test("the load-more control is disabled and marked busy while loadingMoreConversations is true", () => {
+  act(() => {
+    useChatStore.setState({
+      conversations: [{ id: "c1", title: "First chat" }],
+      conversationsNextCursor: "opaque-cursor-1",
+      loadingMoreConversations: true,
+    });
+  });
+
+  render(<Sidebar />);
+  const button = screen.getByRole("button", { name: /load/i });
+
+  expect(button).toBeDisabled();
+  expect(button).toHaveAttribute("aria-busy", "true");
+});
+
+test("the load-more control is enabled and not busy outside of a load", () => {
+  act(() => {
+    useChatStore.setState({
+      conversations: [{ id: "c1", title: "First chat" }],
+      conversationsNextCursor: "opaque-cursor-1",
+      loadingMoreConversations: false,
+    });
+  });
+
+  render(<Sidebar />);
+  const button = screen.getByRole("button", { name: /load more/i });
+
+  expect(button).not.toBeDisabled();
+  expect(button).toHaveAttribute("aria-busy", "false");
+});
+
 // Phase 10 Task 4 -- the frontend half of "done -> conversation-title
 // refresh" (poseidon-carryforwards.md's "Phase 6" entry): this drives the
 // REAL `applyEvent` store action (not a stub), so it proves the whole path

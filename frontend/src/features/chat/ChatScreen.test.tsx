@@ -300,6 +300,57 @@ test("a chip is disabled while its conversation's send is in flight", async () =
   expect(screen.getByRole("button", { name: "New customer prospect" })).toBeDisabled();
 });
 
+// Phase 12 Task 4 (a11y carry-list, verbatim): the thread used to carry
+// `aria-live="polite"` directly, so every streamed TOKEN re-announced the
+// whole growing answer to a screen reader. The fix is a dedicated status
+// region that only announces the turn's LIFECYCLE (thinking -> done/error),
+// never its content -- this test proves the status node's text changes
+// EXACTLY twice across a turn with multiple token frames, not once per token.
+test("the status region announces turn lifecycle exactly twice per turn, not per token", async () => {
+  vi.mocked(streamTurn).mockImplementationOnce(
+    async (
+      _cid: string,
+      _text: string,
+      _clientTurnKey: string,
+      onEvent: (e: SseEvent) => void,
+    ) => {
+      const events: SseEvent[] = [
+        { name: "accepted", data: { turn_id: "t2", message_id: "a2", event_seq: 1, turn_index: 1 } },
+        { name: "token", data: { turn_id: "t2", message_id: "a2", event_seq: 2, text: "One " } },
+        { name: "token", data: { turn_id: "t2", message_id: "a2", event_seq: 3, text: "two " } },
+        { name: "token", data: { turn_id: "t2", message_id: "a2", event_seq: 4, text: "three." } },
+        { name: "done", data: { turn_id: "t2", message_id: "a2", event_seq: 5, usage: {}, title: null } },
+      ];
+      events.forEach(onEvent);
+    },
+  );
+
+  render(<ChatScreen />);
+  const input = await screen.findByPlaceholderText(/message poseidon/i);
+  const status = screen.getByRole("status");
+
+  const observed: string[] = [];
+  const observer = new MutationObserver(() => observed.push(status.textContent ?? ""));
+  observer.observe(status, { characterData: true, childList: true, subtree: true });
+
+  await userEvent.type(input, "hello{Enter}");
+  await waitFor(() => expect(screen.getByText(/One two three\./)).toBeInTheDocument());
+
+  observer.disconnect();
+  expect(observed).toEqual(["Poseidon is thinking...", "Poseidon has replied."]);
+});
+
+// The thread itself must NOT carry its own aria-live -- that is the exact
+// anti-pattern the status region above replaces (module docstring above).
+test("the message thread carries no aria-live of its own", async () => {
+  render(<ChatScreen />);
+  await screen.findByText(/Ask about your data/);
+
+  const thread = document.querySelector(".thread");
+  expect(thread).not.toBeNull();
+  expect(thread).not.toHaveAttribute("aria-live");
+});
+
 test("backend-unreachable bootstrap surfaces a retry banner instead of a silent no-op", async () => {
   // Both requests bootstrap can issue (list, then create-if-empty) fail, so the
   // banner has to come from the catch path rather than from a specific request.
