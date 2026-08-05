@@ -40,6 +40,7 @@ HTTP-tests-here split Task 2 established above.
 import os
 import sys
 import threading
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -217,6 +218,31 @@ async def _create_conversation(client: httpx.AsyncClient, *, headers=None) -> st
     from ``alice``."""
     r = await client.post("/api/conversations", headers=headers or {})
     return r.json()["conversation"]["id"]
+
+
+def _dev_user(name: str = "rl") -> str:
+    """A fresh, run-unique ``X-Dev-User`` act-as value -- mirrors
+    ``test_live_chat_sse.py``'s own ``_dev_user`` helper exactly (see that
+    helper's own docstring for the full rationale).
+
+    Final-round fix (2026-08-05): the chat-send rate-limit tests below used
+    to dispatch every turn header-less, landing on the shared, fixed
+    ``dev|local`` default -- 35 + 10 + 2 turns per full pg run, none of it
+    a real user's data, all of it under the one identity Carlos's own
+    browser resolves to. Each of those tests genuinely does not care WHICH
+    sub it uses (rate limiting is keyed by sub, proven independent by
+    ``test_chat_rate_limit_keys_independently_per_act_as_sub`` above), so
+    they now pose as a throwaway ``dev|rl-<hex>``-shaped identity instead,
+    the same convention ``test_live_chat_sse.py``/``test_chat_e2e_scripted.
+    py`` already established for this file's sibling suites.
+    ``test_no_act_as_header_still_uses_the_pinned_disabled_mode_default``
+    is deliberately NOT converted -- its whole purpose is proving the
+    header-less, ``dev|local`` default path."""
+    return f"{name}-{uuid.uuid4().hex[:8]}"
+
+
+def _headers(user: str) -> dict[str, str]:
+    return {"X-Dev-User": user}
 
 
 # ===========================================================================
@@ -761,10 +787,11 @@ async def test_chat_rate_limit_is_off_by_default_in_disabled_mode(pg_database_ur
     writer = RecordingWriter()
     app = _live_app(data_client=FakeDataClient(), writer=writer, database_url=pg_database_url)
     transport = httpx.ASGITransport(app=app)
+    headers = _headers(_dev_user("rl-off"))
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        cid = await _create_conversation(client)
+        cid = await _create_conversation(client, headers=headers)
         for _i in range(35):
-            await _send_turn(client, cid, FLAGSHIP_TEXT)
+            await _send_turn(client, cid, FLAGSHIP_TEXT, headers=headers)
 
     assert len(writer.start_turn_calls) == 35
 
@@ -780,10 +807,11 @@ async def test_chat_rate_limit_zero_means_off_even_when_explicit(pg_database_url
         database_url=pg_database_url,
     )
     transport = httpx.ASGITransport(app=app)
+    headers = _headers(_dev_user("rl-zero"))
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        cid = await _create_conversation(client)
+        cid = await _create_conversation(client, headers=headers)
         for _i in range(10):
-            await _send_turn(client, cid, FLAGSHIP_TEXT)
+            await _send_turn(client, cid, FLAGSHIP_TEXT, headers=headers)
 
     assert len(writer.start_turn_calls) == 10
 
@@ -798,16 +826,21 @@ async def test_chat_rate_limit_blocks_once_the_bucket_is_empty(pg_database_url):
         database_url=pg_database_url,
     )
     transport = httpx.ASGITransport(app=app)
+    headers = _headers(_dev_user("rl-empty"))
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        cid = await _create_conversation(client)
-        await _send_turn(client, cid, FLAGSHIP_TEXT)
-        await _send_turn(client, cid, FLAGSHIP_TEXT)
+        cid = await _create_conversation(client, headers=headers)
+        await _send_turn(client, cid, FLAGSHIP_TEXT, headers=headers)
+        await _send_turn(client, cid, FLAGSHIP_TEXT, headers=headers)
         # The THIRD call never reaches the route body at all -- require_sales/
         # rate_limit_chat_send are FastAPI dependencies, resolved before the
         # handler runs, so the empty bucket 429s here regardless of whether
         # "conv-rl-c" names a real conversation (it does not, on purpose --
         # proving the block happens before any conversation lookup).
-        r = await client.post("/api/conversations/conv-rl-c/messages", json={"text": FLAGSHIP_TEXT})
+        r = await client.post(
+            "/api/conversations/conv-rl-c/messages",
+            json={"text": FLAGSHIP_TEXT},
+            headers=headers,
+        )
 
     assert r.status_code == 429
     assert r.json() == {
