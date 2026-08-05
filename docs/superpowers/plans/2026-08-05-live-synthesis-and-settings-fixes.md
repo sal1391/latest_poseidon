@@ -28,9 +28,11 @@
 
 **Pre-final wave (2026-08-05, controller-ruled carries from Task A's review):** (1) `config/prompts/router/system.md` — soften ONLY rule 3's closing "listing them all is not [fine]" clause to guidance ("prefer summarizing or highlighting over re-listing every row") — the live evidence showed grounded-but-complete prose restatements, which are harmless; the hard NEVER on markdown/pipe tables stays. Bump the version marker `v2`→`v3` (honest provenance for a content change) and update every pin the bump/clause touches (`test_llm_prompts.py`, `test_chat_e2e_scripted.py`, any grounding-section pin in `test_llm_loop.py`). (2) `docs/architecture/03-llm-routing.md` — ONLY the §(around line 109-110) "bulk rows/artifacts are stripped from LLM-visible tool results (digest + reference only)" sentence, updated to state the reversed rule (capped real rows in the toolResult content since this fix; digest-only was the pre-fix design). Nothing else in either file.
 
+**Final-round amendment (2026-08-05, from the final review's two findings):** (1) `backend/tests/test_api_auth.py` — ONLY the three header-less rate-limit tests (`test_chat_rate_limit_is_off_by_default_in_disabled_mode`, `..._zero_means_off_even_when_explicit`, `..._blocks_once_the_bucket_is_empty`, around lines 755/774/793) converted to run-unique `X-Dev-User` identities per Task B's established pattern — the final review proved they create 35/10/2-user-turn `dev|local` conversations the live worker would genuinely distill (the earlier residue-acceptance ruling rested on a false 1-turn premise, now corrected in the ledger); the identity-pin test stays untouched (structurally exempt). (2) `config/prompts/router/system.md` — ONLY drop `, or a row-by-row restatement of the result` from rule 3's NEVER list (the closing guidance clause already covers it; the hard NEVER stays on markdown/pipe tables), version `v3`→`v4`, with whatever pins the bump touches (`test_llm_prompts.py`, `test_chat_e2e_scripted.py`).
+
 ### Final review (opus)
 
-Whole fix range, both tasks + the pre-final wave; verifies Task A's live evidence is genuine and Task B's demolition left no dead wiring; triages any new minors and the ledger's deferred/ruled items.
+Whole fix range, both tasks + the pre-final wave; verifies Task A's live evidence is genuine and Task B's demolition left no dead wiring; triages any new minors and the ledger's deferred/ruled items. Verdict 2026-08-05: With fixes (the two findings above); v2-era live evidence stands under v3, no fresh live check warranted.
 
 ## Gate (Carlos)
 
