@@ -124,7 +124,14 @@ anyio.to_thread for the off-loop JWKS resolve, Alembic migration 0009.
   `backend/tests/test_identity_providers.py` (Task 1); `backend/tests/test_api_auth.py`
   (Task 1 middleware off-loop test; Task 2 gating + limiter tests); `backend/tests/
   test_memory_worker.py` (Task 3: rewrite of the claim-privilege pin test + probe coverage);
-  `backend/tests/test_migrations.py` (Task 3: extend to 0009); `backend/.env.example`
+  `backend/tests/test_migrations.py` (Task 3: extend to 0009); **amended (2026-08-05,
+  controller-ratified sanction-line gap, the established P11/P13 resolution pattern —
+  Task 3's implementer disclosed rather than silently expanding):**
+  `backend/tests/test_personalization_stores.py` (Task 3, ONLY the policy-count proxy
+  assertion — its "exactly one policy per table" check was a stricter proxy for the real
+  "no admin policy" rule and is tripped by 0009's own plan-mandated worker policy; it becomes
+  a per-table policy allow-list plus a direct "no policy names poseidon_admin" assertion,
+  nothing else in the file); `backend/.env.example`
   (Tasks 5–6: `STATIC_DIR` + the EC2 rows); `docs/architecture/00-overview.md`,
   `docs/architecture/07-infrastructure.md`, `docs/architecture/08-build-phases.md` (Task 6,
   verbatim text below). **Amended (2026-08-05, Carlos's plan review — F2 resolved as option
