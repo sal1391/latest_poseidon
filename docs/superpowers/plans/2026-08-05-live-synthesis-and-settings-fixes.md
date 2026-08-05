@@ -26,9 +26,11 @@
 
 **Task B amendment (2026-08-05, controller, same Carlos-approved pattern as the P13 sanction-line gaps):** Task B's own full-suite F2 proof exposed a second `dev|local` polluter outside its sanctioned files: `backend/tests/test_chat_e2e_scripted.py` (shares the `read_sse` helper; a full pg run still adds +8 `memory_outbox` rows for `dev|local`, that file a confirmed contributor). Sanctioned additions: `backend/tests/test_chat_e2e_scripted.py` (the same run-unique `X-Dev-User` conversion + sweep — and after it, re-run the full-suite before/after proof and chase the `memory_outbox` delta to ZERO; if any residue traces to yet another file, disclose it rather than fix it); `docs/architecture/01-frontend.md` §11 (ONLY the now-stale "version restore" phrase). The implementer's disclosed minimal edit to `frontend/src/features/auth/UserMenu.test.tsx` (dropping a `loadVersions` stub that no longer compiles after F6's store change) is ratified in scope — compile-necessity, no behavior.
 
+**Pre-final wave (2026-08-05, controller-ruled carries from Task A's review):** (1) `config/prompts/router/system.md` — soften ONLY rule 3's closing "listing them all is not [fine]" clause to guidance ("prefer summarizing or highlighting over re-listing every row") — the live evidence showed grounded-but-complete prose restatements, which are harmless; the hard NEVER on markdown/pipe tables stays. Bump the version marker `v2`→`v3` (honest provenance for a content change) and update every pin the bump/clause touches (`test_llm_prompts.py`, `test_chat_e2e_scripted.py`, any grounding-section pin in `test_llm_loop.py`). (2) `docs/architecture/03-llm-routing.md` — ONLY the §(around line 109-110) "bulk rows/artifacts are stripped from LLM-visible tool results (digest + reference only)" sentence, updated to state the reversed rule (capped real rows in the toolResult content since this fix; digest-only was the pre-fix design). Nothing else in either file.
+
 ### Final review (opus)
 
-Whole fix range, both tasks; verifies Task A's live evidence is genuine and Task B's demolition left no dead wiring; triages any new minors.
+Whole fix range, both tasks + the pre-final wave; verifies Task A's live evidence is genuine and Task B's demolition left no dead wiring; triages any new minors and the ledger's deferred/ruled items.
 
 ## Gate (Carlos)
 
