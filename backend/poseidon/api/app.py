@@ -1,3 +1,4 @@
+import anyio.to_thread
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -324,7 +325,18 @@ def _install_identity_middleware(app: FastAPI) -> None:
             return await call_next(request)
         headers = {name.lower(): value for name, value in request.headers.items()}
         try:
-            request.state.user = provider.resolve(headers)
+            # I-5 (phase 9 final review, fixed in phase 14 Task 1): every
+            # provider's resolve() is SYNC (core/identity.py's protocol),
+            # and Auth0Provider's can perform blocking httpx I/O against
+            # the tenant's JWKS endpoint -- reachable PRE-AUTH, on every
+            # request, by an uncredentialed caller. Called inline it stalls
+            # the one event loop thread this process serves every route
+            # from. Off-loaded uniformly for ALL modes: disabled/spcs
+            # resolves are dict lookups where the pooled worker-thread hop
+            # is noise, while branching per mode would be a second code
+            # path to get wrong. Containment below is unaffected --
+            # run_sync re-raises the worker's exception as-is.
+            request.state.user = await anyio.to_thread.run_sync(provider.resolve, headers)
         except AuthError as exc:
             request.state.auth_error = exc
         except Exception as exc:  # noqa: BLE001 - I-1: contain ANY provider failure, never a bare 500

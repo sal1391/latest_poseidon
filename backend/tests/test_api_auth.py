@@ -35,6 +35,13 @@ for a non-allowlisted user. Provider-level cases (allowlist membership,
 casefold, malformed-header-401) live in ``test_identity_providers.py``'s
 own ``SpcsIngressProvider`` matrix instead, the same provider-tests-there/
 HTTP-tests-here split Task 2 established above.
+
+Phase 14 Task 1 adds, at the very bottom: the off-the-event-loop proof for
+the identity middleware's own ``provider.resolve`` call. It belongs here
+rather than in ``test_identity_providers.py`` for exactly the reason this
+file's split already states -- WHICH thread ``resolve`` runs on is a
+property of the middleware, not of any provider, and only a real request
+through the real middleware can show it.
 """
 
 import os
@@ -54,6 +61,7 @@ from poseidon.api import auth as auth_module
 from poseidon.api.auth import current_user
 from poseidon.core.config import Settings
 from poseidon.core.data.synthetic_client import normalize_dsn
+from poseidon.core.identity import DISABLED_DEFAULT_USER
 from poseidon.core.identity_auth0 import ROLES_CLAIM, Auth0Provider
 from tests.test_chat_orchestrator import FakeDataClient, RecordingWriter
 from tests.test_identity_providers import (
@@ -1476,6 +1484,75 @@ def test_every_api_route_is_either_api_me_or_guarded_by_require_sales(build_app)
         "route(s) under /api/* are neither GET /api/me nor guarded by "
         f"require_sales: {unclassified}"
     )
+
+
+# ===========================================================================
+# Phase 14 Task 1 (the phase 9 final review's I-5 carryforward): the
+# identity middleware resolves OFF the event loop thread.
+#
+# Every provider's resolve() is a SYNC method (core/identity.py's own
+# protocol -- providers never import FastAPI, and never became async), and
+# Auth0Provider's own can perform blocking httpx I/O against the tenant's
+# JWKS endpoint. Awaited inline from an async middleware, that call stalls
+# the ONE event loop thread this process serves every route from -- and it
+# is reachable pre-auth, by an uncredentialed caller, on every request.
+# The provider-side half of the fix (bounding those fetches) is proven in
+# test_identity_providers.py; this is the other half.
+# ===========================================================================
+
+
+class _ThreadRecordingProvider:
+    """Records the thread each ``resolve`` call actually runs on.
+
+    A hand-written double rather than a monkeypatched real provider: the
+    ``IdentityProvider`` protocol is structural (one ``resolve(headers)``
+    method, no base class to inherit -- see ``core/identity.py``), so the
+    smallest honest stand-in is a plain object with that one method, and
+    the question under test ("which thread ran it") is the same for every
+    mode. Returns the same fixed identity ``DisabledProvider`` would, so
+    the request it serves still completes normally and the assertion below
+    can also prove the RETURN value crossed back out of the worker thread.
+    """
+
+    def __init__(self) -> None:
+        self.resolve_threads: list[int] = []
+
+    def resolve(self, headers):
+        self.resolve_threads.append(threading.get_ident())
+        return DISABLED_DEFAULT_USER
+
+
+@pytest.mark.anyio
+async def test_identity_resolve_runs_off_the_event_loop_thread():
+    """The middleware must hand ``provider.resolve`` to a worker thread.
+
+    ``loop_thread`` is read in the test coroutine's own body, which IS the
+    event loop thread (``httpx.ASGITransport`` drives the app in-process,
+    on this same loop -- no server, no second thread of its own), so a
+    recorded ident that differs from it can only mean the call genuinely
+    crossed ``anyio.to_thread``. Asserting inequality rather than a
+    specific ident is the point: which pooled worker served it is an
+    implementation detail of anyio's own thread pool, "not the loop
+    thread" is the contract.
+
+    The 200 and the echoed sub are not incidental -- they prove the hop is
+    transparent in both directions: headers in, the resolved UserContext
+    back out to ``request.state.user``, with no behavior change to the
+    route that reads it.
+    """
+    provider = _ThreadRecordingProvider()
+    app = _mock_app()
+    app.state.identity_provider = provider
+    loop_thread = threading.get_ident()
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.get("/api/me")
+
+    assert r.status_code == 200
+    assert r.json()["sub"] == "dev|local"
+    assert len(provider.resolve_threads) == 1
+    assert provider.resolve_threads[0] != loop_thread
 
 
 # ===========================================================================
