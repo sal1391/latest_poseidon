@@ -19,6 +19,18 @@ PKCE), open devtools' Network tab, trigger any API call (e.g. send a chat messag
 export TOKEN=<REPLACE: bearer token copied from the browser session above>
 ```
 
+A couple of steps below need a small host-side JSON/UUID helper (parsing a `curl` response,
+generating a `client_turn_key`) -- pure standard-library one-liners, unrelated to the app's own
+code, so unlike `deploy-ec2.md`'s `docker compose exec backend python ...` calls (which need the
+container's `poseidon` package) these run directly on whatever machine you are running this
+checklist from. `python3` is not guaranteed to resolve on a typical Windows install (only
+`python`/`py` usually do); this resolves once, up front, to whichever name is actually on `PATH`:
+
+```bash
+PY=python3
+command -v python3 >/dev/null 2>&1 || PY=python
+```
+
 ---
 
 ## 1. Health endpoints
@@ -112,8 +124,8 @@ buffering rather than just checking a final status code.
 
 ```bash
 CONV_ID=$(curl -s -X POST "https://$TARGET_DOMAIN/api/conversations" \
-  -H "Authorization: Bearer $TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-CTK=$(python3 -c "import uuid; print(uuid.uuid4())")
+  -H "Authorization: Bearer $TOKEN" | "$PY" -c "import sys,json; print(json.load(sys.stdin)['id'])")
+CTK=$("$PY" -c "import uuid; print(uuid.uuid4())")
 
 curl -N -s "https://$TARGET_DOMAIN/api/conversations/$CONV_ID/messages" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
@@ -230,10 +242,10 @@ done
 
 ```bash
 CONV_ID=$(curl -s -X POST "https://$TARGET_DOMAIN/api/conversations" \
-  -H "Authorization: Bearer $TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+  -H "Authorization: Bearer $TOKEN" | "$PY" -c "import sys,json; print(json.load(sys.stdin)['id'])")
 
 for i in $(seq 1 32); do
-  CTK=$(python3 -c "import uuid; print(uuid.uuid4())")
+  CTK=$("$PY" -c "import uuid; print(uuid.uuid4())")
   code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
     "https://$TARGET_DOMAIN/api/conversations/$CONV_ID/messages" \
     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \

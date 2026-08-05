@@ -28,6 +28,20 @@
 
 set -euo pipefail
 
+# Git Bash (MSYS) on Windows rewrites any argument that LOOKS like an
+# absolute POSIX path -- a leading "/", or one embedded inside a larger
+# string -- into a Windows path before handing it to the native aws.exe.
+# This script hits that class three times: the SSM parameter name below
+# (--names /aws/service/...), "/dev/xvda" inside the block-device-mappings
+# JSON, and the file://<tmp-userdata-path> URI. The rewrite corrupts the
+# argument silently rather than failing loudly, which is worse than an
+# error -- MSYS_NO_PATHCONV=1 disables it. A no-op (unset, ignored) on a
+# real Linux shell, so this costs nothing there. Applied to all six
+# infra/aws/*.sh scripts uniformly (see this comment) even though only this
+# one has a leading-slash argument today, so a later edit to any of them
+# does not have to rediscover the same bug.
+export MSYS_NO_PATHCONV=1
+
 REGION="${AWS_REGION:-us-east-1}"
 DRY_RUN="${DRY_RUN:-0}"
 if [[ "${1:-}" == "--dry-run" ]]; then

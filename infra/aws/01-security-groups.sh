@@ -27,6 +27,13 @@
 
 set -euo pipefail
 
+# Git Bash (MSYS) on Windows can rewrite a leading-slash argument into a
+# Windows path before it reaches aws.exe -- see 05-ec2.sh's own comment for
+# the full story and the three places it actually bites there. No-op on a
+# real Linux shell; applied here too so an edit adding such an argument
+# later does not have to rediscover the bug.
+export MSYS_NO_PATHCONV=1
+
 REGION="${AWS_REGION:-us-east-1}"
 EC2_SG_NAME="${EC2_SG_NAME:-poseidon-ec2-sg}"
 RDS_SG_NAME="${RDS_SG_NAME:-poseidon-rds-sg}"

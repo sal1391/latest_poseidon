@@ -1,10 +1,11 @@
-# 07 — Infrastructure: Local-First, Then SPCS (Primary) and EC2 (Secondary)
+# 07 — Infrastructure: Local-First, Then EC2 (First-Deployed) and SPCS (Corporate Primary)
 
 Principle: one architecture, one container image, one environment contract, three habitats.
 Everything is developed and validated locally with docker-compose, then deployed unchanged to
-**Snowpark Container Services (SPCS) — the primary target, following the proven in-house
-pattern** — with **EC2 as the secondary/alternative target**. Only configuration differs
-(decision D8, revised).
+**EC2 first** -- a public, Auth0-gated instance on proven AWS footing, brought up before the
+corporate-platform work -- and then to **Snowpark Container Services (SPCS), the corporate
+primary target**, following the proven in-house pattern. Only configuration differs (decision
+D8, revised 2026-08-05).
 
 ## 1. Local development topology
 
@@ -56,7 +57,7 @@ same image, so the corporate deployment path stays compatible by construction.
 | Identity default | `spcs_ingress` (D22) | `auth0` |
 | Outbound calls | External Access Integration (§4) | security-group egress |
 
-## 4. SPCS deployment (primary)
+## 4. SPCS deployment (corporate primary)
 
 Mirrors the wfs_work_structure pattern (container-agent-app / table-chatbot archetypes) with
 Poseidon's service shape:
@@ -140,7 +141,7 @@ Decision D32: the in-service Postgres and MinIO get scheduled logical backups sh
 a rehearsed restore, and stated RPO/RTO — a mounted volume protects against container restarts and
 nothing else.
 
-## 5. EC2 deployment (secondary)
+## 5. EC2 deployment (first-deployed)
 
 ```mermaid
 flowchart LR

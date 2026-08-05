@@ -28,7 +28,11 @@ marked `<REPLACE: why>` rather than left as an unexplained placeholder.
 All six live in `infra/aws/`, are idempotent (check-before-create; safe to re-run), and accept
 `--dry-run` (native EC2 `--dry-run` where the CLI supports it, a print-only check-mode where it
 does not -- each script's own header says which). None hardcodes a credential or an
-account-specific value; every account-specific input is an environment variable.
+account-specific value; every account-specific input is an environment variable. Each script
+also sets `MSYS_NO_PATHCONV=1` itself (a no-op outside Git Bash on Windows), so a leading-slash
+argument -- `05-ec2.sh`'s SSM parameter lookup is the one that actually needs it today -- is not
+silently rewritten into a Windows path before `aws.exe` ever sees it; nothing extra to set by
+hand here.
 
 ```bash
 cd infra/aws
