@@ -118,7 +118,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, Connection, Engine
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import ArgumentError, DBAPIError
 from sqlalchemy.pool import NullPool
 
 from poseidon.core.obs import get_logger
@@ -278,8 +278,29 @@ def build_engine(database_url: str) -> Engine:
     ``pool_pre_ping``, ...), there is exactly one call site to change --
     the same "the hook ships, no policy yet" shape doc 05 section 4 already
     uses for the ontology's row-scope hook (decision D16, YAGNI on policy,
-    not on mechanism)."""
-    return create_engine(database_url)
+    not on mechanism).
+
+    **Phase 14 Task 4 -- a malformed value must name itself (P10 M3).** A
+    ``DATABASE_URL`` that is not a parseable SQLAlchemy URL at all (an
+    operator paste of a bare hostname, a missing ``://``, ...) makes
+    ``create_engine`` raise ``sqlalchemy.exc.ArgumentError("Could not parse
+    SQLAlchemy URL from given URL string")`` -- RED-probed directly against
+    this exact call (``test_architecture_fitness.py``'s own probe, run
+    before this wrap existed): the message names neither the environment
+    variable at fault nor what a valid value looks like, so an operator's
+    first signal is a generic parser complaint two layers removed from the
+    ``.env`` line they just edited. Re-raised here with both, the same
+    "name the variable and the fix" discipline :func:`assert_boot_
+    privileges` above already applies to privilege misconfiguration.
+    """
+    try:
+        return create_engine(database_url)
+    except ArgumentError as exc:
+        raise ArgumentError(
+            f"DATABASE_URL is not a valid database connection string ({exc}). "
+            "Expected a SQLAlchemy URL of the form "
+            "postgresql+psycopg://<user>:<password>@<host>:<port>/<database>."
+        ) from exc
 
 
 @contextmanager
