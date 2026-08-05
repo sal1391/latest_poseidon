@@ -12,10 +12,11 @@ construction time (see each module's own docstring).
 
 from .memory import MemoryStore, MemoryTooLarge, MemoryValidationError, UserMemory
 from .outbox import ConversationOutbox, OutboxStore
-from .profile import ProfileStore, UserProfile
+from .profile import InstructionTooLarge, ProfileStore, UserProfile
 
 __all__ = [
     "ConversationOutbox",
+    "InstructionTooLarge",
     "MemoryStore",
     "MemoryTooLarge",
     "MemoryValidationError",

@@ -132,6 +132,19 @@ would be invisible to every cost report. Neither write can break the job:
 ``RunLogWriter``'s never-raises contract already guarantees that, and this
 module leans on it rather than re-implementing it.
 
+The dividing line for whether an ``llm_calls`` row is written at all is
+"did the transport complete", never "was the answer usable" (final
+whole-phase review, finding I-4). A provider that RAISES spent nothing and
+gets no row; a provider that ANSWERS spent real tokens and gets one, with
+the real counts -- ``status='error'`` when :func:`_parse_entries` then
+rejects that answer, ``status='ok'`` when it does not (including when
+``write_version`` later refuses the entries the answer produced, which is a
+verdict on well-formed content, not on the call). The parse-failure path
+matters most precisely because it is the most expensive repeating one: a
+conversation whose transcript reliably provokes a non-JSON answer burns
+``memory_max_attempts`` calls per idle window and is re-armed by the
+conversation's every later turn.
+
 Usage::
 
     DATABASE_URL=postgresql+psycopg://poseidon:poseidon@localhost:5432/poseidon \\
@@ -470,16 +483,24 @@ def _distill(
     prompts_dir,
     transcript: str,
     existing: list[dict],
-) -> tuple[LLMResponse, list[dict], str, str]:
-    """One model call: render the prompt, invoke the ``memory`` role, parse
-    the answer. Returns ``(response, entries, version, hash)`` -- the last
-    two being the prompt's own provenance for the ``llm_calls`` row.
+) -> tuple[LLMResponse, str, str]:
+    """One model call: render the prompt, invoke the ``memory`` role.
+    Returns ``(response, version, hash)`` -- the last two being the
+    prompt's own provenance for the ``llm_calls`` row.
 
-    Raises whatever the provider raised (a transport failure) or
-    :class:`DistillationError` (an unusable answer); both are failures the
-    caller records against ``attempts`` identically, since from the outbox
-    row's point of view they are the same thing: this attempt produced no
-    memory.
+    Raises whatever the provider raised (a transport failure), which the
+    caller records against ``attempts`` like any other "this attempt
+    produced no memory" outcome.
+
+    **Deliberately does NOT parse the answer** (final whole-phase review,
+    finding I-4). It used to, and the raise on an unusable answer unwound
+    past this function's own return, so :func:`_process_one`'s ``response``
+    stayed ``None`` and the ``llm_calls`` row for a call that had already
+    completed -- and already cost real money -- was never written at all.
+    Parsing now happens in :func:`_process_one`, AFTER that row is
+    accounted for; this function's contract is exactly "everything up to
+    and including the transport", so that whatever it returns is by
+    construction a call whose spend is known.
     """
     system = registry.render(
         DISTILL_PROMPT,
@@ -488,10 +509,8 @@ def _distill(
     )
     messages = [{"role": "user", "content": [{"text": _DISTILL_REQUEST}]}]
     response = role_client.invoke(MEMORY_ROLE, system=system, messages=messages)
-    entries = _parse_entries(response.text)
     return (
         response,
-        entries,
         prompt_version(prompts_dir, DISTILL_PROMPT),
         prompt_hash(system),
     )
@@ -607,7 +626,7 @@ def _process_one(
     # can never land.
     try:
         with span(f"llm:{MEMORY_ROLE}", conversation_id=row.conversation_id):
-            response, entries, version, digest = _distill(
+            response, version, digest = _distill(
                 settings=settings,
                 role_client=role_client,
                 registry=registry,
@@ -625,21 +644,42 @@ def _process_one(
         # orchestrator.py's own `_append_records` verbatim: doc 06 section 1
         # reserves that value for exactly this case.
         config = role_client.resolve(MEMORY_ROLE)
-        if turn_run_id is not None:
-            writer.append_llm_call(
-                turn_run_id=turn_run_id,
-                user_sub=row.user_sub,
-                seq=1,
-                provider=("stub" if settings.llm_mode == "stub" else config.provider),
-                model_id=config.model,
-                role=MEMORY_ROLE,
-                prompt_version=version,
-                prompt_hash=digest,
-                input_tokens=response.input_tokens,
-                output_tokens=response.output_tokens,
-                latency_ms=latency_ms,
-                status="ok",
-            )
+        # Parsing sits INSIDE a try/finally whose finally writes the
+        # llm_calls row, so the row lands on BOTH outcomes (final
+        # whole-phase review, finding I-4). It used to happen inside
+        # _distill, above the accounting entirely: a DistillationError
+        # therefore unwound past this block with `response` still None, so
+        # the call's spend was never recorded anywhere -- and cost_rollup.py
+        # reads llm_calls and nothing else. `call_status` starts at "error"
+        # and is promoted only once the parse actually returns, so any
+        # escape route (including one a future edit adds) is accounted for
+        # honestly rather than silently as "ok".
+        #
+        # "error" here means precisely "the transport succeeded, the answer
+        # did not": a call whose answer parses stays "ok" even if
+        # write_version later rejects the entries it produced (that
+        # rejection is about the CONTENT of a perfectly well-formed answer,
+        # and is already covered by its own regression test).
+        call_status = "error"
+        try:
+            entries = _parse_entries(response.text)
+            call_status = "ok"
+        finally:
+            if turn_run_id is not None:
+                writer.append_llm_call(
+                    turn_run_id=turn_run_id,
+                    user_sub=row.user_sub,
+                    seq=1,
+                    provider=("stub" if settings.llm_mode == "stub" else config.provider),
+                    model_id=config.model,
+                    role=MEMORY_ROLE,
+                    prompt_version=version,
+                    prompt_hash=digest,
+                    input_tokens=response.input_tokens,
+                    output_tokens=response.output_tokens,
+                    latency_ms=latency_ms,
+                    status=call_status,
+                )
         if entries:
             written = memory.write_version(
                 _stamp_entries(

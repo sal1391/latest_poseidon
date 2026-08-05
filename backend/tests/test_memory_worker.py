@@ -307,8 +307,9 @@ def _turn_runs(pg_engine, user_sub: str):
     with pg_engine.connect() as conn:
         return conn.execute(
             text(
-                "SELECT id, kind, status, conversation_id, question, answer_summary, error "
-                "FROM turn_run WHERE user_sub = :u ORDER BY created_at"
+                "SELECT id, kind, status, conversation_id, question, answer_summary, error, "
+                "input_tokens, output_tokens FROM turn_run WHERE user_sub = :u "
+                "ORDER BY created_at"
             ),
             {"u": user_sub},
         ).all()
@@ -663,6 +664,19 @@ def test_a_failed_distillation_increments_attempts_and_leaves_the_row_pending(
 def test_a_malformed_distiller_answer_is_a_failure_not_a_silent_success(
     pg_engine, worker_settings
 ):
+    """Final whole-phase review, finding I-4 (overturning ledger minor
+    T4-M2): the transport SUCCEEDED here -- a real Sonnet call, real tokens,
+    real money -- and only the parse of what it returned failed. Parsing
+    used to happen inside ``_distill``, so its raise unwound past the
+    ``append_llm_call`` below it and ``response`` stayed ``None``: no
+    ``llm_calls`` row at all (``scripts/cost_rollup.py`` rolls spend up from
+    that table and nothing else, per its own docstring) and a ``turn_run``
+    finalized with 0/0 tokens. That made the phase's single most expensive
+    repeating failure path -- a conversation whose transcript reliably
+    provokes a non-JSON answer burns ``memory_max_attempts`` calls per idle
+    window, re-armed by every new turn -- completely invisible to every cost
+    report. The attempts-ladder half of this test is the pre-existing
+    behavior and must not change."""
     settings = worker_settings(memory_max_attempts=5)
     user_sub = _fresh_user_sub()
     cid = _create_conversation(pg_engine, user_sub)
@@ -678,6 +692,43 @@ def test_a_malformed_distiller_answer_is_a_failure_not_a_silent_success(
     assert row.status == "pending"
     assert row.attempts == 1
     assert _memory_versions(pg_engine, user_sub) == []
+    # The spend is recorded, with the REAL token counts the provider
+    # reported -- and as status="error", distinguishing it from the
+    # write_version-rejection path (which parses fine and stays "ok").
+    calls = _llm_calls(pg_engine, user_sub)
+    assert len(calls) == 1, "a transport-succeeded call must land an llm_calls row"
+    assert calls[0].role == "memory"
+    assert calls[0].status == "error"
+    assert (calls[0].input_tokens, calls[0].output_tokens) == (11, 7)
+    assert calls[0].prompt_version == "v1"
+    assert calls[0].prompt_hash
+    # The parent turn_run carries the same real counts, not 0/0.
+    runs = _turn_runs(pg_engine, user_sub)
+    assert [run.status for run in runs] == ["error"]
+    assert (runs[0].input_tokens, runs[0].output_tokens) == (11, 7)
+
+
+def test_a_provider_transport_failure_records_no_llm_calls_row(pg_engine, worker_settings):
+    """The other side of finding I-4's boundary, so the fix above cannot be
+    over-applied: when the provider itself raises, no call completed and no
+    tokens were spent, so there is nothing to account for -- ``llm_calls``
+    must stay empty and the ``turn_run`` must genuinely report 0/0. Only the
+    transport-succeeded/parse-failed path gains a row."""
+    settings = worker_settings(memory_max_attempts=5)
+    user_sub = _fresh_user_sub()
+    cid = _create_conversation(pg_engine, user_sub)
+    _seed_outbox(pg_engine, user_sub, cid, minutes_ago=_IDLE_MINUTES + 5)
+
+    memory_worker.run_once(
+        pg_engine,
+        settings,
+        _role_client(settings, _ScriptedDistiller([RuntimeError("provider exploded")])),
+    )
+
+    assert _llm_calls(pg_engine, user_sub) == []
+    runs = _turn_runs(pg_engine, user_sub)
+    assert [run.status for run in runs] == ["error"]
+    assert (runs[0].input_tokens, runs[0].output_tokens) == (0, 0)
 
 
 @pytest.mark.parametrize(

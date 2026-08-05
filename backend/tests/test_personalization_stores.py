@@ -37,7 +37,11 @@ from poseidon.core.data.synthetic_client import normalize_dsn
 from poseidon.core.db import rls_transaction
 from poseidon.core.personalization.memory import MemoryStore, MemoryTooLarge, MemoryValidationError
 from poseidon.core.personalization.outbox import OutboxStore
-from poseidon.core.personalization.profile import ProfileStore
+from poseidon.core.personalization.profile import (
+    INSTRUCTION_MAX_CHARS,
+    InstructionTooLarge,
+    ProfileStore,
+)
 from poseidon.core.util.uuid7 import uuid7
 
 pytestmark = pytest.mark.pg
@@ -353,6 +357,60 @@ def test_two_users_profiles_never_leak_into_each_others_get(pg_engine):
     assert store.for_user(sub_b).get()["system_instruction"] == "b's instruction"
 
 
+# Final whole-phase review, finding I-2: the memory document is capped at
+# exactly one point (``UserMemory.write_version``, MemoryTooLarge -> 422),
+# but the instruction -- the half a user TYPES, injected into every router
+# and synthesis prompt on every subsequent turn -- had no cap anywhere, in
+# the route body model or in this store. A single oversized PUT therefore
+# broke that user's every later turn, permanently, with no way back except
+# another PUT. Capped here rather than in ``api/me.py``'s request model for
+# the same reason ``memory.py``'s own module docstring gives for its cap
+# ("enforcement lives at exactly ONE point"): the store is the single path
+# every writer -- HTTP route today, anything else later -- has to go
+# through, so the cap cannot be bypassed by adding a second caller.
+def test_profile_put_over_the_instruction_cap_raises_and_writes_nothing(pg_engine):
+    user_sub = _fresh_user_sub()
+    store = ProfileStore(pg_engine, app_role=_EFFECTIVE_APP_ROLE).for_user(user_sub)
+
+    with pytest.raises(InstructionTooLarge):
+        store.put("x" * (INSTRUCTION_MAX_CHARS + 1))
+
+    with pg_engine.connect() as conn:
+        count = conn.execute(
+            text("SELECT COUNT(*) FROM user_profile WHERE user_sub = :u"), {"u": user_sub}
+        ).scalar_one()
+    assert count == 0, "an oversized instruction must upsert nothing"
+
+
+def test_profile_put_at_exactly_the_instruction_cap_is_accepted(pg_engine):
+    """The boundary is inclusive, matching ``write_version``'s own
+    ``len(rendered) > settings.memory_max_chars`` comparison -- a document
+    exactly AT the cap is within it."""
+    user_sub = _fresh_user_sub()
+    store = ProfileStore(pg_engine, app_role=_EFFECTIVE_APP_ROLE).for_user(user_sub)
+    at_cap = "x" * INSTRUCTION_MAX_CHARS
+
+    written = store.put(at_cap)
+
+    assert written["system_instruction"] == at_cap
+    assert store.get()["system_instruction"] == at_cap
+
+
+def test_profile_put_does_not_clobber_an_existing_instruction_when_rejected(pg_engine):
+    """The raise happens before any SQL runs, so a rejected oversized PUT
+    leaves the user's PREVIOUS instruction exactly as it was -- the same
+    "raises BEFORE any row is inserted" property ``write_version``'s own
+    size check has."""
+    user_sub = _fresh_user_sub()
+    store = ProfileStore(pg_engine, app_role=_EFFECTIVE_APP_ROLE).for_user(user_sub)
+    store.put("the instruction that must survive")
+
+    with pytest.raises(InstructionTooLarge):
+        store.put("y" * (INSTRUCTION_MAX_CHARS + 1))
+
+    assert store.get()["system_instruction"] == "the instruction that must survive"
+
+
 # ===========================================================================
 # MemoryStore / UserMemory
 # ===========================================================================
@@ -577,6 +635,44 @@ def test_memory_write_version_prunes_to_keep_versions(pg_engine, settings_overri
         ).all()
     assert [v.version for v in versions] == [4, 5, 6], (
         "only the newest memory_keep_versions rows must survive pruning"
+    )
+
+
+# Final whole-phase review, finding I-3: with memory_keep_versions at 0,
+# `cutoff = next_version - 0` equals the version that was just inserted, so
+# the prune DELETE removed the row the INSERT three lines above it had
+# written -- in the SAME transaction. write_version still returned that
+# version's dict, so a caller (and `PUT /api/me/memory`) reported a 200
+# carrying a version number that was not in the table, and this user's
+# memory silently never persisted at all. The misconfiguration is a
+# plausible one precisely because this codebase reads 0 as "off" everywhere
+# else it means anything (`token_spike_threshold`,
+# `rate_limit_chat_per_minute`), so a value below 1 now means "keep
+# everything" rather than "delete everything."
+def test_memory_write_version_with_keep_versions_zero_prunes_nothing(
+    pg_engine, settings_override
+):
+    settings_override(memory_keep_versions=0)
+    user_sub = _fresh_user_sub()
+    store = MemoryStore(pg_engine, app_role=_EFFECTIVE_APP_ROLE).for_user(user_sub)
+
+    first = store.write_version([_entry("fact", "statement one")], created_by="user")
+    second = store.write_version([_entry("fact", "statement two")], created_by="user")
+
+    assert (first["version"], second["version"]) == (1, 2), (
+        "each write must allocate the NEXT version -- a deleted-on-write row "
+        "makes MAX(version) reset to 0 and every write reuse version 1"
+    )
+    current = store.get_current()
+    assert current is not None, "the version write_version just returned must exist in the table"
+    assert current["version"] == 2
+    with pg_engine.connect() as conn:
+        versions = conn.execute(
+            text("SELECT version FROM user_memory WHERE user_sub = :u ORDER BY version"),
+            {"u": user_sub},
+        ).all()
+    assert [v.version for v in versions] == [1, 2], (
+        "memory_keep_versions below 1 must prune nothing, never delete the just-written row"
     )
 
 

@@ -48,7 +48,10 @@ passed this check at write time.
 **Version retention is enforced at write time too, inside
 :meth:`write_version`, AFTER the new version successfully inserts:** rows
 older than the newest ``settings.memory_keep_versions`` for this user are
-deleted in the same transaction. ``settings.memory_max_chars``/``settings.
+deleted in the same transaction -- unless that setting is below 1, which
+means "keep everything" and skips the prune entirely (see
+:meth:`write_version`'s own docstring for the bug that guard fixes).
+``settings.memory_max_chars``/``settings.
 memory_keep_versions`` are read fresh (``get_settings()``, itself
 ``lru_cache``-wrapped -- a cheap, already-memoized lookup) on every call
 rather than captured at construction time, since :class:`MemoryStore` is
@@ -313,7 +316,23 @@ class UserMemory:
         zero or less (fewer versions exist than the retention window
         allows) deletes nothing -- the DELETE's own ``version <= :cutoff``
         predicate is never true for the always-positive ``version`` column
-        in that case, so no separate guard is needed here."""
+        in that case, so no separate guard is needed for THAT case.
+
+        A ``memory_keep_versions`` below 1 skips the prune entirely (final
+        whole-phase review, finding I-3). At 0 the arithmetic above yields
+        ``cutoff == next_version``, so the DELETE removed the row the
+        INSERT immediately above it had just written, in the same
+        transaction: this method still returned that version's dict, so
+        ``PUT /api/me/memory`` answered 200 with a version number that was
+        not in the table and the user's memory silently never persisted at
+        all. Reading a value below 1 as "keep everything" (rather than
+        rejecting it in ``Settings``) matches this codebase's own 0-means-
+        off convention for every other numeric knob that has one
+        (``token_spike_threshold``, ``rate_limit_chat_per_minute``) -- which
+        is exactly what made the misconfiguration plausible enough to be
+        worth guarding against here, at the one place the damage happens,
+        instead of at a config boundary a future caller could construct
+        ``Settings`` around."""
         _validate_entries(entries)
         rendered = _render_entries_markdown(entries)
         settings = get_settings()
@@ -337,10 +356,11 @@ class UserMemory:
                     "created_by": created_by,
                 },
             ).first()
-            cutoff = next_version - settings.memory_keep_versions
-            conn.execute(
-                _PRUNE_OLD_VERSIONS_SQL, {"user_sub": self._user_sub, "cutoff": cutoff}
-            )
+            if settings.memory_keep_versions >= 1:
+                cutoff = next_version - settings.memory_keep_versions
+                conn.execute(
+                    _PRUNE_OLD_VERSIONS_SQL, {"user_sub": self._user_sub, "cutoff": cutoff}
+                )
         return _row_to_version_dict(row)
 
     def restore(self, version: int) -> dict:

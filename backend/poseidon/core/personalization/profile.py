@@ -23,12 +23,61 @@ show -- an empty instruction is a valid, common state, not an error. So
 "updated_at": None}``) for "never written" that a real row with an empty
 string would produce, rather than ``None`` or a raise -- there is no
 "not found" outcome for this method to have at all.
+
+**The instruction is capped, at exactly one point: :meth:`UserProfile.put`
+(final whole-phase review, finding I-2).** The instruction is injected into
+every router and synthesis prompt for the rest of that user's life (Task
+2's wiring), so an unbounded one is not merely a large row -- it
+persistently breaks that user's every subsequent turn, with no way back
+except another ``put``. Mirrors ``core/personalization/memory.py``'s own
+"size cap enforcement lives at exactly ONE point" discipline verbatim,
+including its typed :class:`ValueError` subclass
+(:class:`InstructionTooLarge`, the twin of that module's
+``MemoryTooLarge``, mapped to the same RFC-7807 422 by ``api/me.py``) and
+its "raises BEFORE any row is written" property -- a rejected instruction
+leaves the previous one exactly as it was. Enforced HERE rather than as a
+``max_length`` on ``api/me.py``'s request model for the reason that module
+gives for the memory cap: the store is the one path every writer has to go
+through, so a second caller cannot bypass it.
+
+:data:`INSTRUCTION_MAX_CHARS` is 8000 -- the same number
+``settings.memory_max_chars`` happens to default to, deliberately as a
+SEPARATE constant rather than a read of that setting: the two cap
+different documents (one machine-distilled and pruned, one hand-typed) and
+an operator retuning the memory budget must not silently retune the
+instruction's. 8000 characters is roughly 2000 tokens, which is a generous
+ceiling for a hand-written standing instruction (doc 01 section 9's own
+examples are one or two sentences) while leaving the four-section prompt
+``assemble_system`` builds comfortably within budget even alongside a
+full-size memory document. A plain module constant, not a new ``Settings``
+field, for two reasons: this phase's sanctioned ``core/config.py`` scope is
+exactly the two fields it already added, and unlike ``memory_max_chars``
+(which a retention/prompt-budget tuning story genuinely wants per
+environment) there is no environment-specific reason for one deployment's
+typed instruction ceiling to differ from another's.
 """
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from poseidon.core.db import rls_transaction
+
+#: The instruction's own size cap, in characters -- see the module
+#: docstring's "The instruction is capped" section for why this is a plain
+#: module constant rather than a ``Settings`` field, and why 8000.
+INSTRUCTION_MAX_CHARS = 8000
+
+
+class InstructionTooLarge(ValueError):
+    """Raised by :meth:`UserProfile.put` when the candidate instruction
+    exceeds :data:`INSTRUCTION_MAX_CHARS` -- checked, and raised, BEFORE the
+    upsert runs; never a silent truncation. A :class:`ValueError` subclass,
+    mirroring ``core/personalization/memory.py``'s own
+    :class:`~poseidon.core.personalization.memory.MemoryTooLarge` verbatim
+    (which itself mirrors ``core/chat/history.py``'s ``MalformedCursor``
+    precedent), so any pre-existing broad ``except ValueError`` a caller
+    might already have keeps working unchanged."""
+
 
 _GET_SQL = text(
     "SELECT system_instruction, updated_at FROM user_profile WHERE user_sub = :user_sub"
@@ -105,7 +154,21 @@ class UserProfile:
         """Upsert this user's instruction, returning the updated shape.
         Idempotent-amend, not create-or-fail: a second call for the same
         user AMENDS the one row the ``user_sub`` primary key structurally
-        enforces can only ever be one -- there is no second row to create."""
+        enforces can only ever be one -- there is no second row to create.
+
+        Raises :class:`InstructionTooLarge` when ``system_instruction``
+        exceeds :data:`INSTRUCTION_MAX_CHARS` (module docstring). Checked
+        entirely in Python, before any SQL is built or any connection
+        opened, so "a rejected instruction leaves the previous one exactly
+        as it was" is structural rather than merely tested -- the same
+        shape ``UserMemory.write_version``'s own size check has. An empty
+        string is still always accepted (the column's own ``default ''``);
+        only the upper bound is enforced."""
+        if len(system_instruction) > INSTRUCTION_MAX_CHARS:
+            raise InstructionTooLarge(
+                f"system instruction ({len(system_instruction)} chars) exceeds "
+                f"the {INSTRUCTION_MAX_CHARS}-character limit"
+            )
         with self._transaction() as conn:
             row = conn.execute(
                 _UPSERT_SQL,
@@ -117,4 +180,4 @@ class UserProfile:
         }
 
 
-__all__ = ["ProfileStore", "UserProfile"]
+__all__ = ["INSTRUCTION_MAX_CHARS", "InstructionTooLarge", "ProfileStore", "UserProfile"]

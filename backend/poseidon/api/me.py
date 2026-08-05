@@ -28,10 +28,10 @@ Route handlers are deliberately thin: each is a single call into
 ``ProfileStore``/``MemoryStore``'s already-reviewed, RLS-scoped methods
 (Task 1) -- this module owns none of the personalization logic itself,
 only its HTTP shape (status codes, request/response bodies, and the
-``MemoryValidationError``/``MemoryTooLarge`` -> RFC-7807 422 mapping via
-the existing ``problem()`` helper, the SAME constructor ``live_chat.py``'s/
-``auth.py``'s own error responses already render through -- never a
-bespoke error shape).
+``MemoryValidationError``/``MemoryTooLarge``/``InstructionTooLarge`` ->
+RFC-7807 422 mapping via the existing ``problem()`` helper, the SAME
+constructor ``live_chat.py``'s/``auth.py``'s own error responses already
+render through -- never a bespoke error shape).
 
 **``GET /api/me/settings`` never 404s; ``GET /api/me/memory`` does.** Not
 the same "no data yet" shape by accident: ``UserProfile.get()`` (Task 1)
@@ -53,7 +53,7 @@ passes it.
 **404s here use a bare ``HTTPException``, not ``problem()``.** Matches the
 established codebase-wide convention for a plain "not found" (``live_chat.
 py``'s ``get_messages``/``delete_conversation``, ``turns.py``'s ``get_
-turn``) -- only the two store-level VALIDATION exceptions get the RFC-7807
+turn``) -- only the store-level VALIDATION exceptions get the RFC-7807
 ``problem()`` treatment, per this task's own brief.
 """
 
@@ -67,18 +67,23 @@ from poseidon.core.personalization.memory import (
     MemoryTooLarge,
     MemoryValidationError,
 )
-from poseidon.core.personalization.profile import ProfileStore
+from poseidon.core.personalization.profile import (
+    INSTRUCTION_MAX_CHARS,
+    InstructionTooLarge,
+    ProfileStore,
+)
 from poseidon.core.skills.result import problem
 
 router = APIRouter(prefix="/api", tags=["personalization"])
 
-# RFC-7807 "title" values for the two store-level validation exceptions --
-# pinned, distinct strings so a caller (or a test) can tell the two failure
+# RFC-7807 "title" values for the store-level validation exceptions --
+# pinned, distinct strings so a caller (or a test) can tell the failure
 # modes apart without parsing "detail" text, the same convention every other
 # typed-exception mapping in this codebase already follows (_FEEDBACK_NOT_
 # APPLICABLE_TITLE, _MALFORMED_CURSOR_TITLE in live_chat.py).
 _MEMORY_TOO_LARGE_TITLE = "memory_too_large"
 _MEMORY_VALIDATION_TITLE = "memory_invalid"
+_INSTRUCTION_TOO_LARGE_TITLE = "instruction_too_large"
 
 _UNKNOWN_MEMORY_DETAIL = "no memory version yet"
 _UNKNOWN_MEMORY_VERSION_DETAIL = "unknown memory version"
@@ -87,7 +92,16 @@ _UNKNOWN_MEMORY_VERSION_DETAIL = "unknown memory version"
 class SettingsBody(BaseModel):
     """``PUT /api/me/settings``'s request body. An empty string is a valid,
     accepted value -- the column's own ``default ''`` (Task 1's migration
-    0008) -- never rejected here."""
+    0008) -- never rejected here.
+
+    Carries no ``max_length`` of its own on purpose (final whole-phase
+    review, finding I-2): the instruction's size cap lives in
+    ``ProfileStore``'s own ``UserProfile.put``, the single path every
+    writer goes through, exactly like ``MemoryBody`` leaves entry
+    validation to ``UserMemory.write_version``. A ``max_length`` here would
+    make the route a SECOND place that contract is stated (and FastAPI's
+    own generic 422 body, not this module's ``problem()`` shape, the
+    answer)."""
 
     system_instruction: str
 
@@ -105,8 +119,19 @@ class MemoryBody(BaseModel):
 @router.get("/me/settings", dependencies=[Depends(require_sales)])
 def get_settings_route(request: Request) -> dict:
     """``{"system_instruction": str, "updated_at": str | None,
-    "memory_max_chars": int}`` -- always 200, even for a caller who has
-    never called ``PUT`` (module docstring's "never 404s").
+    "memory_max_chars": int, "instruction_max_chars": int}`` -- always 200,
+    even for a caller who has never called ``PUT`` (module docstring's
+    "never 404s").
+
+    ``instruction_max_chars`` is the final whole-phase review's own finding
+    I-2, carried here for exactly the reason ``memory_max_chars`` is (see
+    below): the settings surface's instruction textarea has to bound its
+    input by the SAME number the server enforces, and this route is the
+    only one in this task's interface with anywhere to carry it. Unlike
+    ``memory_max_chars`` it is read off ``ProfileStore``'s own module
+    constant rather than ``request.app.state.settings``, because it is
+    deliberately not a ``Settings`` field at all -- see ``core/
+    personalization/profile.py``'s module docstring for that judgment call.
 
     ``memory_max_chars`` is additive (Task 5's own cap-source-gap
     amendment, commit 5130fee): the frontend settings surface's character-
@@ -124,15 +149,32 @@ def get_settings_route(request: Request) -> dict:
     return {
         **profile_store.for_user(request.state.user.sub).get(),
         "memory_max_chars": settings.memory_max_chars,
+        "instruction_max_chars": INSTRUCTION_MAX_CHARS,
     }
 
 
 @router.put("/me/settings", dependencies=[Depends(require_sales)])
 def put_settings_route(body: SettingsBody, request: Request) -> dict:
-    """Upsert this caller's own instruction; returns the same shape
-    :func:`get_settings_route` does."""
+    """Upsert this caller's own instruction; returns
+    :func:`get_settings_route`'s shape minus its two additive cap fields
+    (both are GET-only -- the amendment and the finding that added them
+    each name that route alone).
+
+    422 (RFC-7807, via ``problem()``) when ``UserProfile.put`` rejects the
+    instruction as too large (``InstructionTooLarge``), raised strictly
+    BEFORE the upsert runs (Task 1's own store contract) so a rejected
+    write never lands and never disturbs the previous instruction. Exactly
+    the mapping :func:`put_memory` already applies to its own two store-
+    level rejections -- see that handler's docstring for why returning a
+    ``JSONResponse`` from a ``-> dict`` handler is this codebase's
+    established shape for a route with more than one response shape."""
     profile_store: ProfileStore = request.app.state.profile_store
-    return profile_store.for_user(request.state.user.sub).put(body.system_instruction)
+    try:
+        return profile_store.for_user(request.state.user.sub).put(body.system_instruction)
+    except InstructionTooLarge as exc:
+        return JSONResponse(
+            status_code=422, content=problem(422, _INSTRUCTION_TOO_LARGE_TITLE, str(exc))
+        )
 
 
 @router.get("/me/memory", dependencies=[Depends(require_sales)])
@@ -201,13 +243,32 @@ def restore_memory_version(version: int, request: Request) -> dict:
     one that belongs to a different user (RLS's own owner-scoped query
     inside ``restore`` makes the two indistinguishable, by design, the same
     "unknown and foreign collapse into the same 404" discipline every other
-    RLS-scoped lookup in this codebase already follows)."""
+    RLS-scoped lookup in this codebase already follows).
+
+    422 on the same two store-level rejections :func:`put_memory` maps
+    (final whole-phase review fold-in B): ``restore`` deliberately has no
+    insert path of its own -- it delegates to ``write_version``, which
+    re-validates and re-size-checks the entries it is handed (Task 1's own
+    "no second, parallel insert path that could drift" reasoning) -- so
+    every exception that method can raise, this route can see. Reachable
+    without any code change: lower ``memory_max_chars`` below what an
+    already-stored version renders to, then restore that version. Without
+    this mapping that produced an unhandled 500 for the identical
+    condition the PUT route answers with a clean 422."""
     memory_store: MemoryStore = request.app.state.memory_store
     user_memory = memory_store.for_user(request.state.user.sub)
     try:
         return user_memory.restore(version)
     except LookupError as exc:
         raise HTTPException(404, detail=_UNKNOWN_MEMORY_VERSION_DETAIL) from exc
+    except MemoryTooLarge as exc:
+        return JSONResponse(
+            status_code=422, content=problem(422, _MEMORY_TOO_LARGE_TITLE, str(exc))
+        )
+    except MemoryValidationError as exc:
+        return JSONResponse(
+            status_code=422, content=problem(422, _MEMORY_VALIDATION_TITLE, str(exc))
+        )
 
 
 __all__ = [

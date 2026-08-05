@@ -32,6 +32,7 @@ import pytest
 from poseidon.core.config import Settings
 from poseidon.core.data.synthetic_client import normalize_dsn
 from poseidon.core.identity_auth0 import ROLES_CLAIM, Auth0Provider
+from poseidon.core.personalization.profile import INSTRUCTION_MAX_CHARS
 from tests.test_identity_providers import (
     AUTH0_TEST_AUDIENCE,
     AUTH0_TEST_DOMAIN,
@@ -193,8 +194,15 @@ async def test_get_settings_for_a_brand_new_user_returns_the_default_shape_never
     # 5130fee): additive on this route, sourced from Settings.
     # memory_max_chars (config.py's own default of 8000, since _app/
     # _settings below applies no override) -- never omitted, and never a
-    # frontend-hardcoded guess.
-    assert r.json() == {"system_instruction": "", "updated_at": None, "memory_max_chars": 8000}
+    # frontend-hardcoded guess. instruction_max_chars is the final review's
+    # own finding I-2, carried the same way and for the same reason (see
+    # test_get_settings_carries_the_instruction_cap below).
+    assert r.json() == {
+        "system_instruction": "",
+        "updated_at": None,
+        "memory_max_chars": 8000,
+        "instruction_max_chars": INSTRUCTION_MAX_CHARS,
+    }
 
 
 @pytest.mark.anyio
@@ -243,6 +251,71 @@ async def test_get_settings_carries_the_configured_memory_max_chars(pg_database_
 
     assert r.status_code == 200
     assert r.json()["memory_max_chars"] == 4321
+
+
+@pytest.mark.anyio
+async def test_get_settings_carries_the_instruction_cap(pg_database_url):
+    """Final whole-phase review, finding I-2: the instruction now has a
+    server-enforced cap (``ProfileStore``'s own ``INSTRUCTION_MAX_CHARS``),
+    so the settings surface's textarea needs the same "fetch the real cap,
+    never hardcode a guess" channel Task 5's own cap-source amendment
+    already built for ``memory_max_chars``. Read off the module constant
+    rather than ``request.app.state.settings``, because unlike the memory
+    cap this one is deliberately NOT a ``Settings`` field (see
+    ``profile.py``'s own module docstring for why)."""
+    headers = _headers(_dev_user("alice"))
+    app = _app(pg_database_url)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.get("/api/me/settings", headers=headers)
+
+    assert r.status_code == 200
+    assert r.json()["instruction_max_chars"] == INSTRUCTION_MAX_CHARS
+
+
+@pytest.mark.anyio
+async def test_put_settings_over_the_instruction_cap_is_422_and_the_write_does_not_land(
+    pg_database_url,
+):
+    """Finding I-2: an oversized instruction is injected into every one of
+    that user's later prompts forever, so it is rejected at the store
+    (``InstructionTooLarge``) and mapped here to the SAME RFC-7807 422
+    shape ``put_memory``'s own ``MemoryTooLarge`` path already returns --
+    never a 500, never a silent truncation, and never a landed write."""
+    headers = _headers(_dev_user("alice"))
+    app = _app(pg_database_url)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        put_response = await client.put(
+            "/api/me/settings",
+            json={"system_instruction": "x" * (INSTRUCTION_MAX_CHARS + 1)},
+            headers=headers,
+        )
+        get_response = await client.get("/api/me/settings", headers=headers)
+
+    assert put_response.status_code == 422
+    body = put_response.json()
+    assert body["status"] == 422
+    assert body["title"] == "instruction_too_large"
+    assert str(INSTRUCTION_MAX_CHARS) in body["detail"]
+    assert get_response.json()["system_instruction"] == "", "an oversized write must not land"
+
+
+@pytest.mark.anyio
+async def test_put_settings_at_exactly_the_instruction_cap_is_accepted(pg_database_url):
+    """Guards against over-correcting the cap: the boundary is inclusive,
+    matching ``put_memory``'s own ``len(rendered) > max`` comparison."""
+    headers = _headers(_dev_user("alice"))
+    app = _app(pg_database_url)
+    at_cap = "x" * INSTRUCTION_MAX_CHARS
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.put(
+            "/api/me/settings", json={"system_instruction": at_cap}, headers=headers
+        )
+
+    assert r.status_code == 200
+    assert r.json()["system_instruction"] == at_cap
 
 
 @pytest.mark.anyio
@@ -430,6 +503,45 @@ async def test_post_restore_on_an_older_version_creates_a_new_version_forcing_cr
     assert body["version"] == 3, "restore must APPEND, not rewrite"
     assert body["created_by"] == "user"
     assert body["entries"] == v1_entries
+
+
+@pytest.mark.anyio
+async def test_post_restore_of_a_now_oversized_version_is_422_not_500(
+    pg_database_url, settings_override
+):
+    """Final whole-phase review fold-in B: ``restore`` delegates to
+    ``write_version`` (Task 1's own design -- one enforcement path, no
+    parallel insert), so it can raise ``MemoryTooLarge``/
+    ``MemoryValidationError`` exactly like ``PUT /api/me/memory`` can. This
+    route caught only ``LookupError``, so either one escaped as an
+    unhandled 500 instead of the RFC-7807 422 the identical failure gets on
+    the PUT route. Reachable whenever ``memory_max_chars`` is lowered below
+    an already-stored version's rendered size and that version is then
+    restored -- exactly the state simulated here."""
+    headers = _headers(_dev_user("alice"))
+    app = _app(pg_database_url)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        # Written under the ordinary (default) cap, so version 1 lands.
+        await client.put(
+            "/api/me/memory",
+            json={"entries": [_entry("fact", "a statement far longer than ten characters")]},
+            headers=headers,
+        )
+        await client.put(
+            "/api/me/memory", json={"entries": [_entry("fact", "second version")]}, headers=headers
+        )
+        # Now the operator lowers the cap below what version 1 renders to.
+        settings_override(memory_max_chars=10)
+        restore_response = await client.post(
+            "/api/me/memory/versions/1/restore", headers=headers
+        )
+
+    assert restore_response.status_code == 422, "a store-level rejection must never 500 here"
+    body = restore_response.json()
+    assert body["status"] == 422
+    assert body["title"] == "memory_too_large"
+    assert "memory_max_chars" in body["detail"]
 
 
 @pytest.mark.anyio
