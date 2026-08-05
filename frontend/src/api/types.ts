@@ -73,6 +73,48 @@ export interface Page<T> { items: T[]; next_cursor: string | null }
 // curated example prompt field; see SkillsPicker.tsx's own fallback list for
 // where an example comes from instead.
 export interface SkillSummary { id: string; label: string; description: string }
+// Phase 13 Task 5 (doc 01 section 9, doc 05 section 5): the personalization
+// settings surface's wire types -- field names mirror `poseidon.api.me`
+// verbatim (this file's own DTO convention), never renamed to camelCase.
+export type MemoryEntryType = "preference" | "scope" | "fact" | "correction";
+export interface MemoryEntry {
+  type: MemoryEntryType;
+  statement: string;
+  source_conversation_id: string;
+  at: string;
+}
+export type MemoryCreatedBy = "user" | "distiller";
+// GET /api/me/settings's wire shape (poseidon.api.me.get_settings_route).
+// `memory_max_chars` is additive (Task 5's own cap-source-gap amendment,
+// commit 5130fee): the ONE place the settings surface's character-budget
+// meter reads the real server-enforced cap from -- fetched, never a value
+// hardcoded client-side. PUT /api/me/settings's own response omits this
+// field (the amendment's sanctioned scope names GET only); `client.ts`'s
+// `putSettings` returns the narrower shape below on purpose.
+export interface SettingsResponse {
+  system_instruction: string;
+  updated_at: string | null;
+  memory_max_chars: number;
+}
+export interface PutSettingsResponse {
+  system_instruction: string;
+  updated_at: string | null;
+}
+// GET/PUT /api/me/memory and POST .../restore's shared wire shape
+// (poseidon.api.me.get_memory/put_memory/restore_memory_version).
+export interface MemoryVersion {
+  version: number;
+  entries: MemoryEntry[];
+  created_by: MemoryCreatedBy;
+  created_at: string;
+}
+// GET /api/me/memory/versions's wire shape (poseidon.api.me.list_memory_versions).
+export interface MemoryVersionSummary {
+  version: number;
+  created_by: MemoryCreatedBy;
+  created_at: string;
+  entry_count: number;
+}
 export interface SseEnvelope { turn_id: string; message_id: string; event_seq: number }
 export type SseEvent =
   | { name: "accepted"; data: SseEnvelope & { turn_index: number } }

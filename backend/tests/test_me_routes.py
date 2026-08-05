@@ -189,7 +189,12 @@ async def test_get_settings_for_a_brand_new_user_returns_the_default_shape_never
         r = await client.get("/api/me/settings", headers=headers)
 
     assert r.status_code == 200
-    assert r.json() == {"system_instruction": "", "updated_at": None}
+    # memory_max_chars is Task 5's own cap-source-gap amendment (commit
+    # 5130fee): additive on this route, sourced from Settings.
+    # memory_max_chars (config.py's own default of 8000, since _app/
+    # _settings below applies no override) -- never omitted, and never a
+    # frontend-hardcoded guess.
+    assert r.json() == {"system_instruction": "", "updated_at": None, "memory_max_chars": 8000}
 
 
 @pytest.mark.anyio
@@ -209,8 +214,35 @@ async def test_put_settings_then_get_round_trips(pg_database_url):
     body = put_response.json()
     assert body["system_instruction"] == "always show GP in USD thousands"
     assert body["updated_at"] is not None
+    # PUT's own response carries no memory_max_chars (the amendment's
+    # sanctioned scope names the GET route only) -- so the round-trip
+    # proof below compares the two SHARED fields explicitly rather than a
+    # single `get_response.json() == body` dict equality, which the GET-only
+    # additive field would now break.
     assert get_response.status_code == 200
-    assert get_response.json() == body
+    get_body = get_response.json()
+    assert get_body["system_instruction"] == body["system_instruction"]
+    assert get_body["updated_at"] == body["updated_at"]
+    assert get_body["memory_max_chars"] == 8000
+
+
+@pytest.mark.anyio
+async def test_get_settings_carries_the_configured_memory_max_chars(pg_database_url):
+    """``request.app.state.settings`` is the literal ``Settings`` instance
+    ``_app``/``_settings`` below construct and pass straight into
+    ``create_app`` -- NOT the process-wide, ``lru_cache``-wrapped
+    ``get_settings()`` singleton ``settings_override`` (this file's own
+    fixture, used by the 422-too-large test below) exists to patch. So this
+    test proves the real cap-source wiring with a plain constructor
+    override, no env-var monkeypatching or cache-clearing needed."""
+    headers = _headers(_dev_user("alice"))
+    app = _app(pg_database_url, memory_max_chars=4321)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.get("/api/me/settings", headers=headers)
+
+    assert r.status_code == 200
+    assert r.json()["memory_max_chars"] == 4321
 
 
 @pytest.mark.anyio

@@ -1,8 +1,13 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { expect, test, vi } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { beforeEach, expect, test, vi } from "vitest";
 import type { Identity } from "../../api/client";
+import { resetSettingsStore, useSettingsStore } from "../../state/settingsStore";
 import { IdentityContext } from "./identityContext";
 import { UserMenu } from "./UserMenu";
+
+beforeEach(() => {
+  resetSettingsStore();
+});
 
 test("renders nothing outside an AuthGate (no IdentityContext provider)", () => {
   const { container } = render(<UserMenu />);
@@ -65,4 +70,41 @@ test("falls back to sub when name is null (spcs_ingress carries no display name)
   );
 
   expect(screen.getByText("sf|alice")).toBeInTheDocument();
+});
+
+// Phase 13 Task 5: the settings surface's own entry point (doc 01 section
+// 9). Stubs the store's three load actions rather than standing up MSW here
+// -- this file's own established style is a pure presentational/interaction
+// test with no network layer (see the three tests above), and
+// `SettingsPanel.test.tsx` already covers the panel's own load-on-open wiring
+// against the real store; this test's only job is proving the TRIGGER opens
+// it and that opening still reaches those same actions end to end.
+test("clicking the Settings trigger opens the settings panel and triggers its initial load", async () => {
+  const loadSettings = vi.fn(async () => undefined);
+  const loadMemory = vi.fn(async () => undefined);
+  const loadVersions = vi.fn(async () => undefined);
+  act(() => {
+    useSettingsStore.setState({ loadSettings, loadMemory, loadVersions });
+  });
+  const identity: Identity = {
+    sub: "auth0|abc",
+    name: "Alice",
+    email: "alice@example.com",
+    roles: ["Poseidon:Sales"],
+    identity_mode: "auth0",
+  };
+
+  render(
+    <IdentityContext.Provider value={{ identity, logout: () => undefined }}>
+      <UserMenu />
+    </IdentityContext.Provider>,
+  );
+  expect(screen.queryByRole("dialog", { name: /settings/i })).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: /^settings$/i }));
+
+  expect(await screen.findByRole("dialog", { name: /settings/i })).toBeInTheDocument();
+  expect(loadSettings).toHaveBeenCalledTimes(1);
+  expect(loadMemory).toHaveBeenCalledTimes(1);
+  expect(loadVersions).toHaveBeenCalledTimes(1);
 });

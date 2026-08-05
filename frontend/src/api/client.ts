@@ -1,4 +1,15 @@
-import type { Conversation, Message, MessagePart, Page, SkillSummary } from "./types";
+import type {
+  Conversation,
+  Message,
+  MessagePart,
+  MemoryEntry,
+  MemoryVersion,
+  MemoryVersionSummary,
+  Page,
+  PutSettingsResponse,
+  SettingsResponse,
+  SkillSummary,
+} from "./types";
 
 /** RFC-7807 problem-details shape every backend failure in this codebase
  * renders through (poseidon.core.skills.result.problem; api/auth.py's
@@ -204,4 +215,73 @@ export interface TurnDetail {
 export async function getTurn(turnId: string): Promise<TurnDetail> {
   const r = await apiFetch(`/api/turns/${turnId}`);
   return (await r.json()) as TurnDetail;
+}
+
+/** Phase 13 Task 5 (doc 01 section 9): the settings surface's own routes
+ * (`poseidon.api.me`, mounted only under `chat_mode=="live"`, same as
+ * `getTurn`/`listSkills` above -- see that router module's own docstring).
+ *
+ * GET /api/me/settings -- always 200, even for a caller who has never
+ * called PUT (`get_settings_route`'s own docstring: "never 404s").
+ * `memory_max_chars` is Task 5's own additive field -- see `api/types.ts`'s
+ * `SettingsResponse` for why. */
+export async function getSettings(): Promise<SettingsResponse> {
+  const r = await apiFetch("/api/me/settings");
+  return (await r.json()) as SettingsResponse;
+}
+
+/** PUT /api/me/settings -- upserts this caller's own instruction; an empty
+ * string is a valid, accepted value (`SettingsBody`'s own docstring), never
+ * rejected. Returns the narrower `PutSettingsResponse` shape (no
+ * `memory_max_chars` -- the amendment's sanctioned scope adds that field to
+ * the GET route only). */
+export async function putSettings(systemInstruction: string): Promise<PutSettingsResponse> {
+  const r = await apiFetch("/api/me/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ system_instruction: systemInstruction }),
+  });
+  return (await r.json()) as PutSettingsResponse;
+}
+
+/** GET /api/me/memory -- 200 with this caller's current memory version, or
+ * a 404 `settingsStore.ts`'s own `loadMemory` treats as "no memory yet,"
+ * not an error (`get_memory`'s own docstring: the one route in this task's
+ * interface where the null-vs-404 distinction actually matters). */
+export async function getMemory(): Promise<MemoryVersion> {
+  const r = await apiFetch("/api/me/memory");
+  return (await r.json()) as MemoryVersion;
+}
+
+/** PUT /api/me/memory -- writes a new version from this caller's own
+ * edited entries list (always `created_by: "user"`, `put_memory`'s own
+ * docstring); 200 with the new version's dict, or (via the thrown
+ * `ApiError`) a 422 problem+json when the store rejects the candidate
+ * entries as malformed or too large. */
+export async function putMemory(entries: MemoryEntry[]): Promise<MemoryVersion> {
+  const r = await apiFetch("/api/me/memory", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ entries }),
+  });
+  return (await r.json()) as MemoryVersion;
+}
+
+/** GET /api/me/memory/versions -- `[{version, created_by, created_at,
+ * entry_count}]`, newest first; an empty list for a caller who has never
+ * written a version (never a 404, `list_memory_versions`'s own
+ * docstring). */
+export async function listMemoryVersions(): Promise<MemoryVersionSummary[]> {
+  const r = await apiFetch("/api/me/memory/versions");
+  return (await r.json()) as MemoryVersionSummary[];
+}
+
+/** POST /api/me/memory/versions/{version}/restore -- appends a new version
+ * carrying `version`'s own entries verbatim, always `created_by: "user"`
+ * regardless of who authored the version being restored
+ * (`restore_memory_version`'s own docstring); 404 if `version` does not
+ * exist for this caller. */
+export async function restoreMemoryVersion(version: number): Promise<MemoryVersion> {
+  const r = await apiFetch(`/api/me/memory/versions/${version}/restore`, { method: "POST" });
+  return (await r.json()) as MemoryVersion;
 }

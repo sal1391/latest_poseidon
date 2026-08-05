@@ -104,11 +104,27 @@ class MemoryBody(BaseModel):
 
 @router.get("/me/settings", dependencies=[Depends(require_sales)])
 def get_settings_route(request: Request) -> dict:
-    """``{"system_instruction": str, "updated_at": str | None}`` -- always
-    200, even for a caller who has never called ``PUT`` (module docstring's
-    "never 404s")."""
+    """``{"system_instruction": str, "updated_at": str | None,
+    "memory_max_chars": int}`` -- always 200, even for a caller who has
+    never called ``PUT`` (module docstring's "never 404s").
+
+    ``memory_max_chars`` is additive (Task 5's own cap-source-gap
+    amendment, commit 5130fee): the frontend settings surface's character-
+    budget meter (doc 01 section 9) has to read the SAME cap ``UserMemory.
+    write_version`` enforces (``settings.memory_max_chars``, ``core/
+    personalization/memory.py``), and this route was the only one in this
+    task's own interface that had nowhere to carry it. Read off
+    ``request.app.state.settings`` -- the identical shared-app-state read
+    ``auth.py``'s own ``get_me`` route already uses for ``identity_mode``
+    -- never a value this route computes, caches, or guesses itself.
+    ``PUT /me/settings`` below deliberately does NOT gain this field: the
+    amendment's sanctioned scope names the GET route only."""
     profile_store: ProfileStore = request.app.state.profile_store
-    return profile_store.for_user(request.state.user.sub).get()
+    settings = request.app.state.settings
+    return {
+        **profile_store.for_user(request.state.user.sub).get(),
+        "memory_max_chars": settings.memory_max_chars,
+    }
 
 
 @router.put("/me/settings", dependencies=[Depends(require_sales)])

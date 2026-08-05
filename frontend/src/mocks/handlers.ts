@@ -1,5 +1,5 @@
 import { http, HttpResponse } from "msw";
-import type { Conversation, Message } from "../api/types";
+import type { Conversation, MemoryEntry, Message } from "../api/types";
 
 /** Fixed ids keep component assertions readable: one conversation, one opener. */
 export const mockConversation: Conversation = { id: "c1", title: "New chat" };
@@ -86,4 +86,37 @@ export const handlers = [
   // static-list path deterministic and fast under these mock-backed tests,
   // rather than an unhandled request falling through to a real network call.
   http.get("/api/skills", () => new HttpResponse(null, { status: 404 })),
+
+  // Phase 13 Task 5: the settings surface's own routes (poseidon.api.me).
+  // Defaults mirror a brand-new user (Task 3's own contract): an empty
+  // instruction, and no memory version yet at all (a 404, not an empty
+  // list -- `GET /api/me/memory`'s own null-vs-404 distinction). Per-test
+  // overrides use `server.use(...)`, the same convention every other
+  // override in this file already follows.
+  http.get("/api/me/settings", () =>
+    HttpResponse.json({ system_instruction: "", updated_at: null, memory_max_chars: 8000 })),
+
+  http.put("/api/me/settings", async ({ request }) => {
+    const body = (await request.json()) as { system_instruction: string };
+    return HttpResponse.json({
+      system_instruction: body.system_instruction,
+      updated_at: "2026-08-04T12:00:00Z",
+    });
+  }),
+
+  http.get("/api/me/memory", () => new HttpResponse(null, { status: 404 })),
+
+  http.put("/api/me/memory", async ({ request }) => {
+    const body = (await request.json()) as { entries: MemoryEntry[] };
+    return HttpResponse.json({
+      version: 1,
+      entries: body.entries,
+      created_by: "user",
+      created_at: "2026-08-04T12:00:00Z",
+    });
+  }),
+
+  http.get("/api/me/memory/versions", () => HttpResponse.json([])),
+
+  http.post("/api/me/memory/versions/:version/restore", () => new HttpResponse(null, { status: 404 })),
 ];
