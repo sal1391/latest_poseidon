@@ -163,6 +163,40 @@ def test_row_scope_on_a_measure_column_is_rejected_at_load(tmp_path: Path):
     )
 
 
+def test_an_empty_row_scope_mapping_is_rejected_at_load(tmp_path: Path):
+    """`row_scope: {}` must NEVER parse as "declares no scope" -- that is the
+    one shape in this mechanism that would fail OPEN. A half-written block
+    would render every row for every caller with no signal at all: the
+    vendored all-None pin below would stay green, because the entity really
+    would have parsed to None."""
+    path = _fixture_path(tmp_path, "    row_scope: {}")
+
+    with pytest.raises(pydantic.ValidationError):
+        load(path)
+
+
+def test_a_present_but_empty_row_scope_block_is_rejected_at_load(tmp_path: Path):
+    """The same fail-open shape in its other spelling: `row_scope:` with
+    nothing under it, which YAML parses to None -- byte-identical, through
+    ``dict.get``, to the key being absent. Only genuine ABSENCE means "this
+    entity is unscoped" (see the loader's `_ROW_SCOPE_ABSENT` sentinel)."""
+    path = _fixture_path(tmp_path, "    row_scope:")
+
+    with pytest.raises(pydantic.ValidationError):
+        load(path)
+
+
+def test_a_non_mapping_row_scope_is_rejected_at_load(tmp_path: Path):
+    """`row_scope: PRIMARY_BRKR` (the column name alone, a plausible
+    half-remembered spelling of the block) is a ValidationError like every
+    other malformed-ontology shape -- not the bare TypeError a ``RowScope(
+    **raw)`` splat would raise for a non-mapping."""
+    path = _fixture_path(tmp_path, "    row_scope: PRIMARY_BRKR")
+
+    with pytest.raises(pydantic.ValidationError):
+        load(path)
+
+
 def test_row_scope_claim_is_restricted_to_the_two_identity_fields(tmp_path: Path):
     """`claim` is a Literal["sub", "email"] -- the two UserContext fields that
     can plausibly key a per-person scope today. Widening it later is a
