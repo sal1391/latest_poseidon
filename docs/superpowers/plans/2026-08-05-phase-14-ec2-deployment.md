@@ -149,7 +149,13 @@ anyio.to_thread for the off-loop JWKS resolve, Alembic migration 0009.
   (threading `resolve_row_scope_value(..., ctx.user)` into their spec construction) + their
   co-located `tests/test_tools.py` files; `backend/poseidon/scripts/demo_query.py` (explicit
   `None` + one comment); `backend/tests/test_ontology_loader.py`,
-  `backend/tests/test_query_builder_snapshots.py`. Nothing outside this list is touched;
+  `backend/tests/test_query_builder_snapshots.py`. **Amended (2026-08-05, Task 6 review —
+  two confirmed doc gaps created by the renumber itself):** `docs/architecture/03-llm-routing.md`
+  (ONLY the one stale "(Phase 14)" reference at :34 → "(Phase 15)" — the SPCS phase's new
+  number, reviewer-confirmed); `docs/architecture/07-infrastructure.md` additionally its title
+  line and opening paragraph (ONLY aligning the "SPCS primary / EC2 secondary" sequencing
+  language with the D8-revised narrative the same doc now carries everywhere else — EC2
+  first-deployed, SPCS corporate-primary deployed after). Nothing outside this list is touched;
   frontend source is deliberately untouched (stage-1 build args only).
 
 ## File Map
