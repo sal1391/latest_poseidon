@@ -192,6 +192,34 @@ def _settings() -> Settings:
     )
 
 
+def _drop_artifact_store(app) -> None:
+    """Phase 14 final-review wave (C3): this suite is ``pg``-marked, NOT
+    ``minio``-marked -- it needs a real Postgres and nothing else.
+
+    Before that wave, ``create_app`` wired an ``ArtifactStore`` only under
+    ``deploy_mode == "local"`` and NOTHING threaded it into the
+    orchestrator's ``SkillContext``, so every brief turn through this HTTP
+    surface hit the skill's ``ctx.artifacts is None`` branch and pinned its
+    honest "Artifact: skipped" proof line for free. The wave fixed exactly
+    that (``_wire_live_chat`` builds the store for every deploy_mode;
+    ``live_chat.py`` threads it), which would otherwise make these two
+    scripted flows attempt a REAL PDF upload to whatever ``S3_ENDPOINT_URL``
+    /AWS happens to be reachable from the machine running them -- an
+    environment dependency this suite has never had, and a pinned proof
+    line that would change with it.
+
+    Dropping the store back to ``None`` post-construction (the same
+    post-construction substitution ``test_live_chat_sse.py``'s own
+    ``_live_app`` does for ``data_client``/``run_log_writer``) keeps every
+    number in these two flows byte-identical to what they pinned before the
+    wave. The real store-carrying path is covered offline, without S3, by
+    ``test_live_chat_sse.py``'s own artifact-store wiring test; the real
+    upload path stays where it already lives, behind the ``minio`` marker
+    (``test_artifacts.py``/``test_brief_pdf.py``).
+    """
+    app.state.artifact_store = None
+
+
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
@@ -654,6 +682,7 @@ async def test_existing_customer_brief_flow_scripted_against_live_seeded_postgre
     from poseidon.api.app import create_app
 
     app = create_app(_settings())
+    _drop_artifact_store(app)
     headers = _headers(_dev_user("existing-brief"))
     transport = httpx.ASGITransport(app=app)
     anchor, prior_window, ytd_window = _brief_anchor_windows()
@@ -794,13 +823,15 @@ async def test_existing_customer_brief_flow_scripted_against_live_seeded_postgre
     assert lines_2[9] == "Phases completed: contextualize, research, strategize"
     assert lines_2[10] == "Phases failed: none"
     assert lines_2[11] == "Transport: FixtureResearchTool"
-    # Artifact-or-skip (doc 08 P8's own words): execute_turn never wires a
-    # real ArtifactStore into SkillContext (context.artifacts is
-    # unconditionally None in BOTH the normal path and the D19 subject-turn
-    # path -- verified directly against orchestrator.py's own source), so
-    # every real turn through this HTTP surface shows the honest skip line,
-    # never a real PDF card -- the "or its honest skip" half of the plan's
-    # own Phase Gate wording is what always fires here.
+    # Artifact-or-skip (doc 08 P8's own words): the "or its honest skip"
+    # half of the plan's own Phase Gate wording is what fires here.
+    #
+    # RE-STATED (Phase 14 final-review wave, C3): this used to be true for
+    # free -- execute_turn hardcoded ``artifacts=None`` at BOTH SkillContext
+    # sites, so no HTTP turn anywhere could carry a store. It now CAN, and
+    # does on a real deploy; this suite opts out on purpose via
+    # :func:`_drop_artifact_store` (see its docstring) so the line below
+    # stays a pinned constant instead of an S3-reachability test.
     assert lines_2[12] == "Artifact: skipped (no artifact store configured)"
 
     assert payloads_2[11]["usage"] == {"input_tokens": 0, "output_tokens": 0}
@@ -938,6 +969,7 @@ async def test_new_prospect_brief_flow_scripted_against_live_seeded_postgres():
     from poseidon.api.app import create_app
 
     app = create_app(_settings())
+    _drop_artifact_store(app)
     headers = _headers(_dev_user("new-prospect"))
     transport = httpx.ASGITransport(app=app)
     prospect_pivot = "any relevant news on Meridian Global Shipping?"

@@ -162,7 +162,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # able to boot the API and run every skill that produces no artifact
         # (which is all of them today). The warning is the honest record that
         # artifact writes will fail until MinIO is back.
-        app.state.artifact_store = ArtifactStore(app.state.settings)
+        #
+        # Phase 14 final-review wave (C3): the CONSTRUCTION moved to
+        # _wire_live_chat, which runs above this block, so a live-chat app in
+        # ANY deploy_mode has a store (before this fix, only deploy_mode=
+        # "local" built one at all, and every EC2/SPCS chat turn therefore ran
+        # with SkillContext.artifacts=None -- no brief could ever produce a
+        # PDF on a real deploy). This block keeps its own construction as the
+        # fallback for the local-but-NOT-live app (CHAT_MODE unset, the
+        # dev_runner-only case), and keeps the ensure_bucket() probe for
+        # local either way -- local behavior, warning line included, is
+        # exactly what it was. A local+live app now shares the ONE store
+        # _wire_live_chat built instead of overwriting it with a second one.
+        if getattr(app.state, "artifact_store", None) is None:
+            app.state.artifact_store = ArtifactStore(app.state.settings)
         try:
             app.state.artifact_store.ensure_bucket()
         except Exception as exc:  # noqa: BLE001 - any store failure must not block local boot
@@ -415,7 +428,9 @@ def _wire_live_chat(app: FastAPI) -> None:
 
     Everything else here is built once per app/process, the same "cheap to
     construct, safe to share" discipline ``deploy_mode == "local"``'s own
-    ``artifact_store`` wiring uses: ``RoleClient``/``PromptRegistry`` touch
+    ``dev_runner`` wiring uses (and, since the Phase 14 final-review wave's
+    C3 fix, the discipline ``artifact_store`` -- built here now, for every
+    deploy_mode -- follows too): ``RoleClient``/``PromptRegistry`` touch
     only a packaged YAML file and a prompts directory, ``HistoryStore``/
     ``FeedbackStore`` (Phase 12 Task 1; replaces the in-memory
     ``FeedbackStubStore``) are both explicitly meant to be ONE shared
@@ -533,6 +548,27 @@ def _wire_live_chat(app: FastAPI) -> None:
     prompts_dir = settings.prompts_dir if settings.prompts_dir is not None else DEFAULT_PROMPTS_DIR
     app.state.prompt_registry = PromptRegistry(prompts_dir)
     app.state.data_client = SyntheticDataClient(settings.database_url)
+    # Phase 14 final-review wave (C3): the artifact store, built HERE so it
+    # exists in EVERY deploy_mode a live chat runs in -- not only "local".
+    # `core/chat/orchestrator.py` threads this straight into both of its
+    # SkillContext constructions, and the existing-customer brief skips its
+    # whole PDF step when `ctx.artifacts is None`, so before this line an
+    # EC2/SPCS deploy could not produce a downloadable artifact at all while
+    # local dev could -- the one habitat difference doc 07 section 1's
+    # "artifact code is identical in every habitat" promise forbids.
+    #
+    # No `ensure_bucket()` call here, deliberately, and that is the ONLY
+    # difference from the `deploy_mode == "local"` block's own wiring below.
+    # Constructing the store is pure local work (boto3.client opens no
+    # connection -- see that block's own comment), but ensure_bucket() is a
+    # real network round trip, and on a real deploy the bucket is
+    # infrastructure that `infra/aws/03-s3.sh` already created and the
+    # instance profile deliberately grants no CreateBucket for
+    # (`infra/aws/04-iam.sh`: GetObject/PutObject/ListBucket, nothing more) --
+    # so a boot-time create attempt would be both useless and unauthorized
+    # there. Local keeps its probe: MinIO genuinely may not have the bucket
+    # yet, which is the case that warning line exists for.
+    app.state.artifact_store = ArtifactStore(settings)
     # Phase 11 Task 1: turn_run/llm_calls/tool_calls join conversations/
     # messages under the same RLS discipline (migration 0005) -- app_role is
     # load-bearing here for the identical reason the history_store

@@ -314,6 +314,105 @@ def test_live_mode_app_wires_the_expected_app_state():
     assert app.state.run_log_writer is not None
 
 
+def test_live_wiring_builds_an_artifact_store_and_turns_carry_it(monkeypatch):
+    """Phase 14 final-review wave (C3): the artifact store exists in EVERY
+    deploy_mode a live chat runs in, and both of the orchestrator's
+    ``SkillContext`` constructions carry it.
+
+    Before this wave, ``create_app`` built an ``ArtifactStore`` only under
+    ``deploy_mode == "local"`` and ``core/chat/orchestrator.py`` hardcoded
+    ``artifacts=None`` at both of its context sites -- so the brief skills'
+    ``if ctx.artifacts is not None:`` PDF step was dead code on every
+    deployed target, and doc 08's amended P14 gate row "artifact download"
+    was unsatisfiable by construction. ``deploy_mode="ec2"`` below is the
+    whole point: it is the case that used to get no store at all.
+
+    Offline, and deliberately no S3 of any kind: constructing an
+    ``ArtifactStore`` is pure local work (``boto3.client`` opens no
+    connection -- ``core/artifacts.py``'s own contract, which is exactly why
+    ``_wire_live_chat`` can build one unconditionally), and the dispatch spy
+    below answers the brief with a canned ``SkillResult`` rather than
+    letting the real skill upload a PDF. What is asserted is the WIRING --
+    the identity of the object each context received -- which is the thing
+    that was broken; the real upload path is covered by the ``minio``-marked
+    suites that already own it.
+    """
+    from poseidon.core.artifacts import ArtifactStore
+    from poseidon.core.chat.events import SseEnvelopeSink
+    from poseidon.core.chat.orchestrator import execute_turn
+    from poseidon.core.chat.state import ConversationStateStore
+    from poseidon.core.identity import DISABLED_DEFAULT_USER
+    from poseidon.core.llm.prompts import DEFAULT_PROMPTS_DIR, PromptRegistry
+    from poseidon.core.skills.context import ConversationSlots
+    from poseidon.core.skills.result import SkillResult
+    from tests.test_chat_orchestrator import REFERENCE_DATE
+
+    app = _live_app(deploy_mode="ec2")
+    store = app.state.artifact_store
+    assert isinstance(store, ArtifactStore)
+
+    seen: list = []
+    real_dispatch = SkillRegistry.dispatch
+
+    def spy(self, skill_id, arguments, ctx):
+        seen.append((skill_id, ctx))
+        if skill_id.startswith("customer_insight."):
+            # Canned: the real brief would build and UPLOAD a PDF now that
+            # ctx.artifacts is a real store -- the very behavior this test
+            # proves is reachable, and the one thing an offline test must
+            # not actually perform.
+            return SkillResult(ok=True, parts=[], proof=["spy: brief dispatch intercepted"])
+        return real_dispatch(self, skill_id, arguments, ctx)
+
+    monkeypatch.setattr(SkillRegistry, "dispatch", spy)
+
+    settings = _settings(chat_mode="live", deploy_mode="ec2")
+    state = ConversationStateStore()
+    role_client = RoleClient(settings, providers={"stub": DevDeterministicRouter()})
+    prompt_registry = PromptRegistry(DEFAULT_PROMPTS_DIR)
+
+    def run(conversation_id: str, text: str, ctk: str):
+        sink = SseEnvelopeSink(
+            turn_id=f"turn-{ctk}",
+            message_id=f"msg-{ctk}",
+            send=lambda _frame: None,
+            registry=app.state.skill_registry,
+        )
+        return execute_turn(
+            conversation_id=conversation_id,
+            user=DISABLED_DEFAULT_USER,
+            text=text,
+            client_turn_key=ctk,
+            settings=settings,
+            registry=app.state.skill_registry,
+            data=FakeDataClient(),
+            state=state,
+            writer=RecordingWriter(),
+            role_client=role_client,
+            prompt_registry=prompt_registry,
+            sink=sink,
+            reference_date=REFERENCE_DATE,
+            artifacts=store,
+        )
+
+    # Site 1: the ordinary routed turn's own SkillContext.
+    routed = run("conv-art-routed", "Top GP customers for Port of Singapore in April 2026", "ctk-a")
+    assert routed.status == "ok"
+
+    # Site 2: D19's deterministic subject dispatch -- the branch a brief is
+    # normally reached through, and therefore the one that matters most.
+    state.put("conv-art-subject", ConversationSlots(mode="new_prospect"))
+    subject = run("conv-art-subject", "Meridian Global Shipping", "ctk-b")
+    assert subject.status == "ok"
+
+    dispatched = [skill_id for skill_id, _ctx in seen]
+    assert "data_qa.metric_query" in dispatched
+    assert "customer_insight.new_prospect_brief" in dispatched
+    # The point of the whole test: every context both sites built carries
+    # the SAME store object app.py wired, not None.
+    assert [ctx.artifacts for _skill_id, ctx in seen] == [store] * len(seen)
+
+
 def test_stub_llm_mode_installs_a_fixture_research_tool(capsys):
     """Phase 7 Task 4 (AMENDED post-Task-2): ``LLM_MODE=stub`` (``_settings
     ()``'s own default) installs a ``FixtureResearchTool`` override --

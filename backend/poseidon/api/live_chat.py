@@ -975,6 +975,16 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
                 sink=sink,
                 reference_date=date.today(),
                 tools=app_state.tool_registry,
+                # Phase 14 final-review wave (C3): the process-wide
+                # ArtifactStore app.py's own _wire_live_chat builds for
+                # every deploy_mode -- threaded straight through,
+                # unexamined here any more than tool_registry above is.
+                # Without this line the orchestrator's SkillContext carries
+                # artifacts=None on every real HTTP turn and the brief
+                # skills' `if ctx.artifacts is not None:` PDF step is dead
+                # code on a deployed target (the gate's "artifact download"
+                # row could never pass).
+                artifacts=app_state.artifact_store,
                 # Phase 13 Task 2 (plan amendment, commit bf43d34): the
                 # three personalization stores app.py's own _wire_live_chat
                 # already puts on app.state -- threaded straight through,
