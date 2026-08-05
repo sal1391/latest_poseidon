@@ -9,16 +9,23 @@ built and unit-tested on its own — ``customer_insight/task.yml`` ships
 ``enabled: false`` (its skill arrives Phase 8), but its tools are real code
 now; see the task package's own docstring.
 
-No SQL, no ``query_builder`` import: like every tool in this codebase, this
-composes a certified :class:`~poseidon.core.data.specs.MetricQuerySpec` and
-lets the caller's :class:`~poseidon.core.data.client.DataClient` run it —
-this module only decides WHICH two specs to build and how to prove them.
+No SQL: like every tool in this codebase, this composes a certified
+:class:`~poseidon.core.data.specs.MetricQuerySpec` and lets the caller's
+:class:`~poseidon.core.data.client.DataClient` run it — this module only
+decides WHICH two specs to build and how to prove them. The one thing it
+imports from ``query_builder`` is
+:func:`~poseidon.core.data.query_builder.resolve_row_scope_value` (Phase 14
+Task 6b), which renders nothing: it maps a caller identity onto the D16
+scope value the specs below carry. See ``fetch_metrics``'s own "ROW SCOPE"
+paragraph.
 """
 
 from datetime import date
 
 from poseidon.core.data.client import DataClient, MetricResult
+from poseidon.core.data.query_builder import resolve_row_scope_value
 from poseidon.core.data.specs import MetricQuerySpec, PeriodWindow
+from poseidon.core.identity import UserContext
 
 _ENTITY = "MARINE_SALES_PLANNING_V"
 
@@ -43,7 +50,7 @@ def _ytd_window(anchor: date) -> PeriodWindow:
 
 
 def fetch_metrics(
-    data: DataClient, customer: str, anchor: date
+    data: DataClient, customer: str, anchor: date, user: UserContext | None = None
 ) -> tuple[MetricResult, MetricResult, list[str]]:
     """The six certified metrics for ``customer``, prior full calendar year
     and year-to-date, both windows derived from ``anchor`` alone.
@@ -78,6 +85,17 @@ def fetch_metrics(
     steering the user to a later date) — this tool only refuses to silently
     pretend a YTD window exists when it cannot.
 
+    ROW SCOPE (D16, Phase 14 Task 6b). ``user`` is the caller identity the
+    scope value is resolved from -- ``ctx.user``, at whatever call site owns
+    it. It defaults to ``None`` because ``MARINE_SALES_PLANNING_V`` declares
+    no ``row_scope``, so the resolver answers ``None`` for it either way and
+    every existing caller keeps working unchanged. That default is safe
+    precisely because the mechanism is fail-closed at the builder: the day
+    this entity DOES declare a scope, a call that passed no identity raises
+    ``SpecValidationError`` instead of returning rows the caller cannot see.
+    One resolution, stamped onto BOTH specs, so the prior-year window can
+    never end up scoped differently from the YTD one.
+
     Raises:
         ValueError: if ``anchor`` is January 1st (see above).
     """
@@ -90,12 +108,25 @@ def fetch_metrics(
     filters = {"CUST_NM": (customer,)}
     prior_window = _prior_year_window(anchor)
     ytd_window = _ytd_window(anchor)
+    scope_value = resolve_row_scope_value(_ENTITY, user)
 
     prior = data.run_metric_query(
-        MetricQuerySpec(entity=_ENTITY, metrics=SIX_METRICS, period=prior_window, filters=filters)
+        MetricQuerySpec(
+            entity=_ENTITY,
+            metrics=SIX_METRICS,
+            period=prior_window,
+            filters=filters,
+            scope_value=scope_value,
+        )
     )
     ytd = data.run_metric_query(
-        MetricQuerySpec(entity=_ENTITY, metrics=SIX_METRICS, period=ytd_window, filters=filters)
+        MetricQuerySpec(
+            entity=_ENTITY,
+            metrics=SIX_METRICS,
+            period=ytd_window,
+            filters=filters,
+            scope_value=scope_value,
+        )
     )
 
     proof = [

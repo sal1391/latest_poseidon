@@ -46,6 +46,13 @@ class MetricQuerySpec:
     filters: Mapping[str, tuple[str, ...]] = field(
         default_factory=dict
     )  # dim col -> values (OR within col, AND across)
+    # D16 row scope: the caller-identity value the entity's `row_scope`
+    # column is compared against, or None for an entity that declares no
+    # scope (every certified entity today). NOT a filter: the two are
+    # validated by different rules -- see `query_builder.
+    # resolve_row_scope_value`, which is the ONLY sanctioned way to produce
+    # this value, and the symmetric fail-closed checks in every builder.
+    scope_value: str | None = None
 
 
 @dataclass(frozen=True)
@@ -57,3 +64,4 @@ class BreakdownQuerySpec:
     order_by_metric: str  # must be in metrics
     top_n: int = 5
     filters: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    scope_value: str | None = None  # see MetricQuerySpec.scope_value

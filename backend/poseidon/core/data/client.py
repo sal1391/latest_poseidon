@@ -53,11 +53,26 @@ class PeriodRange:
 
 
 class DataClient(Protocol):
+    """The four calls a skill makes against certified data.
+
+    ``scope_value`` on the two lookups below is D16's row scope (see
+    ``query_builder.resolve_row_scope_value``, the only sanctioned way to
+    produce one): ``None`` for an entity that declares no ``row_scope``,
+    which is every certified entity today. The two spec-taking methods carry
+    the same value on the spec itself rather than as a parameter, so a spec
+    is always self-contained. Adapters pass it straight through to their
+    builder; the fail-closed rules live there, once, not in each adapter.
+    """
+
     def list_dimension_values(
-        self, entity: str, column: str, search: str | None = None
+        self,
+        entity: str,
+        column: str,
+        search: str | None = None,
+        scope_value: str | None = None,
     ) -> list[str]: ...
 
-    def available_periods(self, entity: str) -> PeriodRange: ...
+    def available_periods(self, entity: str, scope_value: str | None = None) -> PeriodRange: ...
 
     def run_metric_query(self, spec: MetricQuerySpec) -> MetricResult: ...
 

@@ -19,7 +19,7 @@ would still mutate the shared object) — see the caller contract documented on
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 # The COALESCE() literal for any entity whose certified rules don't name a
 # different one — MARINE_SALES_PLANNING_V's own rule ("COALESCE(col,
@@ -60,6 +60,38 @@ class NegativeConstraint(BaseModel):
     observed: bool = False
 
 
+class RowScope(BaseModel):
+    """Decision D16 (doc 05 section 4): an entity MAY declare that every
+    query over it is restricted to the rows one caller is allowed to see --
+    ``column`` (a dimension column of the entity) compared against one claim
+    off the caller's ``poseidon.core.identity.UserContext``.
+
+    MECHANISM WITHOUT POLICY. No entity in the certified ``ontology/
+    ontology.yml`` declares this today, and this task deliberately does not
+    add one: the hook ships fully wired and fail-closed so the Snowflake-side
+    effort that eventually needs it flips CONFIG, not code. The pin that
+    keeps that a noticed event rather than a silent drift is
+    ``backend/tests/test_ontology_loader.py``'s
+    ``test_no_certified_entity_declares_row_scope`` -- removing it IS the
+    flip. What the builder does with a declaration lives in
+    ``poseidon.core.data.query_builder`` (``resolve_row_scope_value`` and the
+    symmetric fail-closed checks in all four builders).
+
+    ``claim`` is restricted to the two ``UserContext`` fields that can
+    plausibly key a per-person scope today: ``sub`` (always present,
+    provider-prefixed, globally unambiguous) and ``email`` (optional, so a
+    caller carrying none is refused rather than silently unscoped). Widening
+    this Literal later is a one-line change; leaving it open would let an
+    ontology name a field that is not a string, or not an identity at all
+    (``roles`` is a tuple), and only find out at render time.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    column: str
+    claim: Literal["sub", "email"]
+
+
 class Entity(BaseModel):
     model_config = ConfigDict(frozen=True, extra="ignore")
 
@@ -81,6 +113,9 @@ class Entity(BaseModel):
     # it per entity. "Unknown" is the default (MARINE_SALES_PLANNING_V's own
     # certified rule); W_MARINE_GL_SOURCE_AI overrides it to "Unassigned".
     null_placeholder: str = DEFAULT_NULL_PLACEHOLDER
+    # D16, dormant by design: None on every certified entity today. See
+    # `RowScope` above for the mechanism-without-policy contract.
+    row_scope: RowScope | None = None
 
     def dimensions(self) -> list[str]:
         """Column names with role == "dimension", in file order."""
@@ -89,6 +124,26 @@ class Entity(BaseModel):
     def measures(self) -> list[str]:
         """Column names with role == "measure", in file order."""
         return [c.name for c in self.columns.values() if c.role == "measure"]
+
+    @model_validator(mode="after")
+    def _row_scope_must_name_a_dimension(self) -> "Entity":
+        """A ``row_scope`` column that is not a dimension of this entity is a
+        certification error, refused at LOAD -- the same fail-fast posture the
+        loader already takes for a malformed entity, rather than surfacing as
+        a ``SpecValidationError`` on the first query months later.
+
+        Covers both "column has the wrong role" (a measure can never key a
+        per-person scope) and "column does not exist at all", with one
+        message, exactly as ``query_builder._require_dimension`` does for
+        filter/group-by columns: what matters is that it was never certified
+        as a dimension.
+        """
+        if self.row_scope is not None and self.row_scope.column not in self.dimensions():
+            raise ValueError(
+                f"row_scope column {self.row_scope.column!r} is not a dimension "
+                f"of {self.name} -- certified dimensions: {self.dimensions()}"
+            )
+        return self
 
 
 class Ontology(BaseModel):

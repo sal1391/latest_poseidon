@@ -31,6 +31,9 @@ Parsing notes (see task brief / docs/architecture/04-data-ontology.md §2):
   ``Entity.dual_purpose_pivot_column``; ``...unit_pivot.value`` ->
   ``Entity.dual_purpose_pivot_value`` (e.g. ``"CLASS4"`` / ``"Volume"`` —
   the query builder's volume-mode trigger).
+- ``row_scope`` -> ``Entity.row_scope`` (optional; ``None`` on every
+  certified entity today -- decision D16's dormant hook, see
+  ``models.RowScope``).
 - ``Entity.null_placeholder`` is NOT parsed from the YAML: the certified
   rule lives in prose (``business_rules`` / a column ``description``), so
   it is transcribed into the explicit ``_NULL_PLACEHOLDERS`` mapping below,
@@ -53,6 +56,7 @@ from .models import (
     Metric,
     NegativeConstraint,
     Ontology,
+    RowScope,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -116,6 +120,23 @@ def _parse_hierarchies(
     )
 
 
+def _parse_row_scope(raw: dict[str, Any] | None) -> RowScope | None:
+    """``row_scope: {column, claim}`` -> :class:`RowScope`, or ``None`` when
+    the entity declares none (which is every certified entity today -- see
+    ``RowScope``'s own docstring for the D16 mechanism-without-policy
+    contract).
+
+    Parsed explicitly, like every other field: ``_parse_entity`` builds the
+    :class:`Entity` field by field, so a key nobody reads here would silently
+    stay ``None`` no matter what the YAML said -- a scope declaration that
+    quietly did nothing is exactly the failure this whole mechanism exists to
+    make impossible. An empty/absent block is ``None``; a malformed one
+    raises ``pydantic.ValidationError`` at load, as does a column that is not
+    one of the entity's dimensions (``Entity``'s own validator).
+    """
+    return RowScope(**raw) if raw else None
+
+
 def _parse_entity(name: str, raw: dict[str, Any]) -> Entity:
     (
         hierarchy_levels,
@@ -138,6 +159,7 @@ def _parse_entity(name: str, raw: dict[str, Any]) -> Entity:
         dual_purpose_pivot_column=dual_purpose_pivot_column,
         dual_purpose_pivot_value=dual_purpose_pivot_value,
         null_placeholder=_NULL_PLACEHOLDERS.get(name, DEFAULT_NULL_PLACEHOLDER),
+        row_scope=_parse_row_scope(raw.get("row_scope")),
     )
 
 

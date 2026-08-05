@@ -6,6 +6,13 @@ the mapping/rendering CONTRACT byte-for-byte: exact spec fields, exact part
 dicts, exact proof lists. The pg-marked ``test_skill.py`` alongside this
 module is what proves the same contract holds end to end against real
 seeded data, through the registry.
+
+The final section pins one thing ``skill.run`` itself owns rather than
+either tool: the D16 ``row_scope`` threading (Phase 14 Task 6b).
+``build_spec`` deliberately knows nothing about it -- ``skill.run`` is this
+skill's only code with ``ctx.user`` in hand -- and ``test_skill.py`` is
+``@pytest.mark.pg`` top to bottom, so the offline pin lives here, next to
+the spec-shape tests it is really about.
 """
 
 import datetime as dt
@@ -13,10 +20,12 @@ import datetime as dt
 from poseidon.core.config import Settings
 from poseidon.core.data.client import BreakdownResult, BreakdownRow, MetricResult, PeriodRange
 from poseidon.core.data.specs import BreakdownQuerySpec, MetricQuerySpec, PeriodWindow
+from poseidon.core.identity import UserContext
 from poseidon.core.skills.context import SkillContext
 from poseidon.core.skills.registry import SkillRegistry
 from poseidon.tasks._shared.fragments import DimFilter, PeriodArg
 from poseidon.tasks.data_qa.skills.metric_query.schema import Args
+from poseidon.tasks.data_qa.skills.metric_query.skill import run
 from poseidon.tasks.data_qa.skills.metric_query.tools.build_spec import build_spec
 from poseidon.tasks.data_qa.skills.metric_query.tools.format_parts import format_parts
 
@@ -446,3 +455,106 @@ def test_format_parts_num_lost_and_num_inquiries_have_distinct_friendlies():
     assert rows == [["# Inquiries", 120], ["# Lost", 45]]
     labels = [row[0] for row in rows]
     assert len(set(labels)) == len(labels), "the two metrics must not share a label"
+
+
+# ---------------------------------------------------------------------------
+# D16 row_scope threading (Phase 14 Task 6b) - skill.run, not build_spec
+# ---------------------------------------------------------------------------
+
+_RESOLVER = "poseidon.tasks.data_qa.skills.metric_query.skill.resolve_row_scope_value"
+
+ALICE = UserContext(sub="dev|alice", email="alice@local", name="Alice", roles=("Poseidon:Sales",))
+
+
+class _RecordingDataClient:
+    """Records the specs it is handed and answers with empty results - enough
+    for ``format_parts`` to render a "No data" part, which is all these tests
+    need past the spec itself."""
+
+    def __init__(self) -> None:
+        self.metric_specs: list[MetricQuerySpec] = []
+        self.breakdown_specs: list[BreakdownQuerySpec] = []
+
+    def list_dimension_values(self, *args: object, **kwargs: object) -> list[str]:
+        raise AssertionError("metric_query must never list dimension values")
+
+    def available_periods(self, *args: object, **kwargs: object) -> PeriodRange:
+        raise AssertionError("metric_query must never query available periods")
+
+    def run_metric_query(self, spec: MetricQuerySpec) -> MetricResult:
+        self.metric_specs.append(spec)
+        return MetricResult(
+            entity=spec.entity, period=spec.period, values=dict.fromkeys(spec.metrics)
+        )
+
+    def run_breakdown_query(self, spec: BreakdownQuerySpec) -> BreakdownResult:
+        self.breakdown_specs.append(spec)
+        return BreakdownResult(entity=spec.entity, group_by=spec.group_by, rows=[])
+
+
+def _ctx(client: _RecordingDataClient, user: object = ALICE) -> SkillContext:
+    return SkillContext(data=client, artifacts=None, settings=SETTINGS, user=user)
+
+
+def test_run_consults_the_row_scope_resolver_with_the_caller_identity(monkeypatch):
+    """The resolver is called with the spec's OWN entity and ``ctx.user``
+    verbatim - not with a hardcoded entity, and not with None."""
+    consulted: list[tuple[str, object]] = []
+
+    def _spy(entity: str, user: object) -> str | None:
+        consulted.append((entity, user))
+        return None
+
+    monkeypatch.setattr(_RESOLVER, _spy)
+    client = _RecordingDataClient()
+
+    result = run(_ctx(client), _args())
+
+    assert result.ok is True
+    assert consulted == [(SALES, ALICE)]
+
+
+def test_run_threads_the_resolved_value_onto_both_windows_of_a_comparison(monkeypatch):
+    """One resolution per dispatch, carried onto BOTH specs - a comparison
+    must not leave its second window unscoped."""
+    monkeypatch.setattr(_RESOLVER, lambda entity, user: "dev|alice")
+    client = _RecordingDataClient()
+    args = _args(compare_period=PeriodArg(start=dt.date(2025, 4, 1), end=dt.date(2025, 5, 1)))
+
+    run(_ctx(client), args)
+
+    assert [spec.scope_value for spec in client.metric_specs] == ["dev|alice", "dev|alice"]
+
+
+def test_run_threads_the_resolved_value_onto_a_breakdown(monkeypatch):
+    monkeypatch.setattr(_RESOLVER, lambda entity, user: "dev|alice")
+    client = _RecordingDataClient()
+
+    run(_ctx(client), _args(group_by="CUST_NM"))
+
+    assert [spec.scope_value for spec in client.breakdown_specs] == ["dev|alice"]
+
+
+def test_run_passes_scope_value_none_today_for_the_certified_entity():
+    """The REAL resolver, no spy: MARINE_SALES_PLANNING_V declares no
+    row_scope, so every spec this skill builds carries ``scope_value=None``
+    -- the byte-identical query it built before the mechanism existed. This
+    is the "mechanism without policy" pin at the call-site level."""
+    client = _RecordingDataClient()
+
+    run(_ctx(client), _args())
+
+    assert client.metric_specs[0].scope_value is None
+
+
+def test_run_still_works_for_a_dispatch_with_no_caller_identity():
+    """``SkillContext.user`` defaults to None (every pre-Phase-9 call site,
+    and the dev runner). An entity with no row_scope needs no identity, so
+    the dispatch succeeds -- it is only a DECLARING entity that would refuse
+    this call, loudly, as a 422."""
+    client = _RecordingDataClient()
+
+    result = run(_ctx(client, user=None), _args())
+
+    assert result.ok is True
+    assert client.metric_specs[0].scope_value is None

@@ -35,6 +35,12 @@ Result shaping notes:
 - ``list_dimension_values`` caps at :data:`DIMENSION_VALUE_LIMIT` rows. The
   cap is applied at fetch time rather than by slicing a fully materialized
   list, so a pathologically wide dimension can never balloon memory.
+
+This module owns no row-scope logic either (D16): ``scope_value`` is passed
+straight through to the builder on all four calls -- the two spec-taking
+methods carry it on the spec itself -- so the fail-closed rules live in
+``query_builder`` alone and every adapter that ever implements
+``DataClient`` inherits them by construction rather than by remembering to.
 """
 
 from collections.abc import Sequence
@@ -133,14 +139,20 @@ class SyntheticDataClient:
     # -- DataClient -------------------------------------------------------
 
     def list_dimension_values(
-        self, entity: str, column: str, search: str | None = None
+        self,
+        entity: str,
+        column: str,
+        search: str | None = None,
+        scope_value: str | None = None,
     ) -> list[str]:
-        sql, params = qb.build_dimension_values_query(entity, column, search, DIALECT)
+        sql, params = qb.build_dimension_values_query(
+            entity, column, search, DIALECT, scope_value=scope_value
+        )
         rows = self._fetch(sql, params, limit=DIMENSION_VALUE_LIMIT)
         return [row[0] for row in rows]
 
-    def available_periods(self, entity: str) -> PeriodRange:
-        sql, params = qb.build_period_range_query(entity, DIALECT)
+    def available_periods(self, entity: str, scope_value: str | None = None) -> PeriodRange:
+        sql, params = qb.build_period_range_query(entity, DIALECT, scope_value=scope_value)
         rows = self._fetch(sql, params)
         # MIN/MAX over an empty table still returns exactly one row, of NULLs.
         start, end = rows[0] if rows else (None, None)

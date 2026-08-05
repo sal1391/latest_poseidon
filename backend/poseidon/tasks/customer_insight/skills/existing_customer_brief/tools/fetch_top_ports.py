@@ -10,14 +10,20 @@ year, YTD, or otherwise) it wants ports for.
 """
 
 from poseidon.core.data.client import BreakdownResult, DataClient
+from poseidon.core.data.query_builder import resolve_row_scope_value
 from poseidon.core.data.specs import BreakdownQuerySpec, PeriodWindow
+from poseidon.core.identity import UserContext
 
 _ENTITY = "MARINE_SALES_PLANNING_V"
 _DEFAULT_TOP_N = 5
 
 
 def fetch_top_ports(
-    data: DataClient, customer: str, window: PeriodWindow, top_n: int = _DEFAULT_TOP_N
+    data: DataClient,
+    customer: str,
+    window: PeriodWindow,
+    top_n: int = _DEFAULT_TOP_N,
+    user: UserContext | None = None,
 ) -> tuple[BreakdownResult, list[str]]:
     """GP by ``LOC_NM`` for ``customer`` over ``window``, top ``top_n``
     ports.
@@ -32,6 +38,11 @@ def fetch_top_ports(
     requested: the proof line's "of requested {top_n}" makes that visible
     rather than letting a shorter table silently look like the request was
     for fewer ports than it was.
+
+    ROW SCOPE (D16, Phase 14 Task 6b). ``user`` is the caller identity the
+    scope value is resolved from; see ``fetch_metrics``'s own "ROW SCOPE"
+    paragraph for why it defaults to ``None`` and why that default is safe
+    (fail-closed at the builder, never a silent unscoped query).
     """
     spec = BreakdownQuerySpec(
         entity=_ENTITY,
@@ -41,6 +52,7 @@ def fetch_top_ports(
         order_by_metric="GP",
         top_n=top_n,
         filters={"CUST_NM": (customer,)},
+        scope_value=resolve_row_scope_value(_ENTITY, user),
     )
     result = data.run_breakdown_query(spec)
 
