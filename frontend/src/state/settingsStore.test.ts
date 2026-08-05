@@ -25,13 +25,14 @@ beforeEach(() => {
 // loadSettings / saveInstruction
 // ===========================================================================
 
-test("loadSettings GETs /api/me/settings and populates instruction/updatedAt/memoryMaxChars", async () => {
+test("loadSettings GETs /api/me/settings and populates instruction/updatedAt/both caps", async () => {
   server.use(
     http.get("/api/me/settings", () =>
       HttpResponse.json({
         system_instruction: "always show GP in USD k",
         updated_at: "2026-08-01T00:00:00Z",
         memory_max_chars: 4321,
+        instruction_max_chars: 1234,
       })),
   );
 
@@ -43,6 +44,11 @@ test("loadSettings GETs /api/me/settings and populates instruction/updatedAt/mem
   // Never a hardcoded 8000 -- proves the cap comes from the fetched
   // response, not a client-side constant (Task 5's own cap-source amendment).
   expect(state.memoryMaxChars).toBe(4321);
+  // The final review's finding I-2 carries the instruction's own cap the
+  // same way, and it is a genuinely SEPARATE number from the memory cap --
+  // asserted with a different value here so a fix that wired one field to
+  // the other's value could not pass.
+  expect(state.instructionMaxChars).toBe(1234);
 });
 
 test("saveInstruction PUTs the real {system_instruction} body and updates the store from the response", async () => {
@@ -350,4 +356,51 @@ test("restoreVersion POSTs to the restore route, updates the memory slice, and r
   expect(state.versions).toEqual([
     { version: 3, created_by: "user", created_at: "2026-08-03T00:00:00Z", entry_count: 1 },
   ]);
+});
+
+// Final whole-phase review fold-in A: the exact asymmetry round 2 left
+// behind. `saveMemoryEntries` got its follow-up `loadVersions()` moved into
+// its own best-effort, never-rethrowing try/catch; `restoreVersion`'s
+// identical follow-up call kept no guard at all, so a versions-refresh
+// failure after a restore the SERVER had already committed rejected this
+// action and made the panel say "Could not restore version N" for a restore
+// that had in fact succeeded. Unlike the save path there is no rollback to
+// corrupt here (nothing in this action reverts), so the damage was purely
+// the false failure report -- but the two halves of a pair must not stay
+// asymmetric, and a user told a restore failed will retry it, appending a
+// duplicate version.
+test("a versions-refresh failure after a successful restore does not reject or surface an error", async () => {
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const restoredEntries: MemoryEntry[] = [
+    {
+      type: "fact",
+      statement: "restored",
+      source_conversation_id: "c1",
+      at: "2026-08-01T00:00:00Z",
+    },
+  ];
+  server.use(
+    http.post("/api/me/memory/versions/1/restore", () =>
+      HttpResponse.json({
+        version: 3,
+        entries: restoredEntries,
+        created_by: "user",
+        created_at: "2026-08-03T00:00:00Z",
+      })),
+    http.get("/api/me/memory/versions", () => new HttpResponse(null, { status: 500 })),
+  );
+
+  await expect(useSettingsStore.getState().restoreVersion(1)).resolves.toBeUndefined();
+
+  const state = useSettingsStore.getState();
+  // The restore's own confirmed state stands, every field mutually
+  // consistent; `versions` is merely left stale, exactly as it is on the
+  // save path's equivalent failure.
+  expect(state.memoryVersion).toBe(3);
+  expect(state.memoryEntries).toEqual(restoredEntries);
+  expect(state.memoryCreatedBy).toBe("user");
+  expect(state.memoryCreatedAt).toBe("2026-08-03T00:00:00Z");
+  expect(state.versions).toEqual([]);
+  expect(warnSpy).toHaveBeenCalledTimes(1);
+  warnSpy.mockRestore();
 });

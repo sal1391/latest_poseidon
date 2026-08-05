@@ -189,6 +189,7 @@ export interface SettingsPanelProps {
 export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
   const systemInstruction = useSettingsStore((s) => s.systemInstruction);
   const memoryMaxChars = useSettingsStore((s) => s.memoryMaxChars);
+  const instructionMaxChars = useSettingsStore((s) => s.instructionMaxChars);
   const memoryVersion = useSettingsStore((s) => s.memoryVersion);
   const memoryEntries = useSettingsStore((s) => s.memoryEntries);
   const memoryCreatedBy = useSettingsStore((s) => s.memoryCreatedBy);
@@ -202,6 +203,20 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
   const restoreVersion = useSettingsStore((s) => s.restoreVersion);
 
   const [instructionDraft, setInstructionDraft] = useState(systemInstruction);
+  // Final whole-phase review, finding I-1: the exact twin of `entriesDirty`
+  // below, on the OTHER editable field -- the guard round 1 built for the
+  // entries list was never applied to the instruction draft, and the draft
+  // is the worse of the two to lose because the user TYPED it rather than
+  // merely deleted from a list the server can hand back. Without it, the
+  // resync effect below fired on every `systemInstruction` change,
+  // including (a) the ROLLBACK a failed `saveInstruction` performs -- so a
+  // save that 500ed replaced the user's text with the old value while the
+  // status line said "Please try again", leaving nothing to retry -- and
+  // (b) the background `loadSettings()` every open fires, which could
+  // resolve mid-typing and overwrite a half-written instruction. While
+  // true, the resync effect is inert; cleared on a successful save and on
+  // a fresh open, exactly like `entriesDirty`.
+  const [instructionDirty, setInstructionDirty] = useState(false);
   const [instructionStatus, setInstructionStatus] = useState("");
   // The LOCAL working list Save commits (component docstring above) --
   // seeded from the store's own `memoryEntries` and re-seeded whenever that
@@ -225,8 +240,9 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    if (instructionDirty) return;
     setInstructionDraft(systemInstruction);
-  }, [systemInstruction]);
+  }, [systemInstruction, instructionDirty]);
 
   useEffect(() => {
     if (entriesDirty) return;
@@ -236,7 +252,7 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
   // "Opening the panel ... triggers the initial load" (Step 1's own
   // requirement): every open (not just the first) re-fetches, since a
   // background worker (Task 4) can distill a new memory version between
-  // one open and the next. `entriesDirty` resets here too: a fresh open
+  // one open and the next. BOTH dirty flags reset here: a fresh open
   // always starts from the last confirmed (saved/restored) state, the same
   // "closing without saving discards the edit" contract Save/Restore
   // already imply -- so any not-yet-saved edit left over from a PRIOR open
@@ -244,6 +260,7 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
   useEffect(() => {
     if (!open) return;
     setEntriesDirty(false);
+    setInstructionDirty(false);
     void loadSettings();
     void loadMemory();
     void loadVersions();
@@ -262,8 +279,18 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
     setInstructionStatus("");
     try {
       await saveInstruction(instructionDraft);
+      // Confirmed by the server -- safe to resume tracking
+      // `systemInstruction` again (the resync effect will pick up the
+      // just-saved, now-canonical value, which matches what's shown).
+      setInstructionDirty(false);
       setInstructionStatus("Instruction saved.");
     } catch {
+      // Deliberately NOT cleared on failure, for the same reason
+      // `handleSaveMemory` below does not clear its own flag: the store
+      // rolled `systemInstruction` back, but the user's typed (still
+      // unsaved) text must stay in the textarea so "Please try again" is
+      // something they can actually act on -- clearing the flag here would
+      // let that same rollback's `set()` erase it via the resync effect.
       setInstructionStatus("Could not save your instruction. Please try again.");
     }
   }
@@ -351,8 +378,23 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
           <textarea
             aria-label="System instruction"
             style={textareaStyle}
+            // Finding I-2: the same cap `UserProfile.put` enforces
+            // server-side, fetched on `GET /api/me/settings` rather than
+            // hardcoded here (the discipline Task 5's own cap-source
+            // amendment established for the memory meter). `undefined`
+            // until that response lands -- an unbounded textarea for the
+            // first instant is strictly better than one bounded by a guess
+            // that could disagree with the server.
+            maxLength={instructionMaxChars ?? undefined}
             value={instructionDraft}
-            onChange={(event) => setInstructionDraft(event.target.value)}
+            onChange={(event) => {
+              setInstructionDraft(event.target.value);
+              // Marks the draft dirty (finding I-1) so neither a failed
+              // save's rollback nor a late-resolving background load can
+              // silently replace what the user typed -- see
+              // `instructionDirty`'s own doc comment above.
+              setInstructionDirty(true);
+            }}
           />
           <div style={actionsRowStyle}>
             <button

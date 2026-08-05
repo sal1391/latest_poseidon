@@ -86,6 +86,180 @@ test("editing the instruction and clicking Save calls saveInstruction with the n
   expect(saveInstruction).toHaveBeenCalledWith("new instruction");
 });
 
+// Final whole-phase review, finding I-1: the SAME class of race Task 5's
+// round-1 fix caught on the entries list, never applied to the instruction
+// draft. The draft's resync effect fired on every `systemInstruction`
+// change -- including the ROLLBACK a failed save performs -- so a user who
+// typed a new instruction, hit Save, and got a 500 watched their text
+// silently revert to the old value while the panel told them to "try
+// again": there was nothing left to retry.
+//
+// `saveInstruction` here is a REAL two-phase stub (not the inert
+// `vi.fn(async () => undefined)` the happy-path test above uses), driving
+// the store's genuine optimistic-set-then-rollback sequence -- the same
+// technique the round-1 dirty-guard test uses for `loadMemory`, and for the
+// same reason. An inert stub proves nothing (it never touches
+// `systemInstruction`, so the resync effect it must defeat never fires),
+// and so does a stub that performs both phases in one synchronous burst:
+// React batches them into a single commit whose net `systemInstruction` is
+// unchanged, so the effect's dependency never changes and the bug hides.
+// The two `set()` calls have to land in SEPARATE commits, exactly as they
+// do in life with a real in-flight PUT between them -- hence the
+// test-controlled `failSave`.
+test("a failed instruction save keeps the user's typed text in the textarea", async () => {
+  let failSave: (() => void) | undefined;
+  const saveInstruction = vi.fn((instruction: string) => {
+    const previous = useSettingsStore.getState().systemInstruction;
+    // Phase 1 -- the optimistic write, committed while the PUT is in flight.
+    useSettingsStore.setState({ systemInstruction: instruction });
+    return new Promise<void>((_resolve, reject) => {
+      failSave = () => {
+        // Phase 2 -- the PUT rejected, so the real store rolls the slice
+        // back and rethrows. This is the `set()` that clobbered the draft.
+        act(() => {
+          useSettingsStore.setState({ systemInstruction: previous });
+        });
+        reject(new Error("PUT /api/me/settings failed"));
+      };
+    });
+  });
+  act(() => {
+    seedNoopLoaders();
+    useSettingsStore.setState({ systemInstruction: "the old instruction", saveInstruction });
+  });
+
+  render(<SettingsPanel open={true} onClose={() => undefined} />);
+  const textarea = screen.getByLabelText(/system instruction/i);
+  await userEvent.clear(textarea);
+  await userEvent.type(textarea, "the text the user just typed");
+  await userEvent.click(screen.getByRole("button", { name: /save instruction/i }));
+
+  expect(saveInstruction).toHaveBeenCalledWith("the text the user just typed");
+  expect(textarea).toHaveValue("the text the user just typed");
+
+  await act(async () => {
+    failSave?.();
+  });
+
+  expect(screen.getByText(/could not save your instruction/i)).toBeInTheDocument();
+  expect(textarea).toHaveValue("the text the user just typed");
+});
+
+// The same clobber without any save at all: every open fires a background
+// `loadSettings()`, and its resolution used to overwrite whatever the user
+// had typed while it was in flight.
+test("a background settings load resolving mid-typing does not clobber the draft", async () => {
+  let resolveLoad: (() => void) | undefined;
+  const loadSettings = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        resolveLoad = () => {
+          act(() => {
+            useSettingsStore.setState({ systemInstruction: "the server's own value" });
+          });
+          resolve();
+        };
+      }),
+  );
+  act(() => {
+    seedNoopLoaders();
+    useSettingsStore.setState({ loadSettings, systemInstruction: "" });
+  });
+
+  render(<SettingsPanel open={true} onClose={() => undefined} />);
+  const textarea = screen.getByLabelText(/system instruction/i);
+  await userEvent.type(textarea, "half a thought");
+
+  act(() => {
+    resolveLoad?.();
+  });
+
+  expect(textarea).toHaveValue("half a thought");
+});
+
+// Guards against over-correcting the two fixes above -- exactly the way the
+// entries pair does: with NO pending edit, a background load must still
+// update the textarea, or the dirty guard has become a blanket "ignore
+// every load."
+test("a background settings load resolving with no pending edit still updates the draft", async () => {
+  let resolveLoad: (() => void) | undefined;
+  const loadSettings = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        resolveLoad = () => {
+          act(() => {
+            useSettingsStore.setState({ systemInstruction: "the server's own value" });
+          });
+          resolve();
+        };
+      }),
+  );
+  act(() => {
+    seedNoopLoaders();
+    useSettingsStore.setState({ loadSettings, systemInstruction: "" });
+  });
+
+  render(<SettingsPanel open={true} onClose={() => undefined} />);
+
+  act(() => {
+    resolveLoad?.();
+  });
+
+  expect(screen.getByLabelText(/system instruction/i)).toHaveValue("the server's own value");
+});
+
+// A SUCCESSFUL save clears the dirty flag, so the store's own confirmed,
+// server-returned value takes over again from that point on -- the same
+// contract `handleSaveMemory` already has for the entries list.
+test("a successful instruction save resumes tracking the store's confirmed value", async () => {
+  const saveInstruction = vi.fn(async (instruction: string) => {
+    useSettingsStore.setState({ systemInstruction: instruction });
+  });
+  act(() => {
+    seedNoopLoaders();
+    useSettingsStore.setState({ systemInstruction: "the old instruction", saveInstruction });
+  });
+
+  render(<SettingsPanel open={true} onClose={() => undefined} />);
+  const textarea = screen.getByLabelText(/system instruction/i);
+  await userEvent.clear(textarea);
+  await userEvent.type(textarea, "a saved instruction");
+  await userEvent.click(screen.getByRole("button", { name: /save instruction/i }));
+  expect(screen.getByText(/instruction saved/i)).toBeInTheDocument();
+
+  // A later background load (e.g. the next open, or a distiller-side
+  // change) must be picked up again now that nothing is unsaved.
+  act(() => {
+    useSettingsStore.setState({ systemInstruction: "a newer server value" });
+  });
+
+  expect(textarea).toHaveValue("a newer server value");
+});
+
+// Finding I-2's client half: the textarea bounds its own input by the cap
+// the server actually enforces, fetched on the same response the memory
+// meter's cap already rides (`instruction_max_chars`) -- never a number
+// hardcoded here, the exact gap Task 5's own cap-source amendment closed
+// for `memory_max_chars`.
+test("the instruction textarea's maxLength reads the fetched instruction cap", () => {
+  act(() => {
+    seedNoopLoaders();
+    useSettingsStore.setState({ instructionMaxChars: 1234 });
+  });
+
+  render(<SettingsPanel open={true} onClose={() => undefined} />);
+
+  expect(screen.getByLabelText(/system instruction/i)).toHaveAttribute("maxlength", "1234");
+});
+
+test("the instruction textarea carries no maxLength before the cap has been fetched", () => {
+  act(seedNoopLoaders);
+
+  render(<SettingsPanel open={true} onClose={() => undefined} />);
+
+  expect(screen.getByLabelText(/system instruction/i)).not.toHaveAttribute("maxlength");
+});
+
 test("renders each memory entry's statement, type, source conversation, and date", () => {
   act(() => {
     seedNoopLoaders();

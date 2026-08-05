@@ -17,6 +17,15 @@ export interface SettingsState {
   // this number ever comes from (`SettingsPanel.tsx`'s character-budget
   // meter is the one consumer), never a hardcoded guess.
   memoryMaxChars: number | null;
+  // Final whole-phase review, finding I-2: the instruction's own
+  // server-enforced cap, carried on the SAME response and held to the same
+  // discipline as `memoryMaxChars` above -- `null` until a real
+  // `GET /api/me/settings` lands, never a hardcoded guess. A SEPARATE
+  // number from `memoryMaxChars`, not an alias of it: the two cap different
+  // documents and the backend derives them from different places (see
+  // `core/personalization/profile.py`'s module docstring). Consumed by
+  // `SettingsPanel.tsx`'s instruction textarea as its `maxLength`.
+  instructionMaxChars: number | null;
   memoryVersion: number | null;
   memoryEntries: MemoryEntry[];
   memoryCreatedBy: MemoryCreatedBy | null;
@@ -43,6 +52,11 @@ export interface SettingsState {
   // comment for the failure mode round 1's shape had).
   saveMemoryEntries: (entries: MemoryEntry[]) => Promise<void>;
   loadVersions: () => Promise<void>;
+  // Appends a new version carrying `version`'s entries (Task 3's contract),
+  // then refreshes `versions` as a SEPARATE, best-effort step that cannot
+  // make this call reject -- the same shape `saveMemoryEntries` above has,
+  // applied to the other half of the pair (final review fold-in A; see this
+  // action's own implementation comment).
   restoreVersion: (version: number) => Promise<void>;
 }
 
@@ -66,6 +80,7 @@ function initialState(): Omit<
     systemInstruction: "",
     updatedAt: null,
     memoryMaxChars: null,
+    instructionMaxChars: null,
     memoryVersion: null,
     memoryEntries: [],
     memoryCreatedBy: null,
@@ -84,6 +99,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       systemInstruction: body.system_instruction,
       updatedAt: body.updated_at,
       memoryMaxChars: body.memory_max_chars,
+      instructionMaxChars: body.instruction_max_chars,
     });
   },
 
@@ -200,6 +216,19 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   // stale the instant this resolves -- refetched here rather than hand-
   // patched into `versions` locally, keeping `list_versions`'s own response
   // the single source of truth for that list's shape.
+  //
+  // Final whole-phase review fold-in A: that refresh runs in its OWN
+  // best-effort, never-rethrowing try/catch, the identical shape
+  // `saveMemoryEntries` above got in fix round 2 -- the two halves of this
+  // pair must not diverge. Unguarded, an independently-failing
+  // `GET /api/me/memory/versions` (a network blip, a transient 5xx, a token
+  // expiring between the two calls) made this whole call reject for a
+  // restore the server had ALREADY committed, so the panel reported "Could
+  // not restore version N" for a restore that succeeded -- and a user told
+  // that will retry, appending a duplicate version. Unlike the save path
+  // there is no rollback here for a late failure to corrupt, which is why
+  // this was the narrower of the two; a stale `versions` list is the whole
+  // remaining cost, and it refreshes on this panel's next open or action.
   restoreVersion: async (version) => {
     const body = await api.restoreMemoryVersion(version);
     set({
@@ -209,7 +238,14 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       memoryCreatedAt: body.created_at,
       memoryLoaded: true,
     });
-    await get().loadVersions();
+    try {
+      await get().loadVersions();
+    } catch (err) {
+      console.warn(
+        "restoreVersion: the restore succeeded but refreshing the version list failed",
+        err,
+      );
+    }
   },
 }));
 

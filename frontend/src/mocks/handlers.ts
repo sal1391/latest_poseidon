@@ -94,7 +94,12 @@ export const handlers = [
   // overrides use `server.use(...)`, the same convention every other
   // override in this file already follows.
   http.get("/api/me/settings", () =>
-    HttpResponse.json({ system_instruction: "", updated_at: null, memory_max_chars: 8000 })),
+    HttpResponse.json({
+      system_instruction: "",
+      updated_at: null,
+      memory_max_chars: 8000,
+      instruction_max_chars: 8000,
+    })),
 
   http.put("/api/me/settings", async ({ request }) => {
     const body = (await request.json()) as { system_instruction: string };

@@ -88,13 +88,19 @@ export type MemoryCreatedBy = "user" | "distiller";
 // `memory_max_chars` is additive (Task 5's own cap-source-gap amendment,
 // commit 5130fee): the ONE place the settings surface's character-budget
 // meter reads the real server-enforced cap from -- fetched, never a value
-// hardcoded client-side. PUT /api/me/settings's own response omits this
-// field (the amendment's sanctioned scope names GET only); `client.ts`'s
-// `putSettings` returns the narrower shape below on purpose.
+// hardcoded client-side. `instruction_max_chars` is the final whole-phase
+// review's finding I-2, riding the same response for the same reason: the
+// instruction now has its own server-enforced cap, and the textarea bounds
+// its input by THAT number, fetched. The two are separate numbers on
+// purpose (`profile.py`'s own module docstring) even when they coincide.
+// PUT /api/me/settings's own response omits both fields (the amendment and
+// the finding each name the GET route only); `client.ts`'s `putSettings`
+// returns the narrower shape below on purpose.
 export interface SettingsResponse {
   system_instruction: string;
   updated_at: string | null;
   memory_max_chars: number;
+  instruction_max_chars: number;
 }
 export interface PutSettingsResponse {
   system_instruction: string;
