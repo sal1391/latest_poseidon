@@ -368,6 +368,39 @@ instead of an accident of superuser-ness.
 - [ ] **Step 4:** Apply 0009 to compose; GREEN pg + offline; ruff. **Commit** —
   `feat(worker): explicit poseidon_worker claim role + boot privilege probe (RDS has no superuser)`
 
+### Task 3b: app-role membership grant + probe rehearsal (plan amendment, 2026-08-05 — Task 5's rehearsal surfaced it)
+
+**Model: opus implementer, opus reviewer** (same domain and same reasoning as Task 3).
+
+**The problem (Task 5 implementer's disclosure, symmetric twin of Task 3's):** migration 0004
+created `poseidon_app` but never granted membership to the migration/DSN user the way 0009 does
+for `poseidon_worker`. On compose the superuser DSN can `SET ROLE` to anything, so it never
+surfaced; on RDS (non-superuser master) every request's `rls_transaction` would fail at
+`SET LOCAL ROLE poseidon_app` — while Task 3's boot probe passes, because its check (b) verifies
+the role EXISTS, not that the switch works. The phase's own symmetric-pair rule applies: the
+worker role got a membership grant AND a rehearsed switch; the app role must get both too.
+
+**Files:** create `backend/migrations/versions/0010_app_role_membership.py`; modify
+`backend/poseidon/core/db.py` (extend the probe: when `database_app_role` is set, rehearse
+`SET LOCAL ROLE <app_role>` in a rolled-back transaction — the exact mechanics of check (c),
+refusing with a message naming the role, `DATABASE_APP_ROLE`, and migration 0010),
+`backend/tests/test_migrations.py` (extend the round-trip: `pg_auth_members` membership pin for
+`poseidon_app`, mirroring 0009's — `pg_has_role` is vacuous under a superuser, per Task 3's
+finding), `backend/tests/test_boot_privileges.py` (the RDS-shaped rehearsal for the app role:
+throwaway non-privileged LOGIN role → refuse → `GRANT poseidon_app` → pass, mirroring the
+worker-role rehearsal incl. its uuid-suffix and skip hygiene).
+
+**Migration 0010:** `GRANT poseidon_app TO CURRENT_USER` with 0009's WHY comment style
+(idempotent by nature — re-granting is a no-op; downgrade revokes, guarded like 0009's fixed
+form). Nothing else.
+
+- [ ] **Step 1 (RED):** the membership pin (RED on compose — the row genuinely doesn't exist
+  pre-0010), the probe-rehearsal refusal test (RED — probe currently passes with a
+  switch-incapable DSN). Capture.
+- [ ] **Step 2:** implement migration + probe extension. Apply 0010 to compose.
+- [ ] **Step 3:** GREEN pg + offline; ruff. **Commit** —
+  `fix(db): grant poseidon_app membership + rehearse the app-role switch at boot (RDS)`
+
 ### Task 4: The architecture-fitness test file
 
 **Files:** create `tests/test_architecture_fitness.py`; `core/db.py` ONLY IF the
