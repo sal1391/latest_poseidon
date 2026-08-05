@@ -529,18 +529,47 @@ def _process_one(
 
     user_turns = sum(1 for item in items if item.get("role") == "user")
     if user_turns < MIN_USER_TURNS:
-        # Deliberately leaves status/attempts exactly as they are (the task
-        # brief's own contract): a trivial conversation has not FAILED, so
-        # it must not burn a retry, and it stays claimable so that the turn
-        # which finally makes it substantial is distilled without needing
-        # anything else to re-arm the row.
+        # Marked `done`, never left `pending` (plan amendment a9316d3,
+        # 2026-08-04, Carlos-directed -- this reverses the brief's original
+        # "skipped without changing status" wording, on this task's own
+        # reproduced evidence).
+        #
+        # `attempts` is still untouched: a trivial conversation has not
+        # FAILED, so it must not burn a retry. But leaving the STATUS
+        # `pending` starves the queue. A skipped row keeps its old
+        # `last_turn_at`, so it stays permanently at the head of the
+        # oldest-first claim; once CLAIM_BATCH_SIZE trivial conversations
+        # sit there, no newer eligible conversation is ever reached again.
+        # Reproduced live on the compose stack before this fix: the same
+        # conversation id was skipped on 14 consecutive cycles while a
+        # genuinely idle two-turn conversation was never claimed at all.
+        # That is ordinary production state, not a test artifact -- every
+        # user who asks one question and leaves creates exactly one such
+        # row, permanently.
+        #
+        # Marking `done` loses nothing, which is the whole reason this is
+        # safe: `ConversationOutbox.touch` fully re-arms a `done` row
+        # (status back to `pending`, attempts back to 0, fresh
+        # `last_turn_at`) on that conversation's very next turn. So a
+        # trivial conversation that later becomes substantial is naturally
+        # re-queued -- exactly the property leaving it `pending` was trying
+        # to preserve -- without the starvation, and with no schema change
+        # and no new status value.
+        #
+        # A re-armed row (the user came back between claim and here) is
+        # left alone by `mark_done`'s own `last_turn_at` guard, so the turn
+        # that just landed is not swallowed by this branch either.
+        marked = outbox.mark_done(
+            row.conversation_id, claimed_last_turn_at=row.last_turn_at
+        )
         logger.info(
             "memory_distill_skipped_trivial",
             conversation_id=row.conversation_id,
             user_turns=user_turns,
             minimum=MIN_USER_TURNS,
+            marked_done=marked,
         )
-        return "skipped"
+        return "skipped" if marked else "rearmed"
 
     current = memory.get_current()
     existing = current["entries"] if current is not None else []

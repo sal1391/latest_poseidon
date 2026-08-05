@@ -788,12 +788,17 @@ def test_one_bad_row_does_not_stop_the_rest_of_the_cycle(pg_engine, worker_setti
 # ===========================================================================
 
 
-def test_a_conversation_under_the_minimum_turn_count_is_skipped_untouched(
+def test_a_conversation_under_the_minimum_turn_count_is_skipped_and_marked_done(
     pg_engine, worker_settings
 ):
-    """Brief: skipped "without incrementing attempts or changing status" --
-    a trivial conversation is not a failure, so it must not burn a retry,
-    and it must not call the model at all."""
+    """Plan amendment a9316d3 (2026-08-04, Carlos-directed) reverses this
+    task's original "skipped without changing status" contract: a skipped
+    row is marked ``done``. ``attempts`` is still untouched -- a trivial
+    conversation is not a failure and must not burn a retry -- and the
+    model is still never called. See
+    ``test_a_skipped_row_does_not_starve_newer_eligible_rows`` below for
+    the bug this reverses, and ``test_a_skipped_row_is_re_armed_by_the_next
+    _turn`` for why marking it done loses nothing."""
     settings = worker_settings()
     user_sub = _fresh_user_sub()
     cid = _create_conversation(pg_engine, user_sub, user_turns=memory_worker.MIN_USER_TURNS - 1)
@@ -803,12 +808,101 @@ def test_a_conversation_under_the_minimum_turn_count_is_skipped_untouched(
     memory_worker.run_once(pg_engine, settings, _role_client(settings, distiller))
 
     row = _outbox_row(pg_engine, cid)
-    assert row.status == "pending"
-    assert row.attempts == 0
+    assert row.status == "done"
+    assert row.attempts == 0, "a skip is not a failure -- it must never burn a retry"
     assert row.last_error is None
     assert distiller.calls == [], "a skipped conversation must never reach the model"
     assert _memory_versions(pg_engine, user_sub) == []
     assert _turn_runs(pg_engine, user_sub) == []
+
+
+def test_a_skipped_row_is_re_armed_by_the_next_turn_so_marking_it_done_loses_nothing(
+    pg_engine, worker_settings
+):
+    """The load-bearing half of amendment a9316d3's reasoning, proved
+    rather than asserted: marking a skipped row ``done`` is only safe
+    because ``ConversationOutbox.touch`` fully re-arms it the moment that
+    conversation's next turn lands. A trivial conversation that later
+    becomes substantial must therefore end up distilled, with no manual
+    intervention and nothing else re-queuing it."""
+    from poseidon.core.chat.history import HistoryStore
+    from poseidon.core.personalization.outbox import OutboxStore
+
+    settings = worker_settings()
+    user_sub = _fresh_user_sub()
+    cid = _create_conversation(pg_engine, user_sub, user_turns=memory_worker.MIN_USER_TURNS - 1)
+    _seed_outbox(pg_engine, user_sub, cid, minutes_ago=_IDLE_MINUTES + 5)
+    memory_worker.run_once(
+        pg_engine, settings, _role_client(settings, _ScriptedDistiller(["[]"]))
+    )
+    assert _outbox_row(pg_engine, cid).status == "done"
+
+    # The conversation grows past the minimum, and that turn touches the
+    # outbox exactly as every turn-completion site does (Task 2).
+    history = HistoryStore(pg_engine, app_role=_EFFECTIVE_APP_ROLE).for_user(user_sub)
+    history.append_user_message(cid, str(uuid7()), "and one more thing", None)
+    OutboxStore(pg_engine, app_role=_EFFECTIVE_APP_ROLE).for_user(user_sub).touch(cid)
+
+    re_armed = _outbox_row(pg_engine, cid)
+    assert re_armed.status == "pending", "touch() must re-arm a done row"
+    assert re_armed.attempts == 0
+    # Age the freshly-touched row back past the idle threshold (touch()
+    # always stamps now(), which no test of an IDLE row could use) so the
+    # next cycle claims it.
+    with pg_engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE memory_outbox SET last_turn_at = now() - make_interval(mins => :m) "
+                "WHERE conversation_id = :c"
+            ),
+            {"m": _IDLE_MINUTES + 5, "c": cid},
+        )
+
+    memory_worker.run_once(
+        pg_engine,
+        settings,
+        _role_client(settings, _ScriptedDistiller([_entries_json("finally substantial")])),
+    )
+
+    assert _outbox_row(pg_engine, cid).status == "done"
+    assert len(_memory_versions(pg_engine, user_sub)) == 1
+
+
+def test_a_skipped_row_does_not_starve_newer_eligible_rows(pg_engine, worker_settings):
+    """The starvation bug amendment a9316d3 fixes, pinned directly.
+
+    Before the fix, a skipped row kept its old ``last_turn_at`` and so sat
+    permanently at the head of the oldest-first claim: once
+    ``CLAIM_BATCH_SIZE`` trivial conversations occupied that head, no newer
+    eligible conversation was ever reached again -- reproduced live on the
+    compose stack, where the same id was skipped on 14 consecutive cycles
+    while a genuinely idle two-turn conversation was never claimed at all.
+
+    Fills the entire claim batch with trivial conversations, all OLDER than
+    one real one, and asserts the real one is distilled -- if not on the
+    first cycle (the batch is full of the trivial rows), then on the second,
+    because the first cycle retired them. A bounded number of cycles is the
+    whole property: under the old semantics this loops forever."""
+    settings = worker_settings()
+    user_sub = _fresh_user_sub()
+    trivial = [
+        _create_conversation(pg_engine, user_sub, user_turns=memory_worker.MIN_USER_TURNS - 1)
+        for _ in range(memory_worker.CLAIM_BATCH_SIZE)
+    ]
+    for index, cid in enumerate(trivial):
+        _seed_outbox(pg_engine, user_sub, cid, minutes_ago=_IDLE_MINUTES + 500 + index)
+    real = _create_conversation(pg_engine, user_sub, user_turns=memory_worker.MIN_USER_TURNS)
+    _seed_outbox(pg_engine, user_sub, real, minutes_ago=_IDLE_MINUTES + 5)
+    role_client = _role_client(settings, _ScriptedDistiller([_entries_json("reached at last")]))
+
+    for _cycle in range(2):
+        memory_worker.run_once(pg_engine, settings, role_client)
+
+    assert _outbox_row(pg_engine, real).status == "done", (
+        "a full batch of trivial conversations must not starve a newer eligible one"
+    )
+    assert len(_memory_versions(pg_engine, user_sub)) == 1
+    assert all(_outbox_row(pg_engine, cid).status == "done" for cid in trivial)
 
 
 def test_a_conversation_at_exactly_the_minimum_turn_count_is_distilled(

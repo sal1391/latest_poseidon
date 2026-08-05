@@ -184,8 +184,17 @@ class ConversationOutbox:
             )
 
     def mark_done(self, conversation_id: str, *, claimed_last_turn_at: datetime) -> bool:
-        """Move a successfully-distilled row to ``status='done'``, clearing
-        any ``last_error`` a previous failed attempt left behind.
+        """Move a row the worker has finished with to ``status='done'``,
+        clearing any ``last_error`` a previous failed attempt left behind.
+
+        Two callers, both in ``poseidon/scripts/memory_worker.py``, and the
+        distinction matters to nothing here: a conversation that WAS
+        distilled, and one skipped as too trivial to be worth distilling
+        (plan amendment a9316d3). Neither has anything further to do with
+        this row until its conversation sees another turn, and
+        :meth:`touch` re-arms both identically when one does -- so "done"
+        means "this worker is finished with the row as it currently
+        stands", not specifically "a memory version was written".
 
         ``claimed_last_turn_at`` is the value the WORKER's claim query read
         off this row; the UPDATE only applies while the row still carries
