@@ -73,18 +73,25 @@ test("falls back to sub when name is null (spcs_ingress carries no display name)
 });
 
 // Phase 13 Task 5: the settings surface's own entry point (doc 01 section
-// 9). Stubs the store's three load actions rather than standing up MSW here
-// -- this file's own established style is a pure presentational/interaction
+// 9). Stubs the store's load actions rather than standing up MSW here --
+// this file's own established style is a pure presentational/interaction
 // test with no network layer (see the three tests above), and
 // `SettingsPanel.test.tsx` already covers the panel's own load-on-open wiring
 // against the real store; this test's only job is proving the TRIGGER opens
 // it and that opening still reaches those same actions end to end.
+//
+// F6 (owner decision, 2026-08-05 walkthrough) touched this test file
+// incidentally, outside that fix's own sanctioned file list: removing
+// `loadVersions`/`restoreVersion` from `settingsStore.ts` (Version History
+// is gone from the settings UI) left this test's `loadVersions` stub/
+// assertion referencing an action that no longer exists on `SettingsState`
+// -- a compile error otherwise. Disclosed here and in that task's own
+// report rather than silently expanded scope.
 test("clicking the Settings trigger opens the settings panel and triggers its initial load", async () => {
   const loadSettings = vi.fn(async () => undefined);
   const loadMemory = vi.fn(async () => undefined);
-  const loadVersions = vi.fn(async () => undefined);
   act(() => {
-    useSettingsStore.setState({ loadSettings, loadMemory, loadVersions });
+    useSettingsStore.setState({ loadSettings, loadMemory });
   });
   const identity: Identity = {
     sub: "auth0|abc",
@@ -106,5 +113,4 @@ test("clicking the Settings trigger opens the settings panel and triggers its in
   expect(await screen.findByRole("dialog", { name: /settings/i })).toBeInTheDocument();
   expect(loadSettings).toHaveBeenCalledTimes(1);
   expect(loadMemory).toHaveBeenCalledTimes(1);
-  expect(loadVersions).toHaveBeenCalledTimes(1);
 });

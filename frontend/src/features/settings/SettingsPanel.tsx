@@ -171,36 +171,42 @@ export interface SettingsPanelProps {
 }
 
 /**
- * Phase 13 Task 5 (doc 01 section 9): the settings surface -- "My
- * instructions" (the personal system instruction) and "My memory" (the
- * reviewable, versioned, typed memory document), reached from `UserMenu`'s
- * own "Settings" trigger. Always mounted (so `UserMenu`'s trigger ref stays
- * simple); renders nothing while `open` is false, the same "always mounted,
- * closed renders null" shape `SkillsPicker.tsx` already establishes for
- * this codebase's other overlay.
+ * Phase 13 Task 5 (doc 01 section 9, amended F6): the settings surface --
+ * "My instructions" (the personal system instruction) and "My memory" (the
+ * reviewable, typed memory document, with per-entry delete), reached from
+ * `UserMenu`'s own "Settings" trigger. Always mounted (so `UserMenu`'s
+ * trigger ref stays simple); renders nothing while `open` is false, the
+ * same "always mounted, closed renders null" shape `SkillsPicker.tsx`
+ * already establishes for this codebase's other overlay.
+ *
+ * F6 (owner decision, 2026-08-05 walkthrough): Version History and its
+ * per-version Restore control are REMOVED from this panel -- "business
+ * users don't work like that -- no version history, just memory they can
+ * delete." The backend keeps append-only versioning as invisible
+ * audit/undo (`api/me.py`'s `/api/me/memory/versions*` routes, untouched);
+ * nothing here surfaces it any more.
  *
  * Editing never blocks chat (doc 01 section 9): `saveInstruction`/
  * `saveMemoryEntries` are optimistic with rollback on failure
  * (`settingsStore.ts`'s own doc comment). Deleting a memory entry only ever
  * edits this component's OWN local working list (`localEntries`) -- Save
  * commits the whole edited list via `saveMemoryEntries`; there is no
- * delete-one-entry endpoint (Task 3's own contract).
+ * delete-one-entry endpoint (Task 3's own contract). F5 (Carlos, Gate 3):
+ * both Save buttons are disabled until their own dirty flag
+ * (`instructionDirty`/`entriesDirty`) is set, so a no-op Save is
+ * impossible -- see each button's own comment below.
  */
 export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
   const systemInstruction = useSettingsStore((s) => s.systemInstruction);
   const memoryMaxChars = useSettingsStore((s) => s.memoryMaxChars);
   const instructionMaxChars = useSettingsStore((s) => s.instructionMaxChars);
-  const memoryVersion = useSettingsStore((s) => s.memoryVersion);
   const memoryEntries = useSettingsStore((s) => s.memoryEntries);
   const memoryCreatedBy = useSettingsStore((s) => s.memoryCreatedBy);
   const memoryCreatedAt = useSettingsStore((s) => s.memoryCreatedAt);
-  const versions = useSettingsStore((s) => s.versions);
   const loadSettings = useSettingsStore((s) => s.loadSettings);
   const saveInstruction = useSettingsStore((s) => s.saveInstruction);
   const loadMemory = useSettingsStore((s) => s.loadMemory);
   const saveMemoryEntries = useSettingsStore((s) => s.saveMemoryEntries);
-  const loadVersions = useSettingsStore((s) => s.loadVersions);
-  const restoreVersion = useSettingsStore((s) => s.restoreVersion);
 
   const [instructionDraft, setInstructionDraft] = useState(systemInstruction);
   // Final whole-phase review, finding I-1: the exact twin of `entriesDirty`
@@ -232,9 +238,9 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
   // resync effect below fired on that reference change and silently
   // clobbered `localEntries` back to the fetched list, reverting the
   // delete with no error and no signal. `entriesDirty` marks "localEntries
-  // has a pending edit not yet confirmed by a successful save/restore/
-  // fresh-open" -- while true, the resync effect below is inert; a
-  // late-resolving load can no longer overwrite an in-progress edit.
+  // has a pending edit not yet confirmed by a successful save or a fresh
+  // open" -- while true, the resync effect below is inert; a late-resolving
+  // load can no longer overwrite an in-progress edit.
   const [entriesDirty, setEntriesDirty] = useState(false);
   const [memoryStatus, setMemoryStatus] = useState("");
   const panelRef = useRef<HTMLDivElement>(null);
@@ -253,18 +259,17 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
   // requirement): every open (not just the first) re-fetches, since a
   // background worker (Task 4) can distill a new memory version between
   // one open and the next. BOTH dirty flags reset here: a fresh open
-  // always starts from the last confirmed (saved/restored) state, the same
-  // "closing without saving discards the edit" contract Save/Restore
-  // already imply -- so any not-yet-saved edit left over from a PRIOR open
-  // is deliberately dropped now, not carried forward silently.
+  // always starts from the last confirmed (saved) state, the same
+  // "closing without saving discards the edit" contract Save already
+  // implies -- so any not-yet-saved edit left over from a PRIOR open is
+  // deliberately dropped now, not carried forward silently.
   useEffect(() => {
     if (!open) return;
     setEntriesDirty(false);
     setInstructionDirty(false);
     void loadSettings();
     void loadMemory();
-    void loadVersions();
-  }, [open, loadSettings, loadMemory, loadVersions]);
+  }, [open, loadSettings, loadMemory]);
 
   // Phase 12's own a11y bar (SkillsPicker.tsx's closeAndReturnFocus):
   // opening moves focus INTO the panel; UserMenu.tsx's own `onClose` is what
@@ -321,22 +326,6 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
       // without redoing the delete -- clearing the flag here would let
       // that same rollback's `set()` clobber it via the resync effect.
       setMemoryStatus("Could not save your memory. Please try again.");
-    }
-  }
-
-  async function handleRestore(version: number) {
-    setMemoryStatus("");
-    try {
-      await restoreVersion(version);
-      // Restoring is a deliberate "replace my current memory with this old
-      // version" action -- any not-yet-saved local edit is superseded on
-      // purpose (the status message above makes that explicit, so it is
-      // never a SILENT loss the way the fixed race in the resync effect
-      // would have been).
-      setEntriesDirty(false);
-      setMemoryStatus(`Restored version ${version}.`);
-    } catch {
-      setMemoryStatus(`Could not restore version ${version}.`);
     }
   }
 
@@ -401,6 +390,11 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
               type="button"
               className="btn-primary"
               style={primaryButtonStyle}
+              // F5 (Carlos, Gate 3): a no-op Save must be impossible -- the
+              // button is disabled until `instructionDirty` marks an actual
+              // unsaved edit, so repeated clicks on an unchanged instruction
+              // can no longer stack junk versions server-side.
+              disabled={!instructionDirty}
               onClick={() => void handleSaveInstruction()}
             >
               Save instruction
@@ -458,6 +452,12 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
               type="button"
               className="btn-primary"
               style={primaryButtonStyle}
+              // F5 (Carlos, Gate 3): same guard as the instruction Save
+              // above, on the other half of this named pair -- disabled
+              // until `entriesDirty` marks an actual unsaved edit (a
+              // delete), so repeated clicks on an unchanged list can no
+              // longer stack junk versions server-side.
+              disabled={!entriesDirty}
               onClick={() => void handleSaveMemory()}
             >
               Save memory
@@ -466,37 +466,6 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
           <div role="status" aria-live="polite" style={mutedTextStyle}>
             {memoryStatus}
           </div>
-        </section>
-
-        <section>
-          <h3 style={headingStyle}>Version history</h3>
-          {versions.length === 0 ? (
-            <p style={mutedTextStyle}>No prior versions yet.</p>
-          ) : (
-            <ul style={entryListStyle}>
-              {versions.map((v) => (
-                <li key={v.version} style={entryRowStyle}>
-                  <div>
-                    <p style={entryStatementStyle}>
-                      Version {v.version} -- {v.entry_count}{" "}
-                      {v.entry_count === 1 ? "entry" : "entries"}
-                    </p>
-                    <p style={mutedTextStyle}>{attributionLine(v.created_by, v.created_at)}</p>
-                  </div>
-                  {v.version !== memoryVersion ? (
-                    <button
-                      type="button"
-                      className="btn-quiet"
-                      style={quietButtonStyle}
-                      onClick={() => void handleRestore(v.version)}
-                    >
-                      Restore
-                    </button>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          )}
         </section>
       </div>
     </div>

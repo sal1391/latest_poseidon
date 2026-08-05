@@ -199,13 +199,19 @@ Reached from the user menu. Two user-owned documents, both injected into every t
   Singapore book; always show GP in USD k"). `GET/PUT /api/me/settings`.
 - **My memory** — what Poseidon has learned about the user, stored as typed attributed entries
   (doc 05 §5). Rendered as a reviewable list: each entry shows its statement, its type, and the
-  conversation and date it came from, and can be edited or deleted individually — with a
-  character-budget meter for the rendered form (size cap enforced server-side) and a version list
-  (restore any prior version). `GET/PUT /api/me/memory`, `GET /api/me/memory/versions`.
+  conversation and date it came from, and can be deleted individually — with a character-budget
+  meter for the rendered form (size cap enforced server-side). `GET/PUT /api/me/memory`.
 
 Copy states clearly when each was last updated and by whom ("Updated by Poseidon after your
 conversation on …" vs "Edited by you"). Editing never blocks chat — saves are optimistic with
-rollback on failure.
+rollback on failure. Both Save actions (instruction and memory entries) are disabled until their
+respective edit is actually dirty, so a no-op Save can never fire (owner decision, 2026-08-05).
+
+**Version history is not part of the UI** (owner decision, 2026-08-05: "business users don't work
+like that — no version history, just memory they can delete"). The backend still keeps append-only
+versioning as invisible audit/undo (`GET /api/me/memory/versions`, `POST
+/api/me/memory/versions/{version}/restore`) for support use, but nothing in this surface calls or
+renders it.
 
 ## 10. Error and empty states
 

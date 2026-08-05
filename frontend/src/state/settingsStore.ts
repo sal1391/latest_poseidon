@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { MemoryCreatedBy, MemoryEntry, MemoryVersion, MemoryVersionSummary } from "../api/types";
+import type { MemoryCreatedBy, MemoryEntry } from "../api/types";
 import * as api from "../api/client";
 
 /**
@@ -8,6 +8,15 @@ import * as api from "../api/client";
  * TanStack Query -- Global Constraints: introducing that dependency's first
  * real usage here would pre-empt a separately-tracked "wire or drop"
  * decision).
+ *
+ * F6 (owner decision, 2026-08-05 walkthrough): Version History is removed
+ * from the settings UI -- "business users don't work like that -- no
+ * version history, just memory they can delete." This store therefore
+ * carries no `versions` slice and no `loadVersions`/`restoreVersion`
+ * actions any more; the backend's append-only versioning (`api/me.py`'s
+ * `/api/me/memory/versions*` routes) stays as invisible audit/undo,
+ * untouched -- `api/client.ts`'s `listMemoryVersions`/`restoreMemoryVersion`
+ * remain exported for that reason, simply with no caller in this store.
  */
 export interface SettingsState {
   systemInstruction: string;
@@ -35,7 +44,6 @@ export interface SettingsState {
   // Task 3's own contract) -- both states otherwise look identical
   // (memoryVersion: null, memoryEntries: []).
   memoryLoaded: boolean;
-  versions: MemoryVersionSummary[];
   loadSettings: () => Promise<void>;
   // Optimistic-write-then-rollback -- mirrors `chatStore.submitFeedback`'s
   // already-established shape (Global Constraints: this codebase has one
@@ -46,18 +54,7 @@ export interface SettingsState {
   // the caller's own edited local working list (SettingsPanel.tsx owns
   // that list; deleting an entry is "edit the list, then Save the whole
   // thing" -- there is no delete-one-entry endpoint, Task 3's own contract).
-  // A successful save also refreshes `versions` (fix round 1, Important 2)
-  // as a SEPARATE, best-effort step that cannot roll back the save or make
-  // this call reject (fix round 2 -- see this action's own implementation
-  // comment for the failure mode round 1's shape had).
   saveMemoryEntries: (entries: MemoryEntry[]) => Promise<void>;
-  loadVersions: () => Promise<void>;
-  // Appends a new version carrying `version`'s entries (Task 3's contract),
-  // then refreshes `versions` as a SEPARATE, best-effort step that cannot
-  // make this call reject -- the same shape `saveMemoryEntries` above has,
-  // applied to the other half of the pair (final review fold-in A; see this
-  // action's own implementation comment).
-  restoreVersion: (version: number) => Promise<void>;
 }
 
 // A factory, not a literal object, so `resetSettingsStore` below can reuse
@@ -69,12 +66,7 @@ export interface SettingsState {
 // the SAME array reference reused across every reset.
 function initialState(): Omit<
   SettingsState,
-  | "loadSettings"
-  | "saveInstruction"
-  | "loadMemory"
-  | "saveMemoryEntries"
-  | "loadVersions"
-  | "restoreVersion"
+  "loadSettings" | "saveInstruction" | "loadMemory" | "saveMemoryEntries"
 > {
   return {
     systemInstruction: "",
@@ -86,7 +78,6 @@ function initialState(): Omit<
     memoryCreatedBy: null,
     memoryCreatedAt: null,
     memoryLoaded: false,
-    versions: [],
   };
 }
 
@@ -145,106 +136,29 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     }
   },
 
-  // Fix round 1 (review finding Important 2): PUT /api/me/memory always
-  // creates a new version too (Task 3's own contract, identical to
-  // restoreVersion's own reasoning below) -- so the version list is stale
-  // the instant a save resolves, exactly like a restore.
-  //
-  // Fix round 2 (review finding, correcting round 1's own claim): round 1
-  // put the loadVersions() refresh INSIDE the same try that wraps the
-  // rollback catch, and claimed that was "unguarded, matching
-  // restoreVersion's own precedent" -- true of its POSITION in the
-  // sequence, false of its CONTROL FLOW: restoreVersion has no enclosing
-  // try/catch at all, so nothing about a failed refresh there could ever
-  // roll anything back. Here, by contrast, api.putMemory can succeed (the
-  // server has already committed the new version) and the FOLLOWING
-  // loadVersions() call can independently fail (a network blip, a
-  // transient 5xx, a token expiring between the two calls) -- with the
-  // round-1 shape, that failure fired the SAME catch the PUT's own
-  // failure uses, reverting `memoryEntries` to `prevEntries` even though
-  // the save genuinely succeeded, leaving `memoryVersion`/`memoryCreatedBy`/
-  // `memoryCreatedAt` (already set to the new values) inconsistent with a
-  // reverted `memoryEntries`, AND making this whole call reject so the
-  // panel reported "Could not save your memory" for a save that had
-  // already landed server-side -- a user-driven retry would then PUT the
-  // same list again, creating a duplicate version.
-  //
-  // Fixed shape: the try/catch below wraps ONLY api.putMemory itself (the
-  // one call whose failure means nothing was saved, so rolling back is
-  // correct); the confirmed post-save state is committed unconditionally
-  // once that call succeeds; loadVersions() then runs in its OWN
-  // best-effort try/catch that never rethrows -- a refresh failure here
-  // leaves `versions` merely stale (acceptable; the version list still
-  // sits behind an already-successful save and refreshes the next time
-  // this panel opens or acts) rather than corrupting already-committed
-  // state or reporting a false failure. Mirrors `chatStore.ts`'s own
-  // `hydrateFeedback`: best-effort, warn on failure, never throw.
+  // Optimistic-write-then-rollback for the PUT itself: `entries` is the
+  // caller's own edited local working list (SettingsPanel.tsx owns that
+  // list). F6 (owner decision, 2026-08-05): this action used to also
+  // refresh a `versions` slice in a separate, best-effort step after a
+  // successful save -- that refresh (and the `versions` slice it fed) is
+  // gone now that Version History is removed from the UI; the backend
+  // still creates a new version on every PUT (`api/me.py`'s own contract),
+  // it is simply never surfaced here any more.
   saveMemoryEntries: async (entries) => {
     const prevEntries = get().memoryEntries;
     set({ memoryEntries: entries });
-    let body: MemoryVersion;
     try {
-      body = await api.putMemory(entries);
+      const body = await api.putMemory(entries);
+      set({
+        memoryVersion: body.version,
+        memoryEntries: body.entries,
+        memoryCreatedBy: body.created_by,
+        memoryCreatedAt: body.created_at,
+        memoryLoaded: true,
+      });
     } catch (err) {
       set({ memoryEntries: prevEntries });
       throw err;
-    }
-    set({
-      memoryVersion: body.version,
-      memoryEntries: body.entries,
-      memoryCreatedBy: body.created_by,
-      memoryCreatedAt: body.created_at,
-      memoryLoaded: true,
-    });
-    try {
-      await get().loadVersions();
-    } catch (err) {
-      console.warn(
-        "saveMemoryEntries: the save succeeded but refreshing the version list failed",
-        err,
-      );
-    }
-  },
-
-  loadVersions: async () => {
-    const versions = await api.listMemoryVersions();
-    set({ versions });
-  },
-
-  // Restoring APPENDS a brand-new version (Task 3's own contract: restore
-  // never rewrites the version being restored), so the version list is
-  // stale the instant this resolves -- refetched here rather than hand-
-  // patched into `versions` locally, keeping `list_versions`'s own response
-  // the single source of truth for that list's shape.
-  //
-  // Final whole-phase review fold-in A: that refresh runs in its OWN
-  // best-effort, never-rethrowing try/catch, the identical shape
-  // `saveMemoryEntries` above got in fix round 2 -- the two halves of this
-  // pair must not diverge. Unguarded, an independently-failing
-  // `GET /api/me/memory/versions` (a network blip, a transient 5xx, a token
-  // expiring between the two calls) made this whole call reject for a
-  // restore the server had ALREADY committed, so the panel reported "Could
-  // not restore version N" for a restore that succeeded -- and a user told
-  // that will retry, appending a duplicate version. Unlike the save path
-  // there is no rollback here for a late failure to corrupt, which is why
-  // this was the narrower of the two; a stale `versions` list is the whole
-  // remaining cost, and it refreshes on this panel's next open or action.
-  restoreVersion: async (version) => {
-    const body = await api.restoreMemoryVersion(version);
-    set({
-      memoryVersion: body.version,
-      memoryEntries: body.entries,
-      memoryCreatedBy: body.created_by,
-      memoryCreatedAt: body.created_at,
-      memoryLoaded: true,
-    });
-    try {
-      await get().loadVersions();
-    } catch (err) {
-      console.warn(
-        "restoreVersion: the restore succeeded but refreshing the version list failed",
-        err,
-      );
     }
   },
 }));

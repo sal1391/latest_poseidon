@@ -19,7 +19,7 @@ const secondEntry: MemoryEntry = {
   at: "2026-08-02T00:00:00Z",
 };
 
-/** Every test seeds the store's three load actions as no-op stubs (the
+/** Every test seeds the store's two load actions as no-op stubs (the
  * panel calls them on open, per Step 1's own "opening the panel ... triggers
  * the initial load" requirement) so no test here depends on a real network
  * layer -- mirrors `Sidebar.test.tsx`'s own `useChatStore.setState({...})`
@@ -28,7 +28,6 @@ function seedNoopLoaders(): void {
   useSettingsStore.setState({
     loadSettings: vi.fn(async () => undefined),
     loadMemory: vi.fn(async () => undefined),
-    loadVersions: vi.fn(async () => undefined),
   });
 }
 
@@ -44,19 +43,17 @@ test("renders nothing when closed", () => {
   expect(container).toBeEmptyDOMElement();
 });
 
-test("opening the panel calls loadSettings, loadMemory, and loadVersions", () => {
+test("opening the panel calls loadSettings and loadMemory", () => {
   const loadSettings = vi.fn(async () => undefined);
   const loadMemory = vi.fn(async () => undefined);
-  const loadVersions = vi.fn(async () => undefined);
   act(() => {
-    useSettingsStore.setState({ loadSettings, loadMemory, loadVersions });
+    useSettingsStore.setState({ loadSettings, loadMemory });
   });
 
   render(<SettingsPanel open={true} onClose={() => undefined} />);
 
   expect(loadSettings).toHaveBeenCalledTimes(1);
   expect(loadMemory).toHaveBeenCalledTimes(1);
-  expect(loadVersions).toHaveBeenCalledTimes(1);
 });
 
 test("renders the instruction textarea pre-filled from the loaded value", () => {
@@ -258,6 +255,50 @@ test("the instruction textarea carries no maxLength before the cap has been fetc
   render(<SettingsPanel open={true} onClose={() => undefined} />);
 
   expect(screen.getByLabelText(/system instruction/i)).not.toHaveAttribute("maxlength");
+});
+
+// F5 (Carlos, Gate 3): a no-op Save must be impossible -- repeated clicks
+// on an unchanged instruction used to stack junk versions server-side. The
+// Save instruction button is disabled until `instructionDirty` is set, and
+// re-disables once a save actually lands.
+test("the Save instruction button is disabled until the draft is edited", () => {
+  act(() => {
+    seedNoopLoaders();
+    useSettingsStore.setState({ systemInstruction: "always show GP in USD k" });
+  });
+
+  render(<SettingsPanel open={true} onClose={() => undefined} />);
+
+  expect(screen.getByRole("button", { name: /save instruction/i })).toBeDisabled();
+});
+
+test("editing the instruction enables the Save instruction button", async () => {
+  act(seedNoopLoaders);
+
+  render(<SettingsPanel open={true} onClose={() => undefined} />);
+  const textarea = screen.getByLabelText(/system instruction/i);
+  await userEvent.type(textarea, " more");
+
+  expect(screen.getByRole("button", { name: /save instruction/i })).toBeEnabled();
+});
+
+test("a successful instruction save disables the Save instruction button again", async () => {
+  const saveInstruction = vi.fn(async (instruction: string) => {
+    useSettingsStore.setState({ systemInstruction: instruction });
+  });
+  act(() => {
+    seedNoopLoaders();
+    useSettingsStore.setState({ saveInstruction });
+  });
+
+  render(<SettingsPanel open={true} onClose={() => undefined} />);
+  const textarea = screen.getByLabelText(/system instruction/i);
+  await userEvent.type(textarea, "an edit");
+  const saveButton = screen.getByRole("button", { name: /save instruction/i });
+  expect(saveButton).toBeEnabled();
+  await userEvent.click(saveButton);
+
+  expect(saveButton).toBeDisabled();
 });
 
 test("renders each memory entry's statement, type, source conversation, and date", () => {
@@ -466,41 +507,89 @@ test("the character-budget meter reads the fetched memory_max_chars, never a har
   expect(screen.queryByText(/8000/)).not.toBeInTheDocument();
 });
 
-test("renders the version list with a Restore button on every non-current version, none on the current one", () => {
+// F5 (Carlos, Gate 3): the memory half of the same named pair -- repeated
+// clicks on an unchanged entries list used to stack junk versions
+// server-side too. The Save memory button is disabled until `entriesDirty`
+// is set (a delete), and re-disables once a save actually lands.
+test("the Save memory button is disabled until an entry is deleted", () => {
   act(() => {
     seedNoopLoaders();
     useSettingsStore.setState({
-      memoryVersion: 2,
-      versions: [
-        { version: 2, created_by: "user", created_at: "2026-08-02T00:00:00Z", entry_count: 1 },
-        { version: 1, created_by: "distiller", created_at: "2026-08-01T00:00:00Z", entry_count: 2 },
-      ],
+      memoryVersion: 1,
+      memoryEntries: [sampleEntry],
+      memoryCreatedBy: "user",
+      memoryCreatedAt: "2026-08-01T00:00:00Z",
     });
   });
 
   render(<SettingsPanel open={true} onClose={() => undefined} />);
 
-  expect(screen.getAllByRole("button", { name: /restore/i })).toHaveLength(1);
+  expect(screen.getByRole("button", { name: /save memory/i })).toBeDisabled();
 });
 
-test("clicking Restore calls restoreVersion with that version's number", async () => {
-  const restoreVersion = vi.fn(async () => undefined);
+test("deleting an entry enables the Save memory button", async () => {
   act(() => {
     seedNoopLoaders();
     useSettingsStore.setState({
-      memoryVersion: 2,
-      versions: [
-        { version: 2, created_by: "user", created_at: "2026-08-02T00:00:00Z", entry_count: 1 },
-        { version: 1, created_by: "distiller", created_at: "2026-08-01T00:00:00Z", entry_count: 2 },
-      ],
-      restoreVersion,
+      memoryVersion: 1,
+      memoryEntries: [sampleEntry],
+      memoryCreatedBy: "user",
+      memoryCreatedAt: "2026-08-01T00:00:00Z",
     });
   });
 
   render(<SettingsPanel open={true} onClose={() => undefined} />);
-  await userEvent.click(screen.getByRole("button", { name: /restore/i }));
+  await userEvent.click(
+    screen.getByRole("button", { name: /delete entry: prefers excel exports/i }),
+  );
 
-  expect(restoreVersion).toHaveBeenCalledWith(1);
+  expect(screen.getByRole("button", { name: /save memory/i })).toBeEnabled();
+});
+
+test("a successful memory save disables the Save memory button again", async () => {
+  const saveMemoryEntries = vi.fn(async () => undefined);
+  act(() => {
+    seedNoopLoaders();
+    useSettingsStore.setState({
+      memoryVersion: 1,
+      memoryEntries: [sampleEntry, secondEntry],
+      memoryCreatedBy: "user",
+      memoryCreatedAt: "2026-08-01T00:00:00Z",
+      saveMemoryEntries,
+    });
+  });
+
+  render(<SettingsPanel open={true} onClose={() => undefined} />);
+  await userEvent.click(
+    screen.getByRole("button", { name: /delete entry: prefers excel exports/i }),
+  );
+  const saveButton = screen.getByRole("button", { name: /save memory/i });
+  expect(saveButton).toBeEnabled();
+  await userEvent.click(saveButton);
+
+  expect(saveButton).toBeDisabled();
+});
+
+// F6 (owner decision, 2026-08-05 walkthrough): Version History and its
+// per-version Restore control are removed from the settings UI entirely --
+// "business users don't work like that -- no version history, just memory
+// they can delete." Guards the demolition: no "Version history" heading, no
+// "Restore" control, anywhere in the panel.
+test("renders no Version History section and no Restore control", () => {
+  act(() => {
+    seedNoopLoaders();
+    useSettingsStore.setState({
+      memoryVersion: 2,
+      memoryEntries: [sampleEntry],
+      memoryCreatedBy: "user",
+      memoryCreatedAt: "2026-08-01T00:00:00Z",
+    });
+  });
+
+  render(<SettingsPanel open={true} onClose={() => undefined} />);
+
+  expect(screen.queryByText(/version history/i)).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /restore/i })).not.toBeInTheDocument();
 });
 
 test("pressing Escape calls onClose", () => {

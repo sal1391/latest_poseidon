@@ -47,6 +47,7 @@ module docstring), so the same parsing works unchanged against either.
 import json
 import logging
 import os
+import uuid
 
 import httpx
 import psycopg
@@ -56,7 +57,6 @@ from sqlalchemy import text
 from poseidon.core.chat.dev_router import DevDeterministicRouter
 from poseidon.core.config import Settings
 from poseidon.core.data.synthetic_client import normalize_dsn
-from poseidon.core.identity import DISABLED_DEFAULT_USER
 from poseidon.core.llm.roles import RoleClient
 from poseidon.core.skills.registry import SkillRegistry
 from tests.test_chat_orchestrator import REGISTRY, FakeDataClient, RecordingWriter
@@ -115,12 +115,41 @@ def _json_lines(text: str) -> list[dict]:
     return records
 
 
-async def _create_conversation(client: httpx.AsyncClient) -> str:
+def _dev_user(name: str = "sse") -> str:
+    """A fresh, run-unique ``X-Dev-User`` act-as value -- mirrors
+    ``test_me_routes.py``'s own ``_dev_user`` helper exactly (that file's
+    module docstring: "fresh, run-unique act-as identities... re-running
+    this suite against the same long-lived dev Postgres must never
+    collide with a previous run's rows").
+
+    F2 fix (2026-08-05 walkthrough): every pg test below that dispatches a
+    real turn, or writes through ``ProfileStore``/``MemoryStore``/
+    ``OutboxStore``, now poses as one of these throwaway identities
+    instead of falling through to ``DisabledProvider``'s fixed default
+    (``sub="dev|local"``) -- the real, shared identity Carlos's own
+    browser resolves to. See ``core/identity.py``'s own
+    ``DisabledProvider.resolve``: any ``X-Dev-User`` header sanitizes to
+    ``sub="dev|{value}"``, so this file's writes now land on a unique
+    ``dev|sse-<hex>``-shaped sub every run, never the shared one -- no
+    cleanup required, the same "leave it behind, it's not a real user"
+    convention ``test_me_routes.py``'s own throwaway ``alice``/``bob``
+    identities already rely on."""
+    return f"{name}-{uuid.uuid4().hex[:8]}"
+
+
+def _headers(user: str) -> dict[str, str]:
+    return {"X-Dev-User": user}
+
+
+async def _create_conversation(client: httpx.AsyncClient, headers: dict[str, str]) -> str:
     """A real conversation id via ``POST /api/conversations`` -- every
     adapted test in this file that used to dispatch against an ad hoc
     string now creates one for real first (module docstring's "most of
-    this file is pg-marked now")."""
-    r = await client.post("/api/conversations")
+    this file is pg-marked now"). ``headers`` is REQUIRED (no default) --
+    F2's own fix (see ``_dev_user`` above): a caller cannot forget to pass
+    a run-unique act-as identity and silently fall through to the shared
+    ``dev|local`` one."""
+    r = await client.post("/api/conversations", headers=headers)
     return r.json()["conversation"]["id"]
 
 # U+2014 EM DASH, written as an escape (not a typed literal) -- the same
@@ -187,15 +216,32 @@ def _live_app(*, data_client=None, writer=None, **settings_overrides):
     return app
 
 
-async def read_sse(client: httpx.AsyncClient, cid: str, text: str, client_turn_key: str | None):
+async def read_sse(
+    client: httpx.AsyncClient,
+    cid: str,
+    text: str,
+    client_turn_key: str | None,
+    headers: dict[str, str] | None = None,
+):
     """Mirrors ``test_mock_chat.py``'s own ``read_sse`` helper exactly --
     the wire format is pinned byte-identical (``events.py``'s module
-    docstring), so the same parsing logic applies unchanged."""
+    docstring), so the same parsing logic applies unchanged. ``headers``
+    is F2's own fix (see ``_dev_user`` above): every caller IN THIS FILE
+    now passes a run-unique act-as identity rather than silently
+    dispatching as the shared ``dev|local`` default. It stays OPTIONAL
+    (default ``None``, forwarded to ``httpx`` as-is -- no extra header
+    sent) rather than required, because ``tests/test_chat_e2e_scripted.py``
+    imports this exact function and calls it header-less; that file is
+    outside F2's sanctioned scope (not named in the fix plan's file list)
+    and is disclosed, unfixed, in this task's own report as a same-shaped
+    gap for a follow-up task, not silently folded into this one."""
     events = []
     body = {"text": text}
     if client_turn_key is not None:
         body["client_turn_key"] = client_turn_key
-    async with client.stream("POST", f"/api/conversations/{cid}/messages", json=body) as response:
+    async with client.stream(
+        "POST", f"/api/conversations/{cid}/messages", json=body, headers=headers
+    ) as response:
         assert response.status_code == 200
         name = None
         async for line in response.aiter_lines():
@@ -378,11 +424,16 @@ async def test_live_turn_streams_the_flagship_frame_sequence_and_table_and_proof
 ):
     writer = RecordingWriter()
     app = _live_app(data_client=FakeDataClient(), writer=writer, database_url=pg_database_url)
+    headers = _headers(_dev_user("flagship"))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        cid = await _create_conversation(client)
+        cid = await _create_conversation(client, headers)
         events = await read_sse(
-            client, cid, "Top GP customers for Port of Singapore in April 2026", "ctk-1"
+            client,
+            cid,
+            "Top GP customers for Port of Singapore in April 2026",
+            "ctk-1",
+            headers,
         )
 
     names = [name for name, _data in events]
@@ -469,23 +520,31 @@ async def test_live_turn_injects_real_instruction_and_memory_and_touches_the_out
     provider, so this test asserts on captured prompt TEXT (this task's own
     standard throughout, not "a store method was called").
 
-    ``DISABLED_DEFAULT_USER`` ("dev|local") is the ONLY identity
-    ``identity_mode="disabled"`` (this file's default, like every other pg
-    test here) ever resolves requests to -- there is no way to seed a
-    different user's instruction/memory for an HTTP-level test without a
-    real auth flow this phase does not build. Because that identity is
-    shared by every test in this pg-marked file (and the seeded instruction/
-    memory would otherwise persist in Postgres across test runs), the
-    ``finally`` block below resets both back to their pre-test empty state
-    unconditionally, so this test leaves no residue for any other test
-    against the same database.
+    F2 fix (2026-08-05 walkthrough): this test used to hard-code
+    ``DISABLED_DEFAULT_USER.sub`` ("dev|local") -- on a docstring claim
+    that there was "no way to seed a different user's instruction/memory
+    for an HTTP-level test without a real auth flow this phase does not
+    build". That claim was FALSE: ``identity_mode="disabled"`` (this
+    file's default, like every other pg test here) honors the
+    ``X-Dev-User`` act-as header exactly like ``test_me_routes.py``
+    already relies on for every one of its own tests (``core/identity.
+    py``'s ``DisabledProvider.resolve``). This test now poses as a fresh,
+    run-unique ``_dev_user(...)`` identity (see that helper's own
+    docstring), and seeds ITS store rows only -- never the real, shared
+    ``dev|local`` sub Carlos's own browser resolves to. No ``finally``
+    cleanup is needed any more: a throwaway act-as sub is never reused
+    across runs, the same "leave it behind, it's not a real user"
+    convention ``test_me_routes.py``'s own ``alice``/``bob`` helpers
+    already use.
     """
     writer = RecordingWriter()
     app = _live_app(data_client=FakeDataClient(), writer=writer, database_url=pg_database_url)
     stub = _RecordingRoleClientStub()
     app.state.role_client = RoleClient(app.state.settings, providers={"stub": stub})
 
-    user_sub = DISABLED_DEFAULT_USER.sub
+    user = _dev_user("instr")
+    headers = _headers(user)
+    user_sub = f"dev|{user}"
     instruction = "Always show GP in USD thousands."
     memory_entry = {
         "type": "preference",
@@ -500,54 +559,54 @@ async def test_live_turn_injects_real_instruction_and_memory_and_touches_the_out
     app.state.profile_store.for_user(user_sub).put(instruction)
     app.state.memory_store.for_user(user_sub).write_version([memory_entry], created_by="user")
 
-    try:
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-            cid = await _create_conversation(client)
-            events = await read_sse(
-                client, cid, "Top GP customers for Port of Singapore in April 2026", "ctk-instr-1"
-            )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid = await _create_conversation(client, headers)
+        events = await read_sse(
+            client,
+            cid,
+            "Top GP customers for Port of Singapore in April 2026",
+            "ctk-instr-1",
+            headers,
+        )
 
-        names = [name for name, _data in events]
-        assert names == ["accepted", "tool", "tool", "part", "part", "token", "done"]
+    names = [name for name, _data in events]
+    assert names == ["accepted", "tool", "tool", "part", "part", "token", "done"]
 
-        # ``stub.systems`` also captures live_chat.py's OWN turn-one title
-        # generation call (``_finalize_turn``'s own ``title_for(...)``,
-        # role "utility") -- a completely different, unrelated prompt that
-        # never carries assemble_system's own sections at all, since the
-        # SAME ``app.state.role_client`` (now the recording stub) answers
-        # every role, not just "router". ``=== CONVERSATION STATE ===`` is
-        # assemble_system's own last-section header (core/llm/prompts.py) --
-        # present ONLY on a real router/synthesis render, never the title
-        # prompt -- so it is what isolates the calls this assertion cares
-        # about from that unrelated one.
-        router_systems = [s for s in stub.systems if "=== CONVERSATION STATE ===" in s]
-        assert router_systems  # at least one real router call happened
-        assert len(set(router_systems)) == 1  # one system per turn, reused across iterations
-        for system in router_systems:
-            assert f"=== USER INSTRUCTION ===\n{instruction}" in system
-            assert f"=== MEMORY ===\n{expected_memory_markdown}" in system
+    # ``stub.systems`` also captures live_chat.py's OWN turn-one title
+    # generation call (``_finalize_turn``'s own ``title_for(...)``,
+    # role "utility") -- a completely different, unrelated prompt that
+    # never carries assemble_system's own sections at all, since the
+    # SAME ``app.state.role_client`` (now the recording stub) answers
+    # every role, not just "router". ``=== CONVERSATION STATE ===`` is
+    # assemble_system's own last-section header (core/llm/prompts.py) --
+    # present ONLY on a real router/synthesis render, never the title
+    # prompt -- so it is what isolates the calls this assertion cares
+    # about from that unrelated one.
+    router_systems = [s for s in stub.systems if "=== CONVERSATION STATE ===" in s]
+    assert router_systems  # at least one real router call happened
+    assert len(set(router_systems)) == 1  # one system per turn, reused across iterations
+    for system in router_systems:
+        assert f"=== USER INSTRUCTION ===\n{instruction}" in system
+        assert f"=== MEMORY ===\n{expected_memory_markdown}" in system
 
-        # The outbox touch: memory_outbox has no store-level read method
-        # (ConversationOutbox.touch is write-only by design -- Task 1's own
-        # interface), so this reads the row directly, the same raw-query
-        # verification style test_personalization_stores.py's own touch()
-        # tests already use.
-        with app.state.db_engine.connect() as conn:
-            row = conn.execute(
-                text(
-                    "SELECT status, attempts, last_turn_at FROM memory_outbox "
-                    "WHERE conversation_id = :c"
-                ),
-                {"c": cid},
-            ).first()
-        assert row is not None
-        assert row.status == "pending"
-        assert row.attempts == 0
-        assert row.last_turn_at is not None
-    finally:
-        app.state.profile_store.for_user(user_sub).put("")
-        app.state.memory_store.for_user(user_sub).write_version([], created_by="user")
+    # The outbox touch: memory_outbox has no store-level read method
+    # (ConversationOutbox.touch is write-only by design -- Task 1's own
+    # interface), so this reads the row directly, the same raw-query
+    # verification style test_personalization_stores.py's own touch()
+    # tests already use.
+    with app.state.db_engine.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT status, attempts, last_turn_at FROM memory_outbox "
+                "WHERE conversation_id = :c"
+            ),
+            {"c": cid},
+        ).first()
+    assert row is not None
+    assert row.status == "pending"
+    assert row.attempts == 0
+    assert row.last_turn_at is not None
 
 
 @pytest.mark.pg
@@ -557,14 +616,23 @@ async def test_client_turn_key_retry_gets_pinned_duplicate_turn_error_and_no_sec
 ):
     writer = RecordingWriter()
     app = _live_app(data_client=FakeDataClient(), writer=writer, database_url=pg_database_url)
+    headers = _headers(_dev_user("retry"))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        cid = await _create_conversation(client)
+        cid = await _create_conversation(client, headers)
         first = await read_sse(
-            client, cid, "Top GP customers for Port of Singapore in April 2026", "ctk-1"
+            client,
+            cid,
+            "Top GP customers for Port of Singapore in April 2026",
+            "ctk-1",
+            headers,
         )
         second = await read_sse(
-            client, cid, "Top GP customers for Port of Singapore in April 2026", "ctk-1"
+            client,
+            cid,
+            "Top GP customers for Port of Singapore in April 2026",
+            "ctk-1",
+            headers,
         )
 
     first_names = [name for name, _data in first]
@@ -615,12 +683,13 @@ async def test_unhandled_exception_mid_turn_emits_pinned_internal_error_and_ends
     writer = RecordingWriter()
     app = _live_app(data_client=FakeDataClient(), writer=writer, database_url=pg_database_url)
     monkeypatch.setattr("poseidon.api.live_chat.execute_turn", _crashing_execute_turn)
+    headers = _headers(_dev_user("crash"))
 
     transport = httpx.ASGITransport(app=app)
     with caplog.at_level(logging.ERROR, logger="poseidon.api.live_chat"):
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-            cid = await _create_conversation(client)
-            events = await read_sse(client, cid, "hello", None)
+            cid = await _create_conversation(client, headers)
+            events = await read_sse(client, cid, "hello", None, headers)
 
     # The client sees the partial turn, then ONE pinned error frame, then a
     # clean stream end -- never a raw protocol error (no more frames, no
@@ -662,9 +731,9 @@ async def test_unhandled_exception_mid_turn_emits_pinned_internal_error_and_ends
     # opening a new chat, not a retry against the one that just failed.
     monkeypatch.undo()
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        cid2 = await _create_conversation(client)
+        cid2 = await _create_conversation(client, headers)
         follow_up = await read_sse(
-            client, cid2, "Top GP customers for Port of Singapore in April 2026", None
+            client, cid2, "Top GP customers for Port of Singapore in April 2026", None, headers
         )
     assert [name for name, _data in follow_up] == [
         "accepted",
@@ -693,11 +762,12 @@ async def test_unhandled_exception_with_no_writer_still_ends_stream_cleanly(
     app = _live_app(data_client=FakeDataClient(), database_url=pg_database_url)
     app.state.run_log_writer = None
     monkeypatch.setattr("poseidon.api.live_chat.execute_turn", _crashing_execute_turn)
+    headers = _headers(_dev_user("crash-nowriter"))
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        cid = await _create_conversation(client)
-        events = await read_sse(client, cid, "hello", None)
+        cid = await _create_conversation(client, headers)
+        events = await read_sse(client, cid, "hello", None, headers)
 
     assert [name for name, _data in events] == ["accepted", "token", "error"]
 
@@ -760,9 +830,10 @@ async def test_post_conversations_returns_the_same_opener_shape_as_mock(pg_datab
     the frontend's bootstrap() reads conversation.id/opener.parts and does
     not care which mode produced them."""
     app = _live_app(database_url=pg_database_url)
+    headers = _headers(_dev_user("opener"))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        r = await client.post("/api/conversations")
+        r = await client.post("/api/conversations", headers=headers)
 
     assert r.status_code == 201
     body = r.json()
@@ -788,9 +859,10 @@ async def test_opener_flow_chips_carry_the_d19_pinned_entry_phrases_as_send_text
     rather than the bare "Existing customer"/"New customer prospect"
     labels a human reads on the button."""
     app = _live_app(database_url=pg_database_url)
+    headers = _headers(_dev_user("opener-chips"))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        r = await client.post("/api/conversations")
+        r = await client.post("/api/conversations", headers=headers)
 
     options = r.json()["opener"]["parts"][1]["payload"]["options"]
     assert options == [
@@ -816,11 +888,12 @@ async def test_get_conversations_lists_newest_first(pg_database_url):
     docstring for the disclosed, scoped gap in each item's own shape
     (``{"id", "title"}`` today, not yet ``mode``/``updated_at``)."""
     app = _live_app(database_url=pg_database_url)
+    headers = _headers(_dev_user("list"))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        c1 = (await client.post("/api/conversations")).json()["conversation"]["id"]
-        c2 = (await client.post("/api/conversations")).json()["conversation"]["id"]
-        body = (await client.get("/api/conversations")).json()
+        c1 = (await client.post("/api/conversations", headers=headers)).json()["conversation"]["id"]
+        c2 = (await client.post("/api/conversations", headers=headers)).json()["conversation"]["id"]
+        body = (await client.get("/api/conversations", headers=headers)).json()
 
     assert set(body) == {"items", "next_cursor"}
     assert [c["id"] for c in body["items"][:2]] == [c2, c1]
@@ -840,12 +913,14 @@ async def test_get_conversations_limit_out_of_range_is_422_not_500(pg_database_u
     int, unbounded). FastAPI's own Query(ge=1, le=200) now rejects all
     three before the route body ever runs -- 422, never 500."""
     app = _live_app(database_url=pg_database_url)
+    headers = _headers(_dev_user("limit"))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        await client.post("/api/conversations")  # >=1 row, for limit=0's own branch
+        # >=1 row, for limit=0's own branch
+        await client.post("/api/conversations", headers=headers)
 
         responses = [
-            await client.get("/api/conversations", params={"limit": bad_limit})
+            await client.get("/api/conversations", params={"limit": bad_limit}, headers=headers)
             for bad_limit in (0, -1, 201)
         ]
 
@@ -869,10 +944,13 @@ async def test_get_messages_404_for_a_conversation_id_never_seen():
 @pytest.mark.anyio
 async def test_get_messages_returns_the_opener_right_after_create(pg_database_url):
     app = _live_app(database_url=pg_database_url)
+    headers = _headers(_dev_user("opener-msgs"))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
-        r = await client.get(f"/api/conversations/{cid}/messages")
+        cid = (
+            await client.post("/api/conversations", headers=headers)
+        ).json()["conversation"]["id"]
+        r = await client.get(f"/api/conversations/{cid}/messages", headers=headers)
 
     assert r.status_code == 200
     body = r.json()
@@ -890,12 +968,17 @@ async def test_get_messages_limit_out_of_range_is_422_not_500(pg_database_url):
     trips it unconditionally; limit=501 exercises the new upper bound --
     same three-value matrix as the conversations-list case above."""
     app = _live_app(database_url=pg_database_url)
+    headers = _headers(_dev_user("msgs-limit"))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
+        cid = (
+            await client.post("/api/conversations", headers=headers)
+        ).json()["conversation"]["id"]
 
         responses = [
-            await client.get(f"/api/conversations/{cid}/messages", params={"limit": bad_limit})
+            await client.get(
+                f"/api/conversations/{cid}/messages", params={"limit": bad_limit}, headers=headers
+            )
             for bad_limit in (0, -1, 501)
         ]
 
@@ -917,13 +1000,22 @@ async def test_a_real_turn_is_recorded_into_the_transcript_user_then_assistant_p
     own words), not re-derived some other way."""
     writer = RecordingWriter()
     app = _live_app(data_client=FakeDataClient(), writer=writer, database_url=pg_database_url)
+    headers = _headers(_dev_user("transcript"))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
+        cid = (
+            await client.post("/api/conversations", headers=headers)
+        ).json()["conversation"]["id"]
         await read_sse(
-            client, cid, "Top GP customers for Port of Singapore in April 2026", "ctk-transcript"
+            client,
+            cid,
+            "Top GP customers for Port of Singapore in April 2026",
+            "ctk-transcript",
+            headers,
         )
-        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["items"]
+        msgs = (await client.get(f"/api/conversations/{cid}/messages", headers=headers)).json()[
+            "items"
+        ]
 
     # opener (from create), then the user's question, then the assistant's answer.
     assert [m["role"] for m in msgs] == ["assistant", "user", "assistant"]
@@ -971,11 +1063,16 @@ async def test_a_clarify_turn_is_recorded_into_the_transcript_as_chips_then_text
     app = _live_app(
         data_client=FakeDataClient(), writer=RecordingWriter(), database_url=pg_database_url
     )
+    headers = _headers(_dev_user("clarify"))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
-        await read_sse(client, cid, "gp for Meridiann in April 2026", None)
-        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["items"]
+        cid = (
+            await client.post("/api/conversations", headers=headers)
+        ).json()["conversation"]["id"]
+        await read_sse(client, cid, "gp for Meridiann in April 2026", None, headers)
+        msgs = (await client.get(f"/api/conversations/{cid}/messages", headers=headers)).json()[
+            "items"
+        ]
 
     assistant_msg = msgs[-1]
     kinds = [p["kind"] for p in assistant_msg["parts"]]
@@ -1003,10 +1100,11 @@ async def test_send_message_to_a_never_created_conversation_id_404s(pg_database_
     app = _live_app(
         data_client=FakeDataClient(), writer=RecordingWriter(), database_url=pg_database_url
     )
+    headers = _headers(_dev_user("never-created"))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         r = await client.post(
-            "/api/conversations/never-created/messages", json={"text": "hello"}
+            "/api/conversations/never-created/messages", json={"text": "hello"}, headers=headers
         )
 
     assert r.status_code == 404
@@ -1024,23 +1122,32 @@ async def test_feedback_roundtrip_and_unknown_message_404(pg_database_url):
     # underlying create_app()-built app.state.run_log_writer in place --
     # the real writer create_app()/`_wire_live_chat` already constructs.
     app = _live_app(data_client=FakeDataClient(), database_url=pg_database_url)
+    headers = _headers(_dev_user("feedback"))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
-        await read_sse(client, cid, "hello", None)
-        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["items"]
+        cid = (
+            await client.post("/api/conversations", headers=headers)
+        ).json()["conversation"]["id"]
+        await read_sse(client, cid, "hello", None, headers)
+        msgs = (await client.get(f"/api/conversations/{cid}/messages", headers=headers)).json()[
+            "items"
+        ]
         mid = msgs[-1]["id"]
 
         r = await client.post(
-            f"/api/messages/{mid}/feedback", json={"verdict": "down", "comment": "wrong port"}
+            f"/api/messages/{mid}/feedback",
+            json={"verdict": "down", "comment": "wrong port"},
+            headers=headers,
         )
         assert r.status_code == 204
-        r = await client.get(f"/api/messages/{mid}/feedback")
+        r = await client.get(f"/api/messages/{mid}/feedback", headers=headers)
         assert r.json() == {"verdict": "down", "comment": "wrong port"}
 
-        r = await client.post(f"/api/messages/{mid}/feedback", json={"verdict": "up"})
+        r = await client.post(
+            f"/api/messages/{mid}/feedback", json={"verdict": "up"}, headers=headers
+        )
         assert r.status_code == 204
-        r = await client.get(f"/api/messages/{mid}/feedback")
+        r = await client.get(f"/api/messages/{mid}/feedback", headers=headers)
         assert r.json() == {"verdict": "up", "comment": None}
 
         # "nope" is not even a well-formed uuid -- the SAME fail-closed
@@ -1048,9 +1155,11 @@ async def test_feedback_roundtrip_and_unknown_message_404(pg_database_url):
         # history.py's own methods use, reached here via the feedback
         # existence gate (api/live_chat.py's own _message_visible) rather
         # than TranscriptStore's now-deleted membership check.
-        r = await client.post("/api/messages/nope/feedback", json={"verdict": "up"})
+        r = await client.post(
+            "/api/messages/nope/feedback", json={"verdict": "up"}, headers=headers
+        )
         assert r.status_code == 404
-        r = await client.get("/api/messages/nope/feedback")
+        r = await client.get("/api/messages/nope/feedback", headers=headers)
         assert r.status_code == 404
 
 
@@ -1063,22 +1172,31 @@ async def test_feedback_null_verdict_clears_a_recorded_vote_then_get_404s(pg_dat
     like "never voted" -- 404, indistinguishable by design (this route's
     existing 404-means-no-vote contract, unchanged)."""
     app = _live_app(data_client=FakeDataClient(), database_url=pg_database_url)
+    headers = _headers(_dev_user("unvote"))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
-        await read_sse(client, cid, "hello", None)
-        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["items"]
+        cid = (
+            await client.post("/api/conversations", headers=headers)
+        ).json()["conversation"]["id"]
+        await read_sse(client, cid, "hello", None, headers)
+        msgs = (await client.get(f"/api/conversations/{cid}/messages", headers=headers)).json()[
+            "items"
+        ]
         mid = msgs[-1]["id"]
 
-        r = await client.post(f"/api/messages/{mid}/feedback", json={"verdict": "down"})
+        r = await client.post(
+            f"/api/messages/{mid}/feedback", json={"verdict": "down"}, headers=headers
+        )
         assert r.status_code == 204
-        r = await client.get(f"/api/messages/{mid}/feedback")
+        r = await client.get(f"/api/messages/{mid}/feedback", headers=headers)
         assert r.status_code == 200
 
-        r = await client.post(f"/api/messages/{mid}/feedback", json={"verdict": None})
+        r = await client.post(
+            f"/api/messages/{mid}/feedback", json={"verdict": None}, headers=headers
+        )
         assert r.status_code == 204
 
-        r = await client.get(f"/api/messages/{mid}/feedback")
+        r = await client.get(f"/api/messages/{mid}/feedback", headers=headers)
         assert r.status_code == 404
 
 
@@ -1086,17 +1204,26 @@ async def test_feedback_null_verdict_clears_a_recorded_vote_then_get_404s(pg_dat
 @pytest.mark.anyio
 async def test_feedback_null_verdict_on_a_never_voted_message_is_a_noop_204(pg_database_url):
     app = _live_app(data_client=FakeDataClient(), database_url=pg_database_url)
+    headers = _headers(_dev_user("noop-unvote"))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
-        await read_sse(client, cid, "hello", None)
-        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["items"]
+        cid = (
+            await client.post("/api/conversations", headers=headers)
+        ).json()["conversation"]["id"]
+        await read_sse(client, cid, "hello", None, headers)
+        msgs = (await client.get(f"/api/conversations/{cid}/messages", headers=headers)).json()[
+            "items"
+        ]
         mid = msgs[-1]["id"]
 
-        r = await client.post(f"/api/messages/{mid}/feedback", json={"verdict": None})
+        r = await client.post(
+            f"/api/messages/{mid}/feedback", json={"verdict": None}, headers=headers
+        )
 
         assert r.status_code == 204
-        assert (await client.get(f"/api/messages/{mid}/feedback")).status_code == 404
+        assert (
+            await client.get(f"/api/messages/{mid}/feedback", headers=headers)
+        ).status_code == 404
 
 
 @pytest.mark.pg
@@ -1105,14 +1232,21 @@ async def test_feedback_invalid_verdict_returns_422(pg_database_url):
     app = _live_app(
         data_client=FakeDataClient(), writer=RecordingWriter(), database_url=pg_database_url
     )
+    headers = _headers(_dev_user("bad-verdict"))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
-        await read_sse(client, cid, "hello", None)
-        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["items"]
+        cid = (
+            await client.post("/api/conversations", headers=headers)
+        ).json()["conversation"]["id"]
+        await read_sse(client, cid, "hello", None, headers)
+        msgs = (await client.get(f"/api/conversations/{cid}/messages", headers=headers)).json()[
+            "items"
+        ]
 
         r = await client.post(
-            f"/api/messages/{msgs[-1]['id']}/feedback", json={"verdict": "sideways"}
+            f"/api/messages/{msgs[-1]['id']}/feedback",
+            json={"verdict": "sideways"},
+            headers=headers,
         )
 
     assert r.status_code == 422
@@ -1150,10 +1284,13 @@ async def test_snowflake_data_backend_emits_one_structured_error_frame_and_never
         data_backend="snowflake",
         database_url=pg_database_url,
     )
+    headers = _headers(_dev_user("sf-guard"))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
-        events = await read_sse(client, cid, "hello", None)
+        cid = (
+            await client.post("/api/conversations", headers=headers)
+        ).json()["conversation"]["id"]
+        events = await read_sse(client, cid, "hello", None, headers)
 
     assert [name for name, _data in events] == ["error"]
     error_data = events[0][1]
@@ -1173,11 +1310,16 @@ async def test_snowflake_guard_still_records_an_empty_assistant_message_in_the_t
         data_backend="snowflake",
         database_url=pg_database_url,
     )
+    headers = _headers(_dev_user("sf-guard-transcript"))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        cid = (await client.post("/api/conversations")).json()["conversation"]["id"]
-        await read_sse(client, cid, "hello", None)
-        msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()["items"]
+        cid = (
+            await client.post("/api/conversations", headers=headers)
+        ).json()["conversation"]["id"]
+        await read_sse(client, cid, "hello", None, headers)
+        msgs = (await client.get(f"/api/conversations/{cid}/messages", headers=headers)).json()[
+            "items"
+        ]
 
     assert msgs[-1]["role"] == "assistant"
     assert msgs[-1]["parts"] == []

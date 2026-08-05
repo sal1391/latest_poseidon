@@ -121,7 +121,9 @@ export const handlers = [
     });
   }),
 
-  http.get("/api/me/memory/versions", () => HttpResponse.json([])),
-
-  http.post("/api/me/memory/versions/:version/restore", () => new HttpResponse(null, { status: 404 })),
+  // F6 (owner decision, 2026-08-05 walkthrough): Version History is removed
+  // from the settings UI -- no frontend code calls GET /api/me/memory/versions
+  // or POST .../restore any more (the backend routes and their own tests
+  // stay untouched, `api/me.py`'s invisible audit/undo), so their mock
+  // handlers are removed here too rather than left unreachable.
 ];
