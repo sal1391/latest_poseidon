@@ -35,9 +35,50 @@ path any caller has.
 ``poseidon_admin`` policy at all (doc 05 section 7's "no admin policy,
 deliberately" extends to this table too, alongside ``user_profile``/
 ``user_memory``) -- this module has nothing to gate on that account.
+
+**Phase 13 Task 4 amendment (2026-08-04, controller-caught pre-dispatch):
+the two status-transition methods the worker needs,
+:meth:`ConversationOutbox.mark_done` and :meth:`ConversationOutbox.
+record_failure`.** The phase's own worker-privilege model (see
+``poseidon/scripts/memory_worker.py``'s module docstring) permits exactly
+ONE operation against this table outside a per-user ``rls_transaction`` --
+the cross-user "which conversations are idle" claim query, which
+structurally cannot be scoped to a single user. Everything the worker does
+to a row AFTER claiming it, including moving that row to ``done`` or
+``failed``, has to travel the same ``OutboxStore.for_user(sub)`` path every
+other per-user operation in this codebase does; Task 1 built only
+:meth:`touch`, so those two methods are added here rather than open-coded
+against the privileged connection. :meth:`touch`'s own behavior is
+untouched by this amendment.
+
+**Both transitions are guarded on ``last_turn_at``, and this is
+load-bearing, not defensive garnish.** A claim is not a lease: the row's
+``FOR UPDATE SKIP LOCKED`` lock is released the moment the claim
+transaction commits, long before the (slow, model-bound) distillation
+finishes. A user who comes back mid-distillation reaches :meth:`touch`,
+which fully re-arms the row -- ``last_turn_at = now()``, ``status =
+'pending'``, ``attempts = 0``. An UNGUARDED ``SET status = 'done'`` landing
+after that would silently swallow the new turn's own distillation trigger
+until some later turn happened to re-arm the row again. Both methods below
+therefore match on ``last_turn_at = :claimed_last_turn_at`` -- the exact
+value the claim query read -- so a re-armed row is left alone and simply
+re-distilled (with the new turn included) on a later cycle. This is
+ordinary optimistic concurrency control, using a column the table already
+has, rather than a new ``processing`` status or a lease timestamp the
+schema deliberately does not carry (doc 05 section 5, decision D31).
+
+**``updated_at`` is stamped by both methods, unlike ``touch``.** That
+column exists to say when this row's PROCESSING state last changed, so a
+transition that leaves it stale would make it meaningless. :meth:`touch`'s
+own ``ON CONFLICT DO UPDATE`` does not set it (Task 1's shipped behavior,
+deliberately left byte-unchanged here); a row that is only ever touched
+therefore keeps its insert-time value, which is a pre-existing quirk this
+amendment neither introduces nor is sanctioned to fix.
 """
 
+import json
 import uuid
+from datetime import datetime
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -63,6 +104,31 @@ _TOUCH_SQL = text(
     "VALUES (:conversation_id, :user_sub, now(), 'pending', 0) "
     "ON CONFLICT (conversation_id) DO UPDATE "
     "SET last_turn_at = now(), status = 'pending', attempts = 0, last_error = NULL"
+)
+
+# Phase 13 Task 4. Both statements below carry the same
+# ``last_turn_at = :claimed_last_turn_at`` guard -- see the module
+# docstring's "Both transitions are guarded on last_turn_at" section for
+# why that predicate is load-bearing rather than defensive.
+_MARK_DONE_SQL = text(
+    "UPDATE memory_outbox "
+    "SET status = 'done', last_error = NULL, updated_at = now() "
+    "WHERE conversation_id = :conversation_id AND last_turn_at = :claimed_last_turn_at"
+)
+
+# ONE statement, not a read-then-write pair: `attempts` is incremented and
+# the resulting status decided in the same UPDATE, so there is no window in
+# which a concurrent writer could observe (or interleave with) a half-applied
+# failure. `attempts + 1 >= :max_attempts` reads the column's PRE-update
+# value, so the row moves to 'failed' on exactly the attempt that reaches the
+# ceiling -- with max_attempts=5, attempts lands on 5 and status on 'failed'
+# together, never a sixth pending retry.
+_RECORD_FAILURE_SQL = text(
+    "UPDATE memory_outbox "
+    "SET attempts = attempts + 1, last_error = :last_error, updated_at = now(), "
+    "    status = CASE WHEN attempts + 1 >= :max_attempts THEN 'failed' ELSE 'pending' END "
+    "WHERE conversation_id = :conversation_id AND last_turn_at = :claimed_last_turn_at "
+    "RETURNING status, attempts"
 )
 
 
@@ -116,6 +182,82 @@ class ConversationOutbox:
             conn.execute(
                 _TOUCH_SQL, {"conversation_id": str(parsed), "user_sub": self._user_sub}
             )
+
+    def mark_done(self, conversation_id: str, *, claimed_last_turn_at: datetime) -> bool:
+        """Move a successfully-distilled row to ``status='done'``, clearing
+        any ``last_error`` a previous failed attempt left behind.
+
+        ``claimed_last_turn_at`` is the value the WORKER's claim query read
+        off this row; the UPDATE only applies while the row still carries
+        it (module docstring). Returns ``True`` when the row was actually
+        marked, ``False`` when it was not -- which today means exactly one
+        thing in practice: a :meth:`touch` landed between the claim and
+        this call, so the row is legitimately ``pending`` again and must
+        stay that way. A ``False`` return is therefore an ordinary,
+        expected outcome the caller logs rather than an error it raises on.
+
+        Raises ``ValueError`` for a malformed ``conversation_id``, exactly
+        like :meth:`touch` and for the identical reason (this id is always
+        one the claim query just read out of the table).
+        """
+        parsed = _parse_uuid(conversation_id)
+        if parsed is None:
+            raise ValueError(f"conversation_id {conversation_id!r} is not a valid id")
+        with self._transaction() as conn:
+            result = conn.execute(
+                _MARK_DONE_SQL,
+                {
+                    "conversation_id": str(parsed),
+                    "claimed_last_turn_at": claimed_last_turn_at,
+                },
+            )
+        return result.rowcount == 1
+
+    def record_failure(
+        self,
+        conversation_id: str,
+        *,
+        claimed_last_turn_at: datetime,
+        error: dict,
+        max_attempts: int,
+    ) -> dict | None:
+        """Record one failed distillation attempt: increment ``attempts``,
+        store ``error`` in ``last_error``, and -- on the attempt that
+        reaches ``max_attempts`` -- move the row to ``status='failed'``,
+        all in one statement (see :data:`_RECORD_FAILURE_SQL`'s own comment
+        for why this is deliberately not a read-then-write pair, and why
+        the two halves the plan describes separately -- "increment attempts,
+        stay pending" and "exhausted: mark failed with last_error" -- are
+        one method rather than two).
+
+        Returns ``{"status", "attempts"}`` as the row now stands, or
+        ``None`` when the row was re-armed by a :meth:`touch` between the
+        claim and this call (same ``last_turn_at`` guard, and the same
+        "ordinary expected outcome" reading, as :meth:`mark_done`) -- a
+        re-armed row's ``attempts`` is deliberately back at 0, and this
+        failure belongs to content that row no longer describes.
+
+        The failed row keeps its ``last_error`` for inspection either way
+        (doc 05 section 5: "never silently dropped"). ``error`` is a plain
+        dict serialized to the ``jsonb`` column, mirroring
+        ``core/runlog.py``'s own ``error`` binding convention.
+        """
+        parsed = _parse_uuid(conversation_id)
+        if parsed is None:
+            raise ValueError(f"conversation_id {conversation_id!r} is not a valid id")
+        with self._transaction() as conn:
+            row = conn.execute(
+                _RECORD_FAILURE_SQL,
+                {
+                    "conversation_id": str(parsed),
+                    "claimed_last_turn_at": claimed_last_turn_at,
+                    "last_error": json.dumps(error),
+                    "max_attempts": max_attempts,
+                },
+            ).first()
+        if row is None:
+            return None
+        return {"status": row.status, "attempts": row.attempts}
 
 
 __all__ = ["ConversationOutbox", "OutboxStore"]

@@ -66,6 +66,57 @@ services:
       db: { condition: service_healthy }
       minio: { condition: service_started }
 
+  # Phase 13 Task 4 (doc 05 section 5, decision D31): the idle-triggered
+  # memory-distillation worker. Same image and same environment as
+  # `backend` above, with `python -m poseidon.scripts.memory_worker` in
+  # place of uvicorn -- this is the first long-running non-HTTP process in
+  # this stack (every prior background job was a one-shot CLI script).
+  #
+  # Deliberately runs NO `alembic upgrade head` and NO reseed of its own,
+  # unlike `backend`'s own start-up command: migrations must have exactly
+  # one owner, and two containers racing `alembic upgrade head` against the
+  # same database on every `docker compose up` is a real lock contention
+  # (and, on a fresh volume, a real duplicate-DDL) hazard for no benefit.
+  # `depends_on: backend` is what sequences it -- see that key below.
+  worker:
+    build: { context: ../backend, dockerfile: ../infra/backend.Dockerfile.dev }
+    command: python -m poseidon.scripts.memory_worker
+    environment:
+      # Same rationale as `backend`'s own POSEIDON_ENV_FILE: empty = read no
+      # dotenv, so the host `backend/.env` bind-mounted at /app cannot shadow
+      # the values below.
+      POSEIDON_ENV_FILE: ""
+      DEPLOY_MODE: local
+      DATABASE_URL: postgresql+psycopg://poseidon:poseidon@db:5432/poseidon
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_BUCKET: poseidon-artifacts
+      S3_ACCESS_KEY: poseidon
+      S3_SECRET_KEY: poseidon123
+      DATA_BACKEND: synthetic
+      IDENTITY_MODE: disabled
+      LLM_PROFILE: bedrock
+      LLM_MODE: stub
+      TOOL_TRANSPORT_PERPLEXITY: direct
+      # CHAT_MODE is deliberately absent: it selects which chat HTTP surface
+      # `create_app` mounts, and this process mounts none.
+    volumes:
+      - "../backend:/app"
+      # Same read-only ontology mount, for the same repo-root-anchored path
+      # resolution reason `backend`'s own comment explains at length: this
+      # worker reaches `poseidon.core.chat.history`, which imports the
+      # orchestrator and with it the ontology-backed parsing graph.
+      - "../ontology:/ontology:ro"
+    depends_on:
+      db: { condition: service_healthy }
+      # Not merely ordering: `backend`'s start-up command owns `alembic
+      # upgrade head`, so this worker's very first claim query would hit a
+      # `memory_outbox` table that does not exist yet on a fresh volume.
+      # `service_started` (not `service_healthy` -- `backend` declares no
+      # healthcheck) is the strongest condition available here; the worker's
+      # own per-cycle error handling covers the remaining seconds in which
+      # migrations may still be running.
+      backend: { condition: service_started }
+
   frontend:
     build: { context: ../frontend, dockerfile: ../infra/frontend.Dockerfile.dev }
     command: sh -c "npm install && npm run dev -- --host"

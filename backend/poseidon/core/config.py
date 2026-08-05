@@ -76,6 +76,40 @@ class Settings(BaseSettings):
     perplexity_api_key: str | None = None
     memory_max_chars: int = 8000
     memory_keep_versions: int = 20
+    # Phase 13 Task 4 (doc 05 section 5, decision D31): how long a
+    # conversation must sit untouched before poseidon.scripts.memory_worker
+    # will claim its memory_outbox row and distill it. This is THE trigger
+    # for background distillation -- decision D31 chose an explicit idle
+    # threshold served by a durable queue over an in-process debounce timer
+    # precisely because "the conversation ended" is not an event the server
+    # ever receives; only inactivity is observable, and only a durable row
+    # survives the restart a debounce timer would lose every pending
+    # distillation to. The value is a real trade-off, not a formality: too
+    # short and the worker distills a conversation the user is still in the
+    # middle of (burning a model call on half a thought, and writing a
+    # memory version the very next turn invalidates); too long and a
+    # preference the user stated this morning is not in their prompt this
+    # afternoon. 30 is doc 05 section 5's own named default -- long enough
+    # that a coffee break does not trip it, short enough that a single
+    # working session's preferences are remembered by the next one.
+    memory_idle_minutes: int = 30
+    # Phase 13 Task 4: how many failed distillation attempts a memory_outbox
+    # row absorbs before the worker gives up and moves it to status='failed'
+    # (retaining last_error for inspection -- doc 05 section 5: "never
+    # silently dropped"). A ceiling has to exist at all because the retry
+    # path is otherwise unbounded: a row whose conversation reliably breaks
+    # the distiller -- a prompt-length edge case, a model that answers
+    # non-JSON every single time -- would otherwise be re-claimed on every
+    # poll forever, spending a model call each cycle for an answer that
+    # never lands. 5 is this plan's own choice (doc 05 section 5 names the
+    # ladder but not the number): generous enough to ride out a transient
+    # provider outage or a deploy-window blip across several polls, small
+    # enough that a genuinely poisoned row stops costing money within an
+    # hour or two rather than indefinitely. A `failed` row is terminal only
+    # until the conversation sees another turn -- ConversationOutbox.touch
+    # fully re-arms it (status back to 'pending', attempts back to 0), so
+    # this ceiling never permanently disqualifies a live conversation.
+    memory_max_attempts: int = 5
     # Phase 6 Task 4: which chat HTTP surface poseidon.api.app.create_app mounts.
     # "mock" is the default so every existing env/test keeps today's scripted
     # demo (mock_chat.py) with zero config changes; an operator opts into the
