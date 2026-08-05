@@ -689,6 +689,26 @@ NOT modified; the Snowflake-side effort later flips config, not code.
 **→ Final whole-phase review (opus) over Tasks 1–6b's commit range, then the fix wave +
 re-review per standing SDD process, BEFORE the account-gated half begins.**
 
+**Final-review fix wave (amendment, 2026-08-05 — sanctioned scope for the ONE wave):**
+C1/C2/I2/I5/c-fixes in `infra/runbooks/deploy-ec2.md` + `infra/runbooks/smoke.md` (compose
+interpolation export/`infra/.env` block; §7/§8 counts through `rls_transaction`; the
+get-files-on-the-box step + one cwd convention; parallel rate-limit burst + spend note);
+**C3 option (a)** — `backend/poseidon/api/app.py` (hoist the `ArtifactStore` construction out
+of the `deploy_mode=="local"` branch into live wiring) + `backend/poseidon/core/chat/
+orchestrator.py` (thread `artifacts=` into BOTH `SkillContext` sites, :582 and :1144) +
+`backend/tests/test_live_chat_sse.py` (one covering test: a live-mode app constructs the store
+and a brief turn's context receives it) — chosen because the amended doc 08 P14 gate mandates
+artifact download and this phase provisions S3/IAM for it; I1 — `infra/aws/04-iam.sh` (ECR
+statements: GetAuthorizationToken on `*`, Batch/GetDownloadUrlForLayer on the repo ARN); I3 —
+`deploy-ec2.md` build prefixed `DOCKER_BUILDKIT=1` + the dockerignore header sentence
+(`infra/Dockerfile.dockerignore`); I4 — the D16 flip checklist folded into `RowScope`'s
+docstring (`backend/poseidon/core/ontology/models.py`), naming pipeline.py:481/487/501,
+orchestrator.py:1313, existing_customer_brief/skill.py:409/413, and the five narrow-signature
+fakes; m10 — `backend/poseidon/core/identity_auth0.py` docstring misquote (one line); m33 —
+`docs/architecture/00-overview.md` two old-framing lines; reviewer recommendation 3 taken —
+`infra/Caddyfile` `encode` gains a match-whitelist omitting `text/event-stream` (smoke §6
+still verifies streaming live). Nothing else.
+
 ### Task 7 (account-gated): AWS provisioning walkthrough — Carlos driving
 
 Controller-led, one step at a time (his established preference: exactly one action, wait for
