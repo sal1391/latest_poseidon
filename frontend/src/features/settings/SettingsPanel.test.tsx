@@ -158,6 +158,100 @@ test("deleting an entry removes it from the local list without calling saveMemor
   expect(saveMemoryEntries).not.toHaveBeenCalled();
 });
 
+// Fix round 1 (review finding Important 1): the panel is always mounted,
+// so reopening it shows whatever `memoryEntries` a PRIOR session left in
+// the store while this open's own `loadMemory()` is still in flight. If
+// that fetch resolves (a real fetch always hands back a brand-new array
+// reference, even when the content happens to be unchanged) AFTER the user
+// deletes an entry from what's currently shown, the deletion must survive
+// -- not be silently reverted. `loadMemory` here is a REAL two-phase stub
+// (not the inert `vi.fn(async () => undefined)` every other test in this
+// file uses): it stays pending until `resolveLoad` is invoked, and only
+// then calls `useSettingsStore.setState(...)` with a fresh array -- the
+// exact shape of a real store resolving mid-edit, per the review finding's
+// own required test shape.
+test("a background load resolving after a local delete does not revert the delete", async () => {
+  let resolveLoad: (() => void) | undefined;
+  const loadMemory = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        resolveLoad = () => {
+          act(() => {
+            useSettingsStore.setState({ memoryEntries: [{ ...sampleEntry }, { ...secondEntry }] });
+          });
+          resolve();
+        };
+      }),
+  );
+  act(() => {
+    seedNoopLoaders();
+    useSettingsStore.setState({
+      loadMemory,
+      memoryVersion: 1,
+      memoryEntries: [sampleEntry, secondEntry],
+      memoryCreatedBy: "user",
+      memoryCreatedAt: "2026-08-01T00:00:00Z",
+    });
+  });
+
+  render(<SettingsPanel open={true} onClose={() => undefined} />);
+  // The load kicked off on open is still pending -- delete an entry from
+  // the (currently stale-but-displayed) list before it resolves.
+  await userEvent.click(
+    screen.getByRole("button", { name: /delete entry: prefers excel exports/i }),
+  );
+  expect(screen.queryByText("prefers Excel exports")).not.toBeInTheDocument();
+
+  // Now let the in-flight load resolve. Before the fix, this would clobber
+  // `localEntries` from the freshly-fetched `memoryEntries` and silently
+  // bring the deleted entry back.
+  act(() => {
+    resolveLoad?.();
+  });
+
+  expect(screen.queryByText("prefers Excel exports")).not.toBeInTheDocument();
+  expect(screen.getByText("second entry")).toBeInTheDocument();
+});
+
+// Guards against over-correcting the fix above: with NO pending local
+// edit, a background load resolving must still update what's displayed --
+// the dirty guard must be scoped to "there is an unsaved edit in flight,"
+// never a blanket "ignore every load."
+test("a background load resolving with no pending edit still updates the displayed entries", async () => {
+  let resolveLoad: (() => void) | undefined;
+  const loadMemory = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        resolveLoad = () => {
+          act(() => {
+            useSettingsStore.setState({ memoryEntries: [secondEntry] });
+          });
+          resolve();
+        };
+      }),
+  );
+  act(() => {
+    seedNoopLoaders();
+    useSettingsStore.setState({
+      loadMemory,
+      memoryVersion: 1,
+      memoryEntries: [sampleEntry],
+      memoryCreatedBy: "user",
+      memoryCreatedAt: "2026-08-01T00:00:00Z",
+    });
+  });
+
+  render(<SettingsPanel open={true} onClose={() => undefined} />);
+  expect(screen.getByText("prefers Excel exports")).toBeInTheDocument();
+
+  act(() => {
+    resolveLoad?.();
+  });
+
+  expect(screen.queryByText("prefers Excel exports")).not.toBeInTheDocument();
+  expect(screen.getByText("second entry")).toBeInTheDocument();
+});
+
 test("Save memory commits the whole edited local list via saveMemoryEntries, not a delete-one call", async () => {
   const saveMemoryEntries = vi.fn(async () => undefined);
   act(() => {

@@ -208,6 +208,19 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
   // slice changes (a fresh load, or the store's own post-save/rollback
   // value), but never written back to the store by a delete alone.
   const [localEntries, setLocalEntries] = useState<MemoryEntry[]>(memoryEntries);
+  // Fix round 1 (review finding Important 1): the panel is always mounted,
+  // so `memoryEntries` can change out from under a delete the user made
+  // BEFORE this open's own `loadMemory()` (below) resolved -- reopening
+  // shows the previous session's (stale) entries immediately, the fetch is
+  // still in flight, the user deletes one, and only THEN the fetch
+  // resolves with a brand-new array reference. Without this guard, the
+  // resync effect below fired on that reference change and silently
+  // clobbered `localEntries` back to the fetched list, reverting the
+  // delete with no error and no signal. `entriesDirty` marks "localEntries
+  // has a pending edit not yet confirmed by a successful save/restore/
+  // fresh-open" -- while true, the resync effect below is inert; a
+  // late-resolving load can no longer overwrite an in-progress edit.
+  const [entriesDirty, setEntriesDirty] = useState(false);
   const [memoryStatus, setMemoryStatus] = useState("");
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -216,15 +229,21 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
   }, [systemInstruction]);
 
   useEffect(() => {
+    if (entriesDirty) return;
     setLocalEntries(memoryEntries);
-  }, [memoryEntries]);
+  }, [memoryEntries, entriesDirty]);
 
   // "Opening the panel ... triggers the initial load" (Step 1's own
   // requirement): every open (not just the first) re-fetches, since a
   // background worker (Task 4) can distill a new memory version between
-  // one open and the next.
+  // one open and the next. `entriesDirty` resets here too: a fresh open
+  // always starts from the last confirmed (saved/restored) state, the same
+  // "closing without saving discards the edit" contract Save/Restore
+  // already imply -- so any not-yet-saved edit left over from a PRIOR open
+  // is deliberately dropped now, not carried forward silently.
   useEffect(() => {
     if (!open) return;
+    setEntriesDirty(false);
     void loadSettings();
     void loadMemory();
     void loadVersions();
@@ -252,16 +271,28 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
   function handleDeleteEntry(index: number) {
     // Entries carry no stable id field (api/types.ts's own MemoryEntry
     // shape) -- index is the practical key for a single-session edit list
-    // that is never reordered.
+    // that is never reordered. Marks the list dirty (fix round 1,
+    // Important 1) so a late-resolving background load cannot silently
+    // revert this delete -- see `entriesDirty`'s own doc comment above.
     setLocalEntries((entries) => entries.filter((_, i) => i !== index));
+    setEntriesDirty(true);
   }
 
   async function handleSaveMemory() {
     setMemoryStatus("");
     try {
       await saveMemoryEntries(localEntries);
+      // The edit is now confirmed by the server -- safe to resume trusting
+      // `memoryEntries` again (the resync effect will pick up the just-
+      // saved, now-canonical value, which matches what's already shown).
+      setEntriesDirty(false);
       setMemoryStatus("Memory saved.");
     } catch {
+      // Deliberately NOT cleared on failure: the store rolled its own
+      // `memoryEntries` back, but the user's attempted (still unsaved)
+      // edit must stay visible in `localEntries` so they can retry Save
+      // without redoing the delete -- clearing the flag here would let
+      // that same rollback's `set()` clobber it via the resync effect.
       setMemoryStatus("Could not save your memory. Please try again.");
     }
   }
@@ -270,6 +301,12 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
     setMemoryStatus("");
     try {
       await restoreVersion(version);
+      // Restoring is a deliberate "replace my current memory with this old
+      // version" action -- any not-yet-saved local edit is superseded on
+      // purpose (the status message above makes that explicit, so it is
+      // never a SILENT loss the way the fixed race in the resync effect
+      // would have been).
+      setEntriesDirty(false);
       setMemoryStatus(`Restored version ${version}.`);
     } catch {
       setMemoryStatus(`Could not restore version ${version}.`);

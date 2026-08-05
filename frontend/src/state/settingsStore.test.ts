@@ -169,6 +169,51 @@ test("saveMemoryEntries PUTs the real {entries} body and updates the store from 
   expect(state.memoryCreatedAt).toBe("2026-08-02T00:00:00Z");
 });
 
+// Fix round 1 (review finding Important 2): PUT /api/me/memory always
+// creates a new version (same reasoning as restoreVersion's own test
+// below) -- a successful save must refresh the version list too, or the
+// just-created version stays invisible until the panel is closed and
+// reopened (the exact gap phase-gate item 5's "delete an entry, then
+// save" flow would otherwise hit).
+test("saveMemoryEntries refreshes the version list after a successful save", async () => {
+  const entries: MemoryEntry[] = [
+    {
+      type: "preference",
+      statement: "USD thousands",
+      source_conversation_id: "c1",
+      at: "2026-08-01T00:00:00Z",
+    },
+  ];
+  let saveCalled = false;
+  let versionsFetchedAfterSave = false;
+  server.use(
+    http.put("/api/me/memory", () => {
+      saveCalled = true;
+      return HttpResponse.json({
+        version: 2,
+        entries,
+        created_by: "user",
+        created_at: "2026-08-02T00:00:00Z",
+      });
+    }),
+    http.get("/api/me/memory/versions", () => {
+      versionsFetchedAfterSave = saveCalled;
+      return HttpResponse.json([
+        { version: 2, created_by: "user", created_at: "2026-08-02T00:00:00Z", entry_count: 1 },
+        { version: 1, created_by: "user", created_at: "2026-08-01T00:00:00Z", entry_count: 1 },
+      ]);
+    }),
+  );
+
+  await useSettingsStore.getState().saveMemoryEntries(entries);
+
+  expect(versionsFetchedAfterSave).toBe(true);
+  expect(useSettingsStore.getState().versions).toEqual([
+    { version: 2, created_by: "user", created_at: "2026-08-02T00:00:00Z", entry_count: 1 },
+    { version: 1, created_by: "user", created_at: "2026-08-01T00:00:00Z", entry_count: 1 },
+  ]);
+});
+
 // Optimistic-write-then-rollback, same shape as saveInstruction above --
 // the LOCAL edited list (e.g. after a delete) is what's optimistic; on
 // failure it reverts to whatever was there before this call.

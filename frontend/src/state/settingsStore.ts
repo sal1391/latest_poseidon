@@ -37,6 +37,8 @@ export interface SettingsState {
   // is the caller's own edited local working list (SettingsPanel.tsx owns
   // that list; deleting an entry is "edit the list, then Save the whole
   // thing" -- there is no delete-one-entry endpoint, Task 3's own contract).
+  // A successful save also refreshes `versions` (fix round 1, Important 2)
+  // -- see this action's own implementation comment for why.
   saveMemoryEntries: (entries: MemoryEntry[]) => Promise<void>;
   loadVersions: () => Promise<void>;
   restoreVersion: (version: number) => Promise<void>;
@@ -125,6 +127,14 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     }
   },
 
+  // Fix round 1 (review finding Important 2): PUT /api/me/memory always
+  // creates a new version too (Task 3's own contract, identical to
+  // restoreVersion's own reasoning below) -- so the version list is stale
+  // the instant a save resolves, exactly like a restore. Same fix, same
+  // place in the sequence: refetched via loadVersions() (unguarded --
+  // matches restoreVersion's own precedent, so a failure of THIS call
+  // still rejects the outer saveMemoryEntries call rather than silently
+  // leaving the version list stale with no signal at all).
   saveMemoryEntries: async (entries) => {
     const prevEntries = get().memoryEntries;
     set({ memoryEntries: entries });
@@ -137,6 +147,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         memoryCreatedAt: body.created_at,
         memoryLoaded: true,
       });
+      await get().loadVersions();
     } catch (err) {
       set({ memoryEntries: prevEntries });
       throw err;
