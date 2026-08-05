@@ -707,7 +707,14 @@ orchestrator.py:1313, existing_customer_brief/skill.py:409/413, and the five nar
 fakes; m10 — `backend/poseidon/core/identity_auth0.py` docstring misquote (one line); m33 —
 `docs/architecture/00-overview.md` two old-framing lines; reviewer recommendation 3 taken —
 `infra/Caddyfile` `encode` gains a match-whitelist omitting `text/event-stream` (smoke §6
-still verifies streaming live). Nothing else.
+still verifies streaming live). **Amended post-wave (controller-ratified sanction gaps, both
+C3-required, both the established disclosure pattern): `backend/poseidon/api/live_chat.py`
+(ONE line — `artifacts=app_state.artifact_store` threaded into the existing `execute_turn`
+call, the only place a real HTTP turn reaches it; identical in kind to P13's ratified
+live_chat threading amendment) and `backend/tests/test_chat_e2e_scripted.py` (ONLY the two
+pg flows that pinned `Artifact: skipped` — they now drop the store post-construction via a
+documented helper so no automated test attempts a real S3 upload and every pinned number
+stays byte-identical).** Nothing else.
 
 ### Task 7 (account-gated): AWS provisioning walkthrough — Carlos driving
 
