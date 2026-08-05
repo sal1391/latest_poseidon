@@ -69,6 +69,7 @@ from tests.test_identity_providers import (
     AUTH0_TEST_DOMAIN,
     FailingJwksTransport,
     JwksTransport,
+    ManualClock,
     RecoveringJwksTransport,
     UnreachableJwksTransport,
     generate_rsa_keypair,
@@ -991,6 +992,68 @@ def _run_one_concurrent_round(
 
 
 # ===========================================================================
+# ChatRateLimiter bucket eviction (P9 M-8: _buckets grows forever -- every
+# distinct sub or client IP that ever hits chat-send leaves a bucket
+# permanently). Both use the injected ``clock`` seam (mirrors Auth0Provider's
+# own ``clock`` constructor param, and reuses ``ManualClock`` from
+# test_identity_providers.py rather than re-deriving an equivalent double --
+# the same cross-test-module reuse this file already established above)
+# instead of a real sleep, so a 512-check sweep and a full refill window are
+# both instant and deterministic.
+# ===========================================================================
+
+
+def test_chat_rate_limiter_eviction_sweep_collapses_idle_buckets_to_about_one():
+    """600 distinct keys each get a bucket via check(); once the clock has
+    advanced past every bucket's full-refill window (capacity /
+    refill_per_second seconds), a fully-refilled, untouched bucket is
+    bit-for-bit indistinguishable from a key check() has never seen --
+    dropping it is lossless by construction. 512 further checks on ONE key
+    are enough to force at least one amortized sweep (any run of
+    _EVICT_EVERY consecutive check() calls crosses a multiple of
+    _EVICT_EVERY), while that one key's OWN bucket is refreshed (never
+    stale) by every one of those same checks, so it alone survives."""
+    clock = ManualClock(now=0.0)
+    limiter = auth_module.ChatRateLimiter(per_minute=60, clock=clock)
+    for i in range(600):
+        limiter.check(f"key-{i}")
+
+    full_refill_seconds = limiter._capacity / limiter._refill_per_second
+    clock.advance(full_refill_seconds + 1.0)
+
+    for _ in range(auth_module._EVICT_EVERY):
+        limiter.check("key-0")
+
+    assert len(limiter._buckets) <= 2
+    assert "key-0" in limiter._buckets
+
+
+def test_chat_rate_limiter_eviction_sweep_preserves_a_not_yet_refilled_bucket():
+    """The lossless invariant, proven from the other side: a bucket that
+    has NOT yet fully refilled must survive a sweep with its exact partial
+    token count untouched -- eviction only ever drops a bucket
+    indistinguishable from a brand new one, never a real, in-progress one.
+    A sweep never refills a surviving bucket either (only a live check()
+    call on that key does that), so the count checked here is exactly the
+    one check() itself left behind, not some sweep-recomputed value."""
+    clock = ManualClock(now=0.0)
+    limiter = auth_module.ChatRateLimiter(per_minute=60, clock=clock)
+    limiter.check("partial")
+    expected_tokens = limiter._buckets["partial"].tokens
+
+    full_refill_seconds = limiter._capacity / limiter._refill_per_second
+    clock.advance(full_refill_seconds / 2.0)  # well under the threshold
+
+    # 511 further checks on OTHER keys plus the one above == _EVICT_EVERY
+    # total calls -- one amortized sweep, "partial" never touched again.
+    for i in range(auth_module._EVICT_EVERY - 1):
+        limiter.check(f"other-{i}")
+
+    assert "partial" in limiter._buckets
+    assert limiter._buckets["partial"].tokens == pytest.approx(expected_tokens)
+
+
+# ===========================================================================
 # CORS allowlist: preflight round trip for an allowed vs. a disallowed
 # origin (Global Constraints)
 # ===========================================================================
@@ -1029,6 +1092,58 @@ async def test_cors_preflight_rejects_a_disallowed_origin():
 
     assert r.status_code == 400
     assert "access-control-allow-origin" not in r.headers
+
+
+# ===========================================================================
+# Docs surfaces (/docs, /redoc, /openapi.json) gated outside
+# deploy_mode="local" (P9 carryforward: all three were open in every mode
+# before this task -- api/app.py's own docs_kwargs is the one place this is
+# decided, at FastAPI-constructor time, so there is no route left to guard
+# individually the way require_sales guards mock_chat.router above).
+# ===========================================================================
+
+
+@pytest.mark.anyio
+async def test_docs_surfaces_404_outside_local_deploy_mode():
+    """A production-shaped app (deploy_mode="ec2", identity_mode="auth0")
+    must not expose the interactive docs, the redoc page, or the raw
+    openapi schema -- all three leak the full route/schema surface to
+    anyone who can reach the process, unauthenticated, since none of them
+    sit behind require_sales or any other dependency."""
+    app = _mock_app(
+        deploy_mode="ec2",
+        identity_mode="auth0",
+        auth0_domain=AUTH0_TEST_DOMAIN,
+        auth0_audience=AUTH0_TEST_AUDIENCE,
+        auth0_client_id="test-client-id",
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        docs = await client.get("/docs")
+        redoc = await client.get("/redoc")
+        openapi = await client.get("/openapi.json")
+
+    assert docs.status_code == 404
+    assert redoc.status_code == 404
+    assert openapi.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_docs_surfaces_still_served_under_default_local_deploy_mode():
+    """The symmetric proof: deploy_mode="local" (every existing dev/test
+    app, since _settings never overrides it) must keep serving all three --
+    the docs gate is a deploy_mode branch, never a blanket removal."""
+    app = _mock_app()
+    assert app.state.settings.deploy_mode == "local"
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        docs = await client.get("/docs")
+        redoc = await client.get("/redoc")
+        openapi = await client.get("/openapi.json")
+
+    assert docs.status_code == 200
+    assert redoc.status_code == 200
+    assert openapi.status_code == 200
 
 
 # ===========================================================================

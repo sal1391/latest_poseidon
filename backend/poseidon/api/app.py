@@ -33,8 +33,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # (once per app/process in production; once per test in this suite) is
     # cheap and never double-registers a handler.
     configure_json_logging()
-    app = FastAPI(title="Poseidon API", version="0.1.0")
-    app.state.settings = settings or get_settings()
+    boot_settings = settings or get_settings()
+    # P9 carryforward: /docs, /redoc, and /openapi.json were open in EVERY
+    # deploy mode until this task -- none of the three sit behind
+    # require_sales or any other dependency (they are FastAPI-constructor
+    # built-ins, not routes this module mounts), so the only place they can
+    # be gated is here, at construction time, before app.routes even
+    # exists. docs_kwargs is {} (FastAPI's own defaults: all three served)
+    # in deploy_mode="local" -- every existing dev/test app, unchanged --
+    # and disables all three outside it, since a production-shaped deploy
+    # (ec2/spcs) has no business handing an unauthenticated caller the
+    # full route/schema surface.
+    docs_kwargs = (
+        {}
+        if boot_settings.deploy_mode == "local"
+        else {"docs_url": None, "redoc_url": None, "openapi_url": None}
+    )
+    app = FastAPI(title="Poseidon API", version="0.1.0", **docs_kwargs)
+    app.state.settings = boot_settings
 
     # Phase 9 Task 1 (doc 05 section 2, decision D22): resolved ONCE here,
     # at boot, so a misconfigured or not-yet-implemented identity_mode

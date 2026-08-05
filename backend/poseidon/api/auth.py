@@ -51,6 +51,7 @@ provider.
 import math
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, Request
@@ -226,6 +227,14 @@ class _TokenBucket:
     last_refill: float
 
 
+# P9 M-8: every distinct sub or client IP that ever hits chat-send used to
+# leave a bucket in ChatRateLimiter._buckets FOREVER -- an unbounded-growth
+# leak over an app/process's lifetime. A module constant, not a config
+# knob (YAGNI: no operator-facing reason to ever tune this), read only by
+# ChatRateLimiter.check's own amortized sweep below.
+_EVICT_EVERY = 512
+
+
 class ChatRateLimiter:
     """A config-driven token bucket, one per distinct key (Global
     Constraints: "keyed by sub, fallback client IP"), shared by every
@@ -240,16 +249,34 @@ class ChatRateLimiter:
     60`` tokens per second, so "N per minute" means what it says for any
     rolling 60-second window, not just a window aligned to the clock.
 
-    ``time.monotonic()`` (never ``time.time()``): immune to wall-clock
-    adjustments (NTP sync, DST, an operator changing the system clock) that
-    would otherwise let a bucket's refill math go backwards or jump --
-    Python's own docs recommend it for exactly this "measuring elapsed
-    time" use, never for telling calendar time.
+    ``clock`` (default ``time.monotonic``, never ``time.time()``): immune
+    to wall-clock adjustments (NTP sync, DST, an operator changing the
+    system clock) that would otherwise let a bucket's refill math go
+    backwards or jump -- Python's own docs recommend it for exactly this
+    "measuring elapsed time" use, never for telling calendar time. Made
+    injectable (mirrors ``core/identity_auth0.py``'s ``Auth0Provider``'s own
+    ``clock`` constructor param) purely so this class's own tests can cross
+    a refill window or an eviction sweep instantly and deterministically,
+    never via a real sleep; production always gets the real default.
 
     Thread-safe (Global Constraints): one lock guards every bucket's
     read-modify-write, coarse-grained rather than per-key, since this
     endpoint's traffic volume does not warrant finer-grained locking and
     coarse locking is simpler to prove correct.
+
+    Eviction (P9 M-8): amortized inside ``check()``, under the SAME lock,
+    via a plain call counter -- every ``_EVICT_EVERY`` calls to ``check()``
+    (across ALL keys, not per-key), every bucket whose full-refill window
+    (``_capacity / _refill_per_second`` seconds) has already elapsed since
+    its ``last_refill`` is dropped. LOSSLESS BY CONSTRUCTION: such a bucket
+    is clamped at exactly ``_capacity`` tokens by this same class's own
+    refill math (``min(self._capacity, refilled)`` in ``check()`` below),
+    which is bit-for-bit the SAME state a key ``check()`` has never seen
+    gets on its first call -- dropping it and later rebuilding it from
+    scratch on that key's next ``check()`` call is therefore observably
+    identical to never having dropped it at all. A bucket that has NOT yet
+    fully refilled is never touched by a sweep (it survives with its exact
+    token count and ``last_refill`` unchanged).
 
     Precondition: ``per_minute`` is a positive int. The ``limit=0`` ("off")
     case is handled by the CALLER never constructing this class at all
@@ -259,17 +286,19 @@ class ChatRateLimiter:
     path, not a degenerate instance of this one.
     """
 
-    def __init__(self, per_minute: int) -> None:
+    def __init__(self, per_minute: int, clock: Callable[[], float] = time.monotonic) -> None:
         self._capacity = float(per_minute)
         self._refill_per_second = per_minute / 60.0
         self._buckets: dict[str, _TokenBucket] = {}
         self._lock = threading.Lock()
+        self._clock = clock
+        self._checks_since_sweep = 0
 
     def check(self, key: str) -> float | None:
         """``None`` if ``key`` may proceed (a token was spent); otherwise
         the number of seconds until at least one token will be available
         again."""
-        now = time.monotonic()
+        now = self._clock()
         with self._lock:
             bucket = self._buckets.get(key)
             if bucket is None:
@@ -282,9 +311,30 @@ class ChatRateLimiter:
                 bucket.last_refill = now
             if bucket.tokens >= 1:
                 bucket.tokens -= 1
-                return None
-            deficit = 1.0 - bucket.tokens
-            return deficit / self._refill_per_second
+                result = None
+            else:
+                deficit = 1.0 - bucket.tokens
+                result = deficit / self._refill_per_second
+
+            self._checks_since_sweep += 1
+            if self._checks_since_sweep >= _EVICT_EVERY:
+                self._checks_since_sweep = 0
+                self._evict_idle_buckets(now)
+
+            return result
+
+    def _evict_idle_buckets(self, now: float) -> None:
+        """Called only from inside ``check()``'s own ``with self._lock``
+        block (never acquires the lock itself) every ``_EVICT_EVERY``
+        calls. Drops every bucket whose full-refill window has elapsed
+        since its ``last_refill`` -- see this class's own docstring for why
+        that is lossless rather than merely "probably fine"."""
+        threshold = self._capacity / self._refill_per_second
+        stale_keys = [
+            key for key, bucket in self._buckets.items() if now - bucket.last_refill > threshold
+        ]
+        for key in stale_keys:
+            del self._buckets[key]
 
 
 def rate_limit_chat_send(request: Request) -> None:
