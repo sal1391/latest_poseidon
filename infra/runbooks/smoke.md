@@ -7,6 +7,8 @@ Rows that depend on the SPCS deploy existing are marked **(SPCS -- Phase 15, not
 applicable)** -- this document is written once, now, so Phase 15 only has to add its own
 access-mechanism notes, not rewrite the checklist.
 
+## 0. Preconditions -- set these before running anything below
+
 ```bash
 export TARGET_DOMAIN=<REPLACE: your domain, e.g. poseidon.duckdns.org>
 ```
@@ -19,9 +21,49 @@ PKCE), open devtools' Network tab, trigger any API call (e.g. send a chat messag
 export TOKEN=<REPLACE: bearer token copied from the browser session above>
 ```
 
+### Every `docker compose` command below has two preconditions (EC2)
+
+`docker-compose.ec2.yml` interpolates `${POSEIDON_IMAGE:?}`/`${POSEIDON_DOMAIN:?}` and declares
+`env_file: /etc/poseidon/backend.env`, and **Compose V2 resolves both before EVERY subcommand** --
+`exec`, `logs`, `ps` and `config` included, not just `up`. So each of the two files below must
+already exist, or every compose command in this checklist fails with
+`required variable POSEIDON_IMAGE is missing a value` (or an `env file ... not found`) before it
+runs anything:
+
+1. **`/opt/poseidon/.env`**, holding `POSEIDON_IMAGE=...` and `POSEIDON_DOMAIN=...` -- Compose
+   auto-loads a `.env` sitting beside the compose file, no `--env-file` flag needed.
+2. **`/etc/poseidon/backend.env`**, the secret-bearing env file.
+
+Both are authored by `deploy-ec2.md` Steps 3 and 4; this checklist runs after a deploy, so both
+are normally already in place. Confirm in one command before starting:
+
+```bash
+docker compose -f /opt/poseidon/docker-compose.ec2.yml config >/dev/null && echo "compose OK"
+```
+
+If you would rather not use the `.env` file, export the same two values in **every** shell that
+runs a compose command instead (`export POSEIDON_IMAGE=... POSEIDON_DOMAIN=...`) -- the file is
+recommended because it survives a new SSH session and a reboot.
+
+`/opt/poseidon/...` is the one working-directory convention both runbooks use (see
+`deploy-ec2.md` Step 3): the absolute `-f` path means every command here works from any
+directory, and pins the Compose project name to `poseidon` so `caddy_data` -- and the issued
+certificate in it -- is the same volume every time.
+
+### `POSEIDON_IMAGE` as a real shell variable, for the two `docker run` steps
+
+Section 5's PDF render-verify is a plain `docker run`, **not** a compose subcommand, so it does
+not see `/opt/poseidon/.env` at all:
+
+```bash
+export POSEIDON_IMAGE=<REPLACE: the same ECR reference /opt/poseidon/.env names, e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com/poseidon:a1b2c3d>
+```
+
+### A host-side Python, for the JSON/UUID one-liners
+
 A couple of steps below need a small host-side JSON/UUID helper (parsing a `curl` response,
 generating a `client_turn_key`) -- pure standard-library one-liners, unrelated to the app's own
-code, so unlike `deploy-ec2.md`'s `docker compose exec backend python ...` calls (which need the
+code, so unlike this checklist's `docker compose exec backend python ...` calls (which need the
 container's `poseidon` package) these run directly on whatever machine you are running this
 checklist from. `python3` is not guaranteed to resolve on a typical Windows install (only
 `python`/`py` usually do); this resolves once, up front, to whichever name is actually on `PATH`:
@@ -29,6 +71,18 @@ checklist from. `python3` is not guaranteed to resolve on a typical Windows inst
 ```bash
 PY=python3
 command -v python3 >/dev/null 2>&1 || PY=python
+```
+
+### The logged-in user's `sub`, for sections 7 and 8
+
+Sections 7/8 count rows in RLS-protected tables, which means they must run as the same identity
+that produced them (see those sections for why a bare connection reports 0 on RDS). Capture it
+from the session established in section 3 -- run this once section 3's login has happened:
+
+```bash
+export USER_SUB=$(curl -s "https://$TARGET_DOMAIN/api/me" \
+  -H "Authorization: Bearer $TOKEN" | "$PY" -c "import sys,json; print(json.load(sys.stdin)['sub'])")
+echo "$USER_SUB"   # e.g. auth0|68a1... -- must be non-empty
 ```
 
 ---
@@ -47,7 +101,7 @@ curl -s "https://$TARGET_DOMAIN/health/ready"
 
 ```bash
 # EC2: exec into the running container.
-docker compose -f infra/docker-compose.ec2.yml exec backend python -c \
+docker compose -f /opt/poseidon/docker-compose.ec2.yml exec backend python -c \
   "from poseidon.core.config import get_settings; print(get_settings().identity_mode)"
 ```
 
@@ -115,9 +169,11 @@ docker run --rm "$POSEIDON_IMAGE" python -m pytest -m pdf
 
 ## 6. One real streaming chat turn THROUGH Caddy (not direct-to-8000)
 
-This is the one item this checklist exists partly to answer: whether Caddy's `encode gzip`
-(`infra/Caddyfile`) buffers the SSE response instead of letting it stream token-by-token. There
-is no direct evidence either way before this runs -- `backend` publishes no port on EC2 (see
+This is the one item this checklist exists partly to answer: whether the SSE response reaches the
+client token-by-token or arrives buffered. `infra/Caddyfile` is written to make buffering
+impossible (`flush_interval -1`, plus an `encode` whitelist that excludes `text/event-stream`),
+but "written to be impossible" is not evidence. There is no direct evidence either way before
+this runs -- `backend` publishes no port on EC2 (see
 `docker-compose.ec2.yml`'s own comment), so **every** request in this whole checklist already
 goes through Caddy by construction; this section is the one that specifically watches for
 buffering rather than just checking a final status code.
@@ -139,43 +195,59 @@ curl -N -s "https://$TARGET_DOMAIN/api/conversations/$CONV_ID/messages" \
   one before it, mirroring what the browser UI shows as text appearing progressively rather than
   all at once.
 - [ ] **If it buffers instead** (every line's timestamp is identical, or everything arrives only
-  once the turn finishes): apply the one-line mitigation to `infra/Caddyfile` -- restrict
-  `encode gzip`'s match to a content-type whitelist that omits `text/event-stream`, so SSE
-  responses pass through uncompressed and unbuffered:
+  once the turn finishes): the two mitigations this section used to propose are **both already
+  shipped** in `infra/Caddyfile` -- `flush_interval -1` on the `reverse_proxy` (never buffer),
+  and, since the Phase 14 final-review wave, an explicit `encode gzip { match { ... } }`
+  content-type whitelist that omits `text/event-stream` so an SSE response is never handed to the
+  compressor at all. So buffering here is NOT the known-and-mitigated case anymore; it is a new
+  finding. Confirm the running config is actually the current file first --
 
-  ```caddyfile
-  encode gzip {
-  	match {
-  		header Content-Type text/html*
-  		header Content-Type text/css*
-  		header Content-Type application/javascript*
-  		header Content-Type application/json*
-  		header Content-Type image/svg+xml*
-  	}
-  }
+  ```bash
+  docker compose -f /opt/poseidon/docker-compose.ec2.yml exec caddy cat /etc/caddy/Caddyfile
   ```
 
-  Redeploy Caddy (`docker compose -f docker-compose.ec2.yml up -d caddy`) and re-run this
-  section to confirm the fix.
+  (an old Caddyfile left on the box from a previous deploy is the likeliest explanation; re-scp
+  it per `deploy-ec2.md` Step 3 and `docker compose -f /opt/poseidon/docker-compose.ec2.yml up -d
+  caddy`). If the running config IS current and it still buffers, record it as a real finding for
+  the fix-wave process rather than patching the file live.
 
 ## 7. `turn_run` + `llm_calls` + `message_feedback` rows present
 
+**These tables are RLS-protected, so the query must carry an identity.** On RDS the app's own
+database user is `NOSUPERUSER`/`NOBYPASSRLS` and every one of these tables is `FORCE ROW LEVEL
+SECURITY` with a `user_sub` policy -- a plain `engine.connect()` with no `app.user_sub` set
+matches no rows at all and reports `0` for everything, which reads exactly like a broken deploy
+and is not one. Go through the app's own seam (`poseidon.core.db.rls_transaction`, the same
+function every store in the app uses) with the `$USER_SUB` captured in section 0:
+
 ```bash
-docker compose -f infra/docker-compose.ec2.yml exec backend python -c "
+docker compose -f /opt/poseidon/docker-compose.ec2.yml \
+  exec -e SMOKE_USER_SUB="$USER_SUB" backend python -c "
+import os
 import sqlalchemy as sa
 from poseidon.core.config import get_settings
-engine = sa.create_engine(get_settings().database_url)
-with engine.connect() as c:
+from poseidon.core.db import build_engine, rls_transaction
+settings = get_settings()
+engine = build_engine(settings.database_url)
+with rls_transaction(engine, os.environ['SMOKE_USER_SUB'], app_role=settings.database_app_role) as c:
     for table in ('turn_run', 'llm_calls', 'message_feedback'):
         n = c.execute(sa.text('SELECT count(*) FROM ' + table)).scalar()
         print(table, n)
 "
 ```
 
+> `$USER_SUB` is a variable of the shell on the box, not of the container, so it is passed in
+> explicitly with `exec -e` -- and `-e` must come **before** the service name, which is why the
+> command is wrapped the way it is.
+
 - [ ] `turn_run` > 0 (one row per turn sent in sections 4/6 above).
 - [ ] `llm_calls` > 0 (one row per model invocation those turns made).
 - [ ] Leave a thumbs-up or thumbs-down on one assistant message in the UI, then re-run the query
   above -- `message_feedback` goes from 0 to >= 1.
+- [ ] **If all three read `0`:** check `$USER_SUB` is the sub of the user who actually sent those
+  turns (section 3's logged-in user) before concluding anything is wrong with the deploy -- a
+  correct-but-different identity legitimately sees none of another user's rows. That is RLS
+  working, and this checklist counting rows through it is the point.
 
 ## 8. Memory distillation fires
 
@@ -189,18 +261,26 @@ services:
     environment:
       MEMORY_IDLE_MINUTES: "1"
 YAML
-docker compose -f infra/docker-compose.ec2.yml -f /tmp/memory-idle-override.yml up -d worker
+docker compose -f /opt/poseidon/docker-compose.ec2.yml -f /tmp/memory-idle-override.yml up -d worker
 ```
 
 Have at least one chat turn in a conversation (section 4 already provided one), then wait past
 the lowered threshold (a couple of minutes is plenty), then check:
 
+Same RLS discipline as section 7 -- `turn_run` and `user_memory` are both `user_sub`-scoped, so
+this reads through `rls_transaction` with the same `$USER_SUB`, never a bare connection (a bare
+one prints two empty lists on RDS and looks exactly like distillation having failed):
+
 ```bash
-docker compose -f infra/docker-compose.ec2.yml exec backend python -c "
+docker compose -f /opt/poseidon/docker-compose.ec2.yml \
+  exec -e SMOKE_USER_SUB="$USER_SUB" backend python -c "
+import os
 import sqlalchemy as sa
 from poseidon.core.config import get_settings
-engine = sa.create_engine(get_settings().database_url)
-with engine.connect() as c:
+from poseidon.core.db import build_engine, rls_transaction
+settings = get_settings()
+engine = build_engine(settings.database_url)
+with rls_transaction(engine, os.environ['SMOKE_USER_SUB'], app_role=settings.database_app_role) as c:
     print('memory_update turn_run rows:')
     for r in c.execute(sa.text(\"SELECT id, status, created_at FROM turn_run WHERE kind='memory_update' ORDER BY created_at DESC LIMIT 3\")):
         print(' ', r)
@@ -217,10 +297,10 @@ with engine.connect() as c:
 
 ```bash
 rm /tmp/memory-idle-override.yml
-docker compose -f infra/docker-compose.ec2.yml up -d worker
+docker compose -f /opt/poseidon/docker-compose.ec2.yml up -d worker
 ```
 
-- [ ] Confirm restored: `docker compose -f infra/docker-compose.ec2.yml exec worker python -c
+- [ ] Confirm restored: `docker compose -f /opt/poseidon/docker-compose.ec2.yml exec worker python -c
   "from poseidon.core.config import get_settings; print(get_settings().memory_idle_minutes)"`
   prints `30` again (the packaged default; the compose file itself never overrides it).
 
@@ -238,25 +318,53 @@ done
 ## 10. Rate-limit sanity: burst -> 429 with `Retry-After`
 
 `IDENTITY_MODE=auth0` resolves the chat-send limiter to 30/minute by default
-(`effective_rate_limit_chat_per_minute`, `core/config.py`). Burst past it:
+(`effective_rate_limit_chat_per_minute`, `core/config.py`). Burst past it.
+
+**The burst must be CONCURRENT, and this step costs real money.** Two things follow from that,
+both deliberate:
+
+- *Concurrent, not sequential.* Each accepted send runs a real chat turn to completion before the
+  response closes -- seconds, not milliseconds. A `for` loop that waits for each response spreads
+  32 requests over a minute or more, the 30/minute window slides underneath it, and the run never
+  429s at all: the check silently passes by never testing anything. Firing all 32 at once is the
+  only shape that actually crosses the limit.
+- *Real Bedrock spend.* The ~30 requests that ARE accepted each run a live model turn on the
+  deployed stack. It is small (short "ping" turns on the cheapest routed path), but it is not
+  zero and it is not a mock. Run this once, deliberately, not in a retry loop.
 
 ```bash
 CONV_ID=$(curl -s -X POST "https://$TARGET_DOMAIN/api/conversations" \
   -H "Authorization: Bearer $TOKEN" | "$PY" -c "import sys,json; print(json.load(sys.stdin)['id'])")
 
-for i in $(seq 1 32); do
-  CTK=$("$PY" -c "import uuid; print(uuid.uuid4())")
-  code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+# 32 client_turn_keys up front -- generating uuids inside the loop would
+# serialize the very thing that has to be parallel.
+CTKS=$("$PY" -c "import uuid; print('\n'.join(str(uuid.uuid4()) for _ in range(32)))")
+
+# -P 32: all 32 in flight at once. Prints one status code per line, in
+# completion order (order does not matter here -- the COUNT of each does).
+echo "$CTKS" | xargs -P 32 -I {} \
+  curl -s -o /dev/null -w "%{http_code}\n" -X POST \
     "https://$TARGET_DOMAIN/api/conversations/$CONV_ID/messages" \
     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-    -d "{\"text\":\"ping\",\"client_turn_key\":\"$CTK\"}")
-  printf '%s ' "$code"
-done
-echo
+    -d "{\"text\":\"ping\",\"client_turn_key\":\"{}\"}" \
+  | sort | uniq -c
 ```
 
-- [ ] The run of status codes shows `200`s (accepted turns) for roughly the first 30 requests,
-  then `429` for the rest within that same minute.
+If `xargs -P` is unavailable, background jobs do the same thing:
+
+```bash
+for CTK in $CTKS; do
+  curl -s -o /dev/null -w "%{http_code}\n" -X POST \
+    "https://$TARGET_DOMAIN/api/conversations/$CONV_ID/messages" \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d "{\"text\":\"ping\",\"client_turn_key\":\"$CTK\"}" &
+done
+wait
+```
+
+- [ ] The tally shows both codes: roughly 30 `200`s (accepted turns) and the remainder `429`.
+  The split need not be exactly 30/2 -- what matters is that `429` appears at all and `200`s
+  stop appearing beyond about 30.
 - [ ] Inspect one `429` directly for the header: `curl -s -D - -o /dev/null -X POST ... | grep -i
   retry-after` -> a `Retry-After` header naming a positive number of seconds is present.
 - [ ] Confirm the 401/403 path is untouched: a request with no `Authorization` header (or an
@@ -267,7 +375,7 @@ echo
 
 ```bash
 ssh -i <REPLACE: your key>.pem ec2-user@<REPLACE: the instance's Elastic IP> df -h /
-docker compose -f infra/docker-compose.ec2.yml logs caddy | grep -i "certificate obtained\|obtaining certificate\|certificate.*error" || true
+docker compose -f /opt/poseidon/docker-compose.ec2.yml logs caddy | grep -i "certificate obtained\|obtaining certificate\|certificate.*error" || true
 ```
 
 - [ ] `df -h /` shows headroom well above the 2G swapfile plus the image (roughly 1GB free is a

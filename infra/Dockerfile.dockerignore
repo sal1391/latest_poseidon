@@ -1,8 +1,19 @@
-# Build-context excludes for `docker build -f infra/Dockerfile .` ONLY.
+# Build-context excludes for `DOCKER_BUILDKIT=1 docker build -f infra/Dockerfile .` ONLY.
 #
-# BuildKit reads a <dockerfile-name>.dockerignore sitting next to the
-# Dockerfile in preference to a context-root .dockerignore. That scoping is
-# the entire reason this file is here rather than at the repo root: this
+# **BUILDKIT IS A PREREQUISITE, not a detail.** Only BuildKit reads a
+# <dockerfile-name>.dockerignore sitting next to the Dockerfile; the legacy
+# builder ignores per-Dockerfile ignore files entirely and looks only for a
+# context-root .dockerignore -- and there is deliberately none in this repo
+# (see the next paragraph). So a non-BuildKit build of this image applies NO
+# exclusions at all: the whole repo, .git and node_modules and any local .env
+# included, goes into the build context, and everything below stops being
+# true. Docker 23+ enables BuildKit by default, but infra/runbooks/
+# deploy-ec2.md's build command still sets DOCKER_BUILDKIT=1 explicitly
+# rather than relying on the daemon's default.
+#
+# BuildKit reads that per-Dockerfile file in preference to a context-root
+# .dockerignore. That scoping is the entire reason this file is here rather
+# than at the repo root: this
 # image builds from the ROOT context (it needs backend/, ontology/ and
 # frontend/ at once), and a root .dockerignore would also have changed what
 # the LEGACY root ./Dockerfile -- the Streamlit app, untouched by this phase
