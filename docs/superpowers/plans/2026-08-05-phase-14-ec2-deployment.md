@@ -127,8 +127,23 @@ anyio.to_thread for the off-loop JWKS resolve, Alembic migration 0009.
   `backend/tests/test_migrations.py` (Task 3: extend to 0009); `backend/.env.example`
   (Tasks 5–6: `STATIC_DIR` + the EC2 rows); `docs/architecture/00-overview.md`,
   `docs/architecture/07-infrastructure.md`, `docs/architecture/08-build-phases.md` (Task 6,
-  verbatim text below). Nothing outside this list is touched; frontend source is deliberately
-  untouched (stage-1 build args only).
+  verbatim text below). **Amended (2026-08-05, Carlos's plan review — F2 resolved as option
+  (b), the D16 `row_scope` mechanism, new Task 6b):**
+  `backend/poseidon/core/ontology/models.py` (RowScope model + `Entity.row_scope` + column
+  validator); `backend/poseidon/core/ontology/loader.py` (ONLY IF parsing the new optional
+  field needs more than the model change); `backend/poseidon/core/data/specs.py`
+  (`scope_value` on the two specs); `backend/poseidon/core/data/query_builder.py` (fail-closed
+  enforcement + predicate + the `resolve_row_scope_value` helper);
+  `backend/poseidon/core/data/client.py` + `backend/poseidon/core/data/synthetic_client.py`
+  (optional `scope_value` kwarg on `list_dimension_values`/`available_periods`, passed
+  through); `backend/poseidon/tasks/data_qa/skills/metric_query/skill.py`,
+  `backend/poseidon/tasks/customer_insight/skills/existing_customer_brief/tools/fetch_metrics.py`,
+  `backend/poseidon/tasks/customer_insight/skills/existing_customer_brief/tools/fetch_top_ports.py`
+  (threading `resolve_row_scope_value(..., ctx.user)` into their spec construction) + their
+  co-located `tests/test_tools.py` files; `backend/poseidon/scripts/demo_query.py` (explicit
+  `None` + one comment); `backend/tests/test_ontology_loader.py`,
+  `backend/tests/test_query_builder_snapshots.py`. Nothing outside this list is touched;
+  frontend source is deliberately untouched (stage-1 build args only).
 
 ## File Map
 
@@ -546,8 +561,78 @@ Contents (each its own test):
   shellcheck unavailable on the machine); suites untouched (docs/scripts only — state it).
   **Commit** — `feat(infra): EC2 provisioning scripts + runbooks; docs: record the EC2-first reorder (D8 revised)`
 
-**→ Final whole-phase review (opus) over Tasks 1–6's commit range, then the fix wave + re-review
-per standing SDD process, BEFORE the account-gated half begins.**
+### Task 6b: D16 `row_scope` mechanism (plan amendment — Carlos's review, F2 → option (b))
+
+**Model: opus implementer, opus reviewer** — this touches certified-SQL generation and
+fail-closed security semantics; wrong here means silent cross-scope data exposure at the future
+flip.
+
+**Files:** modify `core/ontology/models.py`, `core/data/specs.py`, `core/data/query_builder.py`,
+`core/data/client.py`, `core/data/synthetic_client.py`,
+`tasks/data_qa/skills/metric_query/skill.py`,
+`tasks/customer_insight/skills/existing_customer_brief/tools/fetch_metrics.py`,
+`tasks/customer_insight/skills/existing_customer_brief/tools/fetch_top_ports.py` (+ their
+co-located `tests/test_tools.py`), `scripts/demo_query.py`, `tests/test_ontology_loader.py`,
+`tests/test_query_builder_snapshots.py`; `core/ontology/loader.py` only if the optional field
+needs loader-side handling beyond the model.
+
+**What ships (doc 05 §4's dormant D16 hook, mechanism without policy):** an ontology entity MAY
+declare `row_scope: {column, claim}`; the query builder then appends the scope predicate from
+`UserContext` automatically. NO certified entity declares it — the certified `ontology.yml` is
+NOT modified; the Snowflake-side effort later flips config, not code.
+
+**Design:**
+
+1. **`models.py`:** frozen `RowScope(BaseModel)` with `column: str` and
+   `claim: Literal["sub", "email"]` (the two UserContext fields that can plausibly key a
+   per-person scope today; widening the Literal later is a one-line change);
+   `Entity.row_scope: RowScope | None = None`; an Entity-level validator rejecting a
+   `row_scope.column` that is not one of the entity's dimension-role columns (a measure or
+   unknown column is a certification error, caught at load, matching the loader's fail-fast
+   posture).
+2. **`specs.py`:** `scope_value: str | None = None` on `MetricQuerySpec` and
+   `BreakdownQuerySpec`, matching the file's existing frozen style.
+3. **`query_builder.py`:** a public helper
+   `resolve_row_scope_value(entity_name: str, user: UserContext | None) -> str | None` —
+   entity without `row_scope` → `None`; declared but `user is None` or the claim's value is
+   empty → `SpecValidationError` naming the entity and stating the fail-closed rule; else the
+   claim's value off `UserContext`. Enforcement in ALL FOUR builders, both directions of the
+   symmetric pair: an entity WITH `row_scope` and no `scope_value` → `SpecValidationError`
+   (fail closed — an unthreaded call path breaks loudly at flip time, never leaks); a
+   `scope_value` supplied for an entity WITHOUT `row_scope` → `SpecValidationError` too (a
+   caller believing scoping exists where it does not is a bug, not a no-op).
+   `build_dimension_values_query` and `build_period_range_query` gain an optional
+   `scope_value: str | None = None` parameter with the same rules; when declared and provided,
+   every builder appends `<column> = <param>` through the existing parameterized-WHERE
+   machinery (never string interpolation).
+4. **`client.py` / `synthetic_client.py`:** `list_dimension_values` and `available_periods`
+   gain `scope_value: str | None = None`, passed through to their builders (protocol + the one
+   implementation).
+5. **Thread the resolver at the spec-building call sites that own `ctx.user`:**
+   `skill.py` (data_qa metric_query), `fetch_metrics.py`, `fetch_top_ports.py` — each passes
+   `scope_value=resolve_row_scope_value(<entity>, ctx.user)` into its spec/client calls.
+   `demo_query.py` (dev CLI, no user) passes an explicit `None` with a one-line comment noting
+   it will fail loudly the day an entity it queries declares `row_scope` — deliberate.
+6. **The flip stays a noticed event:** one pin test asserting every entity in the loaded
+   vendored ontology has `row_scope is None`, with a comment saying removing this pin IS the
+   deliberate act of onlining row scoping (this codebase's established pin-test convention).
+
+- [ ] **Step 1 (RED):** `test_ontology_loader.py` — a fixture entity dict with a valid
+  `row_scope` parses (column + claim round-trip); unknown column rejected at load; measure-role
+  column rejected; the vendored-ontology all-None pin. `test_query_builder_snapshots.py` — a
+  fixture entity WITH `row_scope`: metric + breakdown snapshots on BOTH dialects contain the
+  predicate and its bind param; fail-closed matrix on all four builders (declared+missing →
+  `SpecValidationError`; undeclared+supplied → `SpecValidationError`); existing snapshots
+  byte-unchanged (the no-entity-declares regression pin). Resolver unit matrix
+  (none-declared / declared+no-user / declared+empty-claim / declared+valid). Co-located tool
+  tests: each threaded call site passes the resolver's value through (spy on the client/spec,
+  assert `scope_value=None` today and that the resolver was consulted).
+- [ ] **Step 2:** RED run. Capture. **Step 3:** implement in the file order above.
+- [ ] **Step 4:** GREEN; full offline + pg suites byte-identical elsewhere; ruff. **Commit** —
+  `feat(data): D16 row_scope mechanism — fail-closed scope predicate, no entity declares it yet`
+
+**→ Final whole-phase review (opus) over Tasks 1–6b's commit range, then the fix wave +
+re-review per standing SDD process, BEFORE the account-gated half begins.**
 
 ### Task 7 (account-gated): AWS provisioning walkthrough — Carlos driving
 
@@ -597,7 +682,19 @@ URL; rollback rehearsed; RPO/RTO configuration verified and restore path documen
 suite green (Tasks 1–4 are in the final review's range); `LLM_MODE=live` on Bedrock through the
 instance profile with zero static AWS keys anywhere on the box.
 
-## Open questions for the plan review (present, don't assume — none block Tasks 1–6)
+## Open questions for the plan review — RESOLVED (Carlos, 2026-08-05 plan review)
+
+> 1 → **(b)**: build the D16 `row_scope` mechanism now — added as Task 6b above.
+> 2 → **undecided**; default recommendation stands (free dynamic-DNS subdomain, e.g. DuckDNS —
+>   zero cost, real certificates; swapping to an owned domain later is env/config-only).
+>   Finalized at Task 7's TLS/DNS step, BEFORE Task 8 configures Auth0 callbacks.
+> 3 → **reuse** the dev trial tenant; its ~2026-08-25 expiry is recorded as a standing risk in
+>   the Task 7–9 tracker file.
+> 4 → **confirmed**: env-file-on-box; Secrets Manager deferred to the Snowflake-credentials
+>   effort.
+> 5 → **as is**: the WARNING stands; runbooks enforce.
+
+The original questions as presented (historical record — none blocked Tasks 1–6):
 
 1. **F2, "row-level data scoping by salesperson → fold into Phase 14":** the recon verified the
    new backend has NO salesperson hook (zero grep hits in `poseidon/**` and `ontology.yml`; the
