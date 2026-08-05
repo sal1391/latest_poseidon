@@ -108,6 +108,20 @@ privileges` moves that class of question to process start-up, where a
 wrong answer is a refusal to boot with a message naming the environment
 variable and the fix. See that function's own docstring for the three
 checks and why the worker's is opt-in.
+
+**Phase 14 Task 3b -- the app role must also be ASSUMABLE, not merely
+present.** Task 3's check (b) asked whether the configured ``app_role``
+exists, which is a strictly weaker question than the one ``SET LOCAL
+ROLE`` actually asks: a role that is not a superuser may only assume a
+role it is a MEMBER of, and migration 0004 created ``poseidon_app``
+without ever granting that membership to anybody (migration 0010 is the
+grant; 0009 had carried the same statement for the worker's role since
+Task 3). Every DSN in this project's local habitat is a superuser and may
+assume any role in the cluster, so a probe that only checks existence
+passes here and would still have let an RDS deployment fail at the second
+statement of every single transaction. Check (b) therefore now REHEARSES
+the switch -- the real statement, in a transaction that is thrown away --
+exactly the way check (c) already rehearsed the worker's.
 """
 
 import re
@@ -361,20 +375,28 @@ def assert_boot_privileges(
         database is inert for this process and nothing about the running
         server looks wrong: every user's rows are served to every user. It
         refuses.
-    (b) **A ``DATABASE_APP_ROLE`` naming a role that does not exist.**
-        ``SET LOCAL ROLE`` would then fail on the FIRST request instead --
-        every request, in production, from a typo or an un-migrated
-        database. :func:`_validate_app_role` already runs at first use; this
-        moves the whole class of question to boot, where it belongs.
-    (c) **``require_worker_role`` (the worker's flavor).**
-        :data:`WORKER_ROLE` must exist AND ``SET LOCAL ROLE`` to it must
-        actually succeed -- rehearsed for real, inside a transaction that is
-        rolled back, because "the role exists" and "this DSN may assume it"
-        are different questions with the same silent failure: a
-        non-superuser may only ``SET ROLE`` to a role it is a member of
-        (migration 0009's ``GRANT poseidon_worker TO CURRENT_USER``), and a
-        worker that cannot claim distills nothing while logging healthy
-        empty cycles forever.
+    (b) **A ``DATABASE_APP_ROLE`` this process cannot actually switch to.**
+        Two halves, because ``SET LOCAL ROLE`` has two ways to fail and both
+        of them fail on the FIRST request otherwise -- every request, in
+        production, forever. The role must EXIST (a typo, or an un-migrated
+        database; :func:`_validate_app_role` already rejects a malformed
+        value at first use, and this moves the whole class of question to
+        boot), and the switch to it must SUCCEED, rehearsed for real inside
+        a transaction that is rolled back. The second half is not implied by
+        the first: a role that is not a superuser may only assume a role it
+        is a MEMBER of (migration 0010's ``GRANT poseidon_app TO
+        CURRENT_USER``), and no superuser DSN -- which is every DSN in this
+        project's local habitat -- can ever show you that gap, since a
+        superuser may assume anything.
+    (c) **``require_worker_role`` (the worker's flavor).** The same pair of
+        questions as (b), asked about :data:`WORKER_ROLE`: it must exist AND
+        ``SET LOCAL ROLE`` to it must actually succeed (migration 0009's
+        ``GRANT poseidon_worker TO CURRENT_USER`` is what makes the second
+        true). The consequence differs -- a worker that cannot claim
+        distills nothing while logging healthy empty cycles forever, where
+        an app role that cannot be assumed 500s loudly -- but the mechanism,
+        the rehearsal and the fix are identical, which is why both go
+        through :func:`_role_switch_failure`.
 
     **What this function deliberately does NOT do: decide whether the
     database is up.** A connection that cannot be opened within
@@ -514,15 +536,8 @@ def _run_checks(
                 "every user. Fix: set DATABASE_APP_ROLE=poseidon_app (the role migration "
                 "0004 creates), or point DATABASE_URL at a role with neither attribute."
             )
-        if app_role is not None and _missing(conn, app_role):
-            raise RuntimeError(
-                f"DATABASE_APP_ROLE={app_role!r} names a role that does not exist in "
-                "pg_roles on this database, so SET LOCAL ROLE would fail on the first "
-                "request instead of here. Fix: run `python -m alembic upgrade head` "
-                "against this database (migration 0004 creates poseidon_app), or set "
-                "DATABASE_APP_ROLE empty if this DSN already authenticates as an "
-                "ordinary, non-privileged role that needs no switch."
-            )
+        if app_role is not None:
+            _assert_app_role(conn, app_role)
         if require_worker_role:
             _assert_worker_role(conn)
 
@@ -532,6 +547,69 @@ def _missing(conn: Connection, role: str) -> bool:
     world-readable (unlike ``pg_authid``), so this answers the question for
     an unprivileged connection too -- which is the whole point on RDS."""
     return conn.execute(_ROLE_EXISTS_SQL, {"role": role}).first() is None
+
+
+def _role_switch_failure(conn: Connection, role: str) -> DBAPIError | None:
+    """Rehearse ``SET LOCAL ROLE <role>`` -- the real statement this process
+    would run per request (:func:`rls_transaction`) or per cycle (the
+    worker's claim) -- and return the error it raised, or ``None`` when it
+    succeeded.
+
+    Returns the exception instead of raising a ``RuntimeError`` of its own
+    so that each caller names ITS variable, role and migration in the
+    refusal: checks (b) and (c) fail for one and the same Postgres reason
+    (a role that is not a superuser may only assume a role it is a MEMBER
+    of) but have entirely different fixes and entirely different
+    consequences, and a shared message would have to be vague about both.
+
+    **The transaction is rolled back on every path, success included.**
+    SQLAlchemy auto-begins one on a connection's first ``execute``, so this
+    rollback ends the probe's own transaction and -- exactly like
+    :func:`rls_transaction`'s ``SET LOCAL`` -- guarantees no role switch
+    outlives the rehearsal. On the failure path it does a second job: a
+    statement that raised leaves its transaction ABORTED, and every
+    subsequent statement on it would fail with "current transaction is
+    aborted" -- so without this, one rehearsal's failure would corrupt the
+    verdict of whatever check ran next on the same connection.
+    """
+    try:
+        conn.execute(text(f'SET LOCAL ROLE "{role}"'))
+    except DBAPIError as exc:
+        return exc
+    else:
+        return None
+    finally:
+        conn.rollback()
+
+
+def _assert_app_role(conn: Connection, app_role: str) -> None:
+    """Check (b) of :func:`assert_boot_privileges` -- kept separate only so
+    that function stays readable, and shaped to mirror
+    :func:`_assert_worker_role` below statement for statement, since the two
+    roles fail identically and differ only in what they cost."""
+    if _missing(conn, app_role):
+        raise RuntimeError(
+            f"DATABASE_APP_ROLE={app_role!r} names a role that does not exist in "
+            "pg_roles on this database, so SET LOCAL ROLE would fail on the first "
+            "request instead of here. Fix: run `python -m alembic upgrade head` "
+            "against this database (migration 0004 creates poseidon_app), or set "
+            "DATABASE_APP_ROLE empty if this DSN already authenticates as an "
+            "ordinary, non-privileged role that needs no switch."
+        )
+    exc = _role_switch_failure(conn, app_role)
+    if exc is not None:
+        raise RuntimeError(
+            f'SET LOCAL ROLE "{app_role}" failed for this DATABASE_URL '
+            f"({type(exc).__name__}): DATABASE_APP_ROLE={app_role!r} names a role that "
+            "exists but that this DSN's user may not assume, so every request's "
+            "transaction would fail at its second statement -- a 500 per request, for "
+            "every user, from the first one. Only a superuser may assume a role it is "
+            "not a member of, and no RDS role is a superuser. Fix: run `python -m "
+            "alembic upgrade head` against this database (migration 0010 issues GRANT "
+            f"{app_role} TO CURRENT_USER), or, if this deployment's application user is "
+            f"not the user that runs migrations, GRANT {app_role} TO <this DSN's user> "
+            "directly."
+        ) from exc
 
 
 def _assert_worker_role(conn: Connection) -> None:
@@ -548,13 +626,10 @@ def _assert_worker_role(conn: Connection) -> None:
             "to the migration's own DSN user)."
         )
     # The rehearsal: the real statement the claim path runs, in a
-    # transaction that is thrown away. SQLAlchemy auto-begins one on the
-    # first execute above, so this rollback ends that same transaction --
-    # and, exactly like rls_transaction's own SET LOCAL, guarantees the
-    # pooled connection goes back to the pool with no role switch on it.
-    try:
-        conn.execute(text(f'SET LOCAL ROLE "{WORKER_ROLE}"'))
-    except DBAPIError as exc:
+    # transaction that is thrown away (see _role_switch_failure for why the
+    # rollback is unconditional and what else it protects).
+    exc = _role_switch_failure(conn, WORKER_ROLE)
+    if exc is not None:
         raise RuntimeError(
             f'SET LOCAL ROLE "{WORKER_ROLE}" failed for this DATABASE_URL '
             f"({type(exc).__name__}), so the worker could not claim anything. Only a "
@@ -563,8 +638,6 @@ def _assert_worker_role(conn: Connection) -> None:
             "does exactly that for the user that runs migrations, so a deployment whose "
             "worker user differs from its migration user must issue the GRANT itself."
         ) from exc
-    finally:
-        conn.rollback()
 
 
 __all__ = ["WORKER_ROLE", "assert_boot_privileges", "build_engine", "rls_transaction"]

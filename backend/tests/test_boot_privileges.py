@@ -18,6 +18,14 @@ The two modes, both of which this project has already met once:
    that role is missing, or where the DSN's own role is not a member of it,
    the claim raises or returns zero rows on every cycle while the worker's
    logs stay perfectly healthy.
+3. **Every request 500s at ``SET LOCAL ROLE`` (Task 3b).** Mode 1's own fix
+   has the same membership requirement as mode 2's: ``rls_transaction``
+   switches to ``DATABASE_APP_ROLE`` on every single request, and a
+   non-superuser DSN may only switch to a role it is a MEMBER of. Migration
+   0004 created ``poseidon_app`` and never granted that membership to
+   anyone, which the compose superuser DSN hides completely -- migration
+   0010 is the grant, and the rehearsal below is what refuses to boot
+   without it instead of discovering it one 500 per request.
 
 **Why some tests here are NOT pg-marked.** Unlike every other pg suite in
 this repo, this file deliberately splits: the three tests that need no
@@ -430,6 +438,46 @@ def test_a_dsn_that_is_not_a_member_of_the_worker_role_is_refused_then_passes_af
             conn.execute(text(f"GRANT {WORKER_ROLE} TO {role}"))
 
         assert assert_boot_privileges(engine, settings, require_worker_role=True) is None
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.pg
+def test_a_dsn_that_is_not_a_member_of_the_app_role_is_refused_then_passes_after_the_grant(
+    pg_engine, nonprivileged_dsn
+):
+    """Check (b)'s rehearsal half -- the symmetric twin of the worker test
+    above, and the empirical proof of WHY migration 0010 exists.
+
+    Check (b) used to ask only whether ``DATABASE_APP_ROLE`` names a role
+    that EXISTS, and existing is not the same question as "this DSN may
+    assume it": a non-superuser may only ``SET ROLE`` to a role it is a
+    member of, and migration 0004 created ``poseidon_app`` without ever
+    granting that membership to anybody. On this compose database the DSN is
+    a superuser, so the gap was invisible -- the probe passed, and every
+    request's ``rls_transaction`` would still have failed at its ``SET LOCAL
+    ROLE`` the moment the same code met a real RDS master user.
+
+    So this rehearses the switch on a DSN that genuinely cannot make it: the
+    freshly created probe role is a member of nothing, the probe refuses,
+    and the single ``GRANT`` that migration 0010 performs -- and nothing
+    else -- makes the same probe pass.
+    """
+    dsn, role = nonprivileged_dsn
+    engine = build_engine(dsn)
+    settings = _settings(database_app_role=_APP_ROLE)
+    try:
+        with pytest.raises(RuntimeError, match=_APP_ROLE) as excinfo:
+            assert_boot_privileges(engine, settings)
+        message = str(excinfo.value)
+        assert "DATABASE_APP_ROLE" in message, "the message must name the variable at fault"
+        assert "GRANT" in message, "the message must name the fix"
+        assert "0010" in message, "the message must name the migration that grants it"
+
+        with pg_engine.begin() as conn:
+            conn.execute(text(f"GRANT {_APP_ROLE} TO {role}"))
+
+        assert assert_boot_privileges(engine, settings) is None
     finally:
         engine.dispose()
 

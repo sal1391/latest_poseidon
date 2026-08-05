@@ -48,28 +48,30 @@ def test_upgrade_head_on_sqlite(tmp_path):
     # un-vote follow-up extended it once more, 0006 to 0007 (verdict becomes
     # nullable); Phase 13 Task 1 extended it again, 0007 to 0008
     # (personalization: user_profile/user_memory/memory_outbox); Phase 14
-    # Task 3 extends it to 0009 (the poseidon_worker claim role) --
-    # `alembic current` reports only the single revision at the tip, so this
-    # assertion always names the CURRENT head, not every revision the chain
-    # passed through on the way there.
+    # Task 3 extends it to 0009 (the poseidon_worker claim role), and Task 3b
+    # once more to 0010 (poseidon_app's membership grant, 0009's symmetric
+    # twin) -- `alembic current` reports only the single revision at the tip,
+    # so this assertion always names the CURRENT head, not every revision the
+    # chain passed through on the way there.
     current = _alembic("current", env_overrides=env)
     assert current.returncode == 0, current.stderr
-    assert "0009" in current.stdout, current.stdout
+    assert "0010" in current.stdout, current.stdout
 
     # Phase 14 Task 3: the chain has to walk BACKWARDS too. Every migration
     # since 0002 is a no-op on SQLite (each opens with a dialect guard), so
     # what this half proves is exactly the wiring -- that each revision's
     # downgrade() exists and its down_revision links up -- never the DDL
-    # itself. `test_0009_round_trips_against_postgres` below is where the
-    # real create/drop is exercised.
+    # itself. `test_0009_round_trips_against_postgres` and
+    # `test_0010_round_trips_against_postgres` below are where the real
+    # create/drop and grant/revoke are exercised.
     down = _alembic("downgrade", "-1", env_overrides=env)
     assert down.returncode == 0, down.stderr
-    back_at_0008 = _alembic("current", env_overrides=env)
-    assert "0008" in back_at_0008.stdout, back_at_0008.stdout
+    back_at_0009 = _alembic("current", env_overrides=env)
+    assert "0009" in back_at_0009.stdout, back_at_0009.stdout
 
     up_again = _alembic("upgrade", "head", env_overrides=env)
     assert up_again.returncode == 0, up_again.stderr
-    assert "0009" in _alembic("current", env_overrides=env).stdout
+    assert "0010" in _alembic("current", env_overrides=env).stdout
 
 
 @pytest.mark.pg
@@ -86,6 +88,10 @@ def test_0009_round_trips_against_postgres():
     for: this suite runs against a long-lived shared dev database that the
     compose worker and every other pg suite also use, and leaving it at
     0008 would break them all.
+
+    Since Task 3b the walk down to 0008 also passes THROUGH 0010's revoke
+    and back up through its grant; that revision has its own round-trip
+    below, and this test's ``finally`` restores both.
     """
     dsn = os.environ.get("DATABASE_URL", "")
     if not dsn:
@@ -150,3 +156,86 @@ def test_0009_round_trips_against_postgres():
         "upgrade must put the role, its policy, and the DSN user's membership in it back -- "
         "the membership is what makes SET ROLE legal for a non-superuser, i.e. on RDS"
     )
+
+
+@pytest.mark.pg
+def test_0010_round_trips_against_postgres():
+    """0010's one statement -- ``GRANT poseidon_app TO CURRENT_USER`` --
+    revoked and re-granted against a real Postgres.
+
+    The SQLite test above cannot see any of this for the same reason it
+    cannot see 0009's: role memberships have no SQLite equivalent, so what
+    it proves there is the wiring (this revision's ``downgrade`` exists and
+    its ``down_revision`` links up) and nothing about the grant.
+
+    **Why this one migrates the database itself instead of skipping when it
+    finds one that is behind.** 0009's round-trip above opens with "if the
+    state is not already (True, True, True), skip -- migrate it first",
+    which is the right guard for a revision that was already applied
+    everywhere by the time its test was written. Here the row being pinned
+    is created by the very revision under test, so that guard would have
+    turned the RED run -- against the compose database, at 0009, with this
+    membership genuinely absent -- into a SKIP, which is indistinguishable
+    from a pass and would have proven nothing. Running ``upgrade head``
+    first makes "this database is behind" this test's own business, and
+    leaves the skips above for the differences that really are habitat (no
+    ``DATABASE_URL``, no psycopg).
+    """
+    dsn = os.environ.get("DATABASE_URL", "")
+    if not dsn:
+        pytest.skip("DATABASE_URL is not set")
+    psycopg = pytest.importorskip("psycopg")
+    from poseidon.core.data.synthetic_client import normalize_dsn
+
+    env = {"DATABASE_URL": dsn, "S3_BUCKET": "poseidon-artifacts"}
+
+    def _member() -> bool:
+        """``True`` when the DSN user is a MEMBER of ``poseidon_app``.
+
+        Reads ``pg_auth_members`` directly rather than asking
+        ``pg_has_role(current_user, 'poseidon_app', 'MEMBER')``, for the
+        reason 0009's own pin states and this database proved twice over: a
+        superuser passes ``pg_has_role`` for every role in the cluster
+        whether it was granted or not, and this project's compose DSN is a
+        superuser. ``pg_has_role`` answered TRUE for ``poseidon_app`` here
+        while ``pg_auth_members`` -- correctly -- held no such row at all,
+        which is exactly the gap migration 0010 exists to close. Only the
+        catalog distinguishes a real GRANT.
+        """
+        with psycopg.connect(normalize_dsn(dsn), connect_timeout=2) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM pg_auth_members m "
+                    "JOIN pg_roles granted ON granted.oid = m.roleid "
+                    "JOIN pg_roles grantee ON grantee.oid = m.member "
+                    "WHERE granted.rolname = 'poseidon_app' "
+                    "AND grantee.rolname = current_user"
+                )
+                return cur.fetchone() is not None
+
+    at_head = _alembic("upgrade", "head", env_overrides=env)
+    assert at_head.returncode == 0, at_head.stderr
+    assert _member() is True, (
+        "a database at head must leave its DSN user a MEMBER of poseidon_app: that "
+        "membership is 0010's only statement, and the only thing that makes "
+        "rls_transaction's per-request SET LOCAL ROLE legal for a non-superuser DSN "
+        "(i.e. on RDS, where no role is a superuser)"
+    )
+
+    try:
+        down = _alembic("downgrade", "0009", env_overrides=env)
+        assert down.returncode == 0, down.stderr
+        assert _member() is False, (
+            "downgrade must REVOKE the membership explicitly -- poseidon_app is shared and "
+            "0004 deliberately never drops it, so unlike 0009's role drop there is nothing "
+            "here to take the membership away with it"
+        )
+    finally:
+        # Same discipline as 0009's round-trip: this is a long-lived shared
+        # dev database, and leaving it at 0009 would leave the compose
+        # backend's every request unable to SET LOCAL ROLE the moment its DSN
+        # stops being a superuser.
+        up = _alembic("upgrade", "head", env_overrides=env)
+        assert up.returncode == 0, up.stderr
+
+    assert _member() is True, "upgrade must put the membership back"
