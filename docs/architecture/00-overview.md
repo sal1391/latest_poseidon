@@ -148,9 +148,12 @@ poseidon/
   explicit reversal of the TM1 gitignore practice, per project feedback.
 - D7 Streaming uses Server-Sent Events, not WebSockets — unidirectional token/phase streaming is
   all the chat needs; simpler to operate behind a proxy.
-- D8 (revised) One container image, two deploy targets sharing one environment contract: **SPCS
-  primary** (the proven in-house pattern), **EC2 secondary** — dev/prod parity over premature
-  scale-out.
+- D8 (revised 2026-08-05) One container image, two deploy targets sharing one
+  environment contract. **EC2 deploys first** (owner decision at Phase 13 closure: get a
+  public, Auth0-gated instance live on proven AWS footing before the corporate-platform
+  work); **SPCS remains the corporate primary target**, deployed after, with the
+  Snowflake data backend onlined by a separate Snowflake-side effort. Dev/prod parity
+  over premature scale-out, unchanged.
 - D19 Flow = entry orchestration only; after the initial deliverable the router sees the full
   skill registry in every flow — pivots are the product, not an exception (doc 02 §4).
 - D20 App state (chat, run log, feedback, user memory) is Postgres everywhere; in SPCS it runs

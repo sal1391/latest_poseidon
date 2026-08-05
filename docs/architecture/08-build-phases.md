@@ -4,10 +4,12 @@ Discipline: every phase ends with something runnable and validatable. No phase d
 later one. Tests ship inside the phase that introduces the behavior (never deferred, never
 gitignored). Suggested branch-per-phase; merge only after the gate passes.
 
-Shape of the plan: conversational **data Q&A is an early core phase** (P6 — the first
-end-to-end LLM capability); the **SPCS deploy (P14) precedes EC2 (P16)**; the **Snowflake data
-backend comes online at user testing (P15)**; personalization (P13) and feedback (P12) land
-before user testing so testers exercise them.
+Shape of the plan: conversational **data Q&A is an early core phase** (P6 -- the first
+end-to-end LLM capability); **EC2 deploys first** (P14 -- a public, Auth0-gated instance on
+proven AWS footing, owner decision at Phase 13 closure, decision D8 revised), **SPCS follows**
+(P15 -- the corporate primary target; this is the gate that opens user testing) with the
+**Snowflake data backend onlined afterward** by a separate Snowflake-side effort (P16);
+personalization (P13) and feedback (P12) land before user testing so testers exercise them.
 
 ```mermaid
 flowchart LR
@@ -26,9 +28,9 @@ flowchart LR
   P10 --> P11[11 Full observability]
   P11 --> P12[12 Feedback]
   P12 --> P13[13 Personalization]
-  P13 --> P14[14 SPCS deploy]
-  P14 --> P15[15 Snowflake backend]
-  P15 --> P16[16 EC2 deploy]
+  P13 --> P14[14 EC2 deploy]
+  P14 --> P15[15 SPCS deploy]
+  P15 --> P16[16 Snowflake backend]
   P11 -.-> P17[17 Retrieval, optional]
 ```
 
@@ -87,8 +89,8 @@ flowchart LR
 
 - Deliverables: the provider contract (doc 03 §1) with **`BedrockProvider`
   (Converse/ConverseStream) and the stub provider only** — `CortexProvider` is deliberately
-  deferred to Phase 14 (decision D33); `RoleClient` + `models.yml` profiles (both profiles
-  declared, `cortex` unusable until 14); `PromptRegistry` with prompt assembly order (base → user
+  deferred to Phase 15 (decision D33); `RoleClient` + `models.yml` profiles (both profiles
+  declared, `cortex` unusable until 15); `PromptRegistry` with prompt assembly order (base → user
   instruction → memory → state); agent loop with validation, structured error return, iteration
   cap, `tool` event emission; `StubRouter`; utility role for titles; router-decision suite (stub +
   `-m router_live`); prompt contract tests.
@@ -200,7 +202,27 @@ The tables and the writer already exist from Phase 6; this phase makes them usef
   restore a prior version; size cap rejects an oversized write with a clear error.
 - Depends on: 12.
 
-## Phase 14 — SPCS deployment (primary target)
+## Phase 14 — EC2 deployment (first-deployed target)
+
+- Preparation deliverables (before the deploy work -- the hard gate this deploy requires): the
+  Phase 9 hardening carryforwards -- JWKS negative-cache/off-loop, docs-surface gating
+  (`/docs`/`/redoc`/`/openapi.json` closed outside `local`), rate-limiter eviction, the worker
+  claim role (`poseidon_worker`, migration 0009) + the boot privilege probe
+  (`assert_boot_privileges`, migration 0010's `poseidon_app` membership grant), and the
+  architecture-fitness test file -- all landed before `IDENTITY_MODE=auth0` ever goes live in a
+  real deploy, per decision D8 (revised)'s "EC2 deploys first" ordering.
+- Deliverables: provisioning scripts + `infra/runbooks/deploy-ec2.md` (doc 07 §5);
+  `infra/runbooks/smoke.md` (the either-target checklist, shipped here first); EC2 + Caddy TLS +
+  static frontend; RDS with migrations + synthetic load; S3 + lifecycle; instance profile; the
+  worker container in the EC2 compose stack (memory distillation, same image, same env
+  contract); `IDENTITY_MODE=auth0` with prod-tenant URLs; `LLM_PROFILE=bedrock`; Budget alarm.
+- Validate: `smoke.md` executed on the public URL -- login, all three flows, artifact download,
+  `turn_run` + `llm_calls` + `message_feedback` rows present, memory distillation fires; RPO 24h
+  / RTO next business day satisfied by RDS automated daily backups (the owner numbers, doc 07
+  §4); rollback rehearsed (paired `alembic downgrade` + previous image tag).
+- Depends on: 13 (independent of 15/16; sequenced first by decision D8 revised).
+
+## Phase 15 — SPCS deployment (corporate primary target)
 
 - Preparation deliverables (before the deploy work): **`CortexProvider`** (strict-JSON tool
   emulation) behind the unchanged contract of doc 03 §1, plus the **provider-parity contract
@@ -212,7 +234,8 @@ The tables and the writer already exist from Phase 6; this phase makes them usef
   setup; `DEPLOY_MODE=spcs` session strategy live (OAuth token file); `IDENTITY_MODE=
   spcs_ingress` live; Cortex profile as LLM default; scheduled `pg_dump` + artifact mirror
   shipped off-service (doc 07 §4); `infra/runbooks/deploy-spcs.md` and
-  `infra/runbooks/backup-restore-spcs.md`.
+  `infra/runbooks/backup-restore-spcs.md` (`smoke.md` itself already shipped in Phase 14 and
+  needs no changes here).
 - Validate: service READY; `SHOW ENDPOINTS` yields the ingress URL; `smoke.md` executed there —
   login-as-Snowflake-user, all three flows on synthetic data, artifact download, `turn_run` +
   `llm_calls` + feedback rows present, memory distillation fires (idle threshold lowered for the
@@ -222,8 +245,10 @@ The tables and the writer already exist from Phase 6; this phase makes them usef
   testing.**
 - Depends on: 13.
 
-## Phase 15 — Snowflake data backend online
+## Phase 16 — Snowflake data backend online
 
+- Executed as a separate Snowflake-side effort (decision D8 revised), independent of the EC2
+  deploy track.
 - Deliverables: `SnowflakeDataClient` live against the certified views (`MARINE_SALES_
   PLANNING_V`, `W_MARINE_GL_SOURCE_AI`); `DATA_BACKEND=snowflake` flipped in the SPCS
   environment; dialect snapshots verified; period availability + dimension values served from
@@ -231,16 +256,7 @@ The tables and the writer already exist from Phase 6; this phase makes them usef
 - Validate: parity check — the certified-metric suite runs against both backends and agrees on
   shape and semantics; the Singapore-style breakdown returns live numbers with a proof block
   naming `snowflake` as source; user testing proceeds on real data.
-- Depends on: 14.
-
-## Phase 16 — EC2 deployment (secondary target)
-
-- Deliverables: provisioning scripts + `infra/runbooks/deploy-ec2.md` (doc 07 §5); EC2 + Caddy
-  TLS + static frontend; RDS with migrations + synthetic load; S3 + lifecycle; instance
-  profile; `IDENTITY_MODE=auth0` with prod-tenant URLs; `LLM_PROFILE=bedrock`; Budget alarm.
-- Validate: `smoke.md` executed on the public URL — login, all three flows, artifact download,
-  `turn_run` row present; optional `DATA_BACKEND=snowflake` flip verified; rollback rehearsed.
-- Depends on: 13 (independent of 14/15; sequenced after SPCS by decision D8).
+- Depends on: 15.
 
 ## Phase 17 — Retrieval (thin slice, optional)
 
@@ -253,6 +269,6 @@ The tables and the writer already exist from Phase 6; this phase makes them usef
 ## Cut-over criteria for the legacy app
 
 The Streamlit app is retired only when: all three flows verified in the new chat **on SPCS
-against the same backing data** (post-P15); PDF parity accepted; identity behavior verified in
+against the same backing data** (post-P16); PDF parity accepted; identity behavior verified in
 the deployed mode; run-log auditability and feedback capture demonstrated. Until then the repos
 coexist untouched.
