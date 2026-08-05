@@ -1,6 +1,6 @@
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
-import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import type { MemoryEntry } from "../api/types";
 import { handlers } from "../mocks/handlers";
 import { resetSettingsStore, useSettingsStore } from "./settingsStore";
@@ -212,6 +212,52 @@ test("saveMemoryEntries refreshes the version list after a successful save", asy
     { version: 2, created_by: "user", created_at: "2026-08-02T00:00:00Z", entry_count: 1 },
     { version: 1, created_by: "user", created_at: "2026-08-01T00:00:00Z", entry_count: 1 },
   ]);
+});
+
+// Fix round 2 (review finding): the PUT itself succeeding must NOT be
+// undone by an independent failure of the follow-up versions refresh --
+// round 1's shape put both calls in the same try/catch, so a
+// GET /api/me/memory/versions failure AFTER a successful PUT rolled
+// memoryEntries back to its pre-save value (while memoryVersion/
+// memoryCreatedBy/memoryCreatedAt stayed at the new post-save values --
+// an internally inconsistent store) and made this whole call reject, so
+// the caller (SettingsPanel's handleSaveMemory) reported the save itself
+// as failed even though it had already landed server-side.
+test("a versions-refresh failure after a successful save does not roll back the save or reject the call", async () => {
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const savedEntries: MemoryEntry[] = [
+    {
+      type: "preference",
+      statement: "USD thousands",
+      source_conversation_id: "c1",
+      at: "2026-08-01T00:00:00Z",
+    },
+  ];
+  server.use(
+    http.put("/api/me/memory", () =>
+      HttpResponse.json({
+        version: 2,
+        entries: savedEntries,
+        created_by: "user",
+        created_at: "2026-08-02T00:00:00Z",
+      })),
+    http.get("/api/me/memory/versions", () => new HttpResponse(null, { status: 500 })),
+  );
+
+  await expect(useSettingsStore.getState().saveMemoryEntries(savedEntries)).resolves.toBeUndefined();
+
+  const state = useSettingsStore.getState();
+  // The save's own confirmed state stands -- no rollback, and every field
+  // the PUT response carried stays mutually consistent.
+  expect(state.memoryEntries).toEqual(savedEntries);
+  expect(state.memoryVersion).toBe(2);
+  expect(state.memoryCreatedBy).toBe("user");
+  expect(state.memoryCreatedAt).toBe("2026-08-02T00:00:00Z");
+  // versions itself is simply left stale (never touched by this failed
+  // refresh) -- acceptable per the reviewer's own framing.
+  expect(state.versions).toEqual([]);
+  expect(warnSpy).toHaveBeenCalledTimes(1);
+  warnSpy.mockRestore();
 });
 
 // Optimistic-write-then-rollback, same shape as saveInstruction above --

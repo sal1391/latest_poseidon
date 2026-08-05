@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { MemoryCreatedBy, MemoryEntry, MemoryVersionSummary } from "../api/types";
+import type { MemoryCreatedBy, MemoryEntry, MemoryVersion, MemoryVersionSummary } from "../api/types";
 import * as api from "../api/client";
 
 /**
@@ -33,12 +33,14 @@ export interface SettingsState {
   // canonical pattern for this, reuse it, don't invent a second one).
   saveInstruction: (instruction: string) => Promise<void>;
   loadMemory: () => Promise<void>;
-  // Same optimistic-write-then-rollback shape as saveInstruction. `entries`
-  // is the caller's own edited local working list (SettingsPanel.tsx owns
+  // Optimistic-write-then-rollback for the PUT itself only. `entries` is
+  // the caller's own edited local working list (SettingsPanel.tsx owns
   // that list; deleting an entry is "edit the list, then Save the whole
   // thing" -- there is no delete-one-entry endpoint, Task 3's own contract).
   // A successful save also refreshes `versions` (fix round 1, Important 2)
-  // -- see this action's own implementation comment for why.
+  // as a SEPARATE, best-effort step that cannot roll back the save or make
+  // this call reject (fix round 2 -- see this action's own implementation
+  // comment for the failure mode round 1's shape had).
   saveMemoryEntries: (entries: MemoryEntry[]) => Promise<void>;
   loadVersions: () => Promise<void>;
   restoreVersion: (version: number) => Promise<void>;
@@ -130,27 +132,61 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   // Fix round 1 (review finding Important 2): PUT /api/me/memory always
   // creates a new version too (Task 3's own contract, identical to
   // restoreVersion's own reasoning below) -- so the version list is stale
-  // the instant a save resolves, exactly like a restore. Same fix, same
-  // place in the sequence: refetched via loadVersions() (unguarded --
-  // matches restoreVersion's own precedent, so a failure of THIS call
-  // still rejects the outer saveMemoryEntries call rather than silently
-  // leaving the version list stale with no signal at all).
+  // the instant a save resolves, exactly like a restore.
+  //
+  // Fix round 2 (review finding, correcting round 1's own claim): round 1
+  // put the loadVersions() refresh INSIDE the same try that wraps the
+  // rollback catch, and claimed that was "unguarded, matching
+  // restoreVersion's own precedent" -- true of its POSITION in the
+  // sequence, false of its CONTROL FLOW: restoreVersion has no enclosing
+  // try/catch at all, so nothing about a failed refresh there could ever
+  // roll anything back. Here, by contrast, api.putMemory can succeed (the
+  // server has already committed the new version) and the FOLLOWING
+  // loadVersions() call can independently fail (a network blip, a
+  // transient 5xx, a token expiring between the two calls) -- with the
+  // round-1 shape, that failure fired the SAME catch the PUT's own
+  // failure uses, reverting `memoryEntries` to `prevEntries` even though
+  // the save genuinely succeeded, leaving `memoryVersion`/`memoryCreatedBy`/
+  // `memoryCreatedAt` (already set to the new values) inconsistent with a
+  // reverted `memoryEntries`, AND making this whole call reject so the
+  // panel reported "Could not save your memory" for a save that had
+  // already landed server-side -- a user-driven retry would then PUT the
+  // same list again, creating a duplicate version.
+  //
+  // Fixed shape: the try/catch below wraps ONLY api.putMemory itself (the
+  // one call whose failure means nothing was saved, so rolling back is
+  // correct); the confirmed post-save state is committed unconditionally
+  // once that call succeeds; loadVersions() then runs in its OWN
+  // best-effort try/catch that never rethrows -- a refresh failure here
+  // leaves `versions` merely stale (acceptable; the version list still
+  // sits behind an already-successful save and refreshes the next time
+  // this panel opens or acts) rather than corrupting already-committed
+  // state or reporting a false failure. Mirrors `chatStore.ts`'s own
+  // `hydrateFeedback`: best-effort, warn on failure, never throw.
   saveMemoryEntries: async (entries) => {
     const prevEntries = get().memoryEntries;
     set({ memoryEntries: entries });
+    let body: MemoryVersion;
     try {
-      const body = await api.putMemory(entries);
-      set({
-        memoryVersion: body.version,
-        memoryEntries: body.entries,
-        memoryCreatedBy: body.created_by,
-        memoryCreatedAt: body.created_at,
-        memoryLoaded: true,
-      });
-      await get().loadVersions();
+      body = await api.putMemory(entries);
     } catch (err) {
       set({ memoryEntries: prevEntries });
       throw err;
+    }
+    set({
+      memoryVersion: body.version,
+      memoryEntries: body.entries,
+      memoryCreatedBy: body.created_by,
+      memoryCreatedAt: body.created_at,
+      memoryLoaded: true,
+    });
+    try {
+      await get().loadVersions();
+    } catch (err) {
+      console.warn(
+        "saveMemoryEntries: the save succeeded but refreshing the version list failed",
+        err,
+      );
     }
   },
 
