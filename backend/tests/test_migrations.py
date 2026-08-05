@@ -95,7 +95,24 @@ def test_0009_round_trips_against_postgres():
 
     env = {"DATABASE_URL": dsn, "S3_BUCKET": "poseidon-artifacts"}
 
-    def _state() -> tuple[bool, bool]:
+    def _state() -> tuple[bool, bool, bool]:
+        """``(role exists, policy exists, DSN user is a member of the role)``.
+
+        The third element pins ``GRANT poseidon_worker TO CURRENT_USER`` --
+        0009's single most RDS-critical statement, since a non-superuser may
+        only ``SET ROLE`` to a role it is a MEMBER of, and without it the
+        worker's claim raises on every cycle. Nothing else in either suite
+        fails if that line is deleted.
+
+        It reads ``pg_auth_members`` directly rather than asking
+        ``pg_has_role(current_user, 'poseidon_worker', 'MEMBER')``, which
+        would be VACUOUS here: a superuser passes ``pg_has_role`` for every
+        role in the cluster whether granted or not, and this project's
+        compose DSN is a superuser. Verified on that database --
+        ``pg_has_role`` answers true for ``poseidon_app``, which the DSN
+        user has never been granted, while the catalog query below correctly
+        answers false. Only the catalog distinguishes a real GRANT.
+        """
         with psycopg.connect(normalize_dsn(dsn), connect_timeout=2) as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT 1 FROM pg_roles WHERE rolname = 'poseidon_worker'")
@@ -105,19 +122,31 @@ def test_0009_round_trips_against_postgres():
                     "AND policyname = 'memory_outbox_worker'"
                 )
                 policy = cur.fetchone() is not None
-        return role, policy
+                cur.execute(
+                    "SELECT 1 FROM pg_auth_members m "
+                    "JOIN pg_roles granted ON granted.oid = m.roleid "
+                    "JOIN pg_roles grantee ON grantee.oid = m.member "
+                    "WHERE granted.rolname = 'poseidon_worker' "
+                    "AND grantee.rolname = current_user"
+                )
+                member = cur.fetchone() is not None
+        return role, policy, member
 
-    if _state() != (True, True):
+    if _state() != (True, True, True):
         pytest.skip("this database is not at 0009 - migrate it first")
 
     try:
         down = _alembic("downgrade", "0008", env_overrides=env)
         assert down.returncode == 0, down.stderr
-        assert _state() == (False, False), (
-            "downgrade must drop both the worker policy and the role it was written for"
+        assert _state() == (False, False, False), (
+            "downgrade must drop the worker policy, the role it was written for, and "
+            "(with the role) the membership 0009 granted"
         )
     finally:
         up = _alembic("upgrade", "head", env_overrides=env)
         assert up.returncode == 0, up.stderr
 
-    assert _state() == (True, True), "upgrade must put the role and its policy back"
+    assert _state() == (True, True, True), (
+        "upgrade must put the role, its policy, and the DSN user's membership in it back -- "
+        "the membership is what makes SET ROLE legal for a non-superuser, i.e. on RDS"
+    )

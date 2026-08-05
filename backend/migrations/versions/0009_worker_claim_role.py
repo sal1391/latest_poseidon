@@ -148,12 +148,34 @@ def downgrade() -> None:
     if bind.dialect.name != "postgresql":
         return
 
-    op.execute(f"DROP POLICY {_WORKER_POLICY} ON {_MEMORY_OUTBOX}")
-    op.execute(f"REVOKE SELECT, UPDATE ON {_MEMORY_OUTBOX} FROM {_WORKER_ROLE}")
-    op.execute(f"REVOKE USAGE ON SCHEMA public FROM {_WORKER_ROLE}")
+    # Every statement below tolerates the object it targets already being
+    # gone, because a downgrade is exactly when that is likeliest: an
+    # operator who hit a problem may well have dropped the role or the
+    # policy by hand before reaching for `alembic downgrade`. An earlier
+    # draft guarded only the DROP ROLE, which meant a hand-removed role
+    # aborted this downgrade two statements EARLIER, at the first REVOKE --
+    # while the comment claimed it was covered.
+    op.execute(f"DROP POLICY IF EXISTS {_WORKER_POLICY} ON {_MEMORY_OUTBOX}")
+    # One block for the two REVOKEs: `REVOKE ... FROM <role>` raises
+    # undefined_object if the role is gone, and there is nothing to revoke
+    # in that case anyway. (`REVOKE` has no IF EXISTS spelling, hence the
+    # DO block rather than a flag.)
+    op.execute(
+        "DO $$ BEGIN "
+        f"REVOKE SELECT, UPDATE ON {_MEMORY_OUTBOX} FROM {_WORKER_ROLE}; "
+        f"REVOKE USAGE ON SCHEMA public FROM {_WORKER_ROLE}; "
+        "EXCEPTION WHEN undefined_object THEN NULL; "
+        "END $$"
+    )
     # Memberships (the GRANT ... TO CURRENT_USER above, and any a deploy
     # added by hand) are dropped by Postgres along with the role itself, so
     # they need no REVOKE of their own here.
+    #
+    # Kept as its OWN block, deliberately: a PL/pgSQL block that catches an
+    # exception rolls back everything done inside it, so folding the drop in
+    # with the revokes above would mean a role that cannot be dropped keeps
+    # its grants too. Separated, the privileges always come off even when
+    # the role itself has to stay.
     #
     # dependent_objects_still_exist is swallowed rather than raised: it can
     # only mean something OUTSIDE this migration granted this role a

@@ -170,24 +170,24 @@ _ROLE_EXISTS_SQL = text("SELECT 1 FROM pg_roles WHERE rolname = :role")
 #: silently rounds anything smaller up to 2.
 _PROBE_CONNECT_TIMEOUT_SECONDS = 2
 
-#: Database URLs this process has already failed to reach from
-#: :func:`assert_boot_privileges` (masked form, so no password is held in
-#: module state).
+#: **There is deliberately no cache here, and there must not be one.**
 #:
-#: **Only the ABSENCE of a verdict is ever remembered -- never a verdict.**
-#: A refusal and a pass are both recomputed on every call, every time, so no
-#: check this function performs can be short-circuited by something it
-#: concluded earlier. What is cached is strictly "this process already spent
-#: :data:`_PROBE_CONNECT_TIMEOUT_SECONDS` learning it cannot reach this URL,
-#: and re-learning it costs the same again for the same non-answer".
+#: An earlier draft of this task remembered URLs it had failed to reach, so
+#: that the offline suite's 27 ``chat_mode="live"`` apps would not each
+#: spend :data:`_PROBE_CONNECT_TIMEOUT_SECONDS` re-learning that the
+#: placeholder DSN is unreachable (it doubled that suite's runtime). It was
+#: removed on review, and the reasoning is worth keeping so nobody
+#: re-invents it: caching "no verdict was possible" is observationally
+#: identical to caching "this did not refuse". A database that is DOWN at
+#: the first probe and UP-BUT-MISCONFIGURED at a later one -- a real
+#: sequence for any process that outlives a database restart -- would then
+#: have its refusal silently suppressed by a stale entry, which is exactly
+#: the class of silent misconfiguration this whole function exists to end.
+#: A safety check that can be short-circuited by something it concluded
+#: earlier is not a safety check.
 #:
-#: Sized by the real world, not hypothetically: in production this holds at
-#: most one entry and only when the database is down (one app per process).
-#: It exists because the offline test suite builds 27 ``chat_mode="live"``
-#: apps against the deliberately unreachable placeholder DSN, and without
-#: this the boot check -- which cannot possibly render a verdict for any of
-#: them -- doubled that suite's wall-clock time by itself.
-_UNREACHABLE_URLS: set[str] = set()
+#: ``test_a_refusal_is_rendered_on_every_call_never_only_the_first`` fails
+#: if any such cache comes back.
 
 
 def _validate_app_role(name: str) -> None:
@@ -309,10 +309,10 @@ def assert_boot_privileges(
     possible version of "the rehearsal's ``SET ROLE`` cannot leak into a
     later checkout".
 
-    A URL this process has already failed to reach is not re-attempted
-    (:data:`_UNREACHABLE_URLS`) -- the only thing this function ever
-    remembers, and it is the absence of a verdict, never a verdict. Both a
-    pass and a refusal are recomputed in full on every single call.
+    **This function remembers nothing between calls, on purpose** -- see the
+    comment above :data:`_PROBE_CONNECT_TIMEOUT_SECONDS`'s neighbour for the
+    cache that was tried and removed, and why a boot check that can skip a
+    check on the strength of an earlier call is not one.
 
     Non-Postgres engines return immediately: ``pg_roles``, ``SET ROLE`` and
     row-level security are all Postgres-only, the same dialect guard every
@@ -327,10 +327,6 @@ def assert_boot_privileges(
         # reach SQL-text construction, and failing on it should not depend
         # on the database being reachable.
         _validate_app_role(app_role)
-
-    url = str(engine.url)  # password-masked by SQLAlchemy's own __str__
-    if url in _UNREACHABLE_URLS:
-        return
 
     # A throwaway engine on the caller's own URL, not a checkout from the
     # caller's pool -- purely so this one connection can carry a bounded
@@ -348,7 +344,7 @@ def assert_boot_privileges(
         poolclass=NullPool,
     )
     try:
-        _run_checks(probe_engine, url, app_role, require_worker_role)
+        _run_checks(probe_engine, str(engine.url), app_role, require_worker_role)
     finally:
         probe_engine.dispose()
 
@@ -358,14 +354,31 @@ def _run_checks(
 ) -> None:
     """The body of :func:`assert_boot_privileges`, split out only so that
     function's ``finally: probe_engine.dispose()`` reads as one line rather
-    than wrapping every check in another indent level."""
+    than wrapping every check in another indent level. ``url`` is only ever
+    logged, and is SQLAlchemy's own password-masked rendering."""
     try:
         connection = probe_engine.connect()
     except DBAPIError as exc:
-        _UNREACHABLE_URLS.add(url)
+        # An SQLSTATE means the SERVER answered and rejected us -- wrong
+        # password, no such database, not allowed by pg_hba -- which is a
+        # very different operational problem from "nothing answered at all",
+        # and logging both as "unreachable" sends an operator hunting for a
+        # network fault that is not there. psycopg only carries `sqlstate`
+        # on errors the server itself produced, so its presence is exactly
+        # the distinction. Either way no privilege verdict is possible, so
+        # either way this returns rather than refusing: /ready is the
+        # surface that reports a database this process cannot use.
+        sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
         logger.warning(
             "boot_privileges_unchecked",
-            reason="database unreachable at boot",
+            reason=(
+                "the server rejected this connection (authentication, database "
+                "or pg_hba), so no privilege check could run"
+                if sqlstate
+                else "no connection to the database could be opened"
+            ),
+            sqlstate=sqlstate,
+            url=url,
             type=type(exc).__name__,
         )
         return

@@ -42,12 +42,12 @@ passes for a non-privileged DSN with no app role, refuses before the
 """
 
 import os
-import time
+import uuid
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import DBAPIError, OperationalError
 
 from poseidon.core.config import Settings
 from poseidon.core.db import WORKER_ROLE, assert_boot_privileges, build_engine
@@ -56,19 +56,35 @@ CONNECT_TIMEOUT_SECONDS = 2
 
 #: The same unreachable-but-well-formed DSN every offline suite's
 #: ``chat_mode="live"`` app is built against (``test_live_chat_sse.py``'s
-#: own ``_PLACEHOLDER_DSN``, reused verbatim rather than re-invented): port
-#: 1 on loopback refuses instantly, so these tests cost milliseconds.
+#: own ``_PLACEHOLDER_DSN``, reused verbatim rather than re-invented).
+#:
+#: An earlier version of this comment asserted that port 1 on loopback
+#: "refuses instantly, so these tests cost milliseconds". That is not what
+#: happens on this project's Windows host: the SYN is DROPPED, not refused,
+#: and a connection attempt with libpq's default of "wait indefinitely"
+#: took a measured 130 seconds to give up. That measurement is the entire
+#: reason ``core/db.py``'s probe carries an explicit
+#: ``connect_timeout``; with it, each attempt here costs about 2 seconds
+#: (libpq's own floor). Do not "simplify" that timeout away.
 _UNREACHABLE_DSN = "postgresql+psycopg://nobody:nope@127.0.0.1:1/void"
 
 _DSN = os.environ.get("DATABASE_URL", "")
 
 _APP_ROLE = "poseidon_app"
 
-#: Name of the throwaway role ``nonprivileged_dsn`` creates. Deliberately
-#: unmistakable and namespaced: it is created and dropped inside one test,
-#: but a crashed run could leave it behind in a long-lived dev database, and
-#: whoever finds it should be able to tell instantly what made it.
-_PROBE_ROLE = "poseidon_boot_probe_nonpriv"
+#: Name prefix of the throwaway role ``nonprivileged_dsn`` creates.
+#: Deliberately unmistakable and namespaced: it is created and dropped
+#: inside one test, but a crashed run could leave it behind in a long-lived
+#: dev database, and whoever finds it should be able to tell instantly what
+#: made it.
+#:
+#: The per-fixture random suffix is not decoration. Roles are CLUSTER-scoped,
+#: so two pg runs against the same Postgres (two developers, or a local run
+#: overlapping CI) would otherwise share one role name -- and this fixture
+#: both creates and drops it, so one run would delete the other's role
+#: mid-test. A fixed name makes concurrent pg runs actively destructive to
+#: each other; a suffixed one makes them merely simultaneous.
+_PROBE_ROLE_PREFIX = "poseidon_boot_probe_nonpriv"
 _PROBE_PASSWORD = "probe"
 
 
@@ -117,35 +133,6 @@ def test_an_unreachable_database_is_not_a_privilege_verdict():
     engine = build_engine(_UNREACHABLE_DSN)
     try:
         assert assert_boot_privileges(engine, _settings(database_app_role=_APP_ROLE)) is None
-    finally:
-        engine.dispose()
-
-
-def test_an_unreachable_database_is_only_waited_on_once_per_process():
-    """The probe bounds its connect attempt (2s, ``api/health.py``'s
-    ``/ready`` precedent) and then remembers that this URL could not be
-    reached, so the SECOND live-mode app built in the same process pays
-    nothing.
-
-    Measured, not stylistic. Against the unreachable placeholder DSN,
-    libpq's default of "wait indefinitely" took 130 SECONDS per boot; even
-    bounded at libpq's 2-second floor, the offline suite builds 27
-    ``chat_mode="live"`` apps and paid 55s of pure waiting for 27
-    non-answers, doubling its own runtime. What is remembered is only the
-    ABSENCE of a verdict -- ``test_a_dsn_that_is_not_a_member_of_the_worker_
-    role_is_refused_then_passes_after_the_grant`` is the counterpart that
-    fails immediately if a real verdict were ever cached.
-    """
-    engine = build_engine(_UNREACHABLE_DSN)
-    settings = _settings(database_app_role=_APP_ROLE)
-    try:
-        assert_boot_privileges(engine, settings)  # may pay the full timeout
-
-        started = time.monotonic()
-        assert_boot_privileges(engine, settings)
-        assert time.monotonic() - started < 0.5, (
-            "a URL this process already failed to reach must not be waited on again"
-        )
     finally:
         engine.dispose()
 
@@ -221,16 +208,28 @@ def nonprivileged_dsn(pg_engine):
     ``rolsuper`` nor ``rolbypassrls``: the RDS habitat, rehearsed against
     compose (see this module's docstring).
 
-    Dropped again on the way out, including when the test fails. Skips
-    rather than fails if the role cannot actually log in -- password
-    authentication over TCP is a property of the server's ``pg_hba.conf``,
-    not of this codebase, and a differently-configured habitat must not turn
-    that into a red suite.
+    Dropped again on the way out, including when the test fails. Its name
+    carries a random suffix so two concurrent pg runs against the same
+    cluster cannot drop each other's role (see :data:`_PROBE_ROLE_PREFIX`).
+
+    **Skips, never fails, on any habitat difference.** BOTH server-dependent
+    steps are covered: creating the role at all (a ``DATABASE_URL`` role
+    without ``CREATEROLE`` -- a perfectly reasonable way to run this suite --
+    would otherwise hard-error where the docstring promises a skip), and
+    logging in as it afterwards (password auth over TCP is a property of the
+    server's ``pg_hba.conf``, not of this codebase). Anything else still
+    fails loudly.
     """
-    with pg_engine.begin() as conn:
-        conn.execute(text(f"DROP ROLE IF EXISTS {_PROBE_ROLE}"))
-        conn.execute(text(f"CREATE ROLE {_PROBE_ROLE} LOGIN PASSWORD '{_PROBE_PASSWORD}'"))
-    dsn = make_url(_DSN).set(username=_PROBE_ROLE, password=_PROBE_PASSWORD)
+    role = f"{_PROBE_ROLE_PREFIX}_{uuid.uuid4().hex[:8]}"
+    try:
+        with pg_engine.begin() as conn:
+            conn.execute(text(f"CREATE ROLE {role} LOGIN PASSWORD '{_PROBE_PASSWORD}'"))
+    except DBAPIError as exc:
+        pytest.skip(
+            f"cannot create {role} ({type(exc).__name__}) - this DATABASE_URL role has no "
+            "CREATEROLE, so the non-privileged-DSN rehearsal cannot run here"
+        )
+    dsn = make_url(_DSN).set(username=role, password=_PROBE_PASSWORD)
     dsn_text = dsn.render_as_string(hide_password=False)
     try:
         probe = build_engine(dsn_text)
@@ -239,15 +238,15 @@ def nonprivileged_dsn(pg_engine):
                 pass
         except OperationalError as exc:
             pytest.skip(
-                f"{_PROBE_ROLE} cannot log in ({type(exc).__name__}) - this server's "
+                f"{role} cannot log in ({type(exc).__name__}) - this server's "
                 "pg_hba.conf does not accept password auth for a new role"
             )
         finally:
             probe.dispose()
-        yield dsn_text
+        yield dsn_text, role
     finally:
         with pg_engine.begin() as conn:
-            conn.execute(text(f"DROP ROLE IF EXISTS {_PROBE_ROLE}"))
+            conn.execute(text(f"DROP ROLE IF EXISTS {role}"))
 
 
 # ===========================================================================
@@ -294,6 +293,34 @@ def test_an_app_role_that_does_not_exist_is_refused_by_name(pg_engine):
 
 
 @pytest.mark.pg
+def test_a_refusal_is_rendered_on_every_call_never_only_the_first(pg_engine):
+    """**The anti-cache regression guard.** Nothing this function concludes
+    may ever be remembered across calls.
+
+    An earlier draft of this task memoized URLs it had failed to reach, to
+    spare the offline suite 27 pointless connection timeouts. Review killed
+    it, correctly: caching "no verdict was possible" is observationally
+    caching "this did not refuse", and a process that probes while the
+    database is DOWN and probes again once it is UP-BUT-MISCONFIGURED would
+    have had its refusal silently swallowed by the stale entry -- the exact
+    class of silent misconfiguration this function exists to end.
+
+    A timing assertion cannot catch that (and would be vacuous on any host
+    whose refused connections are instant). This asserts the property
+    itself: the same probe, same process, same URL, refuses EVERY time.
+    Any future short-circuit that returns early on a remembered outcome
+    fails here on the second call.
+    """
+    settings = _settings(database_app_role="poseidon_nonexistent_role")
+
+    for _attempt in range(3):
+        # pytest.raises IS the assertion: a call that returned instead of
+        # refusing fails the iteration it happened on.
+        with pytest.raises(RuntimeError, match="poseidon_nonexistent_role"):
+            assert_boot_privileges(pg_engine, settings)
+
+
+@pytest.mark.pg
 def test_a_missing_worker_role_is_refused_by_name(pg_engine, monkeypatch):
     """Check (c), first half. The absent role is simulated by pointing the
     probe at a role name that cannot exist rather than by dropping the real
@@ -325,7 +352,8 @@ def test_a_nonprivileged_dsn_with_no_app_role_passes(pg_engine, nonprivileged_ds
     running a non-privileged DSN sets it empty). Check (a) must not fire
     here, or the probe would refuse to boot the very deployment it exists
     to protect."""
-    engine = build_engine(nonprivileged_dsn)
+    dsn, _role = nonprivileged_dsn
+    engine = build_engine(dsn)
     try:
         assert assert_boot_privileges(engine, _settings(database_app_role=None)) is None
     finally:
@@ -348,7 +376,8 @@ def test_a_dsn_that_is_not_a_member_of_the_worker_role_is_refused_then_passes_af
     ``DATABASE_URL`` role is a superuser, and a superuser can ``SET ROLE``
     to anything.
     """
-    engine = build_engine(nonprivileged_dsn)
+    dsn, role = nonprivileged_dsn
+    engine = build_engine(dsn)
     settings = _settings(database_app_role=None)
     try:
         with pytest.raises(RuntimeError, match=WORKER_ROLE) as excinfo:
@@ -356,7 +385,7 @@ def test_a_dsn_that_is_not_a_member_of_the_worker_role_is_refused_then_passes_af
         assert "GRANT" in str(excinfo.value), "the message must name the fix"
 
         with pg_engine.begin() as conn:
-            conn.execute(text(f"GRANT {WORKER_ROLE} TO {_PROBE_ROLE}"))
+            conn.execute(text(f"GRANT {WORKER_ROLE} TO {role}"))
 
         assert assert_boot_privileges(engine, settings, require_worker_role=True) is None
     finally:
