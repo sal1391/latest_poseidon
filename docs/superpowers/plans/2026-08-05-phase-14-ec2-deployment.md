@@ -193,8 +193,17 @@ event loop. Uncredentialed flood of distinct bogus kids = pre-auth self-DoS on e
    `ChatRateLimiter` gains in Task 2). `_public_key_for_kid(kid)` becomes:
    check positive cache → hit returns key. Check negative cache → entry younger than TTL raises
    the existing `AuthError(401, "unknown signing key", ...)` with NO fetch. Otherwise fetch —
-   but only if `_last_fetch_at` is None or older than `_MIN_FETCH_INTERVAL_SECONDS`; a
-   suppressed fetch goes straight to the negative outcome. After a real fetch, re-check the
+   but only if `_last_fetch_at` is None or older than `_MIN_FETCH_INTERVAL_SECONDS`.
+   **Amended (2026-08-05, Task 1 review Important #1, Carlos's ruling: single-flight):** a
+   caller that finds the interval slot claimed AND a fetch genuinely in flight right now WAITS
+   (bounded — off-lock, on a per-attempt event, capped by the fetch's own explicit timeout) for
+   that fetch to complete, then re-checks the positive cache before taking the negative
+   outcome — so concurrent cold-start/rotation requests with VALID kids ride the winner's
+   fetch instead of receiving spurious 401s. A caller that finds the slot claimed with NO
+   fetch in flight (the bogus-kid flood case) still goes straight to the negative outcome with
+   no fetch and no wait — the anti-DoS property is unchanged: at most one outbound fetch per
+   interval, and attackers never park worker threads. The `httpx.Client` gains an explicit
+   bounded timeout (the waiter cap depends on it). After a real fetch, re-check the
    positive cache; still missing → record kid in the negative cache (evicting the OLDEST entry
    when at `_NEGATIVE_MAX_ENTRIES` — dict insertion order suffices) and raise. A kid found
    positive is removed from the negative cache. Rotation still heals: TTL expiry, or any
