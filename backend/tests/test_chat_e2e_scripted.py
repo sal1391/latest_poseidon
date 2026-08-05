@@ -197,6 +197,28 @@ def anyio_backend():
     return "asyncio"
 
 
+def _dev_user(name: str = "e2e") -> str:
+    """A fresh, run-unique ``X-Dev-User`` act-as value -- mirrors
+    ``test_live_chat_sse.py``'s own ``_dev_user`` helper exactly (added by
+    the 2026-08-05 F2 fix, plan amendment commit ``0388d01``), which itself
+    mirrors ``test_me_routes.py``'s own ``_dev_user`` convention. This file
+    imports ``read_sse`` straight from ``test_live_chat_sse.py`` and, until
+    this fix, called it (and ``POST /api/conversations``) with no
+    ``X-Dev-User`` header at all -- landing every one of its three scripted
+    conversations on ``identity_mode="disabled"``'s fixed default,
+    ``sub="dev|local"``, the real identity Carlos's own browser resolves to.
+    Each test below now poses as its own throwaway ``dev|e2e-<hex>``-shaped
+    sub instead, so a full pg run of this file adds no rows under the real
+    shared identity -- no cleanup needed, the same "leave it behind, it's
+    not a real user" convention ``test_me_routes.py``'s own throwaway
+    ``alice``/``bob`` identities already rely on."""
+    return f"{name}-{uuid.uuid4().hex[:8]}"
+
+
+def _headers(user: str) -> dict[str, str]:
+    return {"X-Dev-User": user}
+
+
 @pytest.mark.anyio
 async def test_scripted_four_turn_conversation_against_live_seeded_postgres():
     """doc-08's own scripted conversation, turn by turn, over the real HTTP
@@ -204,6 +226,7 @@ async def test_scripted_four_turn_conversation_against_live_seeded_postgres():
     from poseidon.api.app import create_app
 
     app = create_app(_settings())
+    headers = _headers(_dev_user("flagship"))
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
@@ -212,12 +235,14 @@ async def test_scripted_four_turn_conversation_against_live_seeded_postgres():
         # a 404) for a cid that was never created via POST /api/conversations
         # (see api/live_chat.py's own module docstring, "A conversation that
         # does not exist... now 404s at send time too").
-        conversation_id = (await client.post("/api/conversations")).json()["conversation"]["id"]
-        events_1 = await read_sse(client, conversation_id, TURN_1, str(uuid.uuid4()))
-        events_2 = await read_sse(client, conversation_id, TURN_2, str(uuid.uuid4()))
-        events_3 = await read_sse(client, conversation_id, TURN_3, str(uuid.uuid4()))
-        events_4 = await read_sse(client, conversation_id, TURN_4, str(uuid.uuid4()))
-        events_5 = await read_sse(client, conversation_id, TURN_5, str(uuid.uuid4()))
+        conversation_id = (
+            await client.post("/api/conversations", headers=headers)
+        ).json()["conversation"]["id"]
+        events_1 = await read_sse(client, conversation_id, TURN_1, str(uuid.uuid4()), headers)
+        events_2 = await read_sse(client, conversation_id, TURN_2, str(uuid.uuid4()), headers)
+        events_3 = await read_sse(client, conversation_id, TURN_3, str(uuid.uuid4()), headers)
+        events_4 = await read_sse(client, conversation_id, TURN_4, str(uuid.uuid4()), headers)
+        events_5 = await read_sse(client, conversation_id, TURN_5, str(uuid.uuid4()), headers)
 
     # ===================================================================
     # Turn 1: "Top GP customers for Port of Singapore in April 2026"
@@ -624,6 +649,7 @@ async def test_existing_customer_brief_flow_scripted_against_live_seeded_postgre
     from poseidon.api.app import create_app
 
     app = create_app(_settings())
+    headers = _headers(_dev_user("existing-brief"))
     transport = httpx.ASGITransport(app=app)
     anchor, prior_window, ytd_window = _brief_anchor_windows()
     ports_window_start = anchor - timedelta(days=365)
@@ -631,16 +657,21 @@ async def test_existing_customer_brief_flow_scripted_against_live_seeded_postgre
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         # Phase 10 Task 3: a real conversation -- see the four-turn test's
         # own comment above for why a bare uuid4 no longer works.
-        conversation_id = (await client.post("/api/conversations")).json()["conversation"]["id"]
+        conversation_id = (
+            await client.post("/api/conversations", headers=headers)
+        ).json()["conversation"]["id"]
         events_1 = await read_sse(
-            client, conversation_id, "start an existing-customer brief", str(uuid.uuid4())
+            client, conversation_id, "start an existing-customer brief", str(uuid.uuid4()), headers
         )
-        events_2 = await read_sse(client, conversation_id, "Northstar Lines", str(uuid.uuid4()))
+        events_2 = await read_sse(
+            client, conversation_id, "Northstar Lines", str(uuid.uuid4()), headers
+        )
         events_3 = await read_sse(
             client,
             conversation_id,
             "top GP customers for Port of Singapore in April 2026",
             str(uuid.uuid4()),
+            headers,
         )
 
     # ===================================================================
@@ -902,20 +933,25 @@ async def test_new_prospect_brief_flow_scripted_against_live_seeded_postgres():
     from poseidon.api.app import create_app
 
     app = create_app(_settings())
+    headers = _headers(_dev_user("new-prospect"))
     transport = httpx.ASGITransport(app=app)
     prospect_pivot = "any relevant news on Meridian Global Shipping?"
 
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         # Phase 10 Task 3: a real conversation -- see the four-turn test's
         # own comment above for why a bare uuid4 no longer works.
-        conversation_id = (await client.post("/api/conversations")).json()["conversation"]["id"]
+        conversation_id = (
+            await client.post("/api/conversations", headers=headers)
+        ).json()["conversation"]["id"]
         events_1 = await read_sse(
-            client, conversation_id, "start a new-prospect brief", str(uuid.uuid4())
+            client, conversation_id, "start a new-prospect brief", str(uuid.uuid4()), headers
         )
         events_2 = await read_sse(
-            client, conversation_id, "Meridian Global Shipping", str(uuid.uuid4())
+            client, conversation_id, "Meridian Global Shipping", str(uuid.uuid4()), headers
         )
-        events_3 = await read_sse(client, conversation_id, prospect_pivot, str(uuid.uuid4()))
+        events_3 = await read_sse(
+            client, conversation_id, prospect_pivot, str(uuid.uuid4()), headers
+        )
 
     # ===================================================================
     # Turn 1: the entry phrase -> mode prompt, clarify, no dispatch.

@@ -227,7 +227,7 @@ renders it.
 - Vitest + React Testing Library: renderer registry (every `kind` renders, including
   `tool_event` status transitions; unknown kind falls back safely), chip → mode transition,
   default-flow composer with skills picker, feedback interaction (up, down + comment, amend),
-  settings/memory editors (size-cap meter, version restore), SSE reducer (event stream → store
+  settings/memory editors (size-cap meter, entry delete), SSE reducer (event stream → store
   state, `tool` event in-place updates, envelope keying by `message_id`, `event_seq` replay
   dropped as a no-op, retry with the same `client_turn_key` yielding one turn, reconnect
   reconciliation).

@@ -221,20 +221,21 @@ async def read_sse(
     cid: str,
     text: str,
     client_turn_key: str | None,
-    headers: dict[str, str] | None = None,
+    headers: dict[str, str],
 ):
     """Mirrors ``test_mock_chat.py``'s own ``read_sse`` helper exactly --
     the wire format is pinned byte-identical (``events.py``'s module
     docstring), so the same parsing logic applies unchanged. ``headers``
-    is F2's own fix (see ``_dev_user`` above): every caller IN THIS FILE
-    now passes a run-unique act-as identity rather than silently
-    dispatching as the shared ``dev|local`` default. It stays OPTIONAL
-    (default ``None``, forwarded to ``httpx`` as-is -- no extra header
-    sent) rather than required, because ``tests/test_chat_e2e_scripted.py``
-    imports this exact function and calls it header-less; that file is
-    outside F2's sanctioned scope (not named in the fix plan's file list)
-    and is disclosed, unfixed, in this task's own report as a same-shaped
-    gap for a follow-up task, not silently folded into this one."""
+    is REQUIRED (F2's own fix, see ``_dev_user`` above; tightened by the
+    2026-08-05 plan amendment, commit ``0388d01``): every caller now poses
+    as a run-unique act-as identity rather than silently dispatching as the
+    shared ``dev|local`` default -- including ``tests/test_chat_e2e_
+    scripted.py``, which imports this exact function and used to call it
+    header-less. That file is now sanctioned and fixed too (its own
+    ``_dev_user``/``_headers`` pair, mirroring this file's), closing the gap
+    this docstring used to disclose rather than fix -- there is no longer
+    any caller anywhere in the codebase that can reach this function without
+    a real, run-unique identity."""
     events = []
     body = {"text": text}
     if client_turn_key is not None:
