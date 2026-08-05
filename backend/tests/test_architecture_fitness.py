@@ -173,9 +173,11 @@ def test_malformed_database_url_error_names_database_url_and_expected_form():
     like. ``core/db.py``'s ``build_engine`` now wraps that exact exception
     in a re-raise naming both (see its own docstring's "Phase 14 Task 4"
     section); this test pins the fixed behavior GREEN."""
+    from sqlalchemy.exc import ArgumentError
+
     from poseidon.core.db import build_engine
 
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(ArgumentError) as exc_info:
         build_engine("not-a-dsn")
 
     message = str(exc_info.value)
