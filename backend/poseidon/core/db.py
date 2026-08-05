@@ -95,14 +95,37 @@ The role name is additionally double-quoted as a Postgres identifier
 (``SET LOCAL ROLE "poseidon_app"``) even though the pattern above already
 rules out anything a raw identifier could not already say -- defense in
 depth costs nothing here.
+
+**Phase 14 Task 3 -- the boot privilege probe
+(:func:`assert_boot_privileges`).** Everything above describes privileges
+this module DEPENDS on and, until this task, never checked: whether the
+configured ``app_role`` exists at all was discovered by the first real
+request (a 500), and whether the DSN was privileged in the first place was
+never discovered at all. Both of those are silent in exactly the way that
+matters -- a privileged DSN with no ``app_role`` serves every user's rows
+to every user and looks perfectly healthy doing it. :func:`assert_boot_
+privileges` moves that class of question to process start-up, where a
+wrong answer is a refusal to boot with a message naming the environment
+variable and the fix. See that function's own docstring for the three
+checks and why the worker's is opt-in.
 """
 
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import TYPE_CHECKING
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.pool import NullPool
+
+from poseidon.core.obs import get_logger
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
+    from poseidon.core.config import Settings
+
+logger = get_logger("db")
 
 _SET_IDENTITY_SQL = text("SELECT set_config('app.user_sub', :sub, true)")
 
@@ -114,6 +137,57 @@ _SET_IDENTITY_SQL = text("SELECT set_config('app.user_sub', :sub, true)")
 # (see the module docstring), so the validation is intentionally paranoid
 # rather than merely "wide enough for legitimate role names".
 _APP_ROLE_PATTERN = re.compile(r"[a-z_][a-z0-9_]{0,62}")
+
+#: The role migration 0009 creates for the memory worker's cross-user claim
+#: query, and the ONE place its name is spelled in application code
+#: (``scripts/memory_worker.py`` imports it from here rather than declaring
+#: its own copy, so the claim and the probe that rehearses the claim can
+#: never disagree about which role they mean). Migration 0009 necessarily
+#: repeats the literal -- a migration must not import application code --
+#: and the pg suites fail if the two ever drift.
+WORKER_ROLE = "poseidon_worker"
+
+#: ``true`` when the connected role bypasses row-level security -- either
+#: attribute does it, and this codebase has been bitten by the first one
+#: (``rolsuper``, the official Postgres image's ``POSTGRES_USER``
+#: convention) already. Deliberately asks about ``current_user`` rather
+#: than about a name from configuration: what matters is what THIS
+#: connection actually authenticated as.
+_PRIVILEGE_SQL = text(
+    "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user"
+)
+
+_ROLE_EXISTS_SQL = text("SELECT 1 FROM pg_roles WHERE rolname = :role")
+
+#: How long :func:`assert_boot_privileges` waits for its one connection
+#: before deciding it cannot render a verdict. Mirrors ``api/health.py``'s
+#: ``/ready`` probe verbatim (``connect_args={"connect_timeout": 2}``), and
+#: for the same reason: an unreachable database must cost a bounded moment,
+#: not an unbounded one. Measured, not assumed -- against this project's own
+#: unreachable placeholder DSN (``127.0.0.1:1``, what every offline test's
+#: live-mode app is built with) libpq's DEFAULT of "wait indefinitely" took
+#: 130 seconds to give up, per boot. 2 is also libpq's own floor: it
+#: silently rounds anything smaller up to 2.
+_PROBE_CONNECT_TIMEOUT_SECONDS = 2
+
+#: Database URLs this process has already failed to reach from
+#: :func:`assert_boot_privileges` (masked form, so no password is held in
+#: module state).
+#:
+#: **Only the ABSENCE of a verdict is ever remembered -- never a verdict.**
+#: A refusal and a pass are both recomputed on every call, every time, so no
+#: check this function performs can be short-circuited by something it
+#: concluded earlier. What is cached is strictly "this process already spent
+#: :data:`_PROBE_CONNECT_TIMEOUT_SECONDS` learning it cannot reach this URL,
+#: and re-learning it costs the same again for the same non-answer".
+#:
+#: Sized by the real world, not hypothetically: in production this holds at
+#: most one entry and only when the database is down (one app per process).
+#: It exists because the offline test suite builds 27 ``chat_mode="live"``
+#: apps against the deliberately unreachable placeholder DSN, and without
+#: this the boot check -- which cannot possibly render a verdict for any of
+#: them -- doubled that suite's wall-clock time by itself.
+_UNREACHABLE_URLS: set[str] = set()
 
 
 def _validate_app_role(name: str) -> None:
@@ -176,4 +250,187 @@ def rls_transaction(
         yield conn
 
 
-__all__ = ["build_engine", "rls_transaction"]
+def assert_boot_privileges(
+    engine: Engine, settings: "Settings", *, require_worker_role: bool = False
+) -> None:
+    """Refuse to start a process whose database privileges are wired in a
+    way that would fail SILENTLY at runtime. Returns ``None`` on success and
+    raises ``RuntimeError`` -- naming the variable or role at fault and the
+    fix -- otherwise.
+
+    Called once per process, right after the ``Engine`` is built:
+    ``api/app.py``'s live-chat wiring calls it with the default
+    ``require_worker_role=False``, and ``scripts/memory_worker.py``'s
+    ``main`` calls it with ``True`` before its first cycle.
+
+    Three checks, on one connection:
+
+    (a) **A privileged DSN with no ``DATABASE_APP_ROLE``.** A role with
+        ``rolsuper`` or ``rolbypassrls`` bypasses row-level security
+        unconditionally -- no schema-level override exists (see this
+        module's "round-0 correction"), and ``app_role`` is this codebase's
+        only answer to it. Configured that way, every RLS policy in the
+        database is inert for this process and nothing about the running
+        server looks wrong: every user's rows are served to every user. It
+        refuses.
+    (b) **A ``DATABASE_APP_ROLE`` naming a role that does not exist.**
+        ``SET LOCAL ROLE`` would then fail on the FIRST request instead --
+        every request, in production, from a typo or an un-migrated
+        database. :func:`_validate_app_role` already runs at first use; this
+        moves the whole class of question to boot, where it belongs.
+    (c) **``require_worker_role`` (the worker's flavor).**
+        :data:`WORKER_ROLE` must exist AND ``SET LOCAL ROLE`` to it must
+        actually succeed -- rehearsed for real, inside a transaction that is
+        rolled back, because "the role exists" and "this DSN may assume it"
+        are different questions with the same silent failure: a
+        non-superuser may only ``SET ROLE`` to a role it is a member of
+        (migration 0009's ``GRANT poseidon_worker TO CURRENT_USER``), and a
+        worker that cannot claim distills nothing while logging healthy
+        empty cycles forever.
+
+    **What this function deliberately does NOT do: decide whether the
+    database is up.** A connection that cannot be opened within
+    :data:`_PROBE_CONNECT_TIMEOUT_SECONDS` yields no privilege verdict, so
+    it is logged and the probe returns. This is not a softening of the
+    checks -- it is the boundary between them and ``/ready``, which is the
+    surface that answers "is the database reachable". ``build_engine`` has
+    always been lazy (``api/app.py``'s own docstring: "an unreachable-but-
+    well-formed host still builds fine here and only fails later, per
+    call"), and turning an unreachable database into a boot crash would be
+    an unrelated behavior change smuggled in by a privilege check.
+
+    The one connection is opened on a THROWAWAY engine built from
+    ``engine.url``, not checked out of the caller's pool, purely so it can
+    carry that timeout -- ``api/health.py``'s ``/ready`` probe already does
+    the same thing for the same reason. Every question below is about the
+    role this DSN authenticates as and about cluster-wide catalog state, so
+    the answer is identical over any connection to the same URL; and the
+    caller's own pool is left completely untouched, which is the strongest
+    possible version of "the rehearsal's ``SET ROLE`` cannot leak into a
+    later checkout".
+
+    A URL this process has already failed to reach is not re-attempted
+    (:data:`_UNREACHABLE_URLS`) -- the only thing this function ever
+    remembers, and it is the absence of a verdict, never a verdict. Both a
+    pass and a refusal are recomputed in full on every single call.
+
+    Non-Postgres engines return immediately: ``pg_roles``, ``SET ROLE`` and
+    row-level security are all Postgres-only, the same dialect guard every
+    migration since 0002 opens with.
+    """
+    if engine.dialect.name != "postgresql":
+        return
+
+    app_role = settings.database_app_role
+    if app_role is not None:
+        # Before the connection, not after: a malformed value must never
+        # reach SQL-text construction, and failing on it should not depend
+        # on the database being reachable.
+        _validate_app_role(app_role)
+
+    url = str(engine.url)  # password-masked by SQLAlchemy's own __str__
+    if url in _UNREACHABLE_URLS:
+        return
+
+    # A throwaway engine on the caller's own URL, not a checkout from the
+    # caller's pool -- purely so this one connection can carry a bounded
+    # connect timeout (see _PROBE_CONNECT_TIMEOUT_SECONDS; the app's pool
+    # deliberately sets none, and a boot check must not be able to hang a
+    # boot). ``api/health.py``'s /ready probe already does exactly this,
+    # for the same reason. Every question asked below is about the ROLE the
+    # DSN authenticates as and about cluster-wide catalog state, so the
+    # answers are identical over any connection to the same URL.
+    # ``NullPool``: one connection, used once, closed -- nothing to leave
+    # pooled behind after ``dispose()``.
+    probe_engine = create_engine(
+        engine.url,
+        connect_args={"connect_timeout": _PROBE_CONNECT_TIMEOUT_SECONDS},
+        poolclass=NullPool,
+    )
+    try:
+        _run_checks(probe_engine, url, app_role, require_worker_role)
+    finally:
+        probe_engine.dispose()
+
+
+def _run_checks(
+    probe_engine: Engine, url: str, app_role: str | None, require_worker_role: bool
+) -> None:
+    """The body of :func:`assert_boot_privileges`, split out only so that
+    function's ``finally: probe_engine.dispose()`` reads as one line rather
+    than wrapping every check in another indent level."""
+    try:
+        connection = probe_engine.connect()
+    except DBAPIError as exc:
+        _UNREACHABLE_URLS.add(url)
+        logger.warning(
+            "boot_privileges_unchecked",
+            reason="database unreachable at boot",
+            type=type(exc).__name__,
+        )
+        return
+
+    with connection as conn:
+        if bool(conn.execute(_PRIVILEGE_SQL).scalar()) and app_role is None:
+            raise RuntimeError(
+                "DATABASE_APP_ROLE is unset, but this DATABASE_URL authenticates as a role "
+                "with rolsuper or rolbypassrls: Postgres bypasses row-level security "
+                "unconditionally for such a role, so every RLS policy in this database is "
+                "silently inert for this process and every user's rows are readable by "
+                "every user. Fix: set DATABASE_APP_ROLE=poseidon_app (the role migration "
+                "0004 creates), or point DATABASE_URL at a role with neither attribute."
+            )
+        if app_role is not None and _missing(conn, app_role):
+            raise RuntimeError(
+                f"DATABASE_APP_ROLE={app_role!r} names a role that does not exist in "
+                "pg_roles on this database, so SET LOCAL ROLE would fail on the first "
+                "request instead of here. Fix: run `python -m alembic upgrade head` "
+                "against this database (migration 0004 creates poseidon_app), or set "
+                "DATABASE_APP_ROLE empty if this DSN already authenticates as an "
+                "ordinary, non-privileged role that needs no switch."
+            )
+        if require_worker_role:
+            _assert_worker_role(conn)
+
+
+def _missing(conn: Connection, role: str) -> bool:
+    """``True`` when ``role`` is not a role in this cluster. ``pg_roles`` is
+    world-readable (unlike ``pg_authid``), so this answers the question for
+    an unprivileged connection too -- which is the whole point on RDS."""
+    return conn.execute(_ROLE_EXISTS_SQL, {"role": role}).first() is None
+
+
+def _assert_worker_role(conn: Connection) -> None:
+    """Check (c) of :func:`assert_boot_privileges` -- kept separate only so
+    that function stays readable; it has exactly one caller."""
+    if _missing(conn, WORKER_ROLE):
+        raise RuntimeError(
+            f"the memory worker requires the {WORKER_ROLE} role, which does not exist in "
+            "pg_roles on this database. Its claim query reads every user's memory_outbox "
+            "rows and that visibility comes from this role's policy, so without it the "
+            "worker distills nothing while logging healthy empty cycles. Fix: run "
+            "`python -m alembic upgrade head` against this database (migration 0009 "
+            f"creates {WORKER_ROLE}, grants it on memory_outbox, and grants membership "
+            "to the migration's own DSN user)."
+        )
+    # The rehearsal: the real statement the claim path runs, in a
+    # transaction that is thrown away. SQLAlchemy auto-begins one on the
+    # first execute above, so this rollback ends that same transaction --
+    # and, exactly like rls_transaction's own SET LOCAL, guarantees the
+    # pooled connection goes back to the pool with no role switch on it.
+    try:
+        conn.execute(text(f'SET LOCAL ROLE "{WORKER_ROLE}"'))
+    except DBAPIError as exc:
+        raise RuntimeError(
+            f'SET LOCAL ROLE "{WORKER_ROLE}" failed for this DATABASE_URL '
+            f"({type(exc).__name__}), so the worker could not claim anything. Only a "
+            "superuser may assume a role it is not a member of, and no RDS role is a "
+            f"superuser. Fix: GRANT {WORKER_ROLE} TO <this DSN's user> -- migration 0009 "
+            "does exactly that for the user that runs migrations, so a deployment whose "
+            "worker user differs from its migration user must issue the GRANT itself."
+        ) from exc
+    finally:
+        conn.rollback()
+
+
+__all__ = ["WORKER_ROLE", "assert_boot_privileges", "build_engine", "rls_transaction"]

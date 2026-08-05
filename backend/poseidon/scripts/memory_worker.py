@@ -32,14 +32,41 @@ conversations, across all users, have gone idle" is a question with no
 single ``app.user_sub`` to scope it to, and row-level security's own
 ``USING (user_sub = current_setting('app.user_sub', true))`` predicate
 returns ZERO rows when that setting is absent (it fails closed -- see
-``core/db.py``'s module docstring). So the claim runs on the raw
-``DATABASE_URL`` connection with no ``rls_transaction`` wrapper and no
-``SET LOCAL ROLE`` -- the same privileged posture ``alembic upgrade`` and
-``poseidon.scripts.seed_synthetic`` already use -- and it sees every user's
-rows because that role bypasses RLS (this project's compose Postgres
-bootstraps ``DATABASE_URL``'s role as the cluster superuser; verified
-empirically before this module was written, and re-proved on every pg run
-by ``test_the_claim_connection_actually_bypasses_row_level_security``).
+``core/db.py``'s module docstring).
+
+**Phase 14 Task 3 rewrote what follows; this paragraph is the change.**
+The claim used to run on the raw ``DATABASE_URL`` connection with no role
+switch at all -- "the same privileged posture ``alembic upgrade`` uses" --
+and it saw every user's rows for one reason only: this project's compose
+Postgres bootstraps ``DATABASE_URL``'s role as the cluster SUPERUSER, and a
+superuser bypasses row-level security unconditionally. That reason does not
+survive the deployment this codebase is heading for. **RDS has no superuser
+and cannot grant ``BYPASSRLS``** (a Postgres superuser-only attribute;
+``rds_superuser`` is not one), so on RDS the owner policy would have applied
+to the claim and it would have returned zero rows on every cycle, forever,
+while this process logged healthy empty polls and quietly distilled nothing.
+
+So the claim now switches role: ``SET LOCAL ROLE poseidon_worker``
+(:data:`~poseidon.core.db.WORKER_ROLE`) as the first statement of the
+claim's own transaction, transaction-scoped exactly like
+``rls_transaction``'s own role switch and reverted the instant that
+transaction ends. Migration 0009 creates that role, grants it ``SELECT,
+UPDATE`` on ``memory_outbox`` and ONE ``USING (true)`` policy there --
+nothing on any other table -- and grants membership in it to the DSN user
+that runs migrations, which is what makes ``SET ROLE`` legal for a
+non-superuser. The claim's cross-user visibility is therefore an explicitly
+granted privilege in EVERY habitat rather than an accident of how the local
+compose image happens to bootstrap its user; on compose the DSN could still
+bypass RLS, but the claim no longer depends on that, and
+``test_the_claim_sees_both_users_rows_under_the_worker_role_and_none_under_
+the_app_role`` proves it with a negative control (the same query under
+``poseidon_app`` sees nothing).
+
+That the role is present and assumable is checked ONCE, at start-up, by
+``core/db.py``'s :func:`~poseidon.core.db.assert_boot_privileges` (see
+:func:`main`) -- because every way this can be wrong is otherwise silent:
+an un-migrated database or a DSN with no membership both produce a worker
+that looks alive and never distills anything.
 
 Everything after the claim is ordinary. Reading the claimed conversation's
 messages, reading and writing that user's memory, moving their outbox row
@@ -47,7 +74,7 @@ to ``done``/``failed``, writing the ``turn_run``/``llm_calls`` rows -- each
 goes through the normal ``Store.for_user(row.user_sub)`` /
 ``rls_transaction`` path every other per-user operation in this codebase
 uses, with ``settings.database_app_role`` threaded through exactly as
-``api/app.py`` threads it. The privilege escalation is scoped to the one
+``api/app.py`` threads it. The widened visibility is scoped to the one
 query that structurally cannot be scoped to a single user, and to nothing
 else.
 
@@ -163,7 +190,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
 from poseidon.core.config import Settings, get_settings
-from poseidon.core.db import build_engine
+from poseidon.core.db import WORKER_ROLE, assert_boot_privileges, build_engine
 from poseidon.core.llm.bedrock import BedrockProvider
 from poseidon.core.llm.prompts import (
     DEFAULT_PROMPTS_DIR,
@@ -254,6 +281,15 @@ _FENCE_RE = re.compile(r"\A\s*```(?:json)?\s*(?P<body>.*?)\s*```\s*\Z", re.DOTAL
 #: author (see :func:`_stamp_entries`), never the model's to assert.
 _MODEL_ENTRY_FIELDS = ("type", "statement")
 
+# The role switch the claim runs under (module docstring's privilege-model
+# section). Double-quoted as a Postgres identifier and built from
+# core/db.py's own constant, never from configuration -- SET ROLE takes no
+# bind parameter, and this is deliberately NOT an operator-tunable value:
+# the role exists to be the counterpart of migration 0009's one policy, so
+# a deployment that could point it elsewhere could only point it somewhere
+# that does not work.
+_CLAIM_ROLE_SQL = text(f'SET LOCAL ROLE "{WORKER_ROLE}"')
+
 # The claim query -- the ONE statement in this phase that runs outside a
 # per-user rls_transaction (see the module docstring's privilege-model
 # section). `FOR UPDATE SKIP LOCKED` is what makes two concurrent claims
@@ -319,11 +355,20 @@ def claim_idle_conversations(
     open while a second runs, which is only expressible if the transaction
     is the caller's.
 
-    The connection MUST be the raw privileged one (``engine.begin()``, no
+    The connection MUST be the raw one (``engine.begin()``, no
     ``rls_transaction``) -- see the module docstring's privilege-model
     section. Passing an identity-scoped connection is not an error this
     function can detect; it would simply return that one user's rows.
+
+    The ``SET LOCAL ROLE poseidon_worker`` that makes the claim cross-user
+    is issued HERE rather than left to the caller, so that every caller --
+    :func:`run_once` and every test that opens its own transaction -- gets
+    it without having to remember to. It is transaction-scoped, so it
+    reverts when the caller's transaction ends, and it applies to the rest
+    of that transaction: keep the claim's transaction to the claim, exactly
+    as :func:`run_once` does.
     """
+    conn.execute(_CLAIM_ROLE_SQL)
     rows = conn.execute(
         _CLAIM_SQL, {"idle_minutes": idle_minutes, "batch_limit": limit}
     ).all()
@@ -867,6 +912,16 @@ def main(argv: list[str] | None = None) -> int:
     configure_json_logging()
     settings = get_settings()
     engine = build_engine(settings.database_url)
+    # Before the first cycle, never during one: every way this process's
+    # database privileges can be wrong is otherwise SILENT (an un-migrated
+    # database, or a DSN with no membership in poseidon_worker, both yield a
+    # worker that polls happily and distills nothing). `require_worker_role`
+    # is what makes this the worker's flavor of the same check api/app.py
+    # runs -- it rehearses the claim's own SET LOCAL ROLE for real. Raising
+    # here stops the process, which is correct: an orchestrator restarting a
+    # container that says why it cannot work is visible, and a worker that
+    # claims nothing forever is not.
+    assert_boot_privileges(engine, settings, require_worker_role=True)
     role_client = _build_role_client(settings)
     logger.info(
         "memory_worker_started",

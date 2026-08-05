@@ -9,7 +9,7 @@ from poseidon.core.chat.feedback import FeedbackStore
 from poseidon.core.chat.history import HistoryStore
 from poseidon.core.config import Settings, get_settings
 from poseidon.core.data.synthetic_client import SyntheticDataClient
-from poseidon.core.db import build_engine
+from poseidon.core.db import assert_boot_privileges, build_engine
 from poseidon.core.identity import AuthError, resolve_provider
 from poseidon.core.llm.bedrock import BedrockProvider
 from poseidon.core.llm.prompts import DEFAULT_PROMPTS_DIR, PromptRegistry
@@ -448,6 +448,20 @@ def _wire_live_chat(app: FastAPI) -> None:
     settings = app.state.settings
     engine = build_engine(settings.database_url)
     app.state.db_engine = engine
+    # Phase 14 Task 3: one boot-time privilege check, here because this is
+    # where the engine is built -- a mock-mode app builds none and never
+    # reaches this line. It refuses to boot a server whose DATABASE_URL
+    # bypasses row-level security with no DATABASE_APP_ROLE to claw it back
+    # (the comment immediately below describes exactly that hazard; until
+    # now nothing checked it), and a DATABASE_APP_ROLE naming a role that
+    # does not exist, which would otherwise 500 the first real request
+    # instead of failing at boot. `require_worker_role` stays False: this
+    # process never runs the claim query -- only the worker does, and it
+    # makes the same call with True. An unreachable database is NOT a
+    # refusal (see assert_boot_privileges' own docstring): create_engine
+    # has always been lazy here, and /ready is what answers "is the
+    # database up".
+    assert_boot_privileges(engine, settings)
     # app_role is load-bearing, not decorative: omitting it here would
     # silently disable RLS enforcement on this dev database's superuser DSN
     # (core/db.py's own "round-0 correction" -- a Postgres superuser
