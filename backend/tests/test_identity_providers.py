@@ -54,6 +54,8 @@ provider-tests-here / HTTP-tests-there split above.
 """
 
 import json
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -75,18 +77,20 @@ from poseidon.core.identity import (
     sanitize_username,
 )
 
-# The three Phase 14 Task 1 tuning constants are imported by NAME rather
-# than re-stated as literals here: a test that hardcoded "300.0" would keep
+# The Phase 14 Task 1 tuning constants are imported by NAME rather than
+# re-stated as literals here: a test that hardcoded "300.0" would keep
 # passing against a provider whose real TTL had drifted to something else
 # entirely. Private (leading-underscore) on purpose -- they are the
 # provider's own internals, not a configuration surface (see that module's
 # own docstring for why they are deliberately NOT Settings fields).
 from poseidon.core.identity_auth0 import (
+    _FETCH_WAIT_SECONDS,
     _MIN_FETCH_INTERVAL_SECONDS,
     _NEGATIVE_MAX_ENTRIES,
     _NEGATIVE_TTL_SECONDS,
     ROLES_CLAIM,
     Auth0Provider,
+    JwksUnavailable,
 )
 from poseidon.core.identity_spcs import SpcsIngressProvider
 from poseidon.core.obs import configure_json_logging
@@ -202,6 +206,65 @@ class JwksTransport(httpx.BaseTransport):
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         self.request_count += 1
+        return httpx.Response(200, json={"keys": self.keys})
+
+
+# How long BlockingJwksTransport below will hold a fetch open before giving
+# up on the test releasing it. Well under _FETCH_WAIT_SECONDS (12), so a
+# rider's own cap is never what ends one of these tests -- a hang here is a
+# bug in the test, and should surface as its own loud failure, not as a
+# mystery JwksUnavailable.
+_TRANSPORT_HOLD_SECONDS = 5.0
+
+
+class BlockingJwksTransport(httpx.BaseTransport):
+    """Fix round 1: a JWKS endpoint whose response is held open until the
+    test releases it.
+
+    The single-flight rule turns on a distinction no instantaneous
+    transport can express -- "a fetch is GENUINELY in flight right now"
+    versus "the slot is claimed but the fetch already finished". Only a
+    transport that can be parked mid-request lets a test put other threads
+    into the first window on purpose. ``started`` fires as the request
+    enters, ``release`` is what lets it leave.
+
+    ``request_count`` needs no lock of its own: the property under test is
+    precisely that at most one thread is ever inside this method.
+    """
+
+    def __init__(self, keys: list[dict], *, fail: bool = False) -> None:
+        self.keys = keys
+        self.fail = fail
+        self.request_count = 0
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        self.request_count += 1
+        self.started.set()
+        if not self.release.wait(_TRANSPORT_HOLD_SECONDS):
+            raise AssertionError(
+                f"the test never released this in-flight JWKS fetch within "
+                f"{_TRANSPORT_HOLD_SECONDS}s"
+            )
+        if self.fail:
+            raise httpx.ConnectError("simulated JWKS endpoint unreachable", request=request)
+        return httpx.Response(200, json={"keys": self.keys})
+
+
+class RecoveringJwksTransport(JwksTransport):
+    """Fix round 1: the transient tenant-side blip -- the FIRST fetch
+    raises ``httpx.ConnectError`` (the same class a genuinely unreachable
+    host produces, like :class:`UnreachableJwksTransport`), every fetch
+    after it serves normally. Distinct from that permanently-broken double
+    because the interesting question here is what callers observe in the
+    window BETWEEN the failure and the recovery. Reused by
+    ``test_api_auth.py``'s own HTTP-boundary proof of the same window."""
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        self.request_count += 1
+        if self.request_count == 1:
+            raise httpx.ConnectError("simulated transient JWKS failure", request=request)
         return httpx.Response(200, json={"keys": self.keys})
 
 
@@ -906,6 +969,189 @@ def test_auth0_negative_cache_is_bounded_and_evicts_the_oldest_entry(rsa_keys):
     # recent kids are all still remembered, and the very first one is gone.
     assert "flood-kid-0" not in provider._negative_kids
     assert f"flood-kid-{_NEGATIVE_MAX_ENTRIES + 9}" in provider._negative_kids
+
+
+# ===========================================================================
+# Auth0Provider -- single flight (task review fix round 1, Important #1).
+#
+# The two bounds above are decided BEFORE the fetch they guard runs, so a
+# request arriving while that fetch is still in flight used to find the
+# interval slot already claimed and be refused -- with "unknown signing
+# key", even when its token named a kid the tenant serves perfectly well.
+# Serialized on one event loop thread that window could not exist; on the
+# worker threads the middleware now uses, it is the ordinary cold-start,
+# post-deploy and key-rotation case, and it hands the first burst of real
+# users a 401 and an SPA re-login blip. Riders now share the winner's
+# fetch. The attacker path is deliberately NOT given that courtesy: it is
+# distinguished below by whether a fetch is running RIGHT NOW.
+# ===========================================================================
+
+
+def _resolve_in_threads(provider, headers, count: int):
+    """Start ``count`` threads each resolving ``headers`` once, and hand
+    back ``(subs, errors, threads)`` -- the lists fill in as the threads
+    run, so a caller starts a group, arranges whatever race it is testing,
+    then joins. Successes and failures are collected separately because
+    WHICH of the two a request got is the assertion in every test below.
+    ``list.append`` is the only shared mutation and is atomic under
+    CPython, so no lock of its own is needed."""
+    subs: list[str] = []
+    errors: list[BaseException] = []
+
+    def resolve_one() -> None:
+        try:
+            subs.append(provider.resolve(headers).sub)
+        except Exception as exc:  # noqa: BLE001 - the exception TYPE is the assertion
+            errors.append(exc)
+
+    threads = [threading.Thread(target=resolve_one) for _ in range(count)]
+    for thread in threads:
+        thread.start()
+    return subs, errors, threads
+
+
+def test_auth0_concurrent_valid_kid_misses_ride_one_fetch_instead_of_401ing(rsa_keys):
+    """The reviewer's cold-start scenario, end to end: eight simultaneous
+    requests, all bearing VALID tokens, against a provider whose cache is
+    empty. One of them wins the interval slot and fetches; the other seven
+    arrive while that fetch is genuinely in flight (guaranteed -- they are
+    not started until the transport reports the request has entered, and
+    the transport does not return until this test releases it).
+
+    Every one of the eight must resolve. Before this fix the seven riders
+    took the suppressed path and raised the pinned unknown-signing-key
+    AuthError -- for a kid the served JWKS contains. ``request_count == 1``
+    is the other half: riding must not mean fetching, or single flight
+    would have traded a spurious 401 for the stampede the interval guard
+    exists to prevent.
+    """
+    key1, pub1, _key2, _pub2 = rsa_keys
+    transport = BlockingJwksTransport([jwk_for(pub1, "key-1")])
+    provider = _auth0_provider(transport)
+    headers = {"authorization": f"Bearer {mint_auth0_token(key1, 'key-1')}"}
+
+    subs, errors, winner = _resolve_in_threads(provider, headers, 1)
+    assert transport.started.wait(_TRANSPORT_HOLD_SECONDS), "the winner never reached the transport"
+
+    rider_subs, rider_errors, riders = _resolve_in_threads(provider, headers, 7)
+    # The riders are already past the point of no return (the winner holds
+    # the slot and the transport is parked), so this grace period only
+    # widens the window in which they park on the in-flight attempt -- the
+    # assertions below hold whether or not every one of them gets there.
+    time.sleep(0.25)
+    transport.release.set()
+    for thread in winner + riders:
+        thread.join(_TRANSPORT_HOLD_SECONDS * 2)
+
+    assert errors == []
+    assert rider_errors == []
+    assert subs + rider_subs == ["auth0|user123"] * 8
+    assert transport.request_count == 1
+
+
+def test_auth0_bogus_kid_after_the_fetch_finished_401s_at_once_without_waiting(rsa_keys):
+    """The other side of the same distinction, and the one that keeps the
+    anti-DoS property intact: with the interval slot claimed but NO fetch
+    in flight, an unknown kid is refused immediately -- it never rides
+    anything, and never parks a worker thread.
+
+    The elapsed-time assertion is what actually proves "without waiting":
+    a rider's cap is _FETCH_WAIT_SECONDS (12), so ten sequential resolves
+    finishing inside a second could not have waited on anything. The bound
+    is deliberately loose (one second against twelve) so a loaded CI box
+    cannot make this flake -- it is testing an absence of blocking, not a
+    latency budget.
+    """
+    key1, pub1, _key2, _pub2 = rsa_keys
+    transport = JwksTransport([jwk_for(pub1, "key-1")])
+    clock = ManualClock()
+    provider = _auth0_provider(transport, clock=clock)
+    # One real, COMPLETED fetch: the slot is claimed, nothing is in flight.
+    provider.resolve({"authorization": f"Bearer {mint_auth0_token(key1, 'key-1')}"})
+    assert provider._fetch_in_flight is None
+    assert provider._last_fetch_at is not None
+
+    started = time.monotonic()
+    for index in range(10):
+        token = mint_auth0_token(key1, f"bogus-kid-{index}")
+        _expect_auth_error(
+            provider, {"authorization": f"Bearer {token}"}, 401, "unknown signing key"
+        )
+    elapsed = time.monotonic() - started
+
+    assert transport.request_count == 1
+    assert elapsed < 1.0, f"the suppressed path blocked for {elapsed:.2f}s"
+    assert elapsed < _FETCH_WAIT_SECONDS
+
+
+def test_auth0_transient_fetch_failure_reports_unavailable_then_heals(rsa_keys):
+    """What the caller that fetched, and every caller after it, observe
+    when the tenant's endpoint is briefly unreachable (review minors #2 and
+    #3, folded into this round).
+
+    Three pinned observations. The caller that actually performed the fetch
+    still sees the raw transport fault, unchanged -- ``api/app.py``'s I-1
+    handler is what contains it, and always was. A caller arriving inside
+    the interval that follows gets :class:`JwksUnavailable`, NOT "unknown
+    signing key": its kid was never checked, so a verdict on its credential
+    would be a fabrication, and the whole point of a non-AuthError here is
+    that it takes the containment path that LOGS -- otherwise a JWKS outage
+    spends the interval looking exactly like a wave of bad tokens. And once
+    the interval expires the provider heals on the next request, with the
+    failure forgotten rather than latched.
+    """
+    key1, pub1, _key2, _pub2 = rsa_keys
+    transport = RecoveringJwksTransport([jwk_for(pub1, "key-1")])
+    clock = ManualClock()
+    provider = _auth0_provider(transport, clock=clock)
+    headers = {"authorization": f"Bearer {mint_auth0_token(key1, 'key-1')}"}
+
+    with pytest.raises(httpx.ConnectError):
+        provider.resolve(headers)
+    assert transport.request_count == 1
+
+    with pytest.raises(JwksUnavailable) as exc_info:
+        provider.resolve(headers)
+    assert "ConnectError" in str(exc_info.value)
+    assert transport.request_count == 1
+
+    clock.advance(_MIN_FETCH_INTERVAL_SECONDS + 1)
+    user = provider.resolve(headers)
+
+    assert user.sub == "auth0|user123"
+    assert transport.request_count == 2
+    assert provider._last_fetch_error is None
+
+
+def test_auth0_riders_of_a_failing_fetch_get_unavailable_not_unknown_kid(rsa_keys):
+    """The same misattribution question, on the concurrent path: three
+    requests ride a fetch that then fails. They must NOT be told their kid
+    is unknown -- nobody ever looked it up -- and they must not be stranded
+    either: the fetcher releases them from a ``finally``, so a fetch that
+    raises wakes its riders exactly like one that succeeds.
+
+    That the riders finish well inside the transport's own hold window is
+    itself the proof they were released by the failure rather than left to
+    time out against their 12-second cap.
+    """
+    key1, pub1, _key2, _pub2 = rsa_keys
+    transport = BlockingJwksTransport([jwk_for(pub1, "key-1")], fail=True)
+    provider = _auth0_provider(transport)
+    headers = {"authorization": f"Bearer {mint_auth0_token(key1, 'key-1')}"}
+
+    _subs, errors, winner = _resolve_in_threads(provider, headers, 1)
+    assert transport.started.wait(_TRANSPORT_HOLD_SECONDS), "the winner never reached the transport"
+
+    _rider_subs, rider_errors, riders = _resolve_in_threads(provider, headers, 3)
+    time.sleep(0.25)
+    transport.release.set()
+    for thread in winner + riders:
+        thread.join(_TRANSPORT_HOLD_SECONDS * 2)
+
+    assert [type(exc) for exc in errors] == [httpx.ConnectError]
+    assert [type(exc) for exc in rider_errors] == [JwksUnavailable] * 3
+    assert all("ConnectError" in str(exc) for exc in rider_errors)
+    assert transport.request_count == 1
 
 
 # ===========================================================================

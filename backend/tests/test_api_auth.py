@@ -69,6 +69,7 @@ from tests.test_identity_providers import (
     AUTH0_TEST_DOMAIN,
     FailingJwksTransport,
     JwksTransport,
+    RecoveringJwksTransport,
     UnreachableJwksTransport,
     generate_rsa_keypair,
     jwk_for,
@@ -1553,6 +1554,37 @@ async def test_identity_resolve_runs_off_the_event_loop_thread():
     assert r.json()["sub"] == "dev|local"
     assert len(provider.resolve_threads) == 1
     assert provider.resolve_threads[0] != loop_thread
+
+
+@pytest.mark.anyio
+async def test_a_jwks_outage_never_surfaces_as_unknown_signing_key():
+    """Fix round 1 (task review minor #2), at the layer a user can see it.
+
+    The provider now suppresses fetches for a full interval after a failed
+    one, so the SECOND request here never touches the tenant at all -- and
+    the question is what it is told. "unknown signing key" would be a
+    fabricated verdict on a token whose kid was never looked up, and would
+    make a tenant outage indistinguishable from a wave of bad credentials.
+    Both requests instead get the same generic ``identity_unavailable``
+    body I-1 already renders for the first one, whose "try again; if this
+    persists, it is not your credential" detail is the accurate answer.
+
+    Provider-level coverage of the same window (which exception, whether a
+    fetch happened, and the heal once the interval expires) lives in
+    test_identity_providers.py; only the rendered body is proven here.
+    """
+    key1, pub1 = generate_rsa_keypair()
+    app = _auth0_app(RecoveringJwksTransport([jwk_for(pub1, "key-1")]))
+    headers = {"Authorization": f"Bearer {mint_auth0_token(key1, 'key-1')}"}
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        first = await client.get("/api/me", headers=headers)
+        second = await client.get("/api/me", headers=headers)
+
+    assert first.status_code == 401
+    assert second.status_code == 401
+    assert second.json()["title"] != "unknown signing key"
+    assert second.json() == first.json()
 
 
 # ===========================================================================
