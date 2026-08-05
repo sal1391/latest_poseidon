@@ -23,12 +23,32 @@ grammar excludes ``.``, but translating for it is ``bedrock.py``'s job at
 its own request boundary; no wire name is ever constructed, stored, or
 compared here.
 
-**Context hygiene.** A tool result reaches the MODEL as a digest -- the
-part kinds, their row counts, and the certified proof block (see
-:func:`tool_result_digest`). The rows themselves reach the USER through the
-``tool_done`` event, which carries the skill's parts verbatim for Phase 6
-to stream as SSE. Bulk data therefore never re-enters the context window,
-and it never has to: the frontend already rendered it.
+**Grounded tool results.** A tool result reaches the MODEL as its digest --
+the part kinds, their row counts, and the certified proof block (see
+:func:`tool_result_digest`) -- FOLLOWED BY the result's own values, capped
+(see :func:`_result_content_text`). The parts also reach the USER through
+the ``tool_done`` event, which carries them verbatim for Phase 6 to stream
+as SSE; the two channels now show the same data, deliberately.
+
+This reverses P5's original "context hygiene" rule, which sent the digest
+ALONE on the grounds that "bulk data never has to re-enter the context
+window: the frontend already rendered it." That premise was false, and the
+2026-08-05 walkthrough is the evidence: the same model that is denied the
+rows is asked, on the next call of this same loop, to write the answer's
+prose. Shown only ``table(rows=5)`` it invented every number and borrowed
+plausible customer names off the state block's carried-context line -- a
+credible-looking answer about data nobody had queried. The offline suites
+never caught it because ``DevDeterministicRouter``, the only router they
+run, never narrates data at all (it closes on the state block alone), so
+its digest was sufficient for a job it declined to do.
+
+What is kept from the old rule is the BOUND: the values are capped at
+:data:`RESULT_CONTENT_MAX_ROWS` rows and :data:`RESULT_CONTENT_MAX_CHARS`
+characters per result, with an explicit truncation marker, so a
+5,000-row breakdown costs a bounded number of tokens and the model is told
+it is looking at a prefix rather than the whole answer. The run-log column
+(``ToolRecord.result_digest``) stays the short digest -- see its own
+docstring for why the two deliberately differ now.
 
 **Structured failures.** ``SkillRegistry.dispatch`` never raises; its
 RFC-7807 problem dict is what goes back to the model, once, as that tool's
@@ -53,6 +73,7 @@ what keeps that recoverable; surfacing the richer stop reason itself is a
 later product decision, not this loop's.
 """
 
+import json
 from dataclasses import dataclass
 from time import monotonic
 from typing import Protocol
@@ -93,6 +114,29 @@ _EMPTY_REPLY_DETAIL = "provider reported stop_reason 'end_turn' with an empty re
 
 _EMPTY_PARTS = "(none)"
 
+# The bound on the values a single tool result puts back into the context
+# window (2026-08-05 live-synthesis fix -- see the module docstring's
+# "Grounded tool results"). 50 rows is at or above every shape a certified
+# skill can return today (``data_qa.metric_query``'s own ``top_n`` is
+# validated at 1-50), so nothing a user actually asks for is truncated;
+# the caps exist for the skill that one day returns a 5,000-row breakdown,
+# and for the character blow-up a handful of very wide cells can cause well
+# short of 50 rows.
+RESULT_CONTENT_MAX_ROWS = 50
+RESULT_CONTENT_MAX_CHARS = 4000
+
+# Byte-pinned content literals (see the tests of the same names). The header
+# states the two facts the model cannot work out for itself: these values
+# are the real result, and the user has ALREADY seen them rendered -- the
+# prompt's own grounding rules (router/system.md v2) are what act on that.
+_CONTENT_HEADER = "data (already shown to the user as rendered parts; use ONLY these values):"
+_CONTENT_NO_PARTS = "data: (no parts returned)"
+_CONTENT_TRUNCATED = f"... result content truncated at {RESULT_CONTENT_MAX_CHARS} characters"
+# What a cell holding SQL NULL renders as. Not ``str(None)``: "None" reads
+# as a value in a list of values, and the difference between "no rows" and
+# "zero" is exactly the distinction a narrative must not blur.
+_NULL_CELL = "(null)"
+
 
 class EventSink(Protocol):
     """Where a turn's progress is announced as it happens.
@@ -132,10 +176,22 @@ class RecordingSink:
 class ToolRecord:
     """One dispatch, shaped for Phase 6's run-log writer (doc 06).
 
-    ``result_digest`` is the same string the model saw, not a second
-    summarization: what the run log shows a reviewer is exactly what the
-    model was told. Bulk rows are deliberately absent -- they are the
-    frontend's, through the ``tool_done`` event.
+    ``result_digest`` is the OPENING of what the model saw, not a second
+    summarization: it is byte-identical to the first lines of the
+    ``toolResult`` content (:func:`_result_content_text` builds that content
+    by appending to this exact string), so a reviewer reading the run log is
+    reading the model's own words for the shape and the certified proof of
+    the result.
+
+    It is deliberately no longer the WHOLE of what the model saw. Since the
+    2026-08-05 live-synthesis fix the content also carries the result's
+    capped values (see the module docstring), and this column keeps the
+    short summary rather than growing to match: the rows a reviewer needs
+    are already persisted as the turn's message parts, ``result_digest`` is
+    written into a ``jsonb`` column on every single dispatch, and P11's own
+    redaction rule (``runlog.py``'s I-2) nulls it alongside ``args`` on the
+    understanding that it is a proof-and-shape summary rather than a copy of
+    the data.
     """
 
     tool_seq: int
@@ -184,9 +240,12 @@ class TurnResult:
 
 
 def tool_result_digest(skill_id: str, result: SkillResult) -> str:
-    """What the MODEL is told a dispatch produced.
+    """The SHAPE and PROOF of what a dispatch produced.
 
-    Three lines at most, and never a cell of data::
+    This is the run-log's ``result_digest`` (doc 06) and the opening of the
+    ``toolResult`` content the model receives -- :func:`_result_content_text`
+    appends the result's own values below it. Three lines at most, and never
+    a cell of data::
 
         data_qa.metric_query ok
         parts: table(rows=3)
@@ -434,8 +493,10 @@ def _dispatch_one(
             "duration_ms": duration_ms,
             "digest": digest,
             # Parts, proof and artifacts go to the UI (Phase 6/8 stream
-            # them); the model only ever sees `digest`. That split IS the
-            # context-hygiene rule -- see the module docstring.
+            # them). Since the 2026-08-05 live-synthesis fix the model is
+            # shown the same values too, capped, through
+            # `_tool_result_block` -- see the module docstring's "Grounded
+            # tool results" for the split this replaces and why.
             "parts": result.parts,
             "proof": result.proof,
             # Phase 8 Task 1: closes the P5 gap events.py's own docstring
@@ -464,18 +525,20 @@ def _dispatch_one(
 def _tool_result_block(call: ToolCall, result: SkillResult, digest: str) -> dict:
     """The Converse ``toolResult`` block for one dispatch.
 
-    Success carries the digest as text; failure carries the problem dict as
+    Success carries the digest plus the result's own capped values as text
+    (:func:`_result_content_text`); failure carries the problem dict as
     JSON, unflattened -- a model correcting itself needs the fields
-    (``status``, ``detail``), not a sentence about them. ``status`` is
-    Converse's own ``ToolResultStatus`` enum ("success"/"error"), which is
-    what tells the model a result is a failure without it having to infer
-    that from the content.
+    (``status``, ``detail``), not a sentence about them, and a failure has
+    no values to ground anything in. ``status`` is Converse's own
+    ``ToolResultStatus`` enum ("success"/"error"), which is what tells the
+    model a result is a failure without it having to infer that from the
+    content.
     """
     if result.ok:
         return {
             "toolResult": {
                 "toolUseId": call.id,
-                "content": [{"text": digest}],
+                "content": [{"text": _result_content_text(digest, result)}],
                 "status": "success",
             }
         }
@@ -486,6 +549,126 @@ def _tool_result_block(call: ToolCall, result: SkillResult, digest: str) -> dict
             "status": "error",
         }
     }
+
+
+def _result_content_text(digest: str, result: SkillResult) -> str:
+    """The digest, then the result's own values, capped.
+
+    Deliberately NOT markdown and deliberately not pipe-delimited: the model
+    is being told never to reproduce a table in its prose (router/system.md
+    v2's third grounding rule), and handing it a ready-made grid to copy
+    would work directly against that. ``name=value`` lines carry the same
+    information in a shape that has to be rewritten to be repeated.
+
+    A result with no parts at all says so in one explicit line rather than
+    ending after the digest: "there is nothing here" is a fact the model
+    must be able to state plainly, and an absent section reads the same as a
+    section nobody rendered.
+    """
+    lines = [digest]
+    if not result.parts:
+        lines.append(_CONTENT_NO_PARTS)
+    else:
+        lines.append(_CONTENT_HEADER)
+        for index, part in enumerate(result.parts, start=1):
+            lines.extend(_part_content(index, part))
+    return _capped(("\n".join(lines)).rstrip())
+
+
+def _part_content(index: int, part: dict) -> list[str]:
+    """One part's values, tagged ``[N]`` so a multi-part result stays
+    legible about which lines belong to which part.
+
+    A kind this module has never been taught about falls back to its payload
+    as JSON rather than being dropped -- the same "the part vocabulary grows
+    without this loop" contract :func:`_part_summary` follows, applied to
+    values instead of shapes: an unknown part rendering verbosely is
+    recoverable, an unknown part rendering as nothing is another silent void
+    for a model to fill.
+    """
+    kind = part.get("kind")
+    payload = part.get("payload") or {}
+    tag = f"[{index}]"
+    if kind == "table":
+        return _table_content(tag, payload)
+    if kind == "metric_grid":
+        return _metric_grid_content(tag, payload)
+    if kind == "text":
+        return [f"{tag} text:", str(payload.get("markdown") or "")]
+    if kind == "phase_section":
+        return [
+            f"{tag} phase_section: {payload.get('title')}",
+            str(payload.get("markdown") or ""),
+        ]
+    return [f"{tag} {kind}: {json.dumps(payload, default=str, sort_keys=True)}"]
+
+
+def _table_content(tag: str, payload: dict) -> list[str]:
+    columns = [str(column) for column in (payload.get("columns") or [])]
+    rows = payload.get("rows") or []
+    lines = [f"{tag} table ({len(rows)} rows)"]
+    for number, row in enumerate(rows[:RESULT_CONTENT_MAX_ROWS], start=1):
+        cells = ", ".join(
+            f"{_column_name(columns, position)}={_cell(value)}"
+            for position, value in enumerate(row)
+        )
+        lines.append(f"{tag} row {number}: {cells}")
+    lines.extend(_row_cap_marker(tag, len(rows), "rows"))
+    return lines
+
+
+def _metric_grid_content(tag: str, payload: dict) -> list[str]:
+    periods = payload.get("periods") or {}
+    metrics = payload.get("metrics") or []
+    lines = [f"{tag} metric_grid ({len(metrics)} metrics)"]
+    if periods:
+        rendered = ", ".join(
+            f"{label}={(window or {}).get('start')}..{(window or {}).get('end')}"
+            for label, window in periods.items()
+        )
+        lines.append(f"{tag} periods: {rendered}")
+    for number, metric in enumerate(metrics[:RESULT_CONTENT_MAX_ROWS], start=1):
+        pairs = ", ".join(f"{key}={_cell(value)}" for key, value in metric.items())
+        lines.append(f"{tag} metric {number}: {pairs}")
+    lines.extend(_row_cap_marker(tag, len(metrics), "metrics"))
+    return lines
+
+
+def _column_name(columns: list[str], position: int) -> str:
+    """A cell's own header, or a positional stand-in when a part carries
+    more cells than columns -- a malformed part must still render its
+    values rather than raise inside a turn."""
+    return columns[position] if position < len(columns) else f"column{position + 1}"
+
+
+def _cell(value: object) -> str:
+    return _NULL_CELL if value is None else str(value)
+
+
+def _row_cap_marker(tag: str, total: int, noun: str) -> list[str]:
+    """The explicit "you are looking at a prefix" line. Without it a capped
+    result is indistinguishable from a complete one, and a model that cannot
+    tell the difference will describe the prefix as the whole answer."""
+    if total <= RESULT_CONTENT_MAX_ROWS:
+        return []
+    return [f"{tag} ... {RESULT_CONTENT_MAX_ROWS} of {total} {noun} shown (truncated)"]
+
+
+def _capped(content: str) -> str:
+    """The character cap, applied at a LINE boundary.
+
+    Cutting mid-line is the one truncation this must never do: half of
+    ``Gross Profit=412000`` is ``Gross Profit=41``, a plausible number that
+    was never in the data -- the exact failure mode this whole change
+    exists to remove.
+    """
+    if len(content) <= RESULT_CONTENT_MAX_CHARS:
+        return content
+    head = content[:RESULT_CONTENT_MAX_CHARS]
+    cut = head.rfind("\n")
+    if cut != -1:
+        head = head[:cut]
+    return f"{head}\n{_CONTENT_TRUNCATED}"
 
 
 def _assistant_tool_use_message(calls: tuple[ToolCall, ...]) -> dict:
@@ -554,6 +737,8 @@ __all__ = [
     "EventSink",
     "LLMRecord",
     "RecordingSink",
+    "RESULT_CONTENT_MAX_CHARS",
+    "RESULT_CONTENT_MAX_ROWS",
     "ROUTER_GUARDRAIL_ENTITY",
     "ROUTER_ROLE",
     "ToolRecord",

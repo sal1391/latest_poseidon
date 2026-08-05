@@ -264,6 +264,39 @@ def test_router_prompt_missing_context_raises_undefined_error():
         registry.render("router/system")
 
 
+def test_router_prompt_carries_the_v2_grounding_rules():
+    """Task A (2026-08-05 live-synthesis fix), rule by rule. Byte-pinned
+    ASCII fragments, one per rule the plan names, so a prompt edit that
+    silently drops any of the four fails here rather than in a live turn.
+    Fragments deliberately avoid the file's typed em dashes (this test file
+    is ASCII-only; ``router/system.md`` is not)."""
+    rendered = _render_real_router_prompt()
+
+    # 1. only values present in THIS turn's tool result
+    assert "must appear in THIS turn's tool result content" in rendered
+    # 2. the parts are already rendered to the user -- reference, never reproduce
+    assert "have ALREADY been rendered to the user" in rendered
+    assert "Refer to them" in rendered
+    # 3. no markdown tables in prose (F4)
+    assert "NEVER emit a markdown table" in rendered
+    # 4. empty or failed -> say so plainly
+    assert "say so plainly" in rendered
+
+
+def test_router_prompt_grounding_rules_are_the_prompts_own_static_prose():
+    """Isolation twin of the test above, in the shape this file already uses
+    for the metric-name placeholder contract: the grounding rules are the
+    template's OWN text, so they survive every guardrail block being blank
+    and can never be supplied by accident through ``skill_lines``/
+    ``negative_constraints``/``metric_definitions``."""
+    rendered = _render_real_router_prompt(
+        metric_definitions="", negative_constraints="", skill_lines=""
+    )
+
+    assert "must appear in THIS turn's tool result content" in rendered
+    assert "NEVER emit a markdown table" in rendered
+
+
 def test_router_prompt_charter_and_routing_rules_present():
     """Doc 03 section 4's own philosophy: prompt content is pinned so an
     edit that silently drops a required rule fails CI, not production.
@@ -573,6 +606,11 @@ def test_render_state_block_empty_hints_renders_no_hints_line():
 
 
 def test_render_state_block_carried_port_region_topic_pass_through():
+    """Pin updated by Task A (2026-08-05 live-synthesis fix): the carried
+    filterable values used to render under the bare label ``Pass-through:``,
+    which a live model read as "this turn's results" and copied into its
+    narrative one turn stale (the investigation's decisive natural
+    experiment). The label now says what the line is and what it is not."""
     slots = ConversationSlots(
         port="SINGAPORE",
         region="APAC",
@@ -587,8 +625,10 @@ def test_render_state_block_carried_port_region_topic_pass_through():
         "Carried port: SINGAPORE\n"
         "Region: APAC\n"
         "Topic: pricing\n"
-        "Pass-through: top_customer=MAERSK LINE, top_port=SINGAPORE"
+        "Carried context (prior turns, NOT current results): "
+        "top_customer=MAERSK LINE, top_port=SINGAPORE"
     )
+    assert "Pass-through:" not in result
 
 
 def test_render_state_block_compare_period_line():
@@ -692,8 +732,12 @@ def test_prompt_hash_differs_for_different_rendered_text():
     assert prompt_hash("text a") != prompt_hash("text b")
 
 
-def test_prompt_version_router_system_prompt_is_v1():
-    assert prompt_version(DEFAULT_PROMPTS_DIR, "router/system") == "v1"
+def test_prompt_version_router_system_prompt_is_v2():
+    """Bumped from v1 by Task A (2026-08-05 live-synthesis fix): the
+    grounding-rules section is a behavioral change to what the router is
+    told, and doc 06's ``llm_calls.prompt_version`` is what keeps runs
+    before and after it distinguishable in the run log."""
+    assert prompt_version(DEFAULT_PROMPTS_DIR, "router/system") == "v2"
 
 
 def test_prompt_version_utility_title_prompt_is_v1():
@@ -701,7 +745,7 @@ def test_prompt_version_utility_title_prompt_is_v1():
 
 
 def test_router_system_prompt_render_has_no_leading_blank_line_from_version_comment():
-    """The ``{# version: v1 -#}`` first line added to ``router/system.md``
+    """The ``{# version: v2 -#}`` first line added to ``router/system.md``
     must vanish from RENDERED output with no trace -- including no stray
     leading blank line, which a plain ``{# ... #}`` (no trim marker) WOULD
     leave behind under Jinja2's default ``trim_blocks=False`` (verified
@@ -718,7 +762,7 @@ def test_router_system_prompt_render_has_no_leading_blank_line_from_version_comm
 
     assert rendered.startswith("# Poseidon Router\n")
     assert "{#" not in rendered
-    assert "version: v1" not in rendered
+    assert "version: v2" not in rendered
 
 
 def test_utility_title_prompt_render_is_byte_unchanged_by_the_version_comment():

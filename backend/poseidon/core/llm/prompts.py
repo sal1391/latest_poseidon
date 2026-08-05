@@ -335,6 +335,19 @@ def render_state_block(slots: ConversationSlots, parsed: ParsedTurn | None) -> s
     return "\n\n".join("\n".join(lines) for lines in groups)
 
 
+# The label the carried filterable values render under (2026-08-05
+# live-synthesis fix). It used to read the bare ``Pass-through:``, which
+# named the MECHANISM (values passed through from an earlier turn's result
+# so the next turn can filter on them) and said nothing about the two
+# properties a reader has to know: these are the PREVIOUS turn's names, and
+# they are not this turn's answer. A live model read the line as the current
+# result and narrated it, turn after turn, exactly one turn stale -- the
+# decisive natural experiment in the 2026-08-05 investigation. The label now
+# states both facts, because the state block is the only channel that could
+# state them: nothing downstream re-labels it.
+_CARRIED_CONTEXT_LABEL = "Carried context (prior turns, NOT current results):"
+
+
 def _render_slots(slots: ConversationSlots) -> list[str]:
     lines = [f"Mode: {slots.mode}"]
     if slots.customer is not None:
@@ -351,7 +364,7 @@ def _render_slots(slots: ConversationSlots) -> list[str]:
         lines.append(f"Topic: {slots.topic}")
     if slots.pass_through:
         pairs = ", ".join(f"{label}={value}" for label, value in slots.pass_through)
-        lines.append(f"Pass-through: {pairs}")
+        lines.append(f"{_CARRIED_CONTEXT_LABEL} {pairs}")
     return lines
 
 

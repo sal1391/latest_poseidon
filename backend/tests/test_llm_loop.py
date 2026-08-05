@@ -30,6 +30,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import BaseModel
 
 from poseidon.core.config import Settings
 from poseidon.core.data.client import BreakdownResult, BreakdownRow, MetricResult, PeriodRange
@@ -51,7 +52,7 @@ from poseidon.core.llm.titles import TITLE_MAX_CHARS, TITLE_PROMPT, UTILITY_ROLE
 from poseidon.core.llm.types import LLMResponse, ToolCall
 from poseidon.core.parsing.pipeline import DEFAULT_ENTITY
 from poseidon.core.skills.context import ConversationSlots, SkillContext
-from poseidon.core.skills.registry import SkillRegistry
+from poseidon.core.skills.registry import RegisteredSkill, SkillRegistry
 from poseidon.core.skills.result import SkillResult, problem, table_part, text_part
 from poseidon.mcp.perplexity.fixture_tool import FixtureResearchTool
 from poseidon.mcp.registry import ToolServerRegistry
@@ -184,6 +185,15 @@ GOOD_ARGS = {
     "group_by": "CUST_NM",
     "top_n": 5,
 }
+# The comparison shape: no group_by, a second window -> format_parts renders
+# ONE metric_grid part rather than a table (Task A needs both shapes' real
+# values to reach the model, not just the table's).
+COMPARE_ARGS = {
+    "entity": "MARINE_SALES_PLANNING_V",
+    "metrics": ["GP", "VOLUME"],
+    "period": {"start": "2026-04-01", "end": "2026-05-01"},
+    "compare_period": {"start": "2025-04-01", "end": "2025-05-01"},
+}
 # Missing the required ``metrics`` field -> the registry's own 422.
 MISSING_METRICS_ARGS = {"period": {"start": "2026-04-01", "end": "2026-05-01"}}
 # A valid shape whose window is inverted -> a DIFFERENT 422 (PeriodArg's
@@ -247,6 +257,7 @@ def _run(
     provider_key: str = "stub",
     sink: RecordingSink | None = None,
     tools: object | None = None,
+    registry: SkillRegistry | None = None,
 ) -> tuple[TurnResult, RecordingSink, StubProvider]:
     """One offline turn. Returns the result plus the two recorders every
     assertion in this file reads: the event sink and the provider stub.
@@ -259,13 +270,21 @@ def _run(
     is threaded straight to ``_context`` for the one routing case
     (``pivot_to_research_with_carry``) that needs a working
     ``ctx.tools.research`` to dispatch against.
+
+    ``registry`` (Task A, 2026-08-05 live-synthesis fix) defaults to the
+    REAL discovered registry, unchanged for every pre-existing call. The
+    cap tests below override it with a one-skill registry whose result is
+    deliberately bigger than any certified skill can return today
+    (``data_qa.metric_query``'s own ``top_n`` maxes at 50), so the row and
+    character caps can be exercised through the real dispatch path rather
+    than by reaching into the loop's internals.
     """
     provider = StubProvider(script)
     role_client = RoleClient(settings, providers={provider_key: provider})
     sink = RecordingSink() if sink is None else sink
     result = run_turn(
         role_client=role_client,
-        registry=REGISTRY,
+        registry=REGISTRY if registry is None else registry,
         context=_context(settings, slots, tools),
         prompt_registry=PromptRegistry(DEFAULT_PROMPTS_DIR),
         user_instruction="",
@@ -276,6 +295,56 @@ def _run(
         max_iterations=max_iterations,
     )
     return result, sink, provider
+
+
+# ===========================================================================
+# A one-skill registry whose result is deliberately oversized (Task A,
+# 2026-08-05 live-synthesis fix)
+#
+# No certified skill can produce a result past the content caps today --
+# ``data_qa.metric_query``'s own ``top_n`` is bounded at 50, exactly the row
+# cap -- so the caps are exercised through this fixture skill instead, which
+# still travels the REAL ``SkillRegistry.dispatch`` path (argument
+# validation included) rather than short-circuiting it.
+# ===========================================================================
+
+FIXTURE_SKILL = "fixture.big_result"
+
+
+class _FixtureArgs(BaseModel):
+    rows: int = 3
+    width: int = 0
+
+
+def _fixture_run(ctx: SkillContext, args: _FixtureArgs) -> SkillResult:
+    """``rows=0`` renders the certified empty shape (the same text part and
+    ``Result: empty`` proof ``format_parts`` emits for a no-data query);
+    anything else is a two-column table whose SECOND cell carries the
+    ``width`` padding, so a character-capped line's tail is checkable."""
+    if args.rows == 0:
+        return SkillResult(
+            ok=True, parts=[text_part("No data for this selection.")], proof=["Result: empty"]
+        )
+    pad = "x" * args.width
+    rows = [[f"row-{number:03d}", f"{number * 1000}{pad}"] for number in range(1, args.rows + 1)]
+    return SkillResult(
+        ok=True,
+        parts=[table_part(columns=["Customer", "Gross Profit"], rows=rows)],
+        proof=[f"Rows: {args.rows}"],
+    )
+
+
+def _fixture_registry() -> SkillRegistry:
+    return SkillRegistry(
+        {
+            FIXTURE_SKILL: RegisteredSkill(
+                skill_id=FIXTURE_SKILL,
+                args_model=_FixtureArgs,
+                fn=_fixture_run,
+                description="A deliberately oversized result, for the content caps.",
+            )
+        }
+    )
 
 
 @pytest.fixture
@@ -581,15 +650,157 @@ def test_every_provider_call_carries_the_full_tool_schemas(settings):
         assert [schema["name"] for schema in call["tools"]] == REGISTRY.skill_ids
 
 
-def test_tool_result_message_is_digest_only_and_never_carries_bulk_rows(settings):
+# ---------------------------------------------------------------------------
+# The model-facing toolResult content (Task A, 2026-08-05 live-synthesis fix)
+#
+# The bug these pin: before this task the toolResult content WAS the
+# three-line digest ("parts: table(rows=5)" and the proof line), so the
+# model that authors the answer's prose had never been shown one cell of
+# the data it was being asked to describe -- and it filled the void with
+# invention. Every assertion here reads the request the provider ACTUALLY
+# received (StubProvider.calls), never a loop internal.
+# ---------------------------------------------------------------------------
+
+
+def _tool_result(provider: StubProvider, *, call_index: int = 1, block: int = 0) -> dict:
+    """The ``toolResult`` block of the results message the provider saw on
+    its ``call_index``-th invoke (message 3 of that request: the window
+    turn, the assistant echo, then the results message)."""
+    return provider.calls[call_index]["messages"][2]["content"][block]["toolResult"]
+
+
+def _tool_result_text(provider: StubProvider, *, call_index: int = 1, block: int = 0) -> str:
+    content = _tool_result(provider, call_index=call_index, block=block)["content"]
+    assert len(content) == 1, content
+    return content[0]["text"]
+
+
+def test_tool_result_content_carries_the_real_rows_the_dispatch_returned(settings):
+    """F1's root-cause pin: the customers and the GP figures the breakdown
+    actually returned are in the content block sent back to the model, by
+    name and by value."""
+    _, _, provider = _run(settings, [_tool_use(_call(GOOD_ARGS)), _end_turn("done")])
+
+    text = _tool_result_text(provider)
+    assert _tool_result(provider)["status"] == "success"
+    for customer in _CUSTOMERS:
+        assert customer in text
+    for value in _BY_CUSTOMER["GP"].values():
+        assert str(round(value)) in text
+
+
+def test_tool_result_content_opens_with_the_digest_then_the_labeled_data_section(settings):
+    """The digest is kept, not replaced: the shape line and the certified
+    proof block still open the content, and the rows follow under a label
+    that says they have already been rendered to the user."""
     result, _, provider = _run(settings, [_tool_use(_call(GOOD_ARGS)), _end_turn("done")])
 
-    second_request = json.dumps(provider.calls[1]["messages"], default=str)
+    text = _tool_result_text(provider)
+    assert text.startswith(result.tool_records[0].result_digest + "\n")
+    assert "data (already shown to the user as rendered parts; use ONLY these values):" in text
+    assert "[1] table (3 rows)" in text
+    assert "[1] row 1: Customer=Northstar Lines, Gross Profit=412000" in text
+
+
+def test_tool_result_content_data_section_is_not_a_markdown_table(settings):
+    """F4's other half: the DATA the model is shown is name=value lines,
+    never a pipe-delimited grid it could copy verbatim into its prose. The
+    digest above it is exempt -- the certified proof block has joined its
+    clauses with " | " since Phase 2 and is not row data."""
+    _, _, provider = _run(settings, [_tool_use(_call(GOOD_ARGS)), _end_turn("done")])
+
+    text = _tool_result_text(provider)
+    data_section = text.split(
+        "data (already shown to the user as rendered parts; use ONLY these values):"
+    )[1]
+    assert "|" not in data_section
+
+
+def test_tool_result_content_carries_a_metric_grids_real_values(settings):
+    """The comparison shape ("what about March?") fabricated six plausible
+    numbers live; a metric_grid's own per-metric values must reach the model
+    the same way a table's rows do."""
+    _, _, provider = _run(settings, [_tool_use(_call(COMPARE_ARGS)), _end_turn("done")])
+
+    text = _tool_result_text(provider)
+    assert "[1] metric_grid (2 metrics)" in text
+    assert "[1] periods: a=2026-04-01..2026-05-01, b=2025-04-01..2025-05-01" in text
+    assert "name=GP" in text
+    assert str(round(_TOTALS["GP"])) in text
+    assert str(round(_TOTALS["VOLUME"])) in text
+
+
+def test_run_log_digest_stays_the_short_summary_the_model_no_longer_sees_alone(settings):
+    """The deliberate divergence this task introduces, pinned so it cannot
+    drift silently: ``ToolRecord.result_digest`` (doc 06's run-log column)
+    stays the row-count summary and still carries no cell of data, while the
+    content the model receives is strictly longer."""
+    result, _, provider = _run(settings, [_tool_use(_call(GOOD_ARGS)), _end_turn("done")])
+
+    digest = result.tool_records[0].result_digest
     for customer in _CUSTOMERS:
-        assert customer not in second_request
-    tool_result = provider.calls[1]["messages"][2]["content"][0]["toolResult"]
-    assert tool_result["status"] == "success"
-    assert tool_result["content"] == [{"text": result.tool_records[0].result_digest}]
+        assert customer not in digest
+    assert len(_tool_result_text(provider)) > len(digest)
+
+
+def test_failed_dispatch_content_is_unchanged_structured_json(settings):
+    """The failure branch keeps its RFC-7807 JSON block -- there are no rows
+    to ground anything in, and a model correcting itself needs the fields."""
+    script = [_tool_use(_call(MISSING_METRICS_ARGS)), _end_turn("sorry")]
+    _, _, provider = _run(settings, script)
+
+    tool_result = _tool_result(provider)
+    assert tool_result["status"] == "error"
+    assert tool_result["content"][0]["json"]["status"] == 422
+
+
+# --- the caps ---------------------------------------------------------------
+
+
+def test_tool_result_content_caps_the_rows_and_names_the_truncation(settings):
+    script = [_tool_use(_call({"rows": 500}, skill=FIXTURE_SKILL)), _end_turn("done")]
+    _, _, provider = _run(settings, script, registry=_fixture_registry())
+
+    text = _tool_result_text(provider)
+    assert "[1] row 1: Customer=row-001" in text
+    assert "[1] row 50: Customer=row-050" in text
+    assert "row-051" not in text
+    assert "[1] ... 50 of 500 rows shown (truncated)" in text
+
+
+def test_tool_result_content_caps_total_characters_at_whole_lines(settings):
+    """The character cap never cuts a line in half -- a half-printed number
+    is exactly the kind of thing a model would report as a whole one."""
+    script = [_tool_use(_call({"rows": 50, "width": 300}, skill=FIXTURE_SKILL)), _end_turn("done")]
+    _, _, provider = _run(settings, script, registry=_fixture_registry())
+
+    text = _tool_result_text(provider)
+    assert "... result content truncated at 4000 characters" in text
+    assert len(text) < 4200
+    row_lines = [line for line in text.splitlines() if line.startswith("[1] row ")]
+    assert row_lines
+    for line in row_lines:
+        assert line.endswith("x" * 300)
+
+
+def test_tool_result_content_uncapped_result_carries_no_truncation_marker(settings):
+    script = [_tool_use(_call({"rows": 50}, skill=FIXTURE_SKILL)), _end_turn("done")]
+    _, _, provider = _run(settings, script, registry=_fixture_registry())
+
+    text = _tool_result_text(provider)
+    assert "truncated" not in text
+    assert "row-050" in text
+
+
+def test_tool_result_content_empty_result_says_so_rather_than_showing_nothing(settings):
+    """The "say so plainly rather than invent" case has to be visible IN the
+    content, not merely absent from it."""
+    script = [_tool_use(_call({"rows": 0}, skill=FIXTURE_SKILL)), _end_turn("no data")]
+    _, _, provider = _run(settings, script, registry=_fixture_registry())
+
+    text = _tool_result_text(provider)
+    assert "[1] text:" in text
+    assert "No data for this selection." in text
 
 
 def test_assistant_echo_uses_dotted_skill_ids_never_wire_names(settings):
@@ -1116,9 +1327,10 @@ def test_loop_through_bedrock_provider_keeps_the_wire_name_on_the_wire(monkeypat
     What it proves that neither half can alone: the Bedrock-safe wire name
     exists only inside the converse payload (the tool definitions, and the
     assistant echo the provider translated on the way out), while every
-    record, event and digest the loop produced stays dotted -- and the fake
-    rows' customer names, which reached the UI through ``tool_done``, are
-    nowhere in the request that goes back to the model."""
+    record, event and digest the loop produced stays dotted -- and the real
+    rows survive the provider's own translation into the second request
+    (``bedrock.py`` returns every non-``toolUse`` block unchanged, so a
+    grounded ``toolResult`` reaches a live model byte for byte)."""
     from poseidon.core.llm.bedrock import BedrockProvider
 
     live_settings = _settings(monkeypatch, LLM_MODE="live", LLM_PROFILE="bedrock")
@@ -1165,11 +1377,13 @@ def test_loop_through_bedrock_provider_keeps_the_wire_name_on_the_wire(monkeypat
     assert second["messages"][1]["content"][0]["toolUse"]["name"] == _WIRE_NAME
     assert len(client.requests) == 2
 
-    # Context hygiene across the same seam: the rows went to the UI, not back
-    # into the window.
+    # Task A (2026-08-05 live-synthesis fix), the inverse of what this
+    # assertion pinned before: the rows the dispatch really returned survive
+    # the Bedrock translation into the second request, so the model that
+    # writes the answer's prose has been shown the data it is describing.
     payload = json.dumps(second, default=str)
     for customer in _CUSTOMERS:
-        assert customer not in payload
+        assert customer in payload
 
 
 # ===========================================================================
