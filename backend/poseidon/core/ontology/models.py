@@ -84,6 +84,45 @@ class RowScope(BaseModel):
     this Literal later is a one-line change; leaving it open would let an
     ontology name a field that is not a string, or not an identity at all
     (``roles`` is a tuple), and only find out at render time.
+
+    FLIP CHECKLIST -- what onlining row scoping actually requires
+    ------------------------------------------------------------
+    The mechanism is complete and fail-closed, but three groups of call
+    sites reach the data layer today WITHOUT a caller identity, and each
+    would start refusing (fail-closed, by design) the moment an entity
+    declares a scope. Onlining is therefore config plus these threadings,
+    in this order:
+
+    1. **Deleting ``test_no_certified_entity_declares_row_scope``
+       (``backend/tests/test_ontology_loader.py``) is the deliberate flip
+       act.** It is not a stale test that "started failing" -- removing it
+       is the decision, and nothing below should be started before that is
+       intended.
+    2. **Unthreaded ``scope_value`` defaults** -- these pass no scope at
+       all today: ``core/parsing/pipeline.py`` lines 481/487/501 (the
+       customer pool, the port pool, and ``available_periods``) and
+       ``core/chat/orchestrator.py`` line 1313 (D19's subject-turn customer
+       pool). Each needs
+       ``query_builder.resolve_row_scope_value(entity, user)`` threaded in,
+       which means ``parse_turn``/``_resolve_subject_customer`` need the
+       ``UserContext`` the orchestrator already holds.
+    3. **``user=`` unthreaded into the brief subskills** --
+       ``tasks/customer_insight/skills/existing_customer_brief/skill.py``
+       lines 409/413 call ``fetch_metrics(ctx.data, ...)`` /
+       ``fetch_top_ports(ctx.data, ...)`` without ``ctx.user``, which the
+       ``SkillContext`` does already carry.
+    4. **Five narrow-signature ``DataClient`` fakes** whose
+       ``list_dimension_values``/``available_periods`` do not accept
+       ``scope_value`` and would raise ``TypeError`` the moment a real one
+       is passed: ``test_emit_seam_loop_events.py`` 646/649,
+       ``test_entry_orchestration.py`` 190/193, ``test_llm_loop.py``
+       146/152, ``test_parsing_hinter_pipeline.py`` 377/387, and
+       ``test_chat_orchestrator.py`` 126/130. Widening the five signatures
+       to match the ``DataClient`` protocol is mechanical, and doing it
+       BEFORE step 2 keeps the suite green throughout.
+
+    (Line numbers are the state at the D16 commit -- treat them as
+    signposts to the right function, not as addresses to trust blindly.)
     """
 
     model_config = ConfigDict(frozen=True, extra="ignore")

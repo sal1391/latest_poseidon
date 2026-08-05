@@ -99,8 +99,12 @@ takes ``api/app.py``'s I-1 containment path, which logs the fault
 server-side (the operator's one signal that a JWKS outage, not a wave of
 bad tokens, is in progress -- previously the whole interval passed
 silently) and answers the caller with the generic ``identity_unavailable``
-401 whose detail already says "try again; if this persists, it is not your
-credential". Disclosed cost: during an outage that containment logs one
+401, whose detail reads, verbatim, "the identity provider failed
+unexpectedly; try again shortly" (``api/app.py``'s
+``_IDENTITY_UNAVAILABLE_DETAIL``) -- a statement about THIS SIDE's health
+and an instruction to retry, never a claim about the caller's credential,
+which is the whole distinction this paragraph exists to draw.
+Disclosed cost: during an outage that containment logs one
 line per affected request. That is exactly the volume this module produced
 before any of this work (every request had its own failing fetch to log),
 so it is not a new amplifier -- but it is louder than the silent interval

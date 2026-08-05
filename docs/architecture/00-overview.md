@@ -44,8 +44,9 @@ by the deterministic conversation-state layer (doc 02 §5).
 10. Observability from day one: the run log records every turn as a parent row plus one row per
     model call and tool call; router-decision tests are a first-class, in-repo test category.
 11. Local-first: the entire system runs locally (docker-compose, synthetic data adapter — the
-    standard local-development practice) and deploys as one container to **SPCS (primary)** and
-    **EC2 (secondary)**; **Snowflake** is the production data platform.
+    standard local-development practice) and deploys as one container to **EC2 (first-deployed)**
+    and **SPCS (the corporate primary target, deployed after)** -- decision D8 as revised
+    2026-08-05; **Snowflake** is the production data platform.
 
 ## 3. Non-goals (this overhaul)
 
@@ -205,5 +206,5 @@ poseidon/
 | 04-data-ontology | Ontology catalog, `DataClient` interface, synthetic + Snowflake adapters, vector store, extensibility |
 | 05-auth-identity | Identity providers (Auth0 / SPCS ingress), identity propagation, RLS, chat history, personalization data, privacy/retention/deletion and egress classification |
 | 06-observability | Run-log schema (`turn_run` + `llm_calls` + `tool_calls`), audit/replay, token accounting, feedback capture, test taxonomy |
-| 07-infrastructure | Local topology, SPCS (primary) and EC2 (secondary) targets, environment contract, trial-account setup path |
+| 07-infrastructure | Local topology, EC2 (first-deployed) and SPCS (corporate primary, deployed after) targets, environment contract, trial-account setup path |
 | 08-build-phases | Phased implementation plan with validation gates |
