@@ -50,7 +50,12 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError, OperationalError
 
 from poseidon.core.config import Settings
-from poseidon.core.db import WORKER_ROLE, assert_boot_privileges, build_engine
+from poseidon.core.db import (
+    WORKER_ROLE,
+    _tcp_reachable,
+    assert_boot_privileges,
+    build_engine,
+)
 
 CONNECT_TIMEOUT_SECONDS = 2
 
@@ -135,6 +140,33 @@ def test_an_unreachable_database_is_not_a_privilege_verdict():
         assert assert_boot_privileges(engine, _settings(database_app_role=_APP_ROLE)) is None
     finally:
         engine.dispose()
+
+
+def test_the_preflight_reports_an_unreachable_host_and_falls_through_when_it_cannot_tell():
+    """The TCP pre-flight that decides whether opening a real connection is
+    worth 2 seconds -- pinned directly, since its verdict is what routes a
+    boot to the no-verdict path.
+
+    The fall-through half matters as much as the detection half: a DSN with
+    no host (libpq's Unix-socket/default case), a Unix-socket directory in
+    the host field, and libpq's comma-separated multi-host form are all
+    things this pre-flight cannot meaningfully ask about, and every one of
+    them must answer ``True`` so the REAL connection decides rather than the
+    probe skipping a database that is perfectly fine.
+    """
+    assert _tcp_reachable(make_url(_UNREACHABLE_DSN)) is False, (
+        "nothing listens on port 1 -- the pre-flight has to say so, or every boot "
+        "against a down database pays the full libpq timeout again"
+    )
+    for undecidable in (
+        "postgresql+psycopg://user@/poseidon",  # no host at all
+        "postgresql+psycopg://user@/poseidon?host=/var/run/postgresql",
+        "postgresql+psycopg://user@/tmp:5432/poseidon",
+    ):
+        assert _tcp_reachable(make_url(undecidable)) is True, (
+            f"{undecidable} is not something a TCP pre-flight can decide -- it must fall "
+            "through to the real connection, never skip the checks"
+        )
 
 
 def test_a_malformed_app_role_is_refused_before_any_connection_is_opened():
@@ -290,6 +322,16 @@ def test_an_app_role_that_does_not_exist_is_refused_by_name(pg_engine):
 
     assert "DATABASE_APP_ROLE" in str(excinfo.value)
     assert "alembic" in str(excinfo.value), "the message must name the fix"
+
+
+@pytest.mark.pg
+def test_the_preflight_does_not_false_negative_against_a_real_database(pg_engine):
+    """The other side of the pre-flight's boundary: a database that IS there
+    must pass it, or the checks below would be skipped on every real boot
+    and this whole module would go quietly inert. 250ms is >100x a
+    loopback/VPC handshake, and this asserts that headroom is real on the
+    habitat the suite actually runs against rather than assumed."""
+    assert _tcp_reachable(make_url(_DSN)) is True
 
 
 @pytest.mark.pg

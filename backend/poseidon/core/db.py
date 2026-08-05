@@ -111,12 +111,13 @@ checks and why the worker's is opt-in.
 """
 
 import re
+import socket
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.engine import URL, Connection, Engine
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.pool import NullPool
 
@@ -159,6 +160,10 @@ _PRIVILEGE_SQL = text(
 
 _ROLE_EXISTS_SQL = text("SELECT 1 FROM pg_roles WHERE rolname = :role")
 
+#: What libpq itself falls back to when a DSN names no port, used so the
+#: pre-flight below asks about the same port the real connection will.
+_DEFAULT_POSTGRES_PORT = 5432
+
 #: How long :func:`assert_boot_privileges` waits for its one connection
 #: before deciding it cannot render a verdict. Mirrors ``api/health.py``'s
 #: ``/ready`` probe verbatim (``connect_args={"connect_timeout": 2}``), and
@@ -169,6 +174,25 @@ _ROLE_EXISTS_SQL = text("SELECT 1 FROM pg_roles WHERE rolname = :role")
 #: 130 seconds to give up, per boot. 2 is also libpq's own floor: it
 #: silently rounds anything smaller up to 2.
 _PROBE_CONNECT_TIMEOUT_SECONDS = 2
+
+#: How long :func:`_tcp_reachable` waits for a bare TCP handshake before
+#: reporting the database unreachable, ending the probe with no verdict.
+#:
+#: **Why a pre-flight exists at all.** Even bounded at libpq's 2-second
+#: floor above, a boot check that cannot possibly render a verdict still
+#: cost the offline suite 27 x 2s -- it builds that many ``chat_mode=
+#: "live"`` apps against a deliberately unreachable placeholder DSN -- which
+#: doubled its wall-clock time. A TCP handshake answers the only question
+#: worth asking first ("is anything listening?") for a fraction of that.
+#:
+#: **Why 0.25s.** A TCP handshake is one round trip: ~0.1ms on loopback,
+#: ~1-2ms between an EC2 instance and an RDS endpoint in the same VPC.
+#: 250ms is more than a hundred times that headroom, while still being
+#: two orders of magnitude cheaper than the libpq floor when nothing
+#: answers. It bounds a handshake, never authentication, TLS or query time
+#: -- all of which happen afterwards, on the real connection, unbounded by
+#: this value.
+_PREFLIGHT_TIMEOUT_SECONDS = 0.25
 
 #: **There is deliberately no cache here, and there must not be one.**
 #:
@@ -188,6 +212,49 @@ _PROBE_CONNECT_TIMEOUT_SECONDS = 2
 #:
 #: ``test_a_refusal_is_rendered_on_every_call_never_only_the_first`` fails
 #: if any such cache comes back.
+
+
+def _tcp_reachable(url: URL) -> bool:
+    """``True`` when a TCP connection to ``url``'s host/port completes
+    within :data:`_PREFLIGHT_TIMEOUT_SECONDS`, or when this URL names no
+    host this function can meaningfully pre-flight.
+
+    **Sound where a cache is not, and for a reason worth stating.** This is
+    re-evaluated on EVERY call and keeps no state whatsoever between them,
+    so unlike the memo that used to live here it can never suppress a
+    refusal that a later call would have rendered: every boot on which TCP
+    answers in time runs all three misconfiguration checks in full, no
+    matter what any earlier boot found.
+
+    Its worst case is a false negative -- a database that is reachable but
+    slower than 250ms to complete a handshake -- and that degrades to
+    exactly the no-verdict posture an unreachable database already takes,
+    which this probe already accepts by design (see
+    :func:`assert_boot_privileges`: it answers "are the privileges right",
+    never "is the database up"; ``/ready`` owns the second question). So the
+    pre-flight can cost a verdict on a boot where the network is already
+    badly degraded, and can never cost one otherwise.
+
+    Anything this cannot pre-flight defensively returns ``True`` and lets
+    the real connection decide: a URL with no host at all (libpq will use a
+    Unix socket or its own default), a Unix-socket directory in the host
+    field, or libpq's comma-separated multi-host form, where "which host"
+    has no single answer here and is the driver's business, not this
+    function's.
+    """
+    host = url.host
+    if not host or host.startswith("/") or host.startswith("@") or "," in host:
+        return True
+    try:
+        with socket.create_connection(
+            (host, url.port or _DEFAULT_POSTGRES_PORT), timeout=_PREFLIGHT_TIMEOUT_SECONDS
+        ):
+            return True
+    except OSError:
+        # Refused, timed out, or a name that does not resolve -- socket.gaierror
+        # is an OSError too. All three mean the same thing here: nothing this
+        # process can ask about privileges.
+        return False
 
 
 def _validate_app_role(name: str) -> None:
@@ -314,6 +381,18 @@ def assert_boot_privileges(
     cache that was tried and removed, and why a boot check that can skip a
     check on the strength of an earlier call is not one.
 
+    What replaced that cache is a stateless TCP pre-flight
+    (:func:`_tcp_reachable`, :data:`_PREFLIGHT_TIMEOUT_SECONDS`): before the
+    connection is built at all, one bare handshake asks whether anything is
+    listening, and a DSN that fails it takes the same no-verdict path an
+    unopenable connection takes. It is sound by the same argument that
+    condemned the cache, applied in reverse -- it holds nothing across
+    calls, so it can never suppress a refusal a later boot would have
+    rendered, and every boot whose TCP answers in time runs all three checks
+    in full. Its only failure mode is a false negative on a database too
+    slow to shake hands in 250ms, which lands on the no-verdict posture this
+    function already takes for an unreachable database by design.
+
     Non-Postgres engines return immediately: ``pg_roles``, ``SET ROLE`` and
     row-level security are all Postgres-only, the same dialect guard every
     migration since 0002 opens with.
@@ -327,6 +406,21 @@ def assert_boot_privileges(
         # reach SQL-text construction, and failing on it should not depend
         # on the database being reachable.
         _validate_app_role(app_role)
+
+    url = str(engine.url)  # password-masked by SQLAlchemy's own __str__
+    # Cheapest question first, and the only one that can be answered without
+    # a database connection at all: is anything listening? A DSN that fails
+    # this takes the SAME no-verdict path a failed connection takes below --
+    # see _tcp_reachable for why re-asking it on every call (rather than
+    # remembering the answer) is what keeps it from ever suppressing a
+    # refusal.
+    if not _tcp_reachable(engine.url):
+        _log_no_verdict(
+            url,
+            "nothing accepted a TCP connection at this host and port within the "
+            "pre-flight window",
+        )
+        return
 
     # A throwaway engine on the caller's own URL, not a checkout from the
     # caller's pool -- purely so this one connection can carry a bounded
@@ -344,9 +438,17 @@ def assert_boot_privileges(
         poolclass=NullPool,
     )
     try:
-        _run_checks(probe_engine, str(engine.url), app_role, require_worker_role)
+        _run_checks(probe_engine, url, app_role, require_worker_role)
     finally:
         probe_engine.dispose()
+
+
+def _log_no_verdict(url: str, reason: str, *, sqlstate: str | None = None) -> None:
+    """The one place a "this boot rendered no privilege verdict" line is
+    emitted, so the pre-flight's version and the failed-connection version
+    are the same event with the same keys rather than two shapes an operator
+    has to learn separately. ``url`` is always the password-masked form."""
+    logger.warning("boot_privileges_unchecked", reason=reason, sqlstate=sqlstate, url=url)
 
 
 def _run_checks(
@@ -369,17 +471,15 @@ def _run_checks(
         # either way this returns rather than refusing: /ready is the
         # surface that reports a database this process cannot use.
         sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
-        logger.warning(
-            "boot_privileges_unchecked",
-            reason=(
-                "the server rejected this connection (authentication, database "
-                "or pg_hba), so no privilege check could run"
+        _log_no_verdict(
+            url,
+            (
+                f"the server rejected this connection ({type(exc).__name__}: "
+                "authentication, database or pg_hba), so no privilege check could run"
                 if sqlstate
-                else "no connection to the database could be opened"
+                else f"no connection to the database could be opened ({type(exc).__name__})"
             ),
             sqlstate=sqlstate,
-            url=url,
-            type=type(exc).__name__,
         )
         return
 
