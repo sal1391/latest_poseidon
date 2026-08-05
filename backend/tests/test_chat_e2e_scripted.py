@@ -531,9 +531,11 @@ async def test_scripted_four_turn_conversation_against_live_seeded_postgres():
         assert call["provider"] == "stub"
         assert call["role"] == "router"
         # Bumped v1 -> v2 by the 2026-08-05 live-synthesis fix (Task A):
-        # router/system.md gained its grounding-rules section, and doc 06's
-        # own column is what keeps runs either side of it distinguishable.
-        assert call["prompt_version"] == "v2"
+        # router/system.md gained its grounding-rules section. Bumped v2 ->
+        # v3 by the same day's pre-final wave (rule 3's closing clause
+        # softened). Doc 06's own column is what keeps runs on either side
+        # of each change distinguishable.
+        assert call["prompt_version"] == "v3"
         prompt_hash = call["prompt_hash"]
         assert len(prompt_hash) == 64
         assert all(char in "0123456789abcdef" for char in prompt_hash)

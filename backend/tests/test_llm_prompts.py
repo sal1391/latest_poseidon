@@ -732,12 +732,15 @@ def test_prompt_hash_differs_for_different_rendered_text():
     assert prompt_hash("text a") != prompt_hash("text b")
 
 
-def test_prompt_version_router_system_prompt_is_v2():
-    """Bumped from v1 by Task A (2026-08-05 live-synthesis fix): the
+def test_prompt_version_router_system_prompt_is_v3():
+    """Bumped v1 -> v2 by Task A (2026-08-05 live-synthesis fix): the
     grounding-rules section is a behavioral change to what the router is
-    told, and doc 06's ``llm_calls.prompt_version`` is what keeps runs
-    before and after it distinguishable in the run log."""
-    assert prompt_version(DEFAULT_PROMPTS_DIR, "router/system") == "v2"
+    told. Bumped v2 -> v3 by the pre-final wave (2026-08-05): rule 3's
+    closing clause was softened from a hard "listing them all is not"
+    prohibition to guidance. Doc 06's ``llm_calls.prompt_version`` is what
+    keeps runs on either side of each change distinguishable in the run
+    log."""
+    assert prompt_version(DEFAULT_PROMPTS_DIR, "router/system") == "v3"
 
 
 def test_prompt_version_utility_title_prompt_is_v1():
@@ -745,7 +748,7 @@ def test_prompt_version_utility_title_prompt_is_v1():
 
 
 def test_router_system_prompt_render_has_no_leading_blank_line_from_version_comment():
-    """The ``{# version: v2 -#}`` first line added to ``router/system.md``
+    """The ``{# version: v3 -#}`` first line on ``router/system.md``
     must vanish from RENDERED output with no trace -- including no stray
     leading blank line, which a plain ``{# ... #}`` (no trim marker) WOULD
     leave behind under Jinja2's default ``trim_blocks=False`` (verified
@@ -762,7 +765,7 @@ def test_router_system_prompt_render_has_no_leading_blank_line_from_version_comm
 
     assert rendered.startswith("# Poseidon Router\n")
     assert "{#" not in rendered
-    assert "version: v2" not in rendered
+    assert "version: v3" not in rendered
 
 
 def test_utility_title_prompt_render_is_byte_unchanged_by_the_version_comment():

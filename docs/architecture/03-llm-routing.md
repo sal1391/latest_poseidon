@@ -106,9 +106,15 @@ The agent loop (per turn):
    Perplexity — marine news search…") — rendered as transcript steps (doc 01 §4) and mirrored
    into run-log `tool_calls` (doc 06).
 
-Context hygiene (TM1 lessons): bulk rows/artifacts are stripped from LLM-visible tool results
-(digest + reference only); the conversation window is bounded with utilization warnings; slot
-state travels in the system prompt, not as accumulated prose history.
+Context hygiene (TM1 lessons, revised by the 2026-08-05 live-synthesis fix): a tool result reaches
+the model as a short digest (part kinds, row counts, the certified proof block) followed by the
+result's own values, capped (`RESULT_CONTENT_MAX_ROWS` rows / `RESULT_CONTENT_MAX_CHARS`
+characters, explicit truncation marker) — the digest opens the `toolResult` content, it is not the
+whole of it. TM1's original "digest only, bulk data never re-enters the context window" rule
+starved the model that authors the answer's prose of the rows it was describing; the run-log's
+`result_digest` column is unaffected and stays the short digest alone (P11's redaction rule nulls
+it on the same terms as before). The conversation window is bounded with utilization warnings;
+slot state travels in the system prompt, not as accumulated prose history.
 
 **Supervisor tier (Opus, optional):** enabled per-environment. When on, it intercepts at two
 points: (a) *pre-dispatch review* for turns where the router's chosen skill confidence conflicts
