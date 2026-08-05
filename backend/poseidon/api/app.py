@@ -1,6 +1,7 @@
 import anyio.to_thread
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from poseidon.api import auth, dev_runner, health, live_chat, me, mock_chat, turns
 from poseidon.core.artifacts import ArtifactStore
@@ -186,6 +187,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # own new conversations/messages router (this task's own brief:
         # "export the dependency cleanly so Phase 10 can attach it").
         app.include_router(dev_runner.router, dependencies=[Depends(auth.require_sales)])
+
+    # Phase 14 Task 5 (doc 07 section 2: "StaticFiles mounted after all
+    # /api/* routes"): the built SPA, served from this same origin when
+    # STATIC_DIR is set -- the production container answers both halves of
+    # the app, so the browser never makes a cross-origin request to its own
+    # API and no CORS allowlist entry is needed for the UI itself. Unset
+    # (local dev, every test that does not opt in) mounts nothing at all and
+    # this factory behaves exactly as it did before this task.
+    #
+    # **THE LAST LINE OF THIS FUNCTION, and that is the whole correctness
+    # argument.** Mount("/") matches EVERY path there is, and Starlette's
+    # router serves the FIRST route whose matches() reports Match.FULL, in
+    # registration order -- so this mount registered anywhere above would
+    # silently swallow /api/* and /health/* whole, turning the SPA's own
+    # boot call (GET /api/me) and every load-balancer probe into a
+    # StaticFiles 404 while the UI itself still looked perfectly healthy.
+    # Anything added to this factory later belongs ABOVE this block; the
+    # ordering is pinned by tests/test_static_serving.py (both the two
+    # must-not-shadow HTTP tests and a structural "spa is the last route"
+    # assertion, so a router appended below here fails loudly instead of
+    # becoming dead code).
+    #
+    # html=True is what serves index.html for "/" (and for a directory
+    # request); an unknown path still 404s, with NO catch-all rewrite to
+    # index.html. That is correct for today's frontend, which has no client-
+    # side router at all -- it is a single screen, so "/" is the only URL
+    # that is ever a legitimate entry point and a deep link cannot exist.
+    # This is the seam to change when one is added: react-router would need
+    # unknown non-/api paths rewritten to index.html (a small custom
+    # StaticFiles subclass or an exception handler), or every refresh on a
+    # sub-route would 404.
+    if app.state.settings.static_dir:
+        app.mount("/", StaticFiles(directory=app.state.settings.static_dir, html=True), name="spa")
     return app
 
 

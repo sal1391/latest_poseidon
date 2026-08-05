@@ -1,0 +1,47 @@
+# Build-context excludes for `docker build -f infra/Dockerfile .` ONLY.
+#
+# BuildKit reads a <dockerfile-name>.dockerignore sitting next to the
+# Dockerfile in preference to a context-root .dockerignore. That scoping is
+# the entire reason this file is here rather than at the repo root: this
+# image builds from the ROOT context (it needs backend/, ontology/ and
+# frontend/ at once), and a root .dockerignore would also have changed what
+# the LEGACY root ./Dockerfile -- the Streamlit app, untouched by this phase
+# -- sees in its own `COPY . .`.
+#
+# Two jobs: keep host-only trees out of the context (frontend/node_modules
+# alone is ~157 MB, and none of it is used -- stage 1 runs its own `npm ci`),
+# and make it structurally impossible for a real secret to reach the image.
+
+# Host-only / regenerated trees.
+.git
+**/node_modules
+**/.venv
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+**/.pytest_cache
+**/.ruff_cache
+# The SPA is BUILT inside stage 1; a stale host dist must never leak in and
+# masquerade as the bundle this image was built from.
+frontend/dist
+
+# Secrets. .env is gitignored, so it exists only on a developer's machine --
+# exactly the file that must never be baked into a shipped image. The
+# container's configuration comes from the orchestrator's environment, and
+# infra/docker-compose.ec2.yml sets POSEIDON_ENV_FILE="" so Settings reads no
+# dotenv at all. .env.example is re-admitted: it is documentation, carries
+# only placeholders, and is tracked in git.
+**/.env
+**/.env.*
+!**/.env.example
+
+# Documentation, planning and tooling trees -- context weight with no
+# runtime use.
+docs
+.superpowers
+.claude
+.maestro
+.streamlit
+.playwright-mcp
+.github
+*.png

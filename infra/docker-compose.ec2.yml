@@ -1,0 +1,125 @@
+# Poseidon on EC2 -- Phase 14 Task 5 (doc 07 section 2, doc 08's EC2 section).
+#
+# Three services and no more: caddy, backend, worker. Deliberately NO db and
+# NO minio, unlike infra/docker-compose.yml -- on EC2 those are managed AWS
+# services (RDS Postgres, real S3), reached over the network, not containers
+# on this box. That is the single biggest difference between this file and
+# the dev stack, and the reason the env contract below looks the way it does.
+#
+# Run it from this directory (the Caddyfile is bind-mounted relative to it):
+#
+#   POSEIDON_IMAGE=poseidon:<git-sha> POSEIDON_DOMAIN=poseidon.example.com \
+#     docker compose -f docker-compose.ec2.yml up -d
+#
+# NOTHING in this file contains a credential, by construction. Every secret
+# lives in /etc/poseidon/backend.env, which is authored ON THE BOX (root-
+# owned, 0600) and only ever REFERENCED here by path -- see backend/.env.
+# example's "--- EC2 ---" block for the exact variable list that file carries.
+
+services:
+  # The only thing listening on the public interface.
+  caddy:
+    image: caddy:2-alpine
+    ports: ["80:80", "443:443"]
+    environment:
+      # `:?` rather than a default: a deploy that forgets this would other-
+      # wise start Caddy on an empty site address, which fails in a far less
+      # obvious way than compose refusing up front.
+      POSEIDON_DOMAIN: ${POSEIDON_DOMAIN:?set POSEIDON_DOMAIN to the public hostname}
+    volumes:
+      - "./Caddyfile:/etc/caddy/Caddyfile:ro"
+      # Certificates and ACME account state. Named volume, not a bind mount,
+      # and NOT optional: without it every `up` starts from no certificate
+      # and re-requests one from Let's Encrypt, which is how a deploy loop
+      # walks into issuance rate limits and ends up serving TLS errors.
+      - "caddy_data:/data"
+      # Caddy's own autosaved config. Separate volume by Caddy's own
+      # convention -- /data is the durable one, /config is regenerable.
+      - "caddy_config:/config"
+    depends_on: [backend]
+    restart: unless-stopped
+
+  backend:
+    # Immutable tag, always -- infra/Dockerfile's own header pins the
+    # poseidon:<git-sha> convention, and rollback is literally redeploying
+    # with the previous sha here. A moving tag would make "which code is
+    # running" unanswerable.
+    image: ${POSEIDON_IMAGE:?set POSEIDON_IMAGE to the poseidon:<git-sha> tag to run}
+    # The same start chain the dev stack uses (infra/docker-compose.yml),
+    # minus --reload. The seeder is re-run-safe -- every `docker compose up`
+    # in dev has re-run it for the whole project's life -- and doc 08's EC2
+    # section explicitly wants "RDS with migrations + synthetic load", so the
+    # demo data is part of a deploy rather than a manual follow-up step.
+    command: >
+      sh -c "python -m alembic upgrade head &&
+             python -m poseidon.scripts.seed_synthetic &&
+             python -m uvicorn poseidon.api.app:create_app --factory --host 0.0.0.0 --port 8000"
+    # Authored on the box, never in git: DATABASE_URL, AUTH0_DOMAIN,
+    # AUTH0_AUDIENCE, AUTH0_CLIENT_ID, S3_BUCKET, and optionally
+    # PERPLEXITY_API_KEY. Referenced by absolute path so it sits outside any
+    # directory a deploy might rsync over.
+    env_file: /etc/poseidon/backend.env
+    environment:
+      # Empty = read no dotenv at all. Same rationale as the dev stack's:
+      # nothing that lands at /app may shadow the environment the
+      # orchestrator passes in. Belt and braces here -- infra/Dockerfile.
+      # dockerignore already keeps every .env out of the image.
+      POSEIDON_ENV_FILE: ""
+      # Non-secret shape of THIS habitat. Compose gives `environment` higher
+      # precedence than `env_file`, so these are the values that win no
+      # matter what the box's env file happens to contain.
+      DEPLOY_MODE: ec2
+      DATA_BACKEND: synthetic
+      IDENTITY_MODE: auth0
+      LLM_PROFILE: bedrock
+      LLM_MODE: live
+      CHAT_MODE: live
+      # What makes create_app serve the built SPA from this same container
+      # (poseidon/api/app.py's mount; infra/Dockerfile puts the bundle here).
+      STATIC_DIR: /app/static
+      TOOL_TRANSPORT_PERPLEXITY: direct
+      # S3_ENDPOINT_URL, S3_ACCESS_KEY and S3_SECRET_KEY are DELIBERATELY
+      # ABSENT -- their absence is the configuration, not an oversight.
+      # Unset, ArtifactStore talks to real AWS S3 and boto3's default
+      # credential chain picks up the EC2 instance profile, so no key
+      # material exists on this box to leak or rotate. All three are Optional
+      # in core/config.py precisely to permit this; they exist for the local
+      # MinIO stack alone. The same principle covers Bedrock: LLM_PROFILE=
+      # bedrock with no credentials configured anywhere resolves through that
+      # same instance profile.
+    # No `ports:` -- this service is reachable only on the compose network,
+    # where caddy proxies to it as backend:8000. Publishing 8000 on the host
+    # would expose an unencrypted, Caddy-bypassing path to the API.
+    restart: unless-stopped
+
+  # The idle-triggered memory-distillation worker (Phase 13 Task 4), same
+  # image and same env contract as `backend`, running a different entrypoint.
+  worker:
+    image: ${POSEIDON_IMAGE:?set POSEIDON_IMAGE to the poseidon:<git-sha> tag to run}
+    command: python -m poseidon.scripts.memory_worker
+    env_file: /etc/poseidon/backend.env
+    environment:
+      POSEIDON_ENV_FILE: ""
+      DEPLOY_MODE: ec2
+      DATA_BACKEND: synthetic
+      IDENTITY_MODE: auth0
+      LLM_PROFILE: bedrock
+      LLM_MODE: live
+      TOOL_TRANSPORT_PERPLEXITY: direct
+      # CHAT_MODE and STATIC_DIR are deliberately absent: both select what
+      # create_app mounts, and this process mounts no HTTP surface at all.
+    depends_on:
+      # Not merely cosmetic ordering. `backend`'s start chain owns `alembic
+      # upgrade head`, and migrations must have exactly ONE owner -- two
+      # containers racing the same upgrade against the same database is real
+      # lock contention and, on a fresh database, real duplicate DDL.
+      # Mirrors the dev stack's own comment verbatim in intent.
+      # `service_started` is the strongest condition available (`backend`
+      # declares no healthcheck); the worker's per-cycle error handling
+      # covers the seconds in which migrations may still be running.
+      backend: { condition: service_started }
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:
