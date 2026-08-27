@@ -7,8 +7,8 @@ that picks skills and fills validated arguments. No model writes SQL, and no mod
 number — every figure in an answer comes from certified queries against a governed semantic
 layer, and every answer carries a proof block showing where it came from.
 
-This repository replaces an earlier three-agent Streamlit dashboard, which still lives here
-during cutover (see [Legacy application](#legacy-application) at the bottom).
+This repository replaces an earlier three-agent Streamlit dashboard. That application has been
+removed; nothing in this tree depends on it.
 
 ## The three conversation flows
 
@@ -140,11 +140,12 @@ the deployment itself is in progress. SPCS deployment and the Snowflake data bac
 
 `docs/architecture/08-build-phases.md` has the full plan and each phase's validation gate.
 
-## Legacy application
+## Predecessor
 
-The original Streamlit dashboard still sits at the repository root — `app.py`, `agents/`,
-`auth.py`, `config.py`, `snowflake_client.py`, `pdf_generator.py`, and its own `tests/` — and is
-retained until cutover. It is deliberately left untouched by the rewrite; treat it as read-only
-history rather than as a component of the new system. `README_BUSINESS.md` and `CONFIG_GUIDE.md`
-belong to it, as does the root `requirements.txt`. The new backend's environment contract is
-`backend/.env.example`.
+The Streamlit dashboard this replaced has been removed from the working tree. It remains in git
+history if you need it — `git log --all -- app.py` will find it.
+
+One thing was carried forward rather than left in history: the 16-field Salesforce CRM template
+its strategist agent produced, which the existing-customer brief is still expected to adopt. It
+is preserved at [`docs/reference/crm-brief-template.md`](docs/reference/crm-brief-template.md)
+with the port marked as outstanding.
