@@ -232,21 +232,52 @@ def test_owner_policy_exists_with_the_pinned_predicate(pg_engine, table, policy)
     )
 
 
+#: Every policy each personalization table is allowed to carry.
+#:
+#: Was "exactly ``<table>_owner``, nothing else" until Phase 14 Task 3,
+#: which adds migration 0009's ``memory_outbox_worker`` -- the memory
+#: worker's claim role, ``USING (true)`` on that ONE table. Widened here
+#: rather than in the assertion below so the allowance is a visible,
+#: table-by-table list a reviewer reads at a glance instead of a special
+#: case buried in a test body.
+_EXPECTED_POLICIES = {
+    _USER_PROFILE: {"user_profile_owner"},
+    _USER_MEMORY: {"user_memory_owner"},
+    _MEMORY_OUTBOX: {"memory_outbox_owner", "memory_outbox_worker"},
+}
+
+
 @pytest.mark.parametrize("table", _PERSONALIZATION_TABLES)
 def test_no_admin_policy_exists_on_any_of_the_three_tables(pg_engine, table):
     """Divergence 1 (migration 0008's own docstring, doc 05 section 7):
     "Admins have no path to another user's messages, user_memory, or
-    user_profile." Exactly one policy total per table -- the owner policy
-    -- proves no poseidon_admin policy was added alongside it."""
+    user_profile."
+
+    Phase 14 Task 3 note: this used to assert "exactly one policy, the
+    owner policy" -- a proxy for "nobody added an admin policy" that was
+    strictly stronger than the rule it stood for, and that migration 0009's
+    ``memory_outbox_worker`` (a MACHINE role for the worker's cross-user
+    claim, on ``memory_outbox`` only -- never a human read path to anyone's
+    memory or profile) therefore trips. The allow-list above replaces the
+    proxy, and the second assertion below now pins the actual rule
+    directly: no policy on any of these tables may be granted to
+    ``poseidon_admin``, whatever else exists.
+    """
     with pg_engine.connect() as conn:
         rows = conn.execute(
-            text("SELECT policyname FROM pg_policies WHERE tablename = :t"), {"t": table}
+            text("SELECT policyname, roles FROM pg_policies WHERE tablename = :t"), {"t": table}
         ).all()
 
-    names = [row.policyname for row in rows]
-    assert names == [f"{table}_owner"], (
-        f"{table} must carry exactly its one owner policy and nothing else, got: {names}"
+    names = {row.policyname for row in rows}
+    assert names == _EXPECTED_POLICIES[table], (
+        f"{table} must carry exactly the policies this codebase sanctions for it, "
+        f"got: {sorted(names)}"
     )
+    for row in rows:
+        assert _ADMIN_ROLE not in (row.roles or []), (
+            f"{row.policyname} names {_ADMIN_ROLE}: doc 05 section 7 gives admins no path "
+            f"to another user's {table}"
+        )
 
 
 @pytest.mark.parametrize("table", _PERSONALIZATION_TABLES)

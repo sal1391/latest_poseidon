@@ -165,6 +165,26 @@ class Settings(BaseSettings):
     # rather than an arbitrary numeric guess this file would otherwise have
     # to invent with no environment-specific basis for picking it.
     token_spike_threshold: int = 0
+    # Phase 14 Task 5 (doc 07 section 2): the directory of BUILT SPA assets
+    # (a Vite `dist`) that poseidon.api.app.create_app serves from "/" when
+    # this is set -- the single-origin production shape, one container
+    # answering both the API and the frontend so there is no second static
+    # host, no cross-origin preflight, and no CORS allowlist entry for the
+    # app's own UI. ``None`` (the default) mounts NOTHING: local development
+    # keeps serving the frontend from Vite's own dev server through its
+    # `/api` proxy (frontend/vite.config.ts), which is what gives hot module
+    # reload, and every existing test in this suite keeps the app shape it
+    # was written against. Typed ``str``, not ``Path``: it is a container-
+    # absolute path handed straight to Starlette's StaticFiles (which
+    # accepts either) and is never joined, walked, or compared here -- a
+    # Path would add filesystem semantics this file deliberately has none
+    # of. NOT validated for existence at boot, unlike the fail-fast
+    # discipline this file's own docstring pins for malformed values:
+    # StaticFiles itself raises at mount time if the directory is missing
+    # (its own check_dir=True default), which is the SAME boot-time failure
+    # a validator here would produce, only with the more accurate error --
+    # so duplicating it would just be a second place to keep in sync.
+    static_dir: str | None = None
 
     @field_validator("database_url", "s3_bucket")
     @classmethod

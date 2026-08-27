@@ -18,23 +18,33 @@ mode regardless of what ``models.yml`` configures, so the worker's own
 production call path (``role_client.invoke("memory", ...)``) is what runs,
 with a deterministic answer.
 
-**Privilege model (Global Constraints, verified empirically before this
-file was written).** The claim query is the ONE operation in this phase
-that reads ``memory_outbox`` outside a per-user ``rls_transaction``: it
-runs on the raw, privileged ``DATABASE_URL`` connection, which this
-project's compose Postgres bootstraps as the cluster superuser
-(``rolsuper = true``, ``rolbypassrls = true`` -- see this module's own
-``test_the_claim_connection_actually_bypasses_row_level_security``, which
-re-proves that empirically rather than trusting the deployment note). Every
-OTHER operation the worker performs -- reading the conversation, writing
-the memory version, moving the outbox row to ``done``/``failed`` -- goes
-through the ordinary ``Store.for_user(sub)``/``rls_transaction`` path.
+**Privilege model (Phase 14 Task 3 rewrote this section).** The claim query
+is the ONE operation in this phase that reads ``memory_outbox`` outside a
+per-user ``rls_transaction`` -- "which conversations, across all users,
+have gone idle" has no single ``app.user_sub`` to scope it to. It used to
+see every user's rows because the compose ``DATABASE_URL`` role happens to
+be the cluster superuser, and superusers bypass row-level security
+unconditionally. That is no longer what makes it work, and this file no
+longer pins it: RDS has no superuser and cannot grant ``BYPASSRLS``, so on
+the deployment this codebase is actually heading for, the old posture
+returned zero rows forever while the worker looked perfectly healthy.
+
+The claim now runs under ``SET LOCAL ROLE poseidon_worker`` (migration
+0009), whose one ``memory_outbox`` policy -- ``USING (true)``, that table
+and nothing else -- is what its cross-user visibility comes from. That is
+an explicitly granted privilege in EVERY habitat, superuser or not, and
+``test_the_claim_sees_both_users_rows_under_the_worker_role_and_none_under_
+the_app_role`` proves both halves: the same query under ``poseidon_app``
+sees zero rows. Every OTHER operation the worker performs -- reading the
+conversation, writing the memory version, moving the outbox row to
+``done``/``failed`` -- still goes through the ordinary
+``Store.for_user(sub)``/``rls_transaction`` path, unchanged.
 
 Mirrors ``test_personalization_stores.py``'s pg conventions exactly: a
 module-level probe skips the whole file if ``DATABASE_URL`` is unset,
-unreachable, or migration 0008 has not been applied; every fixture row is
-built through a real store (``HistoryStore`` for conversations/messages),
-never a bare INSERT for content rows.
+unreachable, or migrations 0008/0009 have not been applied; every fixture
+row is built through a real store (``HistoryStore`` for conversations/
+messages), never a bare INSERT for content rows.
 """
 
 import json
@@ -50,7 +60,7 @@ from sqlalchemy import text
 from poseidon.core.chat.history import HistoryStore
 from poseidon.core.config import Settings, get_settings
 from poseidon.core.data.synthetic_client import normalize_dsn
-from poseidon.core.db import build_engine, rls_transaction
+from poseidon.core.db import WORKER_ROLE, assert_boot_privileges, build_engine, rls_transaction
 from poseidon.core.llm.roles import RoleClient
 from poseidon.core.llm.types import LLMResponse
 from poseidon.core.util.uuid7 import uuid7
@@ -60,7 +70,7 @@ pytestmark = pytest.mark.pg
 
 CONNECT_TIMEOUT_SECONDS = 2
 _UP_HINT = "start it with `docker compose -f infra/docker-compose.yml up -d db`"
-_MIGRATE_HINT = "migrate it with `python -m alembic upgrade head` (revision 0008)"
+_MIGRATE_HINT = "migrate it with `python -m alembic upgrade head` (revision 0009)"
 
 _DSN = os.environ.get("DATABASE_URL", "")
 if not _DSN:
@@ -80,6 +90,16 @@ try:
             if _cur.fetchone() is None:
                 pytest.skip(
                     f"memory_outbox does not exist - {_MIGRATE_HINT}",
+                    allow_module_level=True,
+                )
+            # Phase 14 Task 3: the claim path SET LOCAL ROLEs to this role,
+            # so a database still at 0008 would fail every claim test with an
+            # undefined-object error rather than a legible "you have not
+            # migrated" skip.
+            _cur.execute("SELECT 1 FROM pg_roles WHERE rolname = 'poseidon_worker'")
+            if _cur.fetchone() is None:
+                pytest.skip(
+                    f"the poseidon_worker role does not exist - {_MIGRATE_HINT}",
                     allow_module_level=True,
                 )
             _cur.execute("SELECT rolsuper FROM pg_roles WHERE rolname = current_user")
@@ -365,23 +385,90 @@ def test_settings_carries_the_two_new_memory_worker_fields_with_their_pinned_def
 # ===========================================================================
 
 
-def test_the_claim_connection_actually_bypasses_row_level_security(pg_engine):
-    """Global Constraints' load-bearing precondition, re-proved here rather
-    than trusted: the worker's cross-user claim query runs on the RAW
-    DATABASE_URL connection with no ``rls_transaction`` wrapper and no
-    ``app.user_sub`` set at all -- which returns rows only because this
-    role bypasses row-level security. If this ever stops holding, the claim
-    query silently returns zero rows forever (an unset ``app.user_sub``
-    fails closed) and the worker quietly stops working."""
-    with pg_engine.connect() as conn:
-        row = conn.execute(
-            text("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user")
-        ).first()
+def test_the_claim_sees_both_users_rows_under_the_worker_role_and_none_under_the_app_role(
+    pg_engine,
+):
+    """Phase 14 Task 3, replacing this file's old ``test_the_claim_
+    connection_actually_bypasses_row_level_security``.
 
-    assert row.rolsuper or row.rolbypassrls, (
-        "the DATABASE_URL role must bypass RLS for the cross-user claim query to see "
-        "any row at all -- see this module's docstring and the task report"
+    That test pinned the WRONG thing: it asserted the ``DATABASE_URL`` role
+    carries ``rolsuper``/``rolbypassrls``, making an accident of this
+    project's compose Postgres (the official image bootstraps
+    ``POSTGRES_USER`` as the cluster superuser) into the load-bearing reason
+    the worker sees anything. RDS has no superuser and cannot grant
+    ``BYPASSRLS`` at all, so that premise does not survive the deployment
+    this codebase is heading for -- and its failure mode is silent: an unset
+    ``app.user_sub`` fails closed, so the claim would simply return zero
+    rows on every cycle while the worker logged healthy empty polls forever.
+
+    What is pinned instead is the privilege the claim now actually rests on,
+    with its own negative control. Two DIFFERENT users' idle rows are
+    seeded, and the very same claim SQL is run twice on raw connections that
+    differ in exactly one thing -- the role:
+
+    * under ``poseidon_worker`` (migration 0009's ``memory_outbox_worker``
+      policy, ``USING (true)``) it sees BOTH users' rows;
+    * under ``poseidon_app`` (the owner policy, whose ``app.user_sub`` is
+      unset here) it sees ZERO.
+
+    The negative control is what makes this evidence rather than assertion:
+    if the visibility came from the connection's superuser-ness, the second
+    half would see both rows too, and this test would fail.
+    """
+    first_sub = _fresh_user_sub()
+    second_sub = _fresh_user_sub()
+    first_cid = _create_conversation(pg_engine, first_sub)
+    second_cid = _create_conversation(pg_engine, second_sub)
+    _seed_outbox(pg_engine, first_sub, first_cid, minutes_ago=_IDLE_MINUTES + 5)
+    _seed_outbox(pg_engine, second_sub, second_cid, minutes_ago=_IDLE_MINUTES + 5)
+    params = {"idle_minutes": _IDLE_MINUTES, "batch_limit": 100}
+
+    with pg_engine.begin() as conn:
+        conn.execute(text(f'SET LOCAL ROLE "{WORKER_ROLE}"'))
+        under_worker = conn.execute(memory_worker._CLAIM_SQL, params).all()
+    with pg_engine.begin() as conn:
+        conn.execute(text(f'SET LOCAL ROLE "{_APP_ROLE}"'))
+        under_app = conn.execute(memory_worker._CLAIM_SQL, params).all()
+
+    # The autouse quiet_queue fixture parks every OTHER claimable row, so
+    # the worker role's view here is exactly the two rows this test seeded.
+    assert {str(row.conversation_id) for row in under_worker} == {first_cid, second_cid}, (
+        "the claim must see every user's idle rows under the worker role -- that is the "
+        "one query in this phase that cannot be scoped to a single identity"
     )
+    assert under_app == [], (
+        "the negative control: the identical query under poseidon_app must see NOTHING, "
+        "proving the cross-user visibility comes from migration 0009's worker policy and "
+        "not from the connection happening to bypass RLS"
+    )
+
+
+def test_claim_idle_conversations_switches_its_transaction_to_the_worker_role(pg_engine):
+    """The role switch lives in the CLAIM FUNCTION, not merely in the test
+    above's hand-written setup: a caller that opens the transaction itself
+    (``run_once``, and every test in this file) must get the worker role
+    without having to remember to ask for it. ``SET LOCAL`` is transaction-
+    scoped, so ``current_user`` is still the switched role for the rest of
+    the claim's own transaction and back to the DSN's role after it."""
+    with pg_engine.begin() as conn:
+        memory_worker.claim_idle_conversations(conn, idle_minutes=_IDLE_MINUTES, limit=1)
+        during = conn.execute(text("SELECT current_user")).scalar()
+
+    with pg_engine.connect() as conn:
+        after = conn.execute(text("SELECT current_user")).scalar()
+
+    assert during == WORKER_ROLE
+    assert after != WORKER_ROLE, "SET LOCAL must not survive the claim's own transaction"
+
+
+def test_the_worker_boot_probe_passes_against_this_database(pg_engine, worker_settings):
+    """The worker's own startup check (``main`` calls this before its first
+    cycle). It is what turns "the claim silently returns nothing forever"
+    into a refusal to start at all -- see ``tests/test_boot_privileges.py``
+    for the failure modes; this asserts the compose habitat satisfies it."""
+    settings = worker_settings()
+
+    assert assert_boot_privileges(pg_engine, settings, require_worker_role=True) is None
 
 
 def test_claim_returns_only_the_idle_pending_row(pg_engine):

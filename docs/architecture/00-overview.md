@@ -44,8 +44,9 @@ by the deterministic conversation-state layer (doc 02 §5).
 10. Observability from day one: the run log records every turn as a parent row plus one row per
     model call and tool call; router-decision tests are a first-class, in-repo test category.
 11. Local-first: the entire system runs locally (docker-compose, synthetic data adapter — the
-    standard local-development practice) and deploys as one container to **SPCS (primary)** and
-    **EC2 (secondary)**; **Snowflake** is the production data platform.
+    standard local-development practice) and deploys as one container to **EC2 (first-deployed)**
+    and **SPCS (the corporate primary target, deployed after)** -- decision D8 as revised
+    2026-08-05; **Snowflake** is the production data platform.
 
 ## 3. Non-goals (this overhaul)
 
@@ -148,9 +149,12 @@ poseidon/
   explicit reversal of the TM1 gitignore practice, per project feedback.
 - D7 Streaming uses Server-Sent Events, not WebSockets — unidirectional token/phase streaming is
   all the chat needs; simpler to operate behind a proxy.
-- D8 (revised) One container image, two deploy targets sharing one environment contract: **SPCS
-  primary** (the proven in-house pattern), **EC2 secondary** — dev/prod parity over premature
-  scale-out.
+- D8 (revised 2026-08-05) One container image, two deploy targets sharing one
+  environment contract. **EC2 deploys first** (owner decision at Phase 13 closure: get a
+  public, Auth0-gated instance live on proven AWS footing before the corporate-platform
+  work); **SPCS remains the corporate primary target**, deployed after, with the
+  Snowflake data backend onlined by a separate Snowflake-side effort. Dev/prod parity
+  over premature scale-out, unchanged.
 - D19 Flow = entry orchestration only; after the initial deliverable the router sees the full
   skill registry in every flow — pivots are the product, not an exception (doc 02 §4).
 - D20 App state (chat, run log, feedback, user memory) is Postgres everywhere; in SPCS it runs
@@ -202,5 +206,5 @@ poseidon/
 | 04-data-ontology | Ontology catalog, `DataClient` interface, synthetic + Snowflake adapters, vector store, extensibility |
 | 05-auth-identity | Identity providers (Auth0 / SPCS ingress), identity propagation, RLS, chat history, personalization data, privacy/retention/deletion and egress classification |
 | 06-observability | Run-log schema (`turn_run` + `llm_calls` + `tool_calls`), audit/replay, token accounting, feedback capture, test taxonomy |
-| 07-infrastructure | Local topology, SPCS (primary) and EC2 (secondary) targets, environment contract, trial-account setup path |
+| 07-infrastructure | Local topology, EC2 (first-deployed) and SPCS (corporate primary, deployed after) targets, environment contract, trial-account setup path |
 | 08-build-phases | Phased implementation plan with validation gates |

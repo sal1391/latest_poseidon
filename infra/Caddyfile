@@ -1,0 +1,59 @@
+# Poseidon edge -- Phase 14 Task 5 (doc 07 sections 2 and 5).
+#
+# Caddy is the ONLY thing on the box listening on 80/443. Everything behind
+# it -- the API and the built SPA alike -- is one upstream, because the
+# production image serves both from the same origin (see infra/Dockerfile).
+# There is no /api-versus-/ split to route here: create_app already decides
+# that internally, matching its routers before the StaticFiles mount.
+#
+# {$POSEIDON_DOMAIN} is substituted from Caddy's own environment at config
+# load (infra/docker-compose.ec2.yml passes it in). A real hostname here is
+# what arms automatic HTTPS: Caddy provisions and renews a Let's Encrypt
+# certificate for the site address on its own, which is why the caddy_data
+# volume in the compose file is not optional -- losing it means re-issuing
+# certificates on every deploy and walking into rate limits. Task 7 owns the
+# DNS record that makes the name resolve.
+{$POSEIDON_DOMAIN} {
+	# Compression, with an EXPLICIT content-type whitelist -- and
+	# `text/event-stream` is deliberately not on it (Phase 14 final-review
+	# wave, reviewer recommendation 3). A bare `encode gzip` compresses
+	# every compressible response including the chat SSE stream, and a
+	# compressor is a buffer by nature: it has every reason to hold a few
+	# hundred bytes back waiting for more input to compress well, which
+	# would turn token-by-token streaming into one late burst. The
+	# `flush_interval -1` below is the primary defence and should be
+	# sufficient on its own; this whitelist is the belt to its braces, so
+	# SSE cannot be buffered even if that interacts with compression in
+	# some way this deploy has not seen. Everything actually worth
+	# compressing -- the SPA's HTML/CSS/JS bundle and JSON API responses --
+	# still is.
+	encode gzip {
+		match {
+			header Content-Type text/html*
+			header Content-Type text/css*
+			header Content-Type text/plain*
+			# Both spellings on purpose: Python's own mimetypes maps .js to
+			# text/javascript on 3.12+, and Starlette's StaticFiles (which
+			# serves the SPA bundle from this same container) uses it -- so
+			# listing only application/javascript would quietly stop
+			# compressing the largest file the browser downloads.
+			header Content-Type text/javascript*
+			header Content-Type application/javascript*
+			header Content-Type application/json*
+			header Content-Type application/problem+json*
+			header Content-Type image/svg+xml*
+		}
+	}
+
+	reverse_proxy backend:8000 {
+		# THE SSE REQUIREMENT (doc 07 section 5: "no buffering"). The chat
+		# response is a text/event-stream that emits token frames as the model
+		# produces them. With Caddy's default response buffering, those frames
+		# would sit in the proxy until the buffer filled or the stream ended,
+		# and the user would watch a blank screen and then receive the whole
+		# answer at once -- the streaming UX would be gone with nothing
+		# actually broken to debug. -1 means "flush immediately, never
+		# buffer".
+		flush_interval -1
+	}
+}

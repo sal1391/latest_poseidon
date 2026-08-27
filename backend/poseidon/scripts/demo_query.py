@@ -65,6 +65,14 @@ ALL_CUSTOMERS_TOP_N = 500
 # it can never be misread as a zero.
 _NO_VALUE = "n/a"
 
+# D16 row scope (Phase 14 Task 6b): this is a dev CLI with no logged-in
+# caller, so every query below passes an explicit scope_value=None rather
+# than relying on a default -- and the day an entity it queries declares a
+# row_scope, these calls fail loudly with a SpecValidationError instead of
+# printing unscoped rows. That is deliberate: a smoke script must not be the
+# one path in this codebase that quietly bypasses row scoping. Whoever flips
+# that entity gives this script an identity (or drops the entity from it).
+
 # metric -> (row label, value formatter). Units live in the label so the
 # numbers stay narrow; counts print as integers because "24,000.0 inquiries"
 # reads like a measurement rather than a count.
@@ -133,7 +141,10 @@ def _periods_section(client: SyntheticDataClient) -> str:
             return [entity, "(no rows)", "(no rows)"]
         return [entity, period_range.start.isoformat(), period_range.end.isoformat()]
 
-    rows = [cells(entity, client.available_periods(entity)) for entity in (SALES, GL)]
+    rows = [
+        cells(entity, client.available_periods(entity, scope_value=None))
+        for entity in (SALES, GL)
+    ]
     table = _render_table(
         ["ENTITY", "EARLIEST", "LATEST"], rows, right_align=[False, False, False]
     )
@@ -142,10 +153,10 @@ def _periods_section(client: SyntheticDataClient) -> str:
 
 def _summary_section(client: SyntheticDataClient) -> str:
     prior = client.run_metric_query(
-        MetricQuerySpec(entity=SALES, metrics=SIX_METRICS, period=PRIOR_YEAR)
+        MetricQuerySpec(entity=SALES, metrics=SIX_METRICS, period=PRIOR_YEAR, scope_value=None)
     )
     ytd = client.run_metric_query(
-        MetricQuerySpec(entity=SALES, metrics=SIX_METRICS, period=YTD_2026)
+        MetricQuerySpec(entity=SALES, metrics=SIX_METRICS, period=YTD_2026, scope_value=None)
     )
 
     rows = [
@@ -181,6 +192,7 @@ def _customer_gp_rows(
             order_by_metric="GP",
             top_n=top_n,
             filters={"LOC_NM": (SINGAPORE,)},
+            scope_value=None,
         )
     ).rows
 

@@ -265,6 +265,7 @@ import logging
 from dataclasses import dataclass
 from datetime import date
 from time import monotonic
+from typing import TYPE_CHECKING
 
 from poseidon.core.chat.events import SseEnvelopeSink
 from poseidon.core.chat.state import ConversationStateStore
@@ -302,6 +303,12 @@ from poseidon.core.runlog import RunLogWriter
 from poseidon.core.skills.context import ConversationSlots, SkillContext
 from poseidon.core.skills.registry import SkillRegistry
 from poseidon.core.skills.result import problem
+
+if TYPE_CHECKING:  # ArtifactStore imports ArtifactRef from core.skills.context
+    # -- the same one-way dependency direction that module's own docstring
+    # keeps by annotating `SkillContext.artifacts` as a string. Nothing here
+    # touches the store at runtime; it is threaded through untouched.
+    from poseidon.core.artifacts import ArtifactStore
 
 logger = logging.getLogger(__name__)
 
@@ -424,6 +431,7 @@ def execute_turn(
     sink: SseEnvelopeSink,
     reference_date: date,
     tools: object | None = None,
+    artifacts: "ArtifactStore | None" = None,
     profile_store: ProfileStore | None = None,
     memory_store: MemoryStore | None = None,
     outbox_store: OutboxStore | None = None,
@@ -471,6 +479,18 @@ def execute_turn(
     ``ToolServerRegistry`` ``api/app.py`` builds once per app; a skill that
     never reads ``ctx.tools`` (``data_qa.metric_query`` today) is
     unaffected either way.
+
+    ``artifacts`` (Phase 14 final-review wave, C3 -- additive, defaults to
+    ``None`` so every call site before that wave keeps working unchanged) is
+    the process-wide :class:`~poseidon.core.artifacts.ArtifactStore`,
+    threaded straight to ``SkillContext.artifacts`` at BOTH places this
+    module builds a context (here and :func:`_finish_subject_turn`),
+    unexamined, exactly like ``tools``. Both used to hardcode ``None``,
+    which made the brief skills' ``if ctx.artifacts is not None:`` PDF step
+    dead code on every deployed target: ``api/app.py`` built a store only
+    under ``deploy_mode == "local"``, and nothing threaded it here even
+    there. ``poseidon.api.live_chat`` now supplies ``app.state.artifact_
+    store``, which ``_wire_live_chat`` builds for every deploy_mode.
 
     ``SkillContext.llm``/``SkillContext.emit_part`` (Phase 8 Task 1, both
     additive -- default ``None``, so every call site before this task keeps
@@ -534,6 +554,7 @@ def execute_turn(
             role_client=role_client,
             sink=sink,
             tools=tools,
+            artifacts=artifacts,
             outbox_store=outbox_store,
         )
 
@@ -579,7 +600,7 @@ def execute_turn(
 
     context = SkillContext(
         data=data,
-        artifacts=None,
+        artifacts=artifacts,
         settings=settings,
         state=parsed.slots,
         tools=tools,
@@ -1088,11 +1109,19 @@ def _finish_subject_turn(
     role_client: RoleClient,
     sink: SseEnvelopeSink,
     tools: object | None,
+    artifacts: "ArtifactStore | None" = None,
     outbox_store: OutboxStore | None = None,
 ) -> TurnOutcome:
     """D19 branch 2: the subject turn -- see the module docstring's "D19
     entry orchestration" for the full contract (resolution rules, the
     deterministic-dispatch shape, the ``brief_done`` gating).
+
+    ``artifacts`` (Phase 14 final-review wave, C3, additive): threaded
+    straight from ``execute_turn``'s own parameter of the same name into
+    the ``SkillContext`` below -- see that function's docstring. This is
+    the branch that matters most for it: D19's deterministic dispatch is
+    how a brief skill is normally reached, and the brief is the one skill
+    that produces a PDF.
 
     ``outbox_store`` (Phase 13 Task 2, additive): threaded straight from
     ``execute_turn``'s own parameter of the same name -- see :func:`_touch_
@@ -1141,7 +1170,7 @@ def _finish_subject_turn(
 
     context = SkillContext(
         data=data,
-        artifacts=None,
+        artifacts=artifacts,
         settings=settings,
         state=prior_slots,
         tools=tools,

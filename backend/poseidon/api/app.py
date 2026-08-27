@@ -1,5 +1,7 @@
+import anyio.to_thread
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from poseidon.api import auth, dev_runner, health, live_chat, me, mock_chat, turns
 from poseidon.core.artifacts import ArtifactStore
@@ -8,7 +10,7 @@ from poseidon.core.chat.feedback import FeedbackStore
 from poseidon.core.chat.history import HistoryStore
 from poseidon.core.config import Settings, get_settings
 from poseidon.core.data.synthetic_client import SyntheticDataClient
-from poseidon.core.db import build_engine
+from poseidon.core.db import assert_boot_privileges, build_engine
 from poseidon.core.identity import AuthError, resolve_provider
 from poseidon.core.llm.bedrock import BedrockProvider
 from poseidon.core.llm.prompts import DEFAULT_PROMPTS_DIR, PromptRegistry
@@ -32,8 +34,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # (once per app/process in production; once per test in this suite) is
     # cheap and never double-registers a handler.
     configure_json_logging()
-    app = FastAPI(title="Poseidon API", version="0.1.0")
-    app.state.settings = settings or get_settings()
+    boot_settings = settings or get_settings()
+    # P9 carryforward: /docs, /redoc, and /openapi.json were open in EVERY
+    # deploy mode until this task -- none of the three sit behind
+    # require_sales or any other dependency (they are FastAPI-constructor
+    # built-ins, not routes this module mounts), so the only place they can
+    # be gated is here, at construction time, before app.routes even
+    # exists. docs_kwargs is {} (FastAPI's own defaults: all three served)
+    # in deploy_mode="local" -- every existing dev/test app, unchanged --
+    # and disables all three outside it, since a production-shaped deploy
+    # (ec2/spcs) has no business handing an unauthenticated caller the
+    # full route/schema surface.
+    docs_kwargs = (
+        {}
+        if boot_settings.deploy_mode == "local"
+        else {"docs_url": None, "redoc_url": None, "openapi_url": None}
+    )
+    app = FastAPI(title="Poseidon API", version="0.1.0", **docs_kwargs)
+    app.state.settings = boot_settings
 
     # Phase 9 Task 1 (doc 05 section 2, decision D22): resolved ONCE here,
     # at boot, so a misconfigured or not-yet-implemented identity_mode
@@ -144,7 +162,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # able to boot the API and run every skill that produces no artifact
         # (which is all of them today). The warning is the honest record that
         # artifact writes will fail until MinIO is back.
-        app.state.artifact_store = ArtifactStore(app.state.settings)
+        #
+        # Phase 14 final-review wave (C3): the CONSTRUCTION moved to
+        # _wire_live_chat, which runs above this block, so a live-chat app in
+        # ANY deploy_mode has a store (before this fix, only deploy_mode=
+        # "local" built one at all, and every EC2/SPCS chat turn therefore ran
+        # with SkillContext.artifacts=None -- no brief could ever produce a
+        # PDF on a real deploy). This block keeps its own construction as the
+        # fallback for the local-but-NOT-live app (CHAT_MODE unset, the
+        # dev_runner-only case), and keeps the ensure_bucket() probe for
+        # local either way -- local behavior, warning line included, is
+        # exactly what it was. A local+live app now shares the ONE store
+        # _wire_live_chat built instead of overwriting it with a second one.
+        if getattr(app.state, "artifact_store", None) is None:
+            app.state.artifact_store = ArtifactStore(app.state.settings)
         try:
             app.state.artifact_store.ensure_bucket()
         except Exception as exc:  # noqa: BLE001 - any store failure must not block local boot
@@ -169,6 +200,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # own new conversations/messages router (this task's own brief:
         # "export the dependency cleanly so Phase 10 can attach it").
         app.include_router(dev_runner.router, dependencies=[Depends(auth.require_sales)])
+
+    # Phase 14 Task 5 (doc 07 section 2: "StaticFiles mounted after all
+    # /api/* routes"): the built SPA, served from this same origin when
+    # STATIC_DIR is set -- the production container answers both halves of
+    # the app, so the browser never makes a cross-origin request to its own
+    # API and no CORS allowlist entry is needed for the UI itself. Unset
+    # (local dev, every test that does not opt in) mounts nothing at all and
+    # this factory behaves exactly as it did before this task.
+    #
+    # **THE LAST LINE OF THIS FUNCTION, and that is the whole correctness
+    # argument.** Mount("/") matches EVERY path there is, and Starlette's
+    # router serves the FIRST route whose matches() reports Match.FULL, in
+    # registration order -- so this mount registered anywhere above would
+    # silently swallow /api/* and /health/* whole, turning the SPA's own
+    # boot call (GET /api/me) and every load-balancer probe into a
+    # StaticFiles 404 while the UI itself still looked perfectly healthy.
+    # Anything added to this factory later belongs ABOVE this block; the
+    # ordering is pinned by tests/test_static_serving.py (both the two
+    # must-not-shadow HTTP tests and a structural "spa is the last route"
+    # assertion, so a router appended below here fails loudly instead of
+    # becoming dead code).
+    #
+    # html=True is what serves index.html for "/" (and for a directory
+    # request); an unknown path still 404s, with NO catch-all rewrite to
+    # index.html. That is correct for today's frontend, which has no client-
+    # side router at all -- it is a single screen, so "/" is the only URL
+    # that is ever a legitimate entry point and a deep link cannot exist.
+    # This is the seam to change when one is added: react-router would need
+    # unknown non-/api paths rewritten to index.html (a small custom
+    # StaticFiles subclass or an exception handler), or every refresh on a
+    # sub-route would 404.
+    if app.state.settings.static_dir:
+        app.mount("/", StaticFiles(directory=app.state.settings.static_dir, html=True), name="spa")
     return app
 
 
@@ -324,7 +388,18 @@ def _install_identity_middleware(app: FastAPI) -> None:
             return await call_next(request)
         headers = {name.lower(): value for name, value in request.headers.items()}
         try:
-            request.state.user = provider.resolve(headers)
+            # I-5 (phase 9 final review, fixed in phase 14 Task 1): every
+            # provider's resolve() is SYNC (core/identity.py's protocol),
+            # and Auth0Provider's can perform blocking httpx I/O against
+            # the tenant's JWKS endpoint -- reachable PRE-AUTH, on every
+            # request, by an uncredentialed caller. Called inline it stalls
+            # the one event loop thread this process serves every route
+            # from. Off-loaded uniformly for ALL modes: disabled/spcs
+            # resolves are dict lookups where the pooled worker-thread hop
+            # is noise, while branching per mode would be a second code
+            # path to get wrong. Containment below is unaffected --
+            # run_sync re-raises the worker's exception as-is.
+            request.state.user = await anyio.to_thread.run_sync(provider.resolve, headers)
         except AuthError as exc:
             request.state.auth_error = exc
         except Exception as exc:  # noqa: BLE001 - I-1: contain ANY provider failure, never a bare 500
@@ -353,7 +428,9 @@ def _wire_live_chat(app: FastAPI) -> None:
 
     Everything else here is built once per app/process, the same "cheap to
     construct, safe to share" discipline ``deploy_mode == "local"``'s own
-    ``artifact_store`` wiring uses: ``RoleClient``/``PromptRegistry`` touch
+    ``dev_runner`` wiring uses (and, since the Phase 14 final-review wave's
+    C3 fix, the discipline ``artifact_store`` -- built here now, for every
+    deploy_mode -- follows too): ``RoleClient``/``PromptRegistry`` touch
     only a packaged YAML file and a prompts directory, ``HistoryStore``/
     ``FeedbackStore`` (Phase 12 Task 1; replaces the in-memory
     ``FeedbackStubStore``) are both explicitly meant to be ONE shared
@@ -420,6 +497,20 @@ def _wire_live_chat(app: FastAPI) -> None:
     settings = app.state.settings
     engine = build_engine(settings.database_url)
     app.state.db_engine = engine
+    # Phase 14 Task 3: one boot-time privilege check, here because this is
+    # where the engine is built -- a mock-mode app builds none and never
+    # reaches this line. It refuses to boot a server whose DATABASE_URL
+    # bypasses row-level security with no DATABASE_APP_ROLE to claw it back
+    # (the comment immediately below describes exactly that hazard; until
+    # now nothing checked it), and a DATABASE_APP_ROLE naming a role that
+    # does not exist, which would otherwise 500 the first real request
+    # instead of failing at boot. `require_worker_role` stays False: this
+    # process never runs the claim query -- only the worker does, and it
+    # makes the same call with True. An unreachable database is NOT a
+    # refusal (see assert_boot_privileges' own docstring): create_engine
+    # has always been lazy here, and /ready is what answers "is the
+    # database up".
+    assert_boot_privileges(engine, settings)
     # app_role is load-bearing, not decorative: omitting it here would
     # silently disable RLS enforcement on this dev database's superuser DSN
     # (core/db.py's own "round-0 correction" -- a Postgres superuser
@@ -457,6 +548,27 @@ def _wire_live_chat(app: FastAPI) -> None:
     prompts_dir = settings.prompts_dir if settings.prompts_dir is not None else DEFAULT_PROMPTS_DIR
     app.state.prompt_registry = PromptRegistry(prompts_dir)
     app.state.data_client = SyntheticDataClient(settings.database_url)
+    # Phase 14 final-review wave (C3): the artifact store, built HERE so it
+    # exists in EVERY deploy_mode a live chat runs in -- not only "local".
+    # `core/chat/orchestrator.py` threads this straight into both of its
+    # SkillContext constructions, and the existing-customer brief skips its
+    # whole PDF step when `ctx.artifacts is None`, so before this line an
+    # EC2/SPCS deploy could not produce a downloadable artifact at all while
+    # local dev could -- the one habitat difference doc 07 section 1's
+    # "artifact code is identical in every habitat" promise forbids.
+    #
+    # No `ensure_bucket()` call here, deliberately, and that is the ONLY
+    # difference from the `deploy_mode == "local"` block's own wiring below.
+    # Constructing the store is pure local work (boto3.client opens no
+    # connection -- see that block's own comment), but ensure_bucket() is a
+    # real network round trip, and on a real deploy the bucket is
+    # infrastructure that `infra/aws/03-s3.sh` already created and the
+    # instance profile deliberately grants no CreateBucket for
+    # (`infra/aws/04-iam.sh`: GetObject/PutObject/ListBucket, nothing more) --
+    # so a boot-time create attempt would be both useless and unauthorized
+    # there. Local keeps its probe: MinIO genuinely may not have the bucket
+    # yet, which is the case that warning line exists for.
+    app.state.artifact_store = ArtifactStore(settings)
     # Phase 11 Task 1: turn_run/llm_calls/tool_calls join conversations/
     # messages under the same RLS discipline (migration 0005) -- app_role is
     # load-bearing here for the identical reason the history_store

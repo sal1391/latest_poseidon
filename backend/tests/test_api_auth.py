@@ -35,6 +35,13 @@ for a non-allowlisted user. Provider-level cases (allowlist membership,
 casefold, malformed-header-401) live in ``test_identity_providers.py``'s
 own ``SpcsIngressProvider`` matrix instead, the same provider-tests-there/
 HTTP-tests-here split Task 2 established above.
+
+Phase 14 Task 1 adds, at the very bottom: the off-the-event-loop proof for
+the identity middleware's own ``provider.resolve`` call. It belongs here
+rather than in ``test_identity_providers.py`` for exactly the reason this
+file's split already states -- WHICH thread ``resolve`` runs on is a
+property of the middleware, not of any provider, and only a real request
+through the real middleware can show it.
 """
 
 import os
@@ -54,6 +61,7 @@ from poseidon.api import auth as auth_module
 from poseidon.api.auth import current_user
 from poseidon.core.config import Settings
 from poseidon.core.data.synthetic_client import normalize_dsn
+from poseidon.core.identity import DISABLED_DEFAULT_USER
 from poseidon.core.identity_auth0 import ROLES_CLAIM, Auth0Provider
 from tests.test_chat_orchestrator import FakeDataClient, RecordingWriter
 from tests.test_identity_providers import (
@@ -61,6 +69,8 @@ from tests.test_identity_providers import (
     AUTH0_TEST_DOMAIN,
     FailingJwksTransport,
     JwksTransport,
+    ManualClock,
+    RecoveringJwksTransport,
     UnreachableJwksTransport,
     generate_rsa_keypair,
     jwk_for,
@@ -982,6 +992,68 @@ def _run_one_concurrent_round(
 
 
 # ===========================================================================
+# ChatRateLimiter bucket eviction (P9 M-8: _buckets grows forever -- every
+# distinct sub or client IP that ever hits chat-send leaves a bucket
+# permanently). Both use the injected ``clock`` seam (mirrors Auth0Provider's
+# own ``clock`` constructor param, and reuses ``ManualClock`` from
+# test_identity_providers.py rather than re-deriving an equivalent double --
+# the same cross-test-module reuse this file already established above)
+# instead of a real sleep, so a 512-check sweep and a full refill window are
+# both instant and deterministic.
+# ===========================================================================
+
+
+def test_chat_rate_limiter_eviction_sweep_collapses_idle_buckets_to_about_one():
+    """600 distinct keys each get a bucket via check(); once the clock has
+    advanced past every bucket's full-refill window (capacity /
+    refill_per_second seconds), a fully-refilled, untouched bucket is
+    bit-for-bit indistinguishable from a key check() has never seen --
+    dropping it is lossless by construction. 512 further checks on ONE key
+    are enough to force at least one amortized sweep (any run of
+    _EVICT_EVERY consecutive check() calls crosses a multiple of
+    _EVICT_EVERY), while that one key's OWN bucket is refreshed (never
+    stale) by every one of those same checks, so it alone survives."""
+    clock = ManualClock(now=0.0)
+    limiter = auth_module.ChatRateLimiter(per_minute=60, clock=clock)
+    for i in range(600):
+        limiter.check(f"key-{i}")
+
+    full_refill_seconds = limiter._capacity / limiter._refill_per_second
+    clock.advance(full_refill_seconds + 1.0)
+
+    for _ in range(auth_module._EVICT_EVERY):
+        limiter.check("key-0")
+
+    assert len(limiter._buckets) <= 2
+    assert "key-0" in limiter._buckets
+
+
+def test_chat_rate_limiter_eviction_sweep_preserves_a_not_yet_refilled_bucket():
+    """The lossless invariant, proven from the other side: a bucket that
+    has NOT yet fully refilled must survive a sweep with its exact partial
+    token count untouched -- eviction only ever drops a bucket
+    indistinguishable from a brand new one, never a real, in-progress one.
+    A sweep never refills a surviving bucket either (only a live check()
+    call on that key does that), so the count checked here is exactly the
+    one check() itself left behind, not some sweep-recomputed value."""
+    clock = ManualClock(now=0.0)
+    limiter = auth_module.ChatRateLimiter(per_minute=60, clock=clock)
+    limiter.check("partial")
+    expected_tokens = limiter._buckets["partial"].tokens
+
+    full_refill_seconds = limiter._capacity / limiter._refill_per_second
+    clock.advance(full_refill_seconds / 2.0)  # well under the threshold
+
+    # 511 further checks on OTHER keys plus the one above == _EVICT_EVERY
+    # total calls -- one amortized sweep, "partial" never touched again.
+    for i in range(auth_module._EVICT_EVERY - 1):
+        limiter.check(f"other-{i}")
+
+    assert "partial" in limiter._buckets
+    assert limiter._buckets["partial"].tokens == pytest.approx(expected_tokens)
+
+
+# ===========================================================================
 # CORS allowlist: preflight round trip for an allowed vs. a disallowed
 # origin (Global Constraints)
 # ===========================================================================
@@ -1020,6 +1092,58 @@ async def test_cors_preflight_rejects_a_disallowed_origin():
 
     assert r.status_code == 400
     assert "access-control-allow-origin" not in r.headers
+
+
+# ===========================================================================
+# Docs surfaces (/docs, /redoc, /openapi.json) gated outside
+# deploy_mode="local" (P9 carryforward: all three were open in every mode
+# before this task -- api/app.py's own docs_kwargs is the one place this is
+# decided, at FastAPI-constructor time, so there is no route left to guard
+# individually the way require_sales guards mock_chat.router above).
+# ===========================================================================
+
+
+@pytest.mark.anyio
+async def test_docs_surfaces_404_outside_local_deploy_mode():
+    """A production-shaped app (deploy_mode="ec2", identity_mode="auth0")
+    must not expose the interactive docs, the redoc page, or the raw
+    openapi schema -- all three leak the full route/schema surface to
+    anyone who can reach the process, unauthenticated, since none of them
+    sit behind require_sales or any other dependency."""
+    app = _mock_app(
+        deploy_mode="ec2",
+        identity_mode="auth0",
+        auth0_domain=AUTH0_TEST_DOMAIN,
+        auth0_audience=AUTH0_TEST_AUDIENCE,
+        auth0_client_id="test-client-id",
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        docs = await client.get("/docs")
+        redoc = await client.get("/redoc")
+        openapi = await client.get("/openapi.json")
+
+    assert docs.status_code == 404
+    assert redoc.status_code == 404
+    assert openapi.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_docs_surfaces_still_served_under_default_local_deploy_mode():
+    """The symmetric proof: deploy_mode="local" (every existing dev/test
+    app, since _settings never overrides it) must keep serving all three --
+    the docs gate is a deploy_mode branch, never a blanket removal."""
+    app = _mock_app()
+    assert app.state.settings.deploy_mode == "local"
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        docs = await client.get("/docs")
+        redoc = await client.get("/redoc")
+        openapi = await client.get("/openapi.json")
+
+    assert docs.status_code == 200
+    assert redoc.status_code == 200
+    assert openapi.status_code == 200
 
 
 # ===========================================================================
@@ -1476,6 +1600,106 @@ def test_every_api_route_is_either_api_me_or_guarded_by_require_sales(build_app)
         "route(s) under /api/* are neither GET /api/me nor guarded by "
         f"require_sales: {unclassified}"
     )
+
+
+# ===========================================================================
+# Phase 14 Task 1 (the phase 9 final review's I-5 carryforward): the
+# identity middleware resolves OFF the event loop thread.
+#
+# Every provider's resolve() is a SYNC method (core/identity.py's own
+# protocol -- providers never import FastAPI, and never became async), and
+# Auth0Provider's own can perform blocking httpx I/O against the tenant's
+# JWKS endpoint. Awaited inline from an async middleware, that call stalls
+# the ONE event loop thread this process serves every route from -- and it
+# is reachable pre-auth, by an uncredentialed caller, on every request.
+# The provider-side half of the fix (bounding those fetches) is proven in
+# test_identity_providers.py; this is the other half.
+# ===========================================================================
+
+
+class _ThreadRecordingProvider:
+    """Records the thread each ``resolve`` call actually runs on.
+
+    A hand-written double rather than a monkeypatched real provider: the
+    ``IdentityProvider`` protocol is structural (one ``resolve(headers)``
+    method, no base class to inherit -- see ``core/identity.py``), so the
+    smallest honest stand-in is a plain object with that one method, and
+    the question under test ("which thread ran it") is the same for every
+    mode. Returns the same fixed identity ``DisabledProvider`` would, so
+    the request it serves still completes normally and the assertion below
+    can also prove the RETURN value crossed back out of the worker thread.
+    """
+
+    def __init__(self) -> None:
+        self.resolve_threads: list[int] = []
+
+    def resolve(self, headers):
+        self.resolve_threads.append(threading.get_ident())
+        return DISABLED_DEFAULT_USER
+
+
+@pytest.mark.anyio
+async def test_identity_resolve_runs_off_the_event_loop_thread():
+    """The middleware must hand ``provider.resolve`` to a worker thread.
+
+    ``loop_thread`` is read in the test coroutine's own body, which IS the
+    event loop thread (``httpx.ASGITransport`` drives the app in-process,
+    on this same loop -- no server, no second thread of its own), so a
+    recorded ident that differs from it can only mean the call genuinely
+    crossed ``anyio.to_thread``. Asserting inequality rather than a
+    specific ident is the point: which pooled worker served it is an
+    implementation detail of anyio's own thread pool, "not the loop
+    thread" is the contract.
+
+    The 200 and the echoed sub are not incidental -- they prove the hop is
+    transparent in both directions: headers in, the resolved UserContext
+    back out to ``request.state.user``, with no behavior change to the
+    route that reads it.
+    """
+    provider = _ThreadRecordingProvider()
+    app = _mock_app()
+    app.state.identity_provider = provider
+    loop_thread = threading.get_ident()
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        r = await client.get("/api/me")
+
+    assert r.status_code == 200
+    assert r.json()["sub"] == "dev|local"
+    assert len(provider.resolve_threads) == 1
+    assert provider.resolve_threads[0] != loop_thread
+
+
+@pytest.mark.anyio
+async def test_a_jwks_outage_never_surfaces_as_unknown_signing_key():
+    """Fix round 1 (task review minor #2), at the layer a user can see it.
+
+    The provider now suppresses fetches for a full interval after a failed
+    one, so the SECOND request here never touches the tenant at all -- and
+    the question is what it is told. "unknown signing key" would be a
+    fabricated verdict on a token whose kid was never looked up, and would
+    make a tenant outage indistinguishable from a wave of bad credentials.
+    Both requests instead get the same generic ``identity_unavailable``
+    body I-1 already renders for the first one, whose "try again; if this
+    persists, it is not your credential" detail is the accurate answer.
+
+    Provider-level coverage of the same window (which exception, whether a
+    fetch happened, and the heal once the interval expires) lives in
+    test_identity_providers.py; only the rendered body is proven here.
+    """
+    key1, pub1 = generate_rsa_keypair()
+    app = _auth0_app(RecoveringJwksTransport([jwk_for(pub1, "key-1")]))
+    headers = {"Authorization": f"Bearer {mint_auth0_token(key1, 'key-1')}"}
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        first = await client.get("/api/me", headers=headers)
+        second = await client.get("/api/me", headers=headers)
+
+    assert first.status_code == 401
+    assert second.status_code == 401
+    assert second.json()["title"] != "unknown signing key"
+    assert second.json() == first.json()
 
 
 # ===========================================================================

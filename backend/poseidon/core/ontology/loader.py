@@ -31,6 +31,9 @@ Parsing notes (see task brief / docs/architecture/04-data-ontology.md §2):
   ``Entity.dual_purpose_pivot_column``; ``...unit_pivot.value`` ->
   ``Entity.dual_purpose_pivot_value`` (e.g. ``"CLASS4"`` / ``"Volume"`` —
   the query builder's volume-mode trigger).
+- ``row_scope`` -> ``Entity.row_scope`` (optional; ``None`` on every
+  certified entity today -- decision D16's dormant hook, see
+  ``models.RowScope``).
 - ``Entity.null_placeholder`` is NOT parsed from the YAML: the certified
   rule lives in prose (``business_rules`` / a column ``description``), so
   it is transcribed into the explicit ``_NULL_PLACEHOLDERS`` mapping below,
@@ -53,6 +56,7 @@ from .models import (
     Metric,
     NegativeConstraint,
     Ontology,
+    RowScope,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -116,6 +120,47 @@ def _parse_hierarchies(
     )
 
 
+# "The entity has no `row_scope` key at all", as distinct from "the key is
+# there but empty". `dict.get` cannot tell those apart -- YAML parses a bare
+# `row_scope:` (nothing under it) to None, exactly what an absent key returns
+# -- and they mean opposite things: no declaration versus a half-written one.
+# Only the first is a legitimate "this entity is unscoped"; see
+# `_parse_row_scope` for why the second must never resolve to it.
+_ROW_SCOPE_ABSENT = object()
+
+
+def _parse_row_scope(raw: Any) -> RowScope | None:
+    """``row_scope: {column, claim}`` -> :class:`RowScope`, or ``None`` only
+    when the entity declares no ``row_scope`` AT ALL (which is every
+    certified entity today -- see ``RowScope``'s own docstring for the D16
+    mechanism-without-policy contract).
+
+    Parsed explicitly, like every other field: ``_parse_entity`` builds the
+    :class:`Entity` field by field, so a key nobody reads here would silently
+    stay ``None`` no matter what the YAML said -- a scope declaration that
+    quietly did nothing is exactly the failure this whole mechanism exists to
+    make impossible.
+
+    NO FAIL-OPEN SHAPE. A PRESENT-but-empty declaration (``row_scope:`` with
+    nothing under it, or ``row_scope: {}``) raises
+    ``pydantic.ValidationError`` at load rather than parsing as "declares no
+    scope" -- that would be the one shape in this whole mechanism that fails
+    OPEN: a half-written block at flip time would render every row for every
+    caller, with no signal at all (the vendored all-``None`` pin in
+    ``test_ontology_loader.py`` would stay green, since the entity really
+    would have parsed to ``None``). Hence the ``_ROW_SCOPE_ABSENT`` sentinel
+    above rather than a falsy check, and ``model_validate`` rather than
+    ``RowScope(**raw)``: the latter raises a bare ``TypeError`` for a
+    non-mapping (a string, a list) instead of the ``ValidationError`` every
+    other malformed-ontology shape in this loader produces. A column that is
+    not one of the entity's dimensions raises here too, from ``Entity``'s
+    own validator.
+    """
+    if raw is _ROW_SCOPE_ABSENT:
+        return None
+    return RowScope.model_validate(raw)
+
+
 def _parse_entity(name: str, raw: dict[str, Any]) -> Entity:
     (
         hierarchy_levels,
@@ -138,6 +183,7 @@ def _parse_entity(name: str, raw: dict[str, Any]) -> Entity:
         dual_purpose_pivot_column=dual_purpose_pivot_column,
         dual_purpose_pivot_value=dual_purpose_pivot_value,
         null_placeholder=_NULL_PLACEHOLDERS.get(name, DEFAULT_NULL_PLACEHOLDER),
+        row_scope=_parse_row_scope(raw.get("row_scope", _ROW_SCOPE_ABSENT)),
     )
 
 

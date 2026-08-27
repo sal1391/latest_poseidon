@@ -58,6 +58,7 @@ from poseidon.core.config import Settings
 from poseidon.core.data.client import BreakdownResult, MetricResult
 from poseidon.core.data.specs import BreakdownQuerySpec, MetricQuerySpec, PeriodWindow
 from poseidon.core.data.synthetic_client import SyntheticDataClient, normalize_dsn
+from poseidon.core.identity import UserContext
 from poseidon.core.skills.registry import SkillRegistry
 from poseidon.scripts.generate_synthetic import generate
 from poseidon.tasks.customer_insight.skills.existing_customer_brief.tools.build_brief_pdf import (
@@ -395,6 +396,92 @@ def test_fetch_top_ports_defaults_top_n_to_5():
     fetch_top_ports(client, CUSTOMER, YTD)
 
     assert client.breakdown_specs[0].top_n == 5
+
+
+# ---------------------------------------------------------------------------
+# D16 row_scope threading (Phase 14 Task 6b): both tools resolve the caller's
+# scope value for their own entity and thread it onto every spec they build.
+# ---------------------------------------------------------------------------
+
+_METRICS_RESOLVER = (
+    "poseidon.tasks.customer_insight.skills.existing_customer_brief.tools."
+    "fetch_metrics.resolve_row_scope_value"
+)
+_PORTS_RESOLVER = (
+    "poseidon.tasks.customer_insight.skills.existing_customer_brief.tools."
+    "fetch_top_ports.resolve_row_scope_value"
+)
+
+ALICE = UserContext(sub="dev|alice", email="alice@local", name="Alice", roles=("Poseidon:Sales",))
+
+
+def test_fetch_metrics_consults_the_row_scope_resolver_with_its_own_entity(monkeypatch):
+    consulted: list[tuple[str, object]] = []
+
+    def _spy(entity: str, user: object) -> str | None:
+        consulted.append((entity, user))
+        return None
+
+    monkeypatch.setattr(_METRICS_RESOLVER, _spy)
+    client = _RecordingDataClient()
+
+    fetch_metrics(client, CUSTOMER, ANCHOR, user=ALICE)
+
+    assert consulted == [(SALES, ALICE)]
+
+
+def test_fetch_metrics_threads_the_resolved_value_onto_both_windows(monkeypatch):
+    """One resolution, both specs -- the prior-year window must not be left
+    unscoped while the YTD one is scoped."""
+    monkeypatch.setattr(_METRICS_RESOLVER, lambda entity, user: "dev|alice")
+    client = _RecordingDataClient()
+
+    fetch_metrics(client, CUSTOMER, ANCHOR, user=ALICE)
+
+    assert [spec.scope_value for spec in client.metric_specs] == ["dev|alice", "dev|alice"]
+
+
+def test_fetch_metrics_passes_scope_value_none_today(monkeypatch):
+    """The REAL resolver, no spy: MARINE_SALES_PLANNING_V declares no
+    row_scope, so both certified specs are byte-identical to the ones this
+    tool built before the mechanism existed."""
+    client = _RecordingDataClient()
+
+    fetch_metrics(client, CUSTOMER, ANCHOR, user=ALICE)
+
+    assert [spec.scope_value for spec in client.metric_specs] == [None, None]
+
+
+def test_fetch_top_ports_consults_the_row_scope_resolver_with_its_own_entity(monkeypatch):
+    consulted: list[tuple[str, object]] = []
+
+    def _spy(entity: str, user: object) -> str | None:
+        consulted.append((entity, user))
+        return None
+
+    monkeypatch.setattr(_PORTS_RESOLVER, _spy)
+    client = _RecordingDataClient()
+
+    fetch_top_ports(client, CUSTOMER, YTD, user=ALICE)
+
+    assert consulted == [(SALES, ALICE)]
+
+
+def test_fetch_top_ports_threads_the_resolved_value_onto_its_spec(monkeypatch):
+    monkeypatch.setattr(_PORTS_RESOLVER, lambda entity, user: "dev|alice")
+    client = _RecordingDataClient()
+
+    fetch_top_ports(client, CUSTOMER, YTD, user=ALICE)
+
+    assert client.breakdown_specs[0].scope_value == "dev|alice"
+
+
+def test_fetch_top_ports_passes_scope_value_none_today():
+    client = _RecordingDataClient()
+
+    fetch_top_ports(client, CUSTOMER, YTD, user=ALICE)
+
+    assert client.breakdown_specs[0].scope_value is None
 
 
 # ---------------------------------------------------------------------------

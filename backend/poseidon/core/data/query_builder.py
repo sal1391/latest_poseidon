@@ -38,6 +38,18 @@ hardcoded literal: ``'Unassigned'`` on ``W_MARINE_GL_SOURCE_AI``,
 ``'Unknown'`` everywhere else. See the loader's ``_NULL_PLACEHOLDERS`` for
 the certified rules behind that mapping.
 
+**Row scope (D16, dormant).** An entity MAY declare ``row_scope: {column,
+claim}`` (``poseidon.core.ontology.models.RowScope``); every builder then
+appends ``<column> = %s`` bound to the caller's own claim value, which
+:func:`resolve_row_scope_value` reads off a
+:class:`~poseidon.core.identity.UserContext`. NO certified entity declares
+one today, so every snapshot in this module's test file is unchanged by the
+mechanism -- but the checks are symmetric and FAIL CLOSED in both directions:
+a declaring entity with no ``scope_value`` is refused (an unthreaded call
+path breaks loudly at flip time rather than returning every row), and a
+``scope_value`` supplied for a non-declaring entity is refused too (see
+:func:`_require_scope_value`).
+
 **Volume mode** (currently only ``W_MARINE_GL_SOURCE_AI``, but driven
 entirely by the ontology's ``dual_purpose_measures[0].unit_pivot`` — see
 ``_is_volume_mode``): when a spec's filters pin the entity's dual-purpose
@@ -54,6 +66,7 @@ to the hierarchy level immediately below the pivot column (``CLASS4`` ->
 
 from collections.abc import Mapping
 
+from poseidon.core.identity import UserContext
 from poseidon.core.ontology.loader import get_ontology
 from poseidon.core.ontology.models import Entity
 
@@ -144,6 +157,101 @@ def _validate_filters(entity: Entity, filters: Mapping[str, tuple[str, ...]]) ->
         _require_filter_values(col, values)
 
 
+def resolve_row_scope_value(entity_name: str, user: UserContext | None) -> str | None:
+    """The one sanctioned way to produce a spec's ``scope_value`` (D16).
+
+    Returns ``None`` for an entity that declares no ``row_scope`` -- which is
+    every certified entity today, so every call site this codebase currently
+    has threads a ``None`` through. That is not a no-op: the call sites are
+    wired NOW so that the day an entity declares a scope, they carry a real
+    identity instead of quietly rendering an unscoped query.
+
+    For an entity that DOES declare one, this fails closed rather than
+    guessing:
+
+    - ``user is None`` (an unauthenticated path -- a dev CLI, a background
+      job, a call site nobody threaded an identity through) raises
+      :class:`SpecValidationError` naming the entity. There is no "no user
+      means no scope" fallback: that is precisely the branch that would leak
+      every row.
+    - a claim whose value is empty/absent (``UserContext.email`` is optional)
+      raises too, rather than falling back to another claim -- scoping to the
+      wrong column value is a worse failure than refusing.
+
+    Otherwise it returns the named claim's value off the caller's
+    :class:`~poseidon.core.identity.UserContext`. The entity name is resolved
+    through the loader, so an unknown/planned entity raises the loader's own
+    ``KeyError`` here exactly as it would inside any builder.
+    """
+    entity = _entity(entity_name)
+    row_scope = entity.row_scope
+    if row_scope is None:
+        return None
+    if user is None:
+        raise SpecValidationError(
+            f"{entity.name} declares row_scope on {row_scope.column} "
+            f"(claim {row_scope.claim!r}) but there is no caller identity to "
+            f"read it from -- refusing to build an unscoped query"
+        )
+    value = getattr(user, row_scope.claim)
+    if not value:
+        raise SpecValidationError(
+            f"{entity.name} declares row_scope on {row_scope.column} but the "
+            f"caller's {row_scope.claim!r} claim is empty -- refusing to build "
+            f"an unscoped query"
+        )
+    return value
+
+
+def _require_scope_value(entity: Entity, scope_value: str | None) -> None:
+    """Enforce the symmetric D16 contract, in BOTH directions, before any
+    rendering happens (every builder calls this immediately after resolving
+    its entity, ahead of its own validation, so no other spec mistake can
+    mask a scope one).
+
+    - entity declares ``row_scope`` and no ``scope_value`` was supplied ->
+      refuse. FAIL CLOSED: a call path that was never threaded breaks loudly
+      the day an entity declares a scope, instead of silently rendering the
+      query without the predicate and returning every row.
+    - entity declares none and a ``scope_value`` WAS supplied -> refuse too.
+      A caller that believes scoping applies where the ontology certifies
+      none is a bug; silently dropping the value would let that belief
+      survive undetected onto an entity that also has none.
+    """
+    row_scope = entity.row_scope
+    if row_scope is None:
+        if scope_value is not None:
+            raise SpecValidationError(
+                f"{entity.name} declares no row_scope -- a scope_value must "
+                f"not be supplied for it"
+            )
+        return
+    if scope_value is None:
+        raise SpecValidationError(
+            f"{entity.name} declares row_scope on {row_scope.column} "
+            f"(claim {row_scope.claim!r}) but this query carries no "
+            f"scope_value -- refusing to build an unscoped query"
+        )
+
+
+def _scope_condition(entity: Entity, scope_value: str | None, params: list) -> str | None:
+    """The rendered scope predicate (``<column> = %s``) and its bound param,
+    or ``None`` when the entity declares no ``row_scope``.
+
+    Always a placeholder, never string interpolation: the scope value is the
+    one value in this module that comes from an external identity provider
+    rather than the certified ontology, so it is the one that must never be
+    concatenated into SQL. ``_require_scope_value`` has already run by the
+    time this is called, so a declaring entity is guaranteed a non-None
+    ``scope_value`` here.
+    """
+    row_scope = entity.row_scope
+    if row_scope is None:
+        return None
+    params.append(scope_value)
+    return f"{row_scope.column} = %s"
+
+
 def _table_name(entity: Entity, dialect: str) -> str:
     if dialect == "postgres":
         return f"{_SYNTHETIC_SCHEMA}.{entity.name.lower()}"
@@ -230,6 +338,7 @@ def _where_clause(
     period: PeriodWindow,
     filters: Mapping[str, tuple[str, ...]],
     params: list,
+    scope_value: str | None = None,
 ) -> str:
     """Build the single-line WHERE clause and extend ``params`` in place.
 
@@ -238,7 +347,13 @@ def _where_clause(
     — only for W_MARINE_GL_SOURCE_AI queries touching MONETARY_TOTAL, and
     only outside volume mode (see ``_is_volume_mode``) — the dual-purpose
     exclusion guard, sourced from the ontology's ``dual_purpose_exclusion``
-    field, never hardcoded here.
+    field, never hardcoded here, and LAST the D16 row-scope predicate (see
+    ``_scope_condition``) for an entity that declares one.
+
+    Scope last, deliberately: every clause a caller can influence renders
+    exactly where it always did, so a query over an entity with no
+    ``row_scope`` (every certified entity today) is byte-identical to the one
+    this module built before the mechanism existed.
     """
     date_expr = _date_expr(entity, dialect)
     conditions = [f"{date_expr} >= %s AND {date_expr} < %s"]
@@ -258,11 +373,16 @@ def _where_clause(
     ):
         conditions.append(entity.dual_purpose_exclusion)
 
+    scope = _scope_condition(entity, scope_value, params)
+    if scope is not None:
+        conditions.append(scope)
+
     return " AND ".join(conditions)
 
 
 def build_metric_query(spec: MetricQuerySpec, dialect: str) -> tuple[str, list]:
     entity = _entity(spec.entity)
+    _require_scope_value(entity, spec.scope_value)
     _require_certified_metrics(entity, spec.metrics)
     _validate_filters(entity, spec.filters)
     if _is_volume_mode(entity, spec.filters):
@@ -275,7 +395,9 @@ def build_metric_query(spec: MetricQuerySpec, dialect: str) -> tuple[str, list]:
 
     params: list = []
     select_list = ", ".join(_metric_expr(entity, m) for m in spec.metrics)
-    where = _where_clause(entity, dialect, spec.metrics, spec.period, spec.filters, params)
+    where = _where_clause(
+        entity, dialect, spec.metrics, spec.period, spec.filters, params, spec.scope_value
+    )
 
     clauses = [
         f"SELECT {select_list}",
@@ -290,6 +412,7 @@ def build_metric_query(spec: MetricQuerySpec, dialect: str) -> tuple[str, list]:
 
 def build_breakdown_query(spec: BreakdownQuerySpec, dialect: str) -> tuple[str, list]:
     entity = _entity(spec.entity)
+    _require_scope_value(entity, spec.scope_value)
     _require_certified_metrics(entity, spec.metrics)
     _require_dimension(entity, spec.group_by)
     _validate_filters(entity, spec.filters)
@@ -313,7 +436,9 @@ def build_breakdown_query(spec: BreakdownQuerySpec, dialect: str) -> tuple[str, 
         [f"COALESCE({spec.group_by}, '{entity.null_placeholder}') AS {spec.group_by}"]
         + [_metric_expr(entity, m) for m in spec.metrics]
     )
-    where = _where_clause(entity, dialect, spec.metrics, spec.period, spec.filters, params)
+    where = _where_clause(
+        entity, dialect, spec.metrics, spec.period, spec.filters, params, spec.scope_value
+    )
 
     clauses = [
         f"SELECT {select_list}",
@@ -333,9 +458,14 @@ def build_breakdown_query(spec: BreakdownQuerySpec, dialect: str) -> tuple[str, 
 
 
 def build_dimension_values_query(
-    entity: str, column: str, search: str | None, dialect: str
+    entity: str, column: str, search: str | None, dialect: str, scope_value: str | None = None
 ) -> tuple[str, list]:
+    """A dimension-value list is data too: a type-ahead over a scoped entity
+    must show one caller only the values their own rows carry, so
+    ``scope_value`` follows the identical D16 rules the two spec builders
+    apply (see ``_require_scope_value``)."""
     entity_obj = _entity(entity)
+    _require_scope_value(entity_obj, scope_value)
     _require_dimension(entity_obj, column)
 
     params: list = []
@@ -343,6 +473,9 @@ def build_dimension_values_query(
     if search is not None:
         conditions.append(f"{column} ILIKE %s")
         params.append(f"%{search}%")
+    scope = _scope_condition(entity_obj, scope_value, params)
+    if scope is not None:
+        conditions.append(scope)
 
     clauses = [
         f"SELECT DISTINCT {column}",
@@ -353,12 +486,23 @@ def build_dimension_values_query(
     return "\n".join(clauses), params
 
 
-def build_period_range_query(entity: str, dialect: str) -> tuple[str, list]:
+def build_period_range_query(
+    entity: str, dialect: str, scope_value: str | None = None
+) -> tuple[str, list]:
+    """The one builder with no WHERE clause of its own: a scoped entity gains
+    exactly one (the scope predicate), keeping SELECT / FROM / WHERE order.
+    Scoped here too because MIN/MAX over the whole table would otherwise
+    disclose the shape of rows the caller cannot see."""
     entity_obj = _entity(entity)
+    _require_scope_value(entity_obj, scope_value)
     date_expr = _date_expr(entity_obj, dialect)
 
+    params: list = []
     clauses = [
         f'SELECT MIN({date_expr}) AS "MIN_DATE", MAX({date_expr}) AS "MAX_DATE"',
         f"FROM {_table_name(entity_obj, dialect)}",
     ]
-    return "\n".join(clauses), []
+    scope = _scope_condition(entity_obj, scope_value, params)
+    if scope is not None:
+        clauses.append(f"WHERE {scope}")
+    return "\n".join(clauses), params

@@ -28,7 +28,8 @@ import pytest
 
 from poseidon.core.data import query_builder as qb
 from poseidon.core.data.specs import BreakdownQuerySpec, MetricQuerySpec, PeriodWindow
-from poseidon.core.ontology.models import Entity
+from poseidon.core.identity import UserContext
+from poseidon.core.ontology.models import Column, Entity, Metric, Ontology, RowScope
 
 APRIL = PeriodWindow(dt.date(2026, 4, 1), dt.date(2026, 5, 1))
 
@@ -695,3 +696,312 @@ def test_volume_mode_required_group_by_defensive_errors():
         qb._volume_mode_required_group_by(pivot_is_last_level)
     assert str(exc_info.value) == (
         "pivot column 'PIVOT' has no level below it in SYNTHETIC_LAST_LEVEL")
+
+
+# ---------------------------------------------------------------------------
+# D16 row_scope (Phase 14 Task 6b) -- the dormant scope hook, mechanism only
+#
+# NO certified entity declares `row_scope`, which is exactly why every
+# snapshot ABOVE this line is byte-unchanged by this feature: that is the
+# regression pin (the certified side is pinned in test_ontology_loader.py's
+# `test_no_certified_entity_declares_row_scope`). Everything below runs
+# against FIXTURE entities injected in place of the loaded ontology, so a
+# scope predicate can be pinned without any entity in ontology.yml declaring
+# one.
+# ---------------------------------------------------------------------------
+
+# The value a resolved caller identity would supply -- `dev|...`-shaped, as
+# every `UserContext.sub` in this codebase is.
+SCOPE_VALUE = "dev|alice"
+
+_FIXTURE_COLUMNS = {
+    "LIFT_ETA_DATE": Column(
+        name="LIFT_ETA_DATE", type="DATE", role="date", friendly="Lift ETA"),
+    "CUST_NM": Column(name="CUST_NM", type="VARCHAR", role="dimension", friendly="Customer"),
+    "PRIMARY_BRKR": Column(
+        name="PRIMARY_BRKR", type="VARCHAR", role="dimension", friendly="Broker"),
+    "GROSS_PROFIT": Column(
+        name="GROSS_PROFIT", type="NUMBER", role="measure", friendly="Gross Profit"),
+}
+_FIXTURE_METRICS = {"GP": Metric(name="GP", sql="SUM(GROSS_PROFIT)", kind="sum")}
+
+SCOPED = Entity(
+    name="SCOPED_FIXTURE_V",
+    fqn="SANDBOX.MCA.SCOPED_FIXTURE_V",
+    date_column="LIFT_ETA_DATE",
+    columns=_FIXTURE_COLUMNS,
+    metrics=_FIXTURE_METRICS,
+    row_scope=RowScope(column="PRIMARY_BRKR", claim="sub"),
+)
+EMAIL_SCOPED = Entity(
+    name="EMAIL_SCOPED_FIXTURE_V",
+    fqn="SANDBOX.MCA.EMAIL_SCOPED_FIXTURE_V",
+    date_column="LIFT_ETA_DATE",
+    columns=_FIXTURE_COLUMNS,
+    metrics=_FIXTURE_METRICS,
+    row_scope=RowScope(column="CUST_NM", claim="email"),
+)
+UNSCOPED = Entity(
+    name="UNSCOPED_FIXTURE_V",
+    fqn="SANDBOX.MCA.UNSCOPED_FIXTURE_V",
+    date_column="LIFT_ETA_DATE",
+    columns=_FIXTURE_COLUMNS,
+    metrics=_FIXTURE_METRICS,
+)
+
+FIXTURE_ONTOLOGY = Ontology(
+    version=2, entities={e.name: e for e in (SCOPED, EMAIL_SCOPED, UNSCOPED)}
+)
+
+
+@pytest.fixture
+def fixture_ontology(monkeypatch):
+    """Swap the loaded ontology for the fixture one, for one test. `_entity`
+    reads `get_ontology` as a module global at call time, so patching the
+    name on the module is enough -- no cache clearing, and the vendored
+    ontology.yml is never touched."""
+    monkeypatch.setattr(qb, "get_ontology", lambda: FIXTURE_ONTOLOGY)
+
+
+def _metric_spec(entity: str, scope_value: str | None) -> MetricQuerySpec:
+    return MetricQuerySpec(
+        entity=entity, metrics=("GP",), period=APRIL, scope_value=scope_value)
+
+
+def _breakdown_spec(entity: str, scope_value: str | None) -> BreakdownQuerySpec:
+    return BreakdownQuerySpec(
+        entity=entity,
+        metrics=("GP",),
+        period=APRIL,
+        group_by="CUST_NM",
+        order_by_metric="GP",
+        top_n=5,
+        scope_value=scope_value,
+    )
+
+
+# -- the four builders, both dialects, WITH a declared scope ----------------
+
+
+def test_scoped_metric_query_postgres(fixture_ontology):
+    """The scope predicate is appended LAST in the WHERE clause, as a bound
+    parameter -- never interpolated into the SQL string."""
+    sql, params = qb.build_metric_query(_metric_spec("SCOPED_FIXTURE_V", SCOPE_VALUE), "postgres")
+    assert sql == (
+        'SELECT SUM(GROSS_PROFIT) AS "GP"\n'
+        "FROM synthetic.scoped_fixture_v\n"
+        "WHERE LIFT_ETA_DATE >= %s AND LIFT_ETA_DATE < %s AND PRIMARY_BRKR = %s")
+    assert params == [dt.date(2026, 4, 1), dt.date(2026, 5, 1), SCOPE_VALUE]
+
+
+def test_scoped_metric_query_snowflake(fixture_ontology):
+    sql, params = qb.build_metric_query(_metric_spec("SCOPED_FIXTURE_V", SCOPE_VALUE), "snowflake")
+    assert sql == (
+        'SELECT SUM(GROSS_PROFIT) AS "GP"\n'
+        "FROM SANDBOX.MCA.SCOPED_FIXTURE_V\n"
+        "WHERE LIFT_ETA_DATE >= %s AND LIFT_ETA_DATE < %s AND PRIMARY_BRKR = %s")
+    assert params == [dt.date(2026, 4, 1), dt.date(2026, 5, 1), SCOPE_VALUE]
+
+
+def test_scoped_breakdown_query_postgres(fixture_ontology):
+    sql, params = qb.build_breakdown_query(
+        _breakdown_spec("SCOPED_FIXTURE_V", SCOPE_VALUE), "postgres")
+    assert sql == (
+        "SELECT COALESCE(CUST_NM, 'Unknown') AS CUST_NM, SUM(GROSS_PROFIT) AS \"GP\"\n"
+        "FROM synthetic.scoped_fixture_v\n"
+        "WHERE LIFT_ETA_DATE >= %s AND LIFT_ETA_DATE < %s AND PRIMARY_BRKR = %s\n"
+        "GROUP BY 1\n"
+        'ORDER BY "GP" DESC NULLS LAST\n'
+        "LIMIT %s")
+    assert params == [dt.date(2026, 4, 1), dt.date(2026, 5, 1), SCOPE_VALUE, 5]
+
+
+def test_scoped_breakdown_query_snowflake(fixture_ontology):
+    """The scope param lands BEFORE the LIMIT param -- %s order in the string
+    is the params-list order, which is what the driver binds against."""
+    sql, params = qb.build_breakdown_query(
+        _breakdown_spec("SCOPED_FIXTURE_V", SCOPE_VALUE), "snowflake")
+    assert sql == (
+        "SELECT COALESCE(CUST_NM, 'Unknown') AS CUST_NM, SUM(GROSS_PROFIT) AS \"GP\"\n"
+        "FROM SANDBOX.MCA.SCOPED_FIXTURE_V\n"
+        "WHERE LIFT_ETA_DATE >= %s AND LIFT_ETA_DATE < %s AND PRIMARY_BRKR = %s\n"
+        "GROUP BY 1\n"
+        'ORDER BY "GP" DESC\n'
+        "LIMIT %s")
+    assert params == [dt.date(2026, 4, 1), dt.date(2026, 5, 1), SCOPE_VALUE, 5]
+
+
+def test_scoped_dimension_values_query_postgres(fixture_ontology):
+    sql, params = qb.build_dimension_values_query(
+        "SCOPED_FIXTURE_V", "CUST_NM", "Sing", "postgres", scope_value=SCOPE_VALUE)
+    assert sql == (
+        "SELECT DISTINCT CUST_NM\n"
+        "FROM synthetic.scoped_fixture_v\n"
+        "WHERE CUST_NM IS NOT NULL AND CUST_NM ILIKE %s AND PRIMARY_BRKR = %s\n"
+        "ORDER BY CUST_NM")
+    assert params == ["%Sing%", SCOPE_VALUE]
+
+
+def test_scoped_dimension_values_query_snowflake(fixture_ontology):
+    """Without a search term the scope predicate is the only condition after
+    the NOT NULL guard -- a type-ahead list is scoped exactly like a metric."""
+    sql, params = qb.build_dimension_values_query(
+        "SCOPED_FIXTURE_V", "CUST_NM", None, "snowflake", scope_value=SCOPE_VALUE)
+    assert sql == (
+        "SELECT DISTINCT CUST_NM\n"
+        "FROM SANDBOX.MCA.SCOPED_FIXTURE_V\n"
+        "WHERE CUST_NM IS NOT NULL AND PRIMARY_BRKR = %s\n"
+        "ORDER BY CUST_NM")
+    assert params == [SCOPE_VALUE]
+
+
+def test_scoped_period_range_query_postgres(fixture_ontology):
+    """This builder renders no WHERE clause at all without a scope; with one
+    it gains exactly that clause, in SELECT / FROM / WHERE order."""
+    sql, params = qb.build_period_range_query(
+        "SCOPED_FIXTURE_V", "postgres", scope_value=SCOPE_VALUE)
+    assert sql == (
+        'SELECT MIN(LIFT_ETA_DATE) AS "MIN_DATE", MAX(LIFT_ETA_DATE) AS "MAX_DATE"\n'
+        "FROM synthetic.scoped_fixture_v\n"
+        "WHERE PRIMARY_BRKR = %s")
+    assert params == [SCOPE_VALUE]
+
+
+def test_scoped_period_range_query_snowflake(fixture_ontology):
+    sql, params = qb.build_period_range_query(
+        "SCOPED_FIXTURE_V", "snowflake", scope_value=SCOPE_VALUE)
+    assert sql == (
+        'SELECT MIN(LIFT_ETA_DATE) AS "MIN_DATE", MAX(LIFT_ETA_DATE) AS "MAX_DATE"\n'
+        "FROM SANDBOX.MCA.SCOPED_FIXTURE_V\n"
+        "WHERE PRIMARY_BRKR = %s")
+    assert params == [SCOPE_VALUE]
+
+
+# -- an entity that declares NO row_scope renders exactly as it always did --
+
+
+def test_unscoped_entity_renders_no_scope_predicate(fixture_ontology):
+    """The control case for every snapshot above this section: same fixture
+    columns, no `row_scope`, no scope_value -- and no predicate."""
+    sql, params = qb.build_metric_query(_metric_spec("UNSCOPED_FIXTURE_V", None), "postgres")
+    assert sql == (
+        'SELECT SUM(GROSS_PROFIT) AS "GP"\n'
+        "FROM synthetic.unscoped_fixture_v\n"
+        "WHERE LIFT_ETA_DATE >= %s AND LIFT_ETA_DATE < %s")
+    assert params == [dt.date(2026, 4, 1), dt.date(2026, 5, 1)]
+
+
+# -- the fail-closed matrix: both directions, all four builders -------------
+
+_DECLARED_NO_VALUE = (
+    "SCOPED_FIXTURE_V declares row_scope on PRIMARY_BRKR (claim 'sub') but this "
+    "query carries no scope_value -- refusing to build an unscoped query")
+
+_UNDECLARED_BUT_SUPPLIED = (
+    "UNSCOPED_FIXTURE_V declares no row_scope -- a scope_value must not be "
+    "supplied for it")
+
+
+def test_declared_row_scope_without_a_scope_value_is_refused_by_every_builder(fixture_ontology):
+    """FAIL CLOSED. A call path that never threaded a scope value breaks
+    LOUDLY the day an entity declares one -- it never silently renders the
+    unscoped query and hands back every row."""
+    with pytest.raises(qb.SpecValidationError) as exc_info:
+        qb.build_metric_query(_metric_spec("SCOPED_FIXTURE_V", None), "postgres")
+    assert str(exc_info.value) == _DECLARED_NO_VALUE
+
+    with pytest.raises(qb.SpecValidationError) as exc_info:
+        qb.build_breakdown_query(_breakdown_spec("SCOPED_FIXTURE_V", None), "postgres")
+    assert str(exc_info.value) == _DECLARED_NO_VALUE
+
+    with pytest.raises(qb.SpecValidationError) as exc_info:
+        qb.build_dimension_values_query("SCOPED_FIXTURE_V", "CUST_NM", None, "postgres")
+    assert str(exc_info.value) == _DECLARED_NO_VALUE
+
+    with pytest.raises(qb.SpecValidationError) as exc_info:
+        qb.build_period_range_query("SCOPED_FIXTURE_V", "postgres")
+    assert str(exc_info.value) == _DECLARED_NO_VALUE
+
+
+def test_scope_value_for_an_undeclared_entity_is_refused_by_every_builder(fixture_ontology):
+    """The symmetric half. A caller that believes scoping applies where the
+    ontology certifies none is a bug -- silently ignoring the value would let
+    that belief survive all the way to a real entity that also has none."""
+    with pytest.raises(qb.SpecValidationError) as exc_info:
+        qb.build_metric_query(_metric_spec("UNSCOPED_FIXTURE_V", SCOPE_VALUE), "postgres")
+    assert str(exc_info.value) == _UNDECLARED_BUT_SUPPLIED
+
+    with pytest.raises(qb.SpecValidationError) as exc_info:
+        qb.build_breakdown_query(_breakdown_spec("UNSCOPED_FIXTURE_V", SCOPE_VALUE), "postgres")
+    assert str(exc_info.value) == _UNDECLARED_BUT_SUPPLIED
+
+    with pytest.raises(qb.SpecValidationError) as exc_info:
+        qb.build_dimension_values_query(
+            "UNSCOPED_FIXTURE_V", "CUST_NM", None, "postgres", scope_value=SCOPE_VALUE)
+    assert str(exc_info.value) == _UNDECLARED_BUT_SUPPLIED
+
+    with pytest.raises(qb.SpecValidationError) as exc_info:
+        qb.build_period_range_query("UNSCOPED_FIXTURE_V", "postgres", scope_value=SCOPE_VALUE)
+    assert str(exc_info.value) == _UNDECLARED_BUT_SUPPLIED
+
+
+def test_a_certified_entity_refuses_a_scope_value_too():
+    """No fixture patch: against the REAL vendored ontology, no entity
+    declares a row_scope, so supplying one is refused there as well -- the
+    mechanism is live on certified entities, it simply has nothing to
+    enforce yet."""
+    with pytest.raises(qb.SpecValidationError) as exc_info:
+        qb.build_metric_query(_metric_spec("MARINE_SALES_PLANNING_V", SCOPE_VALUE), "postgres")
+    assert str(exc_info.value) == (
+        "MARINE_SALES_PLANNING_V declares no row_scope -- a scope_value must "
+        "not be supplied for it")
+
+
+# -- resolve_row_scope_value: the UserContext -> scope value seam -----------
+
+ALICE = UserContext(sub="dev|alice", email="alice@local", name="Alice", roles=("Poseidon:Sales",))
+NO_EMAIL = UserContext(sub="dev|bob", email=None, name="Bob", roles=("Poseidon:Sales",))
+
+
+def test_resolve_row_scope_value_is_none_when_the_entity_declares_none(fixture_ontology):
+    """The whole codebase's answer today: every certified entity takes this
+    branch, so every threaded call site passes `scope_value=None`."""
+    assert qb.resolve_row_scope_value("UNSCOPED_FIXTURE_V", ALICE) is None
+
+
+def test_resolve_row_scope_value_is_none_for_an_undeclared_entity_with_no_user(fixture_ontology):
+    """No declaration means no identity requirement -- an unauthenticated dev
+    CLI can still query an unscoped entity."""
+    assert qb.resolve_row_scope_value("UNSCOPED_FIXTURE_V", None) is None
+
+
+def test_resolve_row_scope_value_refuses_a_declared_entity_without_a_user(fixture_ontology):
+    with pytest.raises(qb.SpecValidationError) as exc_info:
+        qb.resolve_row_scope_value("SCOPED_FIXTURE_V", None)
+    assert str(exc_info.value) == (
+        "SCOPED_FIXTURE_V declares row_scope on PRIMARY_BRKR (claim 'sub') but "
+        "there is no caller identity to read it from -- refusing to build an "
+        "unscoped query")
+
+
+def test_resolve_row_scope_value_refuses_an_empty_claim(fixture_ontology):
+    """`email` is optional on UserContext: an identity carrying none cannot
+    key an email-scoped entity, and falling back to another claim would scope
+    the query to the wrong rows."""
+    with pytest.raises(qb.SpecValidationError) as exc_info:
+        qb.resolve_row_scope_value("EMAIL_SCOPED_FIXTURE_V", NO_EMAIL)
+    assert str(exc_info.value) == (
+        "EMAIL_SCOPED_FIXTURE_V declares row_scope on CUST_NM but the caller's "
+        "'email' claim is empty -- refusing to build an unscoped query")
+
+
+def test_resolve_row_scope_value_returns_the_named_claim(fixture_ontology):
+    assert qb.resolve_row_scope_value("SCOPED_FIXTURE_V", ALICE) == "dev|alice"
+    assert qb.resolve_row_scope_value("EMAIL_SCOPED_FIXTURE_V", ALICE) == "alice@local"
+
+
+def test_resolve_row_scope_value_is_none_for_every_certified_entity():
+    """The resolver against the REAL ontology -- the value every threaded
+    call site actually passes today, for both queryable entities."""
+    for entity in ("MARINE_SALES_PLANNING_V", "W_MARINE_GL_SOURCE_AI"):
+        assert qb.resolve_row_scope_value(entity, ALICE) is None
