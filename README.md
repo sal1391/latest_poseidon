@@ -1,148 +1,150 @@
-# Hermes — AI Strategic Intelligence Dashboard
+# Poseidon — chat-first sales intelligence for marine fuel
 
-Hermes is a 3-agent AI-powered strategic intelligence platform for aviation fuel sales. It combines real-time web research (Perplexity), LLM synthesis (Claude Sonnet 4.5 via Snowflake Cortex), and internal business data into a single Streamlit dashboard with progressive result display.
+Poseidon is an ask-anything chat application over internal sales data and external market
+research. A ChatGPT-style React interface sits in front of a **deterministic core**: Python
+functions do all data access, arithmetic, and formatting, while the LLM acts only as a router
+that picks skills and fills validated arguments. No model writes SQL, and no model invents a
+number — every figure in an answer comes from certified queries against a governed semantic
+layer, and every answer carries a proof block showing where it came from.
 
-## Architecture
+This repository replaces an earlier three-agent Streamlit dashboard, which still lives here
+during cutover (see [Legacy application](#legacy-application) at the bottom).
 
-```
-hermes/
-├── app.py                        # Streamlit entry point (progressive display)
-├── config.py                     # Dual-mode config (local / AWS)
-├── auth.py                       # Auth0 authentication (toggleable)
-├── snowflake_client.py           # Snowpark session, queries, Cortex, token counting
-├── pdf_generator.py              # PDF/Markdown export (WeasyPrint)
-├── agents/
-│   ├── __init__.py
-│   ├── contextualizer.py         # Agent 1 — Snowflake Cortex (operational analysis)
-│   ├── researcher.py             # Agent 2 — Perplexity + Cortex (market research)
-│   ├── strategist.py             # Agent 3 — Snowflake Cortex (sales strategy)
-│   ├── orchestrator.py           # Workflow coordination (used by tests)
-│   └── schemas/
-│       ├── __init__.py
-│       ├── market_position.py    # JSON schema for Perplexity call 1
-│       ├── strategic_profile.py  # JSON schema for Perplexity call 2
-│       └── sustainability_esg.py # JSON schema for Perplexity call 3
-├── tests/
-│   ├── __init__.py
-│   ├── contextualizer_test.py    # Agent 1 standalone test
-│   ├── researcher_test.py        # Agent 2 standalone test (with token counting)
-│   ├── perplexity_test.py        # Perplexity API test
-│   └── test_all_agents.py        # Full 3-agent integration test
-├── .streamlit/config.toml
-├── requirements.txt
-├── .env.example
-├── .gitignore
-├── CONFIG_GUIDE.md
-└── README_BUSINESS.md
-```
+## The three conversation flows
 
-## Quick Start (Local Development)
+| Flow | How it starts | What happens |
+|---|---|---|
+| **Default chat** | Free text | Q&A over the certified data layer — *"top GP customers for Port of Singapore in April 2026"*. Follow-ups can pivot to external research on any entity that came back. |
+| **New Customer Prospect** | Company name | Produces a prospect research brief, then lets you pivot into internal data — for example, which customers you already serve at a port the brief mentioned. |
+| **Existing Customer** | Customer picker | Runs the analytics suite and produces a brief, then supports drill-downs into ports, lanes and metrics, plus live external questions. |
 
-### 1. Install dependencies
+The chosen flow shapes **entry orchestration only**. After the first deliverable, the full skill
+registry is available in every flow, with carry-over context — active customer, port, period —
+maintained by a deterministic conversation-state layer rather than by the model's memory.
 
-```bash
-pip install -r requirements.txt
-```
+## How it works
 
-### 2. Configure credentials
+- **Deterministic pre-parsing.** Dates, customer names and skill hints are resolved in Python
+  before any model call. Fuzzy customer matching either resolves confidently or asks with
+  clarification chips; it never guesses silently.
+- **Skills, not prompts.** Every capability is a self-contained directory under
+  `backend/poseidon/tasks/<task>/skills/<skill>/`, with its tools, prompts and tests co-located.
+- **Certified queries only.** A vendored YAML ontology defines the entities, dimensions and
+  measures the query builder is allowed to touch. Adding a table is a certification step, not a
+  code change.
+- **Provider-agnostic LLM layer.** One interface over AWS Bedrock and Snowflake Cortex, with
+  roles mapped to tiers by config — a capable model routes and synthesises, cheaper models do
+  grunt work.
+- **Identity flows through everything.** A verified identity reaches row-level security, chat
+  history and personalization alike, populated by Auth0 or by SPCS ingress.
+- **Observability from day one.** Every turn writes a run-log row plus a child row per model
+  call and per tool call. Thumbs up/down on any message links back to that run log and feeds a
+  router-decision test pipeline.
 
-Open `config.py` and set the two toggles at the top:
+## Quick start
 
-```python
-DEPLOY_MODE = "local"    # Keep as "local" for testing
-AUTH0_ENABLED = False     # Keep False to skip login screen
-```
-
-Then fill in your Snowflake credentials in `_LOCAL_SNOWFLAKE_CONNECTION` and your Perplexity API key in `_LOCAL_PERPLEXITY_API_KEY`.
-
-See `CONFIG_GUIDE.md` for a plain-language explanation.
-
-### 3. Run the app
+Requires Docker Desktop, or Docker Engine with the Compose plugin.
 
 ```bash
-cd hermes
-streamlit run app.py
+docker compose -f infra/docker-compose.yml up --build
 ```
 
-### 4. Run tests
+That brings up four services — Postgres, MinIO for object storage, the backend API, and the Vite
+dev server:
+
+| | |
+|---|---|
+| App | http://localhost:5173 |
+| API | http://localhost:8000 |
+| MinIO console | http://localhost:9001 |
+
+**Data is already there.** The backend's start-up runs migrations and seeds a deterministic
+synthetic dataset — roughly 24,000 marine sales rows and 16,200 GL rows generated from
+`ontology/synthetic/profiles.yml`. The seeder skips when tables already hold rows, so restarting
+never rewrites what a running demo is looking at. Local development runs against this synthetic
+backend; Snowflake is the production data platform.
+
+Out of the box the stack runs with identity disabled and the LLM in stub mode, so it works with
+no credentials at all. Enabling real models or real login is described in
+`infra/runbooks/local.md`.
+
+Stop with `Ctrl+C`, or `docker compose -f infra/docker-compose.yml down`. Named volumes survive a
+`down`; add `-v` to start genuinely clean.
+
+## Tests
 
 ```bash
-# Individual agents
-python -m tests.contextualizer_test "NetJets"
-python -m tests.researcher_test "Delta Air Lines"
-python -m tests.perplexity_test "NetJets"
-
-# Full 3-agent pipeline
-python -m tests.test_all_agents "NetJets"
-python -m tests.test_all_agents "NetJets" --new   # prospect mode
+cd backend && python -m pytest      # offline suite — always green with no services running
+cd frontend && npm test             # component and interaction tests
 ```
 
-## Deployment (AWS Mode)
+Three pytest markers gate tests needing more than a bare Python environment. Each **skips with a
+reason** rather than failing when its dependency is absent, which is what keeps the offline suite
+honest:
 
-Set the toggles in `config.py`:
+| Marker | Needs | Run it with |
+|---|---|---|
+| `pg` | Migrated, seeded Postgres | `DATABASE_URL=postgresql+psycopg://poseidon:poseidon@localhost:5432/poseidon python -m pytest -m pg` |
+| `minio` | Reachable MinIO | `S3_ENDPOINT_URL=http://localhost:9000 S3_ACCESS_KEY=poseidon S3_SECRET_KEY=poseidon123 python -m pytest -m minio` |
+| `pdf` | WeasyPrint native libraries | Easiest inside the container — see `infra/runbooks/local.md` |
 
-```python
-DEPLOY_MODE = "aws"
-AUTH0_ENABLED = True
+The `pg` tests recompute every expectation in pure Python from the same generator that seeded the
+database, then compare against what the certified SQL returned — so they test the query builder,
+not a snapshot of itself.
+
+## Repository layout
+
+```
+backend/poseidon/
+  api/        FastAPI routes, SSE streaming, auth dependencies
+  core/       chat orchestration, ontology loader, query builder, identity, LLM providers
+  tasks/      skills, grouped by task: data_qa, customer_insight, research
+  mcp/        MCP server integrations (Perplexity first)
+  scripts/    seeding, demo CLI, operational scripts
+  migrations/ Alembic migrations
+frontend/src/ React + TypeScript UI, theme-token styling
+ontology/     vendored certified semantic layer + synthetic data profiles
+infra/        compose files, production Dockerfile, Caddy, AWS provisioning scripts, runbooks
+docs/architecture/  the design documents this build follows
 ```
 
-In AWS mode:
-- **Snowflake credentials** are pulled from AWS Secrets Manager (secret: `hermes_secret_json`)
-- **Perplexity API key** is read from the `PERPLEXITY_API_KEY` environment variable
-- **Auth0 config** is built from `CLIENTID` and `DOMAIN` environment variables
+## Architecture documents
 
-Required environment variables are listed in `.env.example`.
+The build follows nine documents in `docs/architecture/`. Start with `00-overview.md`.
 
-## How the Agents Work
+| | |
+|---|---|
+| `00-overview.md` | What Poseidon is, the flows, and the numbered design decisions |
+| `01-frontend.md` | UI structure, theming, chat mechanics |
+| `02-backend-skills.md` | Skill framework, conversation state, carry-over |
+| `03-llm-routing.md` | Provider abstraction, router contract, prompt registry |
+| `04-data-ontology.md` | Certified semantic layer and query building |
+| `05-auth-identity.md` | Identity providers, row-level security, personalization |
+| `06-observability.md` | Run log, feedback capture, router-decision tests |
+| `07-infrastructure.md` | Deployment targets, environments, operational posture |
+| `08-build-phases.md` | Phase-by-phase build plan and validation gates |
 
-### Agent 1 — Contextualizer (Snowflake Cortex / Claude Sonnet 4.5)
-Analyzes internal Snowflake data (fuel volumes, profits, credit, fleet info) and produces an operational context report. For prospects, infers context from public data.
+Operational runbooks live in `infra/runbooks/` — `local.md` for development, `deploy-ec2.md` for
+deployment, `smoke.md` for post-deploy verification.
 
-### Agent 2 — Researcher (Perplexity + Snowflake Cortex)
-Runs 3 sequential web research calls using Perplexity structured output:
-1. **Sustainability & ESG** (`sonar-deep-research`) — carbon goals, SAF strategy, executive stance
-2. **Market Position** (`sonar`) — company overview, competitive landscape
-3. **Strategic Profile** (`sonar-pro`) — business model, financials, market presence
+## Build status
 
-Results are synthesized by Cortex into a single narrative report (no raw data sections passed downstream).
+Phases 0 through 13 are complete and merged: the compose stack, the certified ontology and
+synthetic data, the skill framework, deterministic parsing, LLM routing, end-to-end chat,
+research via Perplexity, both brief flows, identity, persistent history with row-level security,
+observability, feedback capture, and per-user personalization.
 
-### Agent 3 — Strategist (Snowflake Cortex / Claude Sonnet 4.5)
-Takes output from Agents 1 and 2 to generate CRM-ready fields and a strategic action plan.
+Phase 14 puts a public, Auth0-gated instance on EC2. Its build half is complete — production
+image, SPA serving, Caddy with streaming-safe proxying, provisioning scripts, and runbooks — and
+the deployment itself is in progress. SPCS deployment and the Snowflake data backend follow.
 
-### Workflow (Progressive Display)
+`docs/architecture/08-build-phases.md` has the full plan and each phase's validation gate.
 
-Both existing and new account flows use the same order:
+## Legacy application
 
-1. **Agent 1** (Contextualizer) runs first → results display immediately
-2. **Agent 2** (Researcher) kicks off → results display when ready
-3. **Agent 3** (Strategist) runs last → final strategy appears
-
-Users can read earlier results while later agents are still running.
-
-## Key Features
-
-- 12 metric cards displaying Snowflake data (volumes, profits, capture rates, credit)
-- Progressive agent display — no waiting for all 3 to finish
-- Cortex-synthesized research summary (not raw Perplexity sections)
-- Token counting via Snowflake `AI_COUNT_TOKENS` (in test scripts)
-- Truncated JSON recovery for large Perplexity responses
-- PDF export with royal blue themed formatting
-- Dual account workflow (existing vs. new prospects)
-- Auth0 role-based access control (role: `Poseidon:Sales`)
-
-## Technology Stack
-
-- **Streamlit** — interactive web dashboard
-- **Perplexity AI** — real-time web research with structured output
-- **Claude Sonnet 4.5** — LLM via Snowflake Cortex
-- **Snowflake** — internal data + Cortex AI functions
-- **Auth0** — enterprise authentication
-- **AWS** — cloud deployment and secrets management
-
-## Requirements
-
-- Python 3.9+
-- Snowflake account with access to the MCA schema
-- Perplexity API key
-- WeasyPrint system dependencies (for PDF generation)
-- Auth0 tenant (production only)
+The original Streamlit dashboard still sits at the repository root — `app.py`, `agents/`,
+`auth.py`, `config.py`, `snowflake_client.py`, `pdf_generator.py`, and its own `tests/` — and is
+retained until cutover. It is deliberately left untouched by the rewrite; treat it as read-only
+history rather than as a component of the new system. `README_BUSINESS.md` and `CONFIG_GUIDE.md`
+belong to it, as does the root `requirements.txt`. The new backend's environment contract is
+`backend/.env.example`.
