@@ -38,8 +38,12 @@ aws budgets describe-budgets --account-id "$ACCOUNT_ID" \
   --query 'Budgets[].{Name:BudgetName,Limit:BudgetLimit.Amount,Unit:BudgetLimit.Unit,TimeUnit:TimeUnit,Actual:CalculatedSpend.ActualSpend.Amount}' \
   --output table
 
+# tr -d '\r': same Windows CRLF hazard documented in 02-rds.sh's subnet lookup.
+# Here it would fail SILENTLY rather than loudly -- a trailing CR on the last
+# budget name makes the later --budget-name lookup miss, which reads as "no
+# such budget" and invites creating a duplicate.
 mapfile -t budget_names < <(aws budgets describe-budgets --account-id "$ACCOUNT_ID" \
-  --query 'Budgets[].BudgetName' --output text | tr '\t' '\n')
+  --query 'Budgets[].BudgetName' --output text | tr -d '\r' | tr '\t' '\n')
 
 if [[ "${#budget_names[@]}" -eq 0 ]]; then
   echo "WARNING: no budgets found on this account -- the 2026-08-03 alert may have been created under a different account/profile, or since removed. Verify before proceeding; this script deliberately does not create one to avoid a duplicate." >&2

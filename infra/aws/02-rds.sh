@@ -93,9 +93,13 @@ else
   if [[ -n "${DB_SUBNET_IDS:-}" ]]; then
     IFS=',' read -r -a subnet_ids <<<"$DB_SUBNET_IDS"
   else
+    # tr -d '\r' is load-bearing on Windows: aws.exe writes CRLF, and while
+    # $(...) command substitution strips the CR under MSYS, mapfile reading a
+    # process substitution does not -- the CR survives onto the LAST element
+    # and RDS rejects it as "Input can't contain control characters".
     mapfile -t subnet_ids < <(aws ec2 describe-subnets --region "$REGION" \
       --filters "Name=vpc-id,Values=${VPC_ID}" \
-      --query 'Subnets[].SubnetId' --output text | tr '\t' '\n')
+      --query 'Subnets[].SubnetId' --output text | tr -d '\r' | tr '\t' '\n')
   fi
   if [[ "${#subnet_ids[@]}" -lt 2 ]]; then
     echo "ERROR: need at least 2 subnets (in different AZs) in ${VPC_ID}; set DB_SUBNET_IDS explicitly (comma-separated)." >&2
