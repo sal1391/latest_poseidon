@@ -1,7 +1,0 @@
-[server]
-headless = true
-runOnSave = true
-
-[theme]
-primaryColor = "#4169E1"
-backgroundColor = "#FFFFFF"
