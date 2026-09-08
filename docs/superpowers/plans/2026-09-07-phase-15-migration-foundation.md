@@ -32,7 +32,7 @@
 |---|---|
 | `web/package.json` | Next app manifest and scripts |
 | `web/next.config.ts` | `/api/*` rewrite to the FastAPI backend in development |
-| `web/proxy.ts` | Next 16 proxy: resolve identity, attach it to the downstream request |
+| `web/src/proxy.ts` | Next 16 proxy: resolve identity, attach it to the downstream request. **Must sit beside `app/`** — with the `src/` layout that is `web/src/`, NOT the repo root. At the wrong path Next emits no Proxy at all and it silently never runs. |
 | `web/src/lib/identity.ts` | Pure sub-resolution logic, unit-testable without a server |
 | `web/src/lib/identity.test.ts` | Sub-format parity tests |
 | `web/drizzle.config.ts` | drizzle-kit config for introspection |
@@ -131,7 +131,7 @@ git commit -m "feat(web): scaffold the Next.js 16 app beside the Vite app"
 ## Task 2: Identity resolution with byte-identical subjects
 
 **Files:**
-- Create: `web/src/lib/identity.ts`, `web/src/lib/identity.test.ts`, `web/proxy.ts`
+- Create: `web/src/lib/identity.ts`, `web/src/lib/identity.test.ts`, `web/src/proxy.ts`
 - Reference (do not modify): `backend/poseidon/core/identity.py`, `backend/poseidon/core/identity_spcs.py`
 
 **Interfaces:**
@@ -334,9 +334,9 @@ Expected, verified 2026-09-08: `dev|local dev@local Dev User ('Poseidon:Sales',)
 `DEV_IDENTITY` above exactly. The constant is `DISABLED_DEFAULT_USER`
 (`backend/poseidon/core/identity.py:130`). Never adjust the Python to fit the TypeScript.
 
-- [ ] **Step 6: Wire `web/proxy.ts`**
+- [ ] **Step 6: Wire `web/src/proxy.ts`**
 
-Next 16 calls this `proxy`, not `middleware`:
+Next 16 calls this `proxy`, not `middleware`. Per Next's own docs, the file goes "in the project root, or inside `src` if applicable, so that it is located at the same level as `pages` or `app`" — this scaffold uses `src/app`, so the path is `web/src/proxy.ts`. At `web/proxy.ts` the build emits no Proxy line and it never runs, with no error:
 
 ```ts
 import { NextResponse } from "next/server";
@@ -373,7 +373,7 @@ export function proxy(request: NextRequest) {
 - [ ] **Step 7: Commit**
 
 ```bash
-git add web/src/lib/identity.ts web/src/lib/identity.test.ts web/proxy.ts
+git add web/src/lib/identity.ts web/src/lib/identity.test.ts web/src/proxy.ts
 git commit -m "feat(web): resolve identity with subjects byte-identical to Python's"
 ```
 
