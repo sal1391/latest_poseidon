@@ -243,7 +243,11 @@ letting it happen by accident — that is one of the review's owner questions.
 
 ## C08 — P2 — An API PDF link cannot reuse the existing artifact anchor
 
-**ACCEPT — verified in the frontend.** `frontend/src/ui/message-parts/ArtifactPart.tsx` is a plain
+**ACCEPT as written, but DOWNGRADED by the owner's 2026-09-07 identity decision (M5).** The finding
+is correct about `auth0` mode and does not apply to the modes now in scope. Reasoning at the end of
+this entry.
+
+**Original analysis — verified in the frontend.** `frontend/src/ui/message-parts/ArtifactPart.tsx` is a plain
 anchor, and its own docstring states the assumption the migration breaks:
 
 ```tsx
@@ -267,8 +271,22 @@ the existing token provider, applied to both the in-chat card and the panel down
 bearer token in a URL. Recorded in doc 01 and doc 05 during the reconciliation (commit `1477d7b`),
 but no design change is written yet.
 
-**Note for the migration:** this is worth solving *once*, in the Next.js client, rather than porting
-the current anchor and rediscovering the problem.
+**Why M5 downgrades it.** The analysis above depends on the credential being a bearer token held in
+JavaScript. That is an `auth0`-mode property. Under M5:
+
+- **SPCS ingress** forwards `Sf-Context-Current-User` on every request reaching the service — a
+  top-level navigation included. The platform edge sets it, not the client.
+- **Disabled mode** resolves to a fixed identity (`dev|local`). Verified: `frontend/src/` contains
+  no `X-Dev-User` injection anywhere, and `identity.py` ignores rather than rejects an invalid
+  act-as header.
+
+So a plain `<a href>` to an authenticated byte route carries identity in **both** habitats now in
+scope, and no authenticated fetch-and-download path is required for them.
+
+**The constraint does not disappear — it moves.** If Auth0 is ever wired, C08 returns in full. It
+must be recorded next to the `auth0` mode's documentation, so whoever enables that mode meets it
+rather than rediscovering it. Deleting the finding would be wrong; parking it against its mode is
+correct.
 
 ---
 
