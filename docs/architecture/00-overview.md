@@ -223,13 +223,29 @@ remains authoritative for the feature, this table for the fact that the decision
 | D43 | Report content and math follow mom-comparison exactly where it already works: two single-month frames merged in Python, its KPI, top-mover, driver and new/lost rules, its narrative templates. | — |
 | D44 | Visibility: the whole book is visible to every Sales user, including other offices' customer-level GP and margin, as in mom-comparison today. Recorded so a later per-office restriction is a conscious change, not drift. | — |
 | D45 | The query builder gains a multi-column frame query (several certified columns plus a month/quarter/year bucket, no row limit). A report is four to six queries, and the chat can answer "by port by month". | — |
+| D46 | Prompts live in one canonical top-level `prompts/` tree with XML system prompts; skills resolve them by id. Documented exception to the co-location folder law. | folder law |
+| D47 | Ad-hoc in-chat report generation is open to every `Poseidon:Sales` user; `ReportAdmin` gates only shared definitions, runs and sends, enforced at dispatch. | — |
+| D48 | A definition's scope is immutable once it has runs; changing office requires a new definition. | — |
+| D49 | A report link opens the run it names, marked superseded when newer exists; the grounded chat is scoped to the run the panel shows. | D-chat-follows-current |
+| D50 | Saved and emailed reports are complete-month only; day-matched partial months are ad-hoc chat only, outside parity scope. | — |
+| D51 | The reconciliation baseline runs mom-comparison with the same row filter, so parity tests the maths. | — |
+| D52 | Ranked tables carry an `Other (N)` row so the column sums to the footer. | — |
+| D53 | `report_lookup` takes explicit `limit`/`offset` with a remaining-rows marker; no silent truncation. | — |
+| D54 | All queries in a report run share one snapshot where supported; otherwise drift is detected and the run retries once. | — |
 
-Two later decisions are recorded as **confirmed but not yet folded into the design**: the
-application stack migrates to Next.js 16 / AI SDK 6 / Auth.js / Drizzle / Tailwind with Python
-retained as an internal analytics and PDF-rendering service, and supplier-office reports rank
-suppliers rather than customers. Both are owner-confirmed in
-`docs/superpowers/specs/2026-09-05-monthly-performance-reports-codex-review.md`; the design's
-phase table still predates them.
+### Migration decisions (M1-M5)
+
+Recorded in `docs/superpowers/specs/2026-09-07-nextjs-migration-design.md`, which replaces the
+reports design's Phase 15-18 table: **M1** the application layer migrates to Next.js 16 / AI SDK 6 /
+Auth.js / Drizzle / Tailwind; **M2** Python is retained as an internal analytics and PDF-rendering
+service; **M3** the deployment target is SPCS, with EC2 parked; **M4** the SPCS app database is
+managed Snowflake Postgres (D39); **M5** no Auth0 — production identity is SPCS ingress, local
+development stays on the fixed dev user, and Auth0 remains documented but unwired.
+
+**Still not folded into any design:** supplier-office reports must rank **suppliers**, with
+customers as a secondary breakdown (owner-confirmed in the Codex review). This touches the report
+contract, grounded chat, labels and the email/PDF content equally, and is the largest outstanding
+piece of design work.
 
 ## 9. Document map
 
