@@ -1,6 +1,6 @@
 # Morning review — 2026-09-08
 
-Overnight run of 2026-09-07. Branch: **`docs-reconcile-d39`**, four commits, **not pushed**.
+Overnight run of 2026-09-07. Branch: **`docs-reconcile-d39`**, seven commits, **not pushed**.
 Docs only — no implementation code was written, nothing was merged, nothing was pushed.
 
 ---
@@ -21,6 +21,10 @@ so no implementation should start until they are answered.
 **Also waiting on you:** the Codex review's nine owner questions (product decisions — definition
 identity, who may generate reports in chat, historical report links, partial months, and so on), and
 whether the five untracked August walkthrough docs belong in the repo.
+
+**One small thing needing a nod:** `README.md:33` claims *"Adding a table is a certification step,
+not a code change."* That is false — I proved it takes five Python edits (see below). It's a
+one-line fix but it's your README's wording, so I left it alone. Say the word and I'll change it.
 
 **And:** PR #3 from earlier in the session is still open and unmerged.
 
@@ -89,7 +93,7 @@ the de-duplication bug is invisible in a browser — it only shows up on specifi
 It also proposes a replacement phase plan (15–19) following Codex's advice to settle architecture,
 then ship *one* report → grounded-follow-up workflow, then email, then platform.
 
-### 5. Triaged four review findings (commit `4526345`)
+### 5. Triaged all twelve review findings (commits `4526345`, `9fe86fd`)
 
 `docs/superpowers/specs/2026-09-07-codex-findings-triage.md`. Verdicts backed by running code, not
 by re-reading the review.
@@ -134,20 +138,83 @@ right answer costs more than the original uncertainty would have.
 
 ---
 
+## Also done after I wrote the first draft of this list
+
+### 6. The remaining eight findings (commit `9fe86fd`)
+
+All twelve are now worked. The ones beyond C01/C03/C07 that are worth your attention:
+
+- **C04** — two rules in the same section of the reports design contradict each other. D41 says to
+  stamp the office filter onto *"both queries of a share"*; the share-of-total rule says to drop it
+  from the denominator. Apply the stamp last and every share returns **100%**. Only the construction
+  order is missing, so it's a cheap fix — but it would have produced confidently wrong percentages.
+- **C05** — I drew a precision the review didn't. The run row *does* snapshot the period
+  (`period_a`, `period_b`, `basis`). It's the **scope** that isn't — the office is reachable only
+  through the definition FK. So queue a Gibraltar run, edit the definition, and you get a different
+  office than you asked for.
+- **C09** — the grounding check is numeric *set membership*: does this number appear anywhere in the
+  report? "Customer A's GP is 200" passes when A is 100 and B is 200. And the mockup fixture proves
+  the checker **accepts** a correct narrative while proving nothing about **rejection**, which is
+  the only thing a grounding check exists to do. This one matters — it's the safety net under the
+  model's prose about real money.
+- **C08** — verified in your frontend. `ArtifactPart.tsx` is a plain anchor whose own docstring
+  states the presigned-URL assumption D39 breaks, and bearer tokens are attached by
+  `requestWithAuth`, which an `href` navigation never goes through.
+- **C10** — restated rather than resolved. It asked for a change to the Python provider layer the
+  migration retires. Doing that work would be waste; the requirement moves to AI SDK.
+
+### 7. Table-onboarding review (commit `46bd838`)
+
+Codex assigned this. **Your README's extensibility claim is false.** Certification is necessary but
+not sufficient — a newly certified table stays invisible until five Python edits are made. The
+decisive one:
+
+```python
+# metric_query/schema.py:20-22
+entity: Literal["MARINE_SALES_PLANNING_V", "W_MARINE_GL_SOURCE_AI"]
+```
+
+`Args` is by its own docstring *"the only thing the model is allowed to author"*, so that closed
+`Literal` is the entire surface through which a table becomes askable. A third certified entity
+absent from it can't be named, validated or queried. The ontology would know; the product wouldn't.
+
+The other four: null placeholders live in a Python dict rather than the YAML; `query_builder.py`
+hardcodes volume mode and hierarchy roll-up per entity; two modules pin a default entity by name;
+and the synthetic generator has hand-written per-entity row builders with no generic path.
+
+**My recommendation is deliberately small:** a written procedure plus **one guard test** — assert
+every active ontology entity appears in that `Literal` and vice versa. No UI, no tooling.
+Onboarding is rare and its approval step is human by nature. That single test converts today's
+silent failure into a loud CI failure, and it's the highest-value item in the review.
+
+**Good news for your migration decision:** the whole onboarding path lives in `ontology/`, `data/`
+and `tasks/` — all staying Python. The extensibility mechanism needs no rebuild. One constraint
+recorded: the AI SDK tool definition must be *generated* from the Python schema, never re-declaring
+the entity list in TypeScript, or there'd be two closed lists drifting apart.
+
+---
+
 ## Still open
 
-Eight findings not yet worked: C02, C04, C05, C06, C08 (partially handled), C09, C10 (needs
-restating post-migration), C11. Plus the table-onboarding review Codex assigned, and the
-supplier-perspective requirement you confirmed — supplier-office reports must rank suppliers with
-customers as a secondary breakdown, which no current design document covers.
+- The **nine owner questions** from the Codex review — product decisions (definition identity, who
+  may generate reports in chat, historical report links, partial months, top-ten totals, and so on).
+- The **supplier-perspective** requirement you confirmed: supplier-office reports must rank
+  suppliers with customers as a secondary breakdown. No current design document covers it, and it
+  touches the report contract, grounded chat, labels, and email/PDF content equally. This is the
+  largest unaddressed piece of design work.
+- Whether the WFS upstream certification tooling referenced by `ontology/SOURCE.md` actually exists
+  in usable form — flagged, not validated.
+- The five untracked August walkthrough docs.
 
 ---
 
 ## Suggested next step
 
-Answer Q1–Q5, then I can write the Phase 15 implementation plan and present it for your go. If you'd
-rather I keep working the remaining findings first, that's fine too — they don't depend on your
-answers, and none of them are blocked.
+Answer Q1–Q5 and I can write the Phase 15 implementation plan and present it for your go.
+
+If you'd rather I keep working first, the useful things that don't need you are: the
+supplier-perspective design, and folding the twelve findings' required changes back into the reports
+design itself (right now they're recorded in a triage file, not in the design they correct).
 
 Nothing is pushed. Say the word and I'll push the branch and open a PR so you can read it from your
 phone.
