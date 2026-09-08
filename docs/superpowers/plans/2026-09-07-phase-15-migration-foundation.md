@@ -170,8 +170,30 @@ describe("resolveIdentity", () => {
   });
 
   it("spcs_ingress mints an sf| sub from the platform header", () => {
+    process.env.SPCS_SALES_USERS = "*";
     const id = resolveIdentity("spcs_ingress", "spcs", h({ "sf-context-current-user": "CARLOS" }));
     expect(id).toMatchObject({ sub: "sf|carlos", roles: ["Poseidon:Sales"] });
+  });
+
+  it("spcs_ingress grants Sales only to allow-listed users", () => {
+    process.env.SPCS_SALES_USERS = "alice,bob";
+    const allowed = resolveIdentity("spcs_ingress", "spcs", h({ "sf-context-current-user": "ALICE" }));
+    expect(allowed).toMatchObject({ sub: "sf|alice", roles: ["Poseidon:Sales"] });
+
+    // Authenticated by the platform, but not on the list -> no roles.
+    const stranger = resolveIdentity("spcs_ingress", "spcs", h({ "sf-context-current-user": "mallory" }));
+    expect(stranger).toMatchObject({ sub: "sf|mallory", roles: [] });
+  });
+
+  it("rejects a username over the 64-character cap", () => {
+    process.env.SPCS_SALES_USERS = "*";
+    expect(() => resolveIdentity("spcs_ingress", "spcs", h({ "sf-context-current-user": "a".repeat(65) })))
+      .toThrow(/missing spcs identity header/i);
+  });
+
+  it("rejects a dot, which Python's character class excludes", () => {
+    const id = resolveIdentity("disabled", "local", h({ "x-dev-user": "first.last" }));
+    expect(id).toMatchObject({ sub: "dev|local" });
   });
 
   it("spcs_ingress refuses to trust the header outside spcs deploy mode", () => {
@@ -224,8 +246,23 @@ const DEV_IDENTITY: Identity = {
   roles: ["Poseidon:Sales"],
 };
 
-/** Same sanitisation the Python providers apply to an act-as / ingress name. */
-const SAFE_NAME = /^[a-z0-9_.-]+$/;
+/**
+ * Port of Python's `sanitize_username` (core/identity.py) -- the ONE rule this
+ * codebase applies to any operator- or platform-supplied username-shaped
+ * header. Both modes share it there, so both share it here.
+ *
+ * Python: `_ACT_AS_PATTERN = re.compile(r"[a-z0-9_-]{1,64}")` applied with
+ * `.fullmatch()` to the casefolded value. Note: NO dot, and a 1-64 length cap.
+ * `fullmatch` is why "alice!" is rejected wholesale rather than truncated to
+ * its matching "alice" prefix.
+ */
+const SAFE_NAME = /^[a-z0-9_-]{1,64}$/;
+
+/** Returns the sanitised username, or null when it does not match. */
+function sanitizeUsername(raw: string): string | null {
+  const candidate = raw.toLowerCase();
+  return SAFE_NAME.test(candidate) ? candidate : null;
+}
 
 export function resolveIdentity(
   mode: "disabled" | "spcs_ingress" | "auth0",
@@ -234,8 +271,9 @@ export function resolveIdentity(
 ): Identity {
   if (mode === "disabled") {
     const actAs = headers.get("x-dev-user");
-    if (actAs && SAFE_NAME.test(actAs.toLowerCase())) {
-      return { ...DEV_IDENTITY, sub: `dev|${actAs.toLowerCase()}` };
+    const name = actAs ? sanitizeUsername(actAs) : null;
+    if (name) {
+      return { ...DEV_IDENTITY, sub: `dev|${name}` };
     }
     // An invalid act-as header is IGNORED, never rejected -- the whole point
     // of this mode is that it never refuses a request.
@@ -250,13 +288,29 @@ export function resolveIdentity(
       throw new AuthError("spcs identity header is not trusted outside spcs deploy mode");
     }
     const raw = headers.get("sf-context-current-user");
-    const name = raw?.trim().toLowerCase();
+    const name = raw === null ? null : sanitizeUsername(raw);
     // A present-but-malformed header raises the SAME error as an absent one:
-    // both mean the trusted edge did not deliver what it guarantees.
-    if (!name || !SAFE_NAME.test(name)) {
+    // both mean the trusted edge did not deliver what it guarantees. Python
+    // has no separate "malformed" bucket here either.
+    if (!name) {
       throw new AuthError("missing spcs identity header");
     }
-    return { sub: `sf|${name}`, email: null, name: null, roles: ["Poseidon:Sales"] };
+    // Roles are ALLOWLIST-GATED, not granted to everyone the platform
+    // authenticates -- mirrors identity_spcs.py:156,
+    // `roles = (_SALES_ROLE,) if self._is_allowed(candidate) else ()`.
+    // The allowlist is Settings.spcs_sales_users, casefolded, and "*" means
+    // everyone. A user the platform authenticated but who is NOT on the list
+    // gets an empty role list, and require_sales then 403s them.
+    const allowlist = new Set(
+      (process.env.SPCS_SALES_USERS ?? "").split(",").map((n) => n.trim().toLowerCase()).filter(Boolean),
+    );
+    const allowed = allowlist.has("*") || allowlist.has(name);
+    return {
+      sub: `sf|${name}`,
+      email: null,
+      name: null,
+      roles: allowed ? ["Poseidon:Sales"] : [],
+    };
   }
 
   throw new AuthError("auth0 mode is not wired in this phase (decision M5)");
@@ -273,11 +327,12 @@ Expected: PASS, 8 tests.
 Run from `backend/`:
 
 ```bash
-.venv/Scripts/python.exe -B -c "from poseidon.core.identity import DEV_CONTEXT; print(DEV_CONTEXT.sub, DEV_CONTEXT.email, DEV_CONTEXT.name, DEV_CONTEXT.roles)"
+cd backend && .venv/Scripts/python.exe -B -c "from poseidon.core.identity import DISABLED_DEFAULT_USER as U; print(U.sub, U.email, U.name, U.roles)"
 ```
 
-Expected output must match `DEV_IDENTITY` above exactly: `dev|local dev@local Dev User ('Poseidon:Sales',)`.
-If the constant is named differently, find the real fixed context in `backend/poseidon/core/identity.py` and match **its** values. Do not adjust the Python to fit the TypeScript.
+Expected, verified 2026-09-08: `dev|local dev@local Dev User ('Poseidon:Sales',)` — matching
+`DEV_IDENTITY` above exactly. The constant is `DISABLED_DEFAULT_USER`
+(`backend/poseidon/core/identity.py:130`). Never adjust the Python to fit the TypeScript.
 
 - [ ] **Step 6: Wire `web/proxy.ts`**
 
