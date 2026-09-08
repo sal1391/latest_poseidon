@@ -99,31 +99,40 @@
   .up { color: var(--positive); }
   .down { color: var(--negative); }
 
-  /* ---------- top bar: mockup switcher ---------- */
-  .mock-bar {
-    height: 48px;
-    display: flex; align-items: center; gap: 16px;
-    padding: 0 16px;
-    border-bottom: 1px solid var(--border);
-    background: var(--surface-raised);
-    position: sticky; top: 0; z-index: 5;
+  /* ---------- mockup document chrome ---------- */
+  .doc-head { max-width: 1560px; margin: 0 auto; padding: 44px 28px 6px; }
+  .doc-head h1 { font-size: 26px; letter-spacing: -0.01em; margin-top: 8px; }
+  .doc-head .lede { margin-top: 12px; max-width: 76ch; font-size: 15px; line-height: 1.62; color: var(--ink-muted); }
+  .doc-head .disclaimer { margin-top: 16px; font-size: 12px; color: var(--ink-faint); }
+
+  .board { max-width: 1560px; margin: 0 auto; padding: 30px 28px 44px; }
+  .board + .board { border-top: 1px solid var(--border); }
+  .board-tag {
+    display: inline-block; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+    font-weight: 600; color: var(--ink-muted);
+    border: 1px solid var(--border-strong); border-radius: 999px; padding: 3px 11px;
   }
-  .mock-bar .name { font-weight: 600; }
-  .mock-bar .note { color: var(--ink-muted); font-size: 12px; margin-left: auto; }
-  .tabs { display: flex; gap: 4px; }
-  .tab {
-    border: 1px solid transparent; background: transparent;
-    padding: 6px 12px; border-radius: 999px; cursor: pointer; color: var(--ink-muted);
+  .board-head h2 { font-size: 21px; margin-top: 12px; letter-spacing: -0.01em; }
+  .board-sum { margin-top: 8px; max-width: 76ch; font-size: 14px; line-height: 1.62; color: var(--ink-muted); }
+  .board-key { margin-top: 18px; display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }
+  .board-key > div {
+    background: var(--surface-raised); border: 1px solid var(--border);
+    border-radius: var(--radius-m); padding: 13px 15px;
   }
-  .tab[aria-selected="true"] { background: var(--surface); border-color: var(--border-strong); color: var(--ink); box-shadow: var(--shadow-1); }
-  .tab:hover { color: var(--ink); }
+  .board-key .k-label { display: block; font-size: 12px; font-weight: 600; }
+  .board-key p { margin-top: 6px; font-size: 13px; line-height: 1.55; color: var(--ink-muted); }
+  .board-frame {
+    margin-top: 20px;
+    border: 1px solid var(--border-strong); border-radius: var(--radius-m);
+    overflow: hidden; box-shadow: var(--shadow-2); background: var(--surface);
+  }
+  .board-frame.sunken { background: var(--surface-sunken); }
 
   /* ---------- app shell ---------- */
   .shell {
     display: grid;
     grid-template-columns: 240px minmax(0, 1fr) 400px;
-    height: calc(100vh - 48px);
-    height: calc(100dvh - 48px);
+    height: clamp(560px, 80vh, 840px);
   }
   .sidebar, .panel, .chat { min-height: 0; overflow-y: auto; }
   .sidebar {
@@ -287,7 +296,6 @@
   .ol-body .cta { display: inline-block; background: var(--accent); color: var(--accent-ink); text-decoration: none; padding: 10px 18px; border-radius: 6px; font-weight: 600; font-size: 13px; }
   .ol-body .fine { font-size: 12px; color: var(--ink-faint); }
   .ol-body .narr p { font-size: 13px; line-height: 1.55; max-width: 70ch; }
-  .email-note { max-width: 860px; margin: 0 auto 16px; font-size: 12px; color: var(--ink-muted); text-align: center; }
 
   /* ---------- admin screen ---------- */
   .admin-screen { padding: 28px; display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; align-items: start; }
@@ -322,22 +330,40 @@
     .panel { padding: 16px; }
   }
   @media (prefers-reduced-motion: no-preference) {
-    .btn, .chip, .tab, .run { transition: background-color 120ms ease, color 120ms ease; }
+    .btn, .chip, .run { transition: background-color 120ms ease, color 120ms ease; }
   }
 </style>
 </head>
 <body>
-<div class="mock-bar">
-  <span class="name">Poseidon &middot; monthly report mockup</span>
-  <div class="tabs" role="tablist">
-    <button class="tab" role="tab" aria-selected="true" data-screen="report">Report view</button>
-    <button class="tab" role="tab" aria-selected="false" data-screen="email">Email</button>
-    <button class="tab" role="tab" aria-selected="false" data-screen="admin">Admin dialogs</button>
-  </div>
-  <span class="note">Sample figures are synthetic and internally consistent, not real data.</span>
-</div>
+<header class="doc-head">
+  <div class="eyebrow">Poseidon &middot; design mockup &middot; September 2026</div>
+  <h1>Monthly performance reports</h1>
+  <p class="lede">This feature shows up in three separate places in the product, and each one is a section below. First the app itself, where a salesperson reads the report and asks questions about it. Then the email the team receives every month. Then the admin screens used to set a report up and send it. These are different parts of the product, not three designs of the same page.</p>
+  <p class="disclaimer">Sample figures are synthetic and internally consistent. A design mockup, not live data.</p>
+</header>
 
-<!-- ============================== SCREEN 1: split view ============================== -->
+<!-- ============================== BOARD 1: the app ============================== -->
+<section class="board">
+  <div class="board-head">
+    <span class="board-tag">Section 1 of 3 &middot; in the app</span>
+    <h2>User app</h2>
+    <p class="board-sum">What a salesperson sees when they sign in to Poseidon. One screen, three columns, nothing to set up: their history on the left, the report in the middle, and a conversation on the right. The report opens by default, so the month&rsquo;s numbers are the first thing on the screen.</p>
+    <div class="board-key">
+      <div>
+        <span class="k-label">Left &mdash; previous reports and conversations</span>
+        <p>Every report the user has access to, grouped by office, with each month that has been produced and whether it was sent, replaced or failed. Underneath, their previous conversations. One click reopens either.</p>
+      </div>
+      <div>
+        <span class="k-label">Middle &mdash; the report view (opens here)</span>
+        <p>The month set against the month before: headline figures, ranked customers and ports, charts, the biggest movers with the context of what those accounts did elsewhere, and a written summary. Every number can be traced back to the query that produced it.</p>
+      </div>
+      <div>
+        <span class="k-label">Right &mdash; chat about this report</span>
+        <p>A conversation that already knows which report is on screen, so follow-up questions can be asked in plain English without repeating the office or the dates. The tags above the message box show what an answer is filtered to; remove one to widen the question. Conversations are private to the person who asked.</p>
+      </div>
+    </div>
+  </div>
+  <div class="board-frame">
 <section class="screen shell" id="screen-report">
   <aside class="sidebar">
     <div class="brand"><span class="mark">P</span> Poseidon</div>
@@ -662,11 +688,19 @@
     </div>
   </aside>
 </section>
+  </div>
+</section>
 
-<!-- ============================== SCREEN 2: email ============================== -->
-<section class="screen email-screen" id="screen-email" hidden>
-  <div style="width:100%">
-    <p class="email-note">What the team receives. Plain HTML tables that Outlook renders faithfully; charts and account context live in Poseidon behind the button.</p>
+<!-- ============================== BOARD 2: the email ============================== -->
+<section class="board">
+  <div class="board-head">
+    <span class="board-tag">Section 2 of 3 &middot; what lands in the inbox</span>
+    <h2>Email</h2>
+    <p class="board-sum">The monthly email the team receives, shown here the way it looks in Outlook. It goes to a named recipient list once a report admin has reviewed the report and pressed Send. The email carries the headline figures, the ranked tables and the written summary in plain tables that render correctly in any mail client, plus a PDF copy of the same thing. The heavier material &mdash; charts, account context, the full audit trail &mdash; stays in the app behind the &ldquo;Open in Poseidon&rdquo; button, which keeps the email short enough to read on a phone. Anyone who never opens the app still gets the month&rsquo;s story.</p>
+  </div>
+  <div class="board-frame sunken">
+<section class="screen email-screen" id="screen-email">
+  <div style="width:min(860px,100%)">
     <div class="outlook">
       <div class="ol-head">
         <span class="subj">Monthly Performance &middot; Gibraltar Office &middot; August 2026</span>
@@ -752,9 +786,32 @@
     </div>
   </div>
 </section>
+  </div>
+</section>
 
-<!-- ============================== SCREEN 3: admin dialogs ============================== -->
-<section class="screen admin-screen" id="screen-admin" hidden>
+<!-- ============================== BOARD 3: admin ============================== -->
+<section class="board">
+  <div class="board-head">
+    <span class="board-tag">Section 3 of 3 &middot; report admins only</span>
+    <h2>Setting up and sending a report</h2>
+    <p class="board-sum">Three small forms, seen only by people with the report admin role. Between them they cover the whole life of a report: define it once, generate a month when you want it, and check who is on the list before anything leaves the building. Nothing is ever emailed without a person clicking Send.</p>
+    <div class="board-key">
+      <div>
+        <span class="k-label">Report definition</span>
+        <p>Set up once per office: which office, what it is compared against, and who receives it. Office names are picked from the values that actually exist in the data, so a report cannot be pointed at something that is not there.</p>
+      </div>
+      <div>
+        <span class="k-label">Generate report</span>
+        <p>Choose a month and run it. It works in the background and lands as a draft in the sidebar in about a minute. Re-running a month replaces that draft and leaves anything already sent untouched.</p>
+      </div>
+      <div>
+        <span class="k-label">Send report</span>
+        <p>The last check before it goes out: tick the recipients for this send, decide whether to attach the PDF, and confirm. Changes made here apply to this send only, not to the saved list.</p>
+      </div>
+    </div>
+  </div>
+  <div class="board-frame sunken">
+<section class="screen admin-screen" id="screen-admin">
   <div class="dialog">
     <h2>Report definition</h2>
     <div class="body">
@@ -810,19 +867,13 @@
     <div class="foot"><button class="btn">Cancel</button><button class="btn primary">Send to 5 recipients</button></div>
   </div>
 </section>
+  </div>
+</section>
 
 <div class="tooltip" id="tooltip"></div>
 
 <script>
 (function () {
-  // ---- screen switcher ----
-  var tabs = document.querySelectorAll('.tab');
-  tabs.forEach(function (t) {
-    t.addEventListener('click', function () {
-      tabs.forEach(function (o) { o.setAttribute('aria-selected', o === t ? 'true' : 'false'); });
-      document.querySelectorAll('.screen').forEach(function (s) { s.hidden = (s.id !== 'screen-' + t.dataset.screen); });
-    });
-  });
   // ---- ranked table subtabs ----
   var subtabs = document.querySelectorAll('.subtab');
   subtabs.forEach(function (t) {
