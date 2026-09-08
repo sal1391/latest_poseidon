@@ -5,11 +5,18 @@ later one. Tests ship inside the phase that introduces the behavior (never defer
 gitignored). Suggested branch-per-phase; merge only after the gate passes.
 
 Shape of the plan: conversational **data Q&A is an early core phase** (P6 -- the first
-end-to-end LLM capability); **EC2 deploys first** (P14 -- a public, Auth0-gated instance on
-proven AWS footing, owner decision at Phase 13 closure, decision D8 revised), **SPCS follows**
-(P15 -- the corporate primary target; this is the gate that opens user testing) with the
-**Snowflake data backend onlined afterward** by a separate Snowflake-side effort (P16);
-personalization (P13) and feedback (P12) land before user testing so testers exercise them.
+end-to-end LLM capability); personalization (P13) and feedback (P12) land before user testing so
+testers exercise them.
+
+> **Deployment ordering superseded (D42, 2026-09).** This plan was written with **EC2 first**
+> (P14, decision D8 revised) and **SPCS following** (P15). That is no longer the order. P14 is
+> **paused** after its completed offline half (Tasks 1-6b done; 7-9 pending), EC2 is kept for a
+> later deployment, and **SPCS is the near-term target**. The monthly-performance-reports design
+> also renumbers what follows: its Phases 15-18 replace the P14-P17 block below, folding the old
+> P15 (SPCS) and P16 (Snowflake backend) into its **Phase 18**. Phase *content* below is still
+> accurate; phase *numbers and ordering* are not. Authoritative sequence:
+> `docs/superpowers/specs/2026-09-04-monthly-performance-reports-design.md` §12 — itself pending
+> rework for the confirmed Next.js migration.
 
 ```mermaid
 flowchart LR
@@ -88,9 +95,11 @@ flowchart LR
 ## Phase 5 — LLM provider layer + routing
 
 - Deliverables: the provider contract (doc 03 §1) with **`BedrockProvider`
-  (Converse/ConverseStream) and the stub provider only** — `CortexProvider` is deliberately
-  deferred to Phase 15 (decision D33); `RoleClient` + `models.yml` profiles (both profiles
-  declared, `cortex` unusable until 15); `PromptRegistry` with prompt assembly order (base → user
+  (Converse/ConverseStream) and the stub provider only** — `CortexProvider` deferred (decision
+  D33; **D40 later moved it earlier and fixed its transport as the Cortex REST Messages endpoint
+  with native tool calling**, so "deferred to Phase 15" no longer describes the plan);
+  `RoleClient` + `models.yml` profiles (both profiles declared, `cortex` unusable until Cortex
+  lands); `PromptRegistry` with prompt assembly order (base → user
   instruction → memory → state); agent loop with validation, structured error return, iteration
   cap, `tool` event emission; `StubRouter`; utility role for titles; router-decision suite (stub +
   `-m router_live`); prompt contract tests.
@@ -220,29 +229,43 @@ The tables and the writer already exist from Phase 6; this phase makes them usef
   `turn_run` + `llm_calls` + `message_feedback` rows present, memory distillation fires; RPO 24h
   / RTO next business day satisfied by RDS automated daily backups (the owner numbers, doc 07
   §4); rollback rehearsed (paired `alembic downgrade` + previous image tag).
-- Depends on: 13 (independent of 15/16; sequenced first by decision D8 revised).
+- Depends on: 13. **Ordering superseded by D42:** this phase is paused after its completed
+  offline half (Tasks 1-6b done; 7-9 pending) and the monthly-report work sequences ahead of it.
+  D8 revised's "EC2 deploys first" no longer holds; SPCS is the near-term deployment target.
 
 ## Phase 15 — SPCS deployment (corporate primary target)
 
-- Preparation deliverables (before the deploy work): **`CortexProvider`** (strict-JSON tool
-  emulation) behind the unchanged contract of doc 03 §1, plus the **provider-parity contract
-  test** — recorded tool-calling scenarios normalizing to identical `ToolCall`/`LLMResponse`
-  shapes on Bedrock and Cortex (decision D33); the router-decision suite re-run with
-  `LLM_PROFILE=cortex`.
-- Deliverables: multi-stage Dockerfile (doc 07 §2); `infra/spcs_spec.yaml` (backend + db +
-  minio containers, block volumes, public `api` endpoint); image repo + compute pool + EAI
-  setup; `DEPLOY_MODE=spcs` session strategy live (OAuth token file); `IDENTITY_MODE=
-  spcs_ingress` live; Cortex profile as LLM default; scheduled `pg_dump` + artifact mirror
-  shipped off-service (doc 07 §4); `infra/runbooks/deploy-spcs.md` and
+> **Numbering superseded.** The monthly-performance-reports design folds this phase and the old
+> Phase 16 (Snowflake backend) into its **Phase 18**, and D42 pauses the EC2 phase so report work
+> sequences first. The deliverables below remain accurate as the SPCS content; their phase number
+> and ordering do not. See
+> `docs/superpowers/specs/2026-09-04-monthly-performance-reports-design.md` §12.
+
+- Preparation deliverables (before the deploy work): **`CortexProvider`** over the **Cortex REST
+  Messages endpoint with native tool calling** (decision D40 — *not* the SQL `COMPLETE` function
+  with strict-JSON emulated tools, which was the original D33 plan), behind the unchanged
+  contract of doc 03 §1; plus the **provider-parity contract test** — recorded tool-calling
+  scenarios normalizing to identical `ToolCall`/`LLMResponse` shapes on Bedrock and Cortex; the
+  router-decision suite re-run with `LLM_PROFILE=cortex`. D40 also moves this work earlier than
+  "the SPCS phase's preparation".
+- Deliverables: multi-stage Dockerfile (doc 07 §2); `infra/spcs_spec.yaml` (**backend + worker
+  containers only, no `db`, no `minio`, no block volumes — D39**; public `api` endpoint); image
+  repo + compute pool + EAI setup; **managed Snowflake Postgres provisioned, with `DATABASE_URL`
+  injected from a Snowflake secret (D39)**; `DEPLOY_MODE=spcs` session strategy live (OAuth token
+  file, read fresh per connection, role unset); `IDENTITY_MODE=spcs_ingress` live; Cortex profile
+  as LLM default; **the managed instance's backup/PITR guarantees confirmed against RPO 24h / RTO
+  next business day** (doc 07 §4 — replaces the scheduled `pg_dump` + artifact mirror, which D39
+  removed along with the containers they protected); `infra/runbooks/deploy-spcs.md` and
   `infra/runbooks/backup-restore-spcs.md` (`smoke.md` itself already shipped in Phase 14 and
   needs no changes here).
 - Validate: service READY; `SHOW ENDPOINTS` yields the ingress URL; `smoke.md` executed there —
   login-as-Snowflake-user, all three flows on synthetic data, artifact download, `turn_run` +
   `llm_calls` + feedback rows present, memory distillation fires (idle threshold lowered for the
   rehearsal); parity test green on the Cortex default; suspend/resume rehearsed; rollback
-  (`alembic downgrade` + previous image tag) rehearsed; **restore rehearsed** — a verified dump
-  restored into a fresh service and smoked, against the stated RPO/RTO. **This gate opens user
-  testing.**
+  (`alembic downgrade` + previous image tag) rehearsed; **restore rehearsed** — the managed
+  Snowflake Postgres instance restored or cloned to a chosen point, a fresh service brought up
+  against it and smoked, against the stated RPO/RTO (D39: this recovers report artifacts too,
+  since their bytes are rows). **This gate opens user testing.**
 - Depends on: 13.
 
 ## Phase 16 — Snowflake data backend online

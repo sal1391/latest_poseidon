@@ -96,7 +96,7 @@ new renderer, never a change to chat logic.
 | `table` | columns, rows | top-5 ports and similar tabular results |
 | `phase_section` | title, markdown | one agent phase (Contextualizer / Researcher / Strategist) as an expandable section |
 | `tool_event` | tool, server, status, label | a visible step line in the transcript — e.g. "Calling Perplexity — marine news search…" → "✓ Perplexity — 3 sources"; updated in place as status changes |
-| `artifact` | name, url, mime | download card (PDF brief from S3 pre-signed URL) — assembled by the chat emitter from the skill result's `ArtifactRef` field (doc 02); skills never emit this part directly |
+| `artifact` | name, url, mime | download card (PDF brief from S3 pre-signed URL) — assembled by the chat emitter from the skill result's `ArtifactRef` field (doc 02); skills never emit this part directly. **D39 caveat:** report PDFs are *not* pre-signed URLs — they are bytes behind an authenticated API route, and a plain anchor does not carry the SPA's bearer token, so they need an authenticated fetch-and-download path rather than this card's `href` (Codex review C08) |
 | `proof` | lines[] | collapsible provenance block (doc 06) — assembled by the chat emitter from `SkillResult.proof` (a field per doc 02); skills never emit this part directly |
 | `error` | code, message, hint | inline error card with recovery action |
 

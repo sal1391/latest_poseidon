@@ -30,6 +30,12 @@ downstream code (decision D22).
 - Role mapping: `auth0` reads roles from the namespace claim (§3); `spcs_ingress` grants
   `Poseidon:Sales` via a config-listed allowlist or a Snowflake-role lookup at login (config
   choice, recorded per environment). The 403 path is identical in both.
+- **`Poseidon:ReportAdmin` (D37)** is a second role, granted the same way in each mode
+  (`SPCS_REPORT_ADMINS` allowlist under `spcs_ingress`; the namespace claim under `auth0`). It
+  gates **writes** to report definitions, runs and sends; `Poseidon:Sales` gates reads. Report
+  rows are shared org documents granted to the app role with no per-user row policies, so this
+  role is the *only* thing separating a reader from a writer — it must be enforced at dispatch,
+  not by hiding UI affordances.
 - Subs are provider-prefixed (`auth0|…`, `sf|…`) and therefore stable per provider. An
   environment uses one provider; cross-provider account linking is deliberately out of scope.
 
@@ -211,7 +217,8 @@ be defensible; the final numbers are an **owner decision** and are recorded per 
 | `turn_run` / `llm_calls` / `tool_calls` (audit) | 400 days | `RETENTION_AUDIT_DAYS` |
 | `message_feedback` | kept as long as its `turn_run` | — |
 | `user_memory` versions | last 20 versions | `MEMORY_KEEP_VERSIONS` |
-| Artifacts (PDF briefs) | 90 days, then object-store lifecycle expiry | `RETENTION_ARTIFACT_DAYS` |
+| Artifacts — brief PDFs | 90 days, then object-store lifecycle expiry | `RETENTION_ARTIFACT_DAYS` |
+| Artifacts — report HTML/PDF (D39) | 90 days, then row deletion; no lifecycle rule exists to fall back on, so expiry must be an explicit job | `RETENTION_ARTIFACT_DAYS` |
 | JSON application logs | 30 days | platform log retention |
 
 **Deletion resolves the audit tension explicitly.** `DELETE /api/conversations/{id}` hard-deletes
@@ -238,7 +245,8 @@ leaves a database-side trace. Admins have no path to another user's `messages`, 
 |-----------|-------------|--------------------|
 | LLM provider (Bedrock / Cortex) | conversation messages, user instruction + memory entries, tool schemas, and retrieved internal results (metric values, tables) — this is the processing scope the product requires | credentials, other users' data |
 | Web research (Perplexity, direct or MCP) | entity names only: customer, port, region, and a plain-language topic, plus the user's own question text | any internal metric value, computed figure, period-over-period delta, customer ranking, or anything derived from the certified views |
-| Object store (S3 / MinIO) | generated artifacts and their metadata | raw conversation transcripts |
+| Object store (S3 / MinIO) — *local and EC2 only; absent on SPCS (D39)* | generated brief artifacts and their metadata | raw conversation transcripts |
+| Mail transport (Microsoft Graph on SPCS, SMTP local/EC2) — **D38** | rendered report content and its PDF, to allow-listed internal domains only | conversation content of any kind, and any recipient outside the allow-list |
 | Auth0 | authentication traffic only | conversation content of any kind |
 
 **Decision D29:** retention is configuration with stated defaults, and conversation deletion
@@ -267,7 +275,8 @@ that no numeric result value appears in an outbound research query.
 | `POST /api/conversations/{id}/messages` | authenticated + RLS | send turn; SSE response (doc 01 §5) |
 | `POST /api/messages/{id}/feedback` | authenticated + RLS | verdict + optional comment; idempotent upsert (doc 06 §7) |
 | `GET /api/dimensions/customers?q=` | authenticated | type-ahead from `DataClient.list_dimension_values` |
-| `GET /api/artifacts/{id}` | authenticated + ownership check | 302 to a short-lived pre-signed object-store URL |
+| `GET /api/artifacts/{id}` | authenticated + ownership check | 302 to a short-lived pre-signed object-store URL (brief PDFs, where an object store exists) |
+| report byte routes (D39) | authenticated + role check | **bytes served through the API in every habitat** — no pre-signed redirect, since SPCS has no object store. Note this changes the browser download contract: a plain `<a href>` will not carry the SPA's bearer token, so an authenticated fetch-and-download path is required (Codex review C08) |
 | `GET /health/live`, `/health/ready` | none | liveness instant; readiness checks DB |
 
 Cross-cutting: explicit CORS origin allowlist (the SPA origin only); token-bucket rate limiting

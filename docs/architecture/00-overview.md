@@ -89,8 +89,8 @@ flowchart LR
   IDP["Identity provider<br/>Auth0 (OIDC) | SPCS ingress"]
   LLM["LLM providers<br/>Bedrock (Sonnet/Opus/Nova)<br/>Snowflake Cortex (Claude)"]
   PPLX["Perplexity<br/>(web research)"]
-  PG[("Postgres + pgvector<br/>chat, run log, feedback,<br/>user memory, vectors")]
-  OBJ[("Object store (S3 API)<br/>artifacts (PDF briefs)")]
+  PG[("Postgres + pgvector<br/>chat, run log, feedback,<br/>user memory, vectors,<br/>report HTML/PDF bytes (D39)<br/>SPCS: managed Snowflake Postgres")]
+  OBJ[("Object store (S3 API)<br/>artifacts (PDF briefs)<br/>local + EC2 only — absent on SPCS (D39)")]
   SRC[("Domain data<br/>synthetic (local default) |<br/>Snowflake views/tables")]
 
   UI -- "login" --> IDP
@@ -157,9 +157,10 @@ poseidon/
   over premature scale-out, unchanged.
 - D19 Flow = entry orchestration only; after the initial deliverable the router sees the full
   skill registry in every flow — pivots are the product, not an exception (doc 02 §4).
-- D20 App state (chat, run log, feedback, user memory) is Postgres everywhere; in SPCS it runs
-  as a second service container on a mounted block volume — mirrors the wfs in-service-DB
-  evidence and keeps the RLS/pgvector schema identical across habitats (doc 07 §4).
+- D20 **(SPCS half revised by D39 — see below)** App state (chat, run log, feedback, user
+  memory) is Postgres everywhere, keeping the RLS/pgvector schema identical across habitats
+  (doc 07 §4). The original in-service-container-on-a-block-volume shape for SPCS is superseded:
+  SPCS now uses managed Snowflake Postgres. The "Postgres everywhere, one schema" half stands.
 - D21 LLM provider layer supports Bedrock and Snowflake Cortex behind one config-driven
   role→{provider, model} interface; SPCS-mode default is Cortex — zero external credentials
   in-platform, and the current app already runs Cortex `claude-sonnet-4-5` (doc 03 §1).
@@ -190,11 +191,45 @@ poseidon/
   threshold with retries, storing typed attributed entries rendered to markdown at assembly and
   never derived from tool output — an in-process debounce loses work on restart, and free-text
   accumulation from external text is a poisoning vector (doc 05 §5).
-- D32 The in-service Postgres and MinIO get scheduled logical backups shipped off-service, a
-  rehearsed restore, and stated RPO/RTO — a mounted volume is not a backup (doc 07 §4).
-- D33 Phase 5 ships Bedrock + stub; Cortex arrives in the SPCS phase's preparation with a
-  provider-parity contract test — prove the seam with one live provider before paying for two
-  (doc 03 §1, doc 08).
+- D32 **(scope narrowed by D39)** Every habitat's app state gets scheduled logical backups
+  shipped off-store, a rehearsed restore, and stated RPO/RTO. The original wording covered
+  in-service Postgres and MinIO containers on mounted volumes; under D39 SPCS has neither, so
+  there the obligation is to verify and document Snowflake Postgres's own backup/PITR guarantees
+  rather than to run backup sidecars. The rehearsed-restore and stated-RPO/RTO requirements are
+  unchanged, and still apply in full to EC2's RDS + S3 (doc 07 §4).
+- D33 **(timing revised by D40, interface unchanged)** Phase 5 ships Bedrock + stub; Cortex
+  arrives with a provider-parity contract test — prove the seam with one live provider before
+  paying for two (doc 03 §1, doc 08). D40 moves Cortex earlier than "the SPCS phase's
+  preparation" and fixes its transport; the one-interface, parity-tested requirement stands.
+
+### Monthly performance reports (D34–D45)
+
+Decisions D34–D45 were taken in the monthly-performance-reports design and are recorded here
+so this log stays the single index of architectural decisions. Detail, schemas and rationale
+live in `docs/superpowers/specs/2026-09-04-monthly-performance-reports-design.md`; that file
+remains authoritative for the feature, this table for the fact that the decision exists.
+
+| # | Decision | Revises |
+|---|----------|---------|
+| D34 | A report is deterministic skill output: Python queries, computes and renders every figure; the synthesis model only writes prose over the computed JSON, and a grounding check verifies every number it writes. | — |
+| D35 | Report scope is an office slice (`CUSTOMER_TEAM_NAME` or `PRIMARY_SUPPLY_TEAM_OFFICE`), or the whole book. A definition = office column + office value + recipient list; generate → preview → send, on demand. | — |
+| D36 | Comparison basis is an enum with one implemented value, `prior_month`. Other bases are declared but fail validation until built. | — |
+| D37 | Report definitions, runs and sends are shared org documents granted to the app role, no per-user row policies. Writes gated by a new role `Poseidon:ReportAdmin`; reads by `Poseidon:Sales`. | — |
+| D38 | One `Mailer` interface. Microsoft Graph is the production transport on SPCS (its egress allows only ports 22, 80, 443, 1024+); SMTP serves local Mailpit and EC2; a stub serves tests. The mail path is a new egress processor: report content to allow-listed internal domains, never conversation content. | — |
+| **D39** | **On SPCS the app database is managed Snowflake Postgres, injected as `DATABASE_URL` from a Snowflake secret. Report HTML and PDF are stored as bytes in Postgres and served through the API in every habitat; MinIO is not part of the SPCS service.** | **D20** |
+| D40 | `CortexProvider` is built now, over the Cortex REST Messages endpoint with native tool calling — not the SQL `COMPLETE` function with emulated tools. | D33 (timing) |
+| D41 | Report chat carries the office filter and month pair by default. Scope is an explicit validated skill argument; the model chooses the value, code applies the filter. Share-of-total is computed in Python. The report's figures reach the model only through `reporting.report_lookup`. | — |
+| D42 | The EC2 deployment (Phase 14) is paused after its completed offline half; report work sequences first. | doc 08 order |
+| D43 | Report content and math follow mom-comparison exactly where it already works: two single-month frames merged in Python, its KPI, top-mover, driver and new/lost rules, its narrative templates. | — |
+| D44 | Visibility: the whole book is visible to every Sales user, including other offices' customer-level GP and margin, as in mom-comparison today. Recorded so a later per-office restriction is a conscious change, not drift. | — |
+| D45 | The query builder gains a multi-column frame query (several certified columns plus a month/quarter/year bucket, no row limit). A report is four to six queries, and the chat can answer "by port by month". | — |
+
+Two later decisions are recorded as **confirmed but not yet folded into the design**: the
+application stack migrates to Next.js 16 / AI SDK 6 / Auth.js / Drizzle / Tailwind with Python
+retained as an internal analytics and PDF-rendering service, and supplier-office reports rank
+suppliers rather than customers. Both are owner-confirmed in
+`docs/superpowers/specs/2026-09-05-monthly-performance-reports-codex-review.md`; the design's
+phase table still predates them.
 
 ## 9. Document map
 
