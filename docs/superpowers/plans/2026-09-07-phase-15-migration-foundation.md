@@ -20,7 +20,8 @@
 - **DSN format differs between the two stacks.** Compose sets `DATABASE_URL=postgresql+psycopg://poseidon:poseidon@db:5432/poseidon` — that `+psycopg` is SQLAlchemy syntax and Drizzle will reject it. Drizzle needs `postgresql://poseidon:poseidon@localhost:5432/poseidon`.
 - **The Vite app must keep working.** Every gate in this phase includes "and `npm run dev` in `frontend/` still serves the old app." Coexistence is the point.
 - **Drizzle does not own migrations yet.** Alembic stays the authority through this phase. Handover happens only after grants and roles are ported deliberately.
-- **Offline Python test command:** `python -B -m pytest -p no:cacheprovider -m 'not pg and not minio and not pdf and not router_live and not research_live'` run from `backend/`. Markers verified in `backend/pyproject.toml`.
+- **Always use `.venv/Scripts/python.exe`, never a bare `python`.** Verified 2026-09-08: a bare `python` resolves to a *different* global 3.14.4 that has `fastapi` and `pytest 9.0.3` but **no `sqlalchemy`**, so it imports partway and dies with a confusing `ModuleNotFoundError`. The venv has pytest 9.1.1.
+- **Offline Python test command:** `cd backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest -p no:cacheprovider -m 'not pg and not minio and not pdf and not router_live and not research_live'` — baseline **1679 passed, 13 skipped, 116 deselected**. Never pipe pytest: a pipe masks the exit code and a failing run reports success.
 - **Postgres-backed Python tests** use `-m pg` and require the compose `db` service up.
 
 ---
@@ -272,7 +273,7 @@ Expected: PASS, 8 tests.
 Run from `backend/`:
 
 ```bash
-python -B -c "from poseidon.core.identity import DEV_CONTEXT; print(DEV_CONTEXT.sub, DEV_CONTEXT.email, DEV_CONTEXT.name, DEV_CONTEXT.roles)"
+.venv/Scripts/python.exe -B -c "from poseidon.core.identity import DEV_CONTEXT; print(DEV_CONTEXT.sub, DEV_CONTEXT.email, DEV_CONTEXT.name, DEV_CONTEXT.roles)"
 ```
 
 Expected output must match `DEV_IDENTITY` above exactly: `dev|local dev@local Dev User ('Poseidon:Sales',)`.
@@ -601,7 +602,7 @@ def test_dispatch_returns_a_skill_result_envelope(client):
 
 - [ ] **Step 2: Run it and watch it fail**
 
-Run from `backend/`: `python -B -m pytest -p no:cacheprovider tests/test_internal_dispatch.py -v`
+Run from `backend/`: `.venv/Scripts/python.exe -B -m pytest -p no:cacheprovider tests/test_internal_dispatch.py -v`
 Expected: FAIL — 404 on every route, because the router does not exist.
 
 - [ ] **Step 3: Implement `backend/poseidon/api/internal.py`**
@@ -695,7 +696,7 @@ app.include_router(internal.router)
 
 - [ ] **Step 5: Run the Python tests and watch them pass**
 
-Run from `backend/`: `python -B -m pytest -p no:cacheprovider tests/test_internal_dispatch.py -v`
+Run from `backend/`: `.venv/Scripts/python.exe -B -m pytest -p no:cacheprovider tests/test_internal_dispatch.py -v`
 Expected: PASS, 3 tests.
 
 - [ ] **Step 6: Write the failing TypeScript test**
@@ -788,7 +789,32 @@ export async function dispatchSkill(
 Run: `cd web && npx vitest run src/lib/skills.test.ts`
 Expected: PASS, 2 tests.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 10: Prove the seam for real, not mocked from both sides**
+
+Both halves are tested apart — Python with `TestClient`, TypeScript against a stubbed `fetch`.
+Neither proves they talk to each other. Join them once:
+
+```bash
+# terminal 1
+docker compose -f infra/docker-compose.yml up -d
+# terminal 2, from web/
+node --input-type=module -e "
+import { dispatchSkill } from './src/lib/skills.ts';
+const r = await dispatchSkill('data_qa.metric_query', {
+  entity: 'MARINE_SALES_PLANNING_V',
+  metrics: ['GP'],
+  period: { start: '2026-04-01', end: '2026-05-01' },
+}, { sub: 'dev|local', roles: ['Poseidon:Sales'] });
+console.log(JSON.stringify(r).slice(0, 400));
+"
+```
+
+Expected: a `SkillResult` envelope with `ok` and `parts`, printed from the **live** FastAPI
+service. If Node cannot import the `.ts` directly on this setup, run it through the app instead —
+any route that calls `dispatchSkill` once. Record the actual output in the report; "it should work"
+is not evidence.
+
+- [ ] **Step 11: Commit**
 
 ```bash
 git add backend/poseidon/api/internal.py backend/tests/test_internal_dispatch.py backend/poseidon/api/app.py web/src/lib/skills.ts web/src/lib/skills.test.ts
@@ -951,7 +977,7 @@ export default async function Conversation({
 
 ```bash
 cd web && npx vitest run
-cd ../backend && python -B -m pytest -p no:cacheprovider -m 'not pg and not minio and not pdf and not router_live and not research_live'
+cd ../backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest -p no:cacheprovider -m 'not pg and not minio and not pdf and not router_live and not research_live'
 cd ../frontend && npm test -- --run
 ```
 
