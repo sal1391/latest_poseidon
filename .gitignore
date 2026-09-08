@@ -27,3 +27,19 @@ frontend/dist/
 # history; the directory's own README.md (the human-review promotion
 # workflow) stays tracked since it is not one of these generated files.
 backend/tests/router_cases/candidates/*.yml
+
+# Browser-automation scratch: Playwright MCP dumps console logs and page
+# snapshots here on every live walkthrough. Debug output, never source.
+.playwright-mcp/
+
+# Ad-hoc verification screenshots dropped at the repo root during live
+# walkthroughs (auth0-login-gate.png, poseidon-phase1-live.png, ...).
+# Screenshots that belong to the docs live under docs/ and stay tracked.
+/*.png
+
+# Local compose overrides. Both carry "never commit" headers of their own:
+# .auth0 holds trial-tenant values that expire and would break the default
+# dev loop for anyone cloning; .live flips LLM_MODE off its safe stub
+# default and points at the host backend/.env.
+infra/docker-compose.auth0.yml
+infra/docker-compose.live.yml
