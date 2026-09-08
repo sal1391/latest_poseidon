@@ -745,7 +745,7 @@ def dispatch_skill(skill_id: str, body: _DispatchRequest, request: Request) -> d
     settings = request.app.state.settings
     ctx = SkillContext(
         data=SyntheticDataClient(settings.database_url),
-        artifacts=request.app.state.artifact_store,
+        artifacts=getattr(request.app.state, "artifact_store", None),
         settings=settings,
         state=ConversationSlots(),
         user=UserContext(
@@ -758,12 +758,36 @@ def dispatch_skill(skill_id: str, body: _DispatchRequest, request: Request) -> d
     return _serialize(registry.dispatch(skill_id, body.args, ctx))
 ```
 
-**Two things to check before writing this**, because they decide whether the code above compiles:
+**Two things this router depends on, both verified 2026-09-08 — read this before writing the code:**
 
-1. `create_app` builds `app.state.skill_registry` only when the dev runner is enabled (see
-   `dev_runner.py`'s module docstring). This router needs it **always**. Read `app.py`'s startup and
-   move the `SkillRegistry.discover()` call out of the dev-only branch if it is inside one.
-2. `_serialize` is currently private to `dev_runner`. Importing a private name across modules is a
+1. **The registry is NOT always built.** `app.py:125` reads:
+
+   ```python
+   if app.state.settings.chat_mode == "live" or app.state.settings.deploy_mode == "local":
+       app.state.skill_registry = SkillRegistry.discover()
+   ```
+
+   Defaults are `deploy_mode="local"`, `chat_mode="mock"` (`config.py:24,117`), so the tests above
+   pass. But a real **SPCS deploy with `chat_mode="mock"` builds no registry at all**, and this
+   router would raise `AttributeError` on `app.state.skill_registry`. Since the internal contract is
+   how Next.js dispatches *every* skill after the migration, the registry must exist whenever this
+   router is mounted.
+
+   **Make the `SkillRegistry.discover()` call unconditional.** Delete the `if` at `app.py:125` and
+   build it always. That condition was a boot-cost optimisation for an app that needed no skills;
+   after this task, every app needs them. Keep the existing comment's intent by noting why it went.
+
+2. **The artifact store is not always set either.** It is assigned in two places — `app.py:571`
+   inside `_wire_live_chat`, and `app.py:177` inside the `deploy_mode == "local"` block, the latter
+   already guarded with `getattr(app.state, "artifact_store", None) is None`. For an
+   `spcs` + `mock` app neither runs, so the attribute never exists.
+
+   Read it defensively, mirroring app.py's own pattern: `getattr(request.app.state,
+   "artifact_store", None)`. Passing `None` is the established semantic — `app.py:170`'s own comment
+   says a real deploy runs `SkillContext.artifacts=None` and no brief can produce a PDF there. An
+   `AttributeError` is not.
+
+3. `_serialize` is currently private to `dev_runner`. Importing a private name across modules is a
    smell — if it is more than a few lines, promote it to a shared module and have both routers use
    it rather than duplicating the `ArtifactRef` flattening.
 
