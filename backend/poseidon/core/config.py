@@ -54,6 +54,26 @@ class Settings(BaseSettings):
     # a boot error, since an empty allowlist is a valid, if inert,
     # environment, not a misconfiguration.
     spcs_sales_users: list[str] = []
+    # Phase 15 Task 7 (PLACEHOLDER -- Carlos is waiting on the Snowflake
+    # stored-procedure code; see core/email_source.py's own module
+    # docstring). In spcs_ingress mode Sf-Context-Current-User carries a
+    # bare username and identity_spcs.py leaves email/name as None -- the
+    # email is assumed today to come from Entra (the SSO in front of
+    # Snowflake), never resolved by this app. This switch names a second,
+    # configurable source: a Snowflake stored procedure that maps the
+    # username to an email. "entra" (the default) is zero behaviour
+    # change; "snowflake_proc" resolves through email_source.resolve_email,
+    # whose stub RAISES rather than calling Snowflake -- the follow-up task
+    # fills it in once the real procedure exists. NOT wired into
+    # identity_spcs.py yet (this task's own explicit scope limit).
+    identity_email_source: Literal["entra", "snowflake_proc"] = "entra"
+    # The fully qualified procedure name (e.g. "DB.SCHEMA.GET_USER_EMAIL")
+    # the snowflake_proc source will call once it is real. Required when
+    # identity_email_source="snowflake_proc" -- enforced below by
+    # snowflake_email_proc_required_when_selected -- so a misconfigured
+    # deploy dies at boot, not at first login. Empty/unset otherwise: no
+    # other source reads this field.
+    snowflake_email_proc: str | None = None
     llm_profile: Literal["bedrock", "cortex"] = "bedrock"
     llm_mode: Literal["stub", "live"] = "stub"
     # Phase 5 (doc 03 sections 1-2): LLM role routing. ``None`` defers to the
@@ -272,6 +292,14 @@ class Settings(BaseSettings):
             ]
             if missing:
                 raise ValueError(f"identity_mode=auth0 requires: {', '.join(missing)}")
+        return self
+
+    @model_validator(mode="after")
+    def snowflake_email_proc_required_when_selected(self) -> "Settings":
+        if self.identity_email_source == "snowflake_proc" and not self.snowflake_email_proc:
+            raise ValueError(
+                "identity_email_source=snowflake_proc requires snowflake_email_proc"
+            )
         return self
 
     @property
