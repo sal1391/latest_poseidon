@@ -4,16 +4,40 @@
 // `''::text` default as the invalid `.default(')`. After any re-pull,
 // restate it as `.default('')` by hand.
 //
-// Alembic remains the migration authority for this phase. Introspection
-// DOES capture row-level security policies (the pgPolicy(...) blocks below,
-// e.g. conversations_owner, messages_owner) and table shapes. It does NOT
-// capture:
+// Alembic remains the migration authority for this phase. Introspection is
+// PARTIAL, and partial in a way that is easy to misread as complete:
+// drizzle-kit 0.31.10 captured policy EXISTENCE for all 9 "_owner" policies
+// below, but the `using`/`withCheck` predicate for only the 4 tables that
+// carry a SINGLE policy -- conversations_owner, messages_owner,
+// user_profile_owner, user_memory_owner. On the 5 tables that carry a SECOND
+// policy -- tool_calls_owner, memory_outbox_owner, turn_run_owner,
+// llm_calls_owner, message_feedback_owner -- the generated pgPolicy(...)
+// below has NO using/withCheck at all, even though the database enforces
+// `user_sub = current_setting('app.user_sub', true)` on every one of them,
+// same as the four that got it right (migrations 0005:125-126, 0006:121-122,
+// 0008:202-203; asserted live by backend/tests/test_rls_policies.py:556-568).
+// Treat every pgPolicy(...) block below as "a policy with this name exists",
+// never as "this is what it enforces."
+//
+// Index operator classes are ROTATED, not merely absent -- e.g.
+// ix_tool_calls_turn_run_id_seq assigns int4_ops to turn_run_id (a uuid
+// column) and uuid_ops to seq (an integer column); ix_conversations_user_recency
+// assigns timestamptz_ops to user_sub (text) and text_ops to id (uuid). These
+// are artifacts of this introspection run, not this database's real operator
+// classes.
+//
+// Introspection also does NOT capture:
 //   - FORCE ROW LEVEL SECURITY
 //   - the poseidon_app and poseidon_worker roles and their grants
 //     (migrations 0009 and 0010), which exist because RDS has no superuser
 // Handing migration authority to Drizzle (decision Q3) requires porting
 // those deliberately first. Until then, `drizzle-kit push`/`generate` must
 // NOT be run against this database.
+//
+// The Phase 16 migration handover MUST re-derive every policy and every
+// index directly from migrations 0004-0010. This file is read-only evidence
+// of what one introspection run produced, never a source `drizzle-kit
+// generate` reads from.
 
 import { pgTable, varchar, index, foreignKey, unique, pgPolicy, check, uuid, text, integer, jsonb, timestamp, boolean, primaryKey } from "drizzle-orm/pg-core"
 import { sql } from "drizzle-orm"

@@ -106,9 +106,8 @@ describe("dispatchSkill", () => {
   });
 
   it("puts the response body in the thrown message, not just the status", async () => {
-    // The route's 404 and 501 details name the offending skill id and the
-    // misconfigured backend (`api/internal.py`); dropping the body would turn
-    // both into an indistinguishable "404".
+    // The route's 404 detail names the offending skill id (`api/internal.py`);
+    // dropping the body would lose that and leave only the bare number.
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({

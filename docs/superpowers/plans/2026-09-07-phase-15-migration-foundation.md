@@ -1149,6 +1149,17 @@ Interface: `resolve_email(username: str) -> str | None` (Python) / `resolveEmail
 
 ---
 
+## Carried into Phase 16 (from the 2026-09-18 execution run)
+
+- R25: `POST /internal/v1/skills/{id}/dispatch` has no auth dependency; the body's `{sub, roles}` is fully trusted; the identity middleware records an `AuthError` and continues; on SPCS the ingress would expose it. Must land before any deploy: a shared-secret header (`POSEIDON_INTERNAL_TOKEN`) via a FastAPI dependency, or an ingress rule that does not publish the prefix. Cheap immediate hardening also pending: `include_in_schema=False` on the router (not applied in Phase 15 because `test_internal_dispatch.py` asserts route presence through `app.openapi()`; the test must change with it).
+- R21: no web-side boot privilege probe; `DATABASE_APP_ROLE=""` against a superuser DSN silently disables RLS where Python's `assert_boot_privileges` (`db.py:529-538`) refuses to boot. Port that check to `web/src/db/client.ts`.
+- R24 follow-up: `internal.py` builds `SyntheticDataClient(settings.database_url)` unconditionally. With `alembic upgrade head` run, the `synthetic` schema exists EMPTY in any database, so a `DATA_BACKEND=snowflake` deploy dispatching a data skill through this route answers zero rows confidently rather than failing. The guard belongs in `SkillContext`/data-client construction so `dev_runner` and `internal` inherit it together.
+- Product question for Carlos: the Next.js pages check only the sub (`requireSub`); nothing in `web/` reads `x-poseidon-roles`, while Python gates every comparable route with `require_sales`. Decide whether `/` and `/c/<id>` require `Poseidon:Sales` before Phase 16 builds chat on them.
+- Spec vs code: spec §7 says `POST /internal/v1/skills/{skill_id}:dispatch` (colon verb); plan and code use `/dispatch`. Carlos picks; the other document changes.
+- Drizzle handover (already planned as Phase 16 Task 1) must re-derive every policy and index directly from migrations 0004-0010, never from this phase's introspected `schema.ts` — see that file's corrected header for exactly which 5 tables' policies and which index operator classes introspection got wrong.
+
+---
+
 ## Deviations from the migration design, and why
 
 Two places where this plan does **not** do what the spec's Phase 15 description says. Both are

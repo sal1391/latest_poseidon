@@ -232,6 +232,8 @@ remains authoritative for the feature, this table for the fact that the decision
 | D52 | Ranked tables carry an `Other (N)` row so the column sums to the footer. | — |
 | D53 | `report_lookup` takes explicit `limit`/`offset` with a remaining-rows marker; no silent truncation. | — |
 | D54 | All queries in a report run share one snapshot where supported; otherwise drift is detected and the run retries once. | — |
+| D55 | Phase 15 simplified the spec's Phase 15 row: no Auth.js (after M5 production identity is the SPCS header and local is the fixed dev user; identity resolves in Next 16's `proxy.ts`); Drizzle READS the live schema by introspection only, Alembic remains migration authority until roles/grants/policies are ported deliberately (Phase 16). | — |
+| D56 | `IDENTITY_EMAIL_SOURCE` (`entra` \| `snowflake_proc`) + `SNOWFLAKE_EMAIL_PROC` exist in both runtimes as a PLACEHOLDER seam for resolving a user's email via a Snowflake stored procedure; the procedure path raises until the procedure code lands; not wired into the identity providers. | — |
 
 ### Migration decisions (M1-M5)
 

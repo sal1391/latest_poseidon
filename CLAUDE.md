@@ -50,12 +50,19 @@ cd backend && .venv/Scripts/python.exe -m ruff check .
 cd frontend && npm test -- --run
 cd frontend && npm run lint
 
+# Web (Next.js) -> 60 passed, 9 skipped, offline (db-backed files skip without DRIZZLE_DATABASE_URL)
+cd web && npm test
+cd web && npx tsc --noEmit
+
 # Run the whole app locally (migrations + synthetic seed + uvicorn, then Vite)
 docker compose -f infra/docker-compose.yml up      # backend :8000, frontend :5173
 
 # Migrations (compose runs this on boot)
 cd backend && .venv/Scripts/python.exe -m alembic upgrade head
 ```
+
+Web (Next.js) suite verified 2026-09-18: `npm test` → 60 passed, 9 skipped (9 test files, 1 skipped
+file); `npx tsc --noEmit` → clean.
 
 **Unverified:** the `-m pg` baseline was not run on 2026-09-08 — Docker Desktop was not running.
 The last recorded figure was 334 passed / 1 skipped. Treat it as stale until re-run.

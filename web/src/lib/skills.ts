@@ -100,9 +100,9 @@ export async function dispatchSkill(
       signal: controller.signal,
     });
     if (!resp.ok) {
-      // The body, not just the status. The route's own 404 and 501 details
-      // name the unregistered skill id and the misconfigured `data_backend`;
-      // a message carrying only the number turns both into the same line.
+      // The body, not just the status. The route's own 404 detail names the
+      // unregistered skill id; a message carrying only the number would lose
+      // that.
       throw new Error(`skill dispatch failed: ${resp.status} ${await resp.text()}`);
     }
     return (await resp.json()) as SkillResult;
