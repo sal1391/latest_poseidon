@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { conversations } from "./schema";
-import { withUser } from "./client";
+import { createRlsClient, withUser } from "./client";
 
 // Requires the compose `db` service. Skipped when DRIZZLE_DATABASE_URL is unset.
 const live = process.env.DRIZZLE_DATABASE_URL ? describe : describe.skip;
@@ -22,6 +22,14 @@ live("withUser", () => {
   // correction" documents (backend/poseidon/core/db.py, module docstring).
   let unwrapped: ReturnType<typeof postgres>;
 
+  // ONE physical connection (`max: 1`), injected into its own client instance,
+  // so that a query issued after a committed `withUser` is guaranteed to be the
+  // next borrower of the connection that transaction just used. See the
+  // `is_local` test below for why that is the only vantage point from which the
+  // transaction-scoping of the identity GUC is observable at all.
+  let pinned: ReturnType<typeof postgres>;
+  let pinnedClient: ReturnType<typeof createRlsClient>;
+
   // One row per user, inserted by this file rather than read out of the
   // synthetic seed, so the visibility assertions below hold against an empty
   // database too. The INSERTs are themselves subject to conversations_owner's
@@ -38,6 +46,8 @@ live("withUser", () => {
 
   beforeAll(async () => {
     unwrapped = postgres(process.env.DRIZZLE_DATABASE_URL!);
+    pinned = postgres(process.env.DRIZZLE_DATABASE_URL!, { max: 1 });
+    pinnedClient = createRlsClient(process.env.DRIZZLE_DATABASE_URL!, { sql: pinned });
     aliceConversationId = await insertConversation("dev|alice", "alice's");
     bobConversationId = await insertConversation("dev|bob", "bob's");
   });
@@ -59,6 +69,7 @@ live("withUser", () => {
       }
     }
     await unwrapped?.end();
+    await pinned?.end();
   });
 
   it("lets a user read their own row", async () => {
@@ -102,6 +113,31 @@ live("withUser", () => {
     expect(row.current_user).toBe("poseidon_app");
     expect(row.session_user).toBe("poseidon");
     expect(row.user_sub).toBe("dev|alice");
+  });
+
+  it("scopes the identity to its own transaction, so a committed value cannot leak to the next borrower of the same connection", async () => {
+    // The regression guard for `set_config`'s third argument (`is_local`,
+    // SET_IDENTITY_SQL in client.ts). Every cheaper vantage point is blind to
+    // it: `pg_settings` carries no row for a placeholder GUC in either form, a
+    // session-scoped SET is discarded by ROLLBACK just as a local one is, and
+    // every path through `withUser` overwrites the value as its first
+    // statement. What is left is a COMMITTED transaction observed from outside
+    // `withUser` on the same physical connection -- which is what `max: 1` plus
+    // an injected client buys.
+    const rows = await pinnedClient.withUser("dev|alice", (tx) =>
+      tx.select({ id: conversations.id }).from(conversations).limit(1),
+    );
+    expect(rows).toHaveLength(1); // the transaction really ran, and committed
+
+    const [row] = await pinned<{ sub: string | null }[]>`
+      SELECT current_setting('app.user_sub', true) AS sub
+    `;
+    // The identity did not survive the commit onto the next checkout.
+    expect(row.sub).not.toBe("dev|alice");
+    // Postgres reverts a transaction-local placeholder GUC to its reset value,
+    // which -- verified against this database -- is the empty string rather than
+    // NULL once set_config has defined the placeholder in this session.
+    expect(row.sub === null || row.sub === "").toBe(true);
   });
 
   it("refuses a malformed DATABASE_APP_ROLE before any statement runs", async () => {
