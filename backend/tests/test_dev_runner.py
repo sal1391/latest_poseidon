@@ -1,12 +1,16 @@
 """Tests for the dev-only skill runner (``poseidon.api.dev_runner``) and its
 wiring into ``create_app``.
 
-Local-mode-only surface: ``create_app`` includes ``dev_runner.router`` — and
-builds ``app.state.skill_registry`` via ``SkillRegistry.discover()`` — only
+Local-mode-only surface: ``create_app`` includes ``dev_runner.router`` only
 when ``settings.deploy_mode == "local"`` (see ``poseidon/api/app.py`` and
 ``dev_runner``'s own module docstring for the "every response is HTTP 200,
 failure is structured content" contract this endpoint mirrors from
 ``SkillRegistry.dispatch``).
+
+``app.state.skill_registry`` is no longer part of that gating. Phase 15 Task 5
+made ``SkillRegistry.discover()`` unconditional, because ``api/internal.py``
+is mounted in every habitat and reads it; the registry now exists in ``spcs``
+and ``ec2`` too, and only the ROUTE is local-only.
 
 Most tests here build a placeholder-DSN app that never touches a real
 database — dispatch's own validation/unknown-skill/backend-guard paths all
@@ -89,7 +93,13 @@ async def test_spcs_mode_app_returns_404_for_the_dev_runner_route():
     route mounted at all, so this is a genuine HTTP-level 404 (unlike every
     structured-error case below, which is a 200)."""
     app = _app(deploy_mode="spcs")
-    assert not hasattr(app.state, "skill_registry")
+    # The registry itself IS built here since Phase 15 Task 5 (see the module
+    # docstring): api/internal.py needs it in every habitat. What stays
+    # local-only is this route -- so the absence asserted below is the
+    # dev_runner ROUTE's, which is what this test is about, and the registry's
+    # presence is asserted alongside it rather than left implied.
+    assert hasattr(app.state, "skill_registry")
+    assert DEV_RUN_PATH_TEMPLATE not in app.openapi()["paths"]
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         r = await client.post(
