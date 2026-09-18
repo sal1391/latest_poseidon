@@ -39,3 +39,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# drizzle-kit pull scratch output (schema.ts, relations.ts, meta/, migrations).
+# Alembic remains the migration authority this phase; only the copy at
+# src/db/schema.ts is tracked. See src/db/schema.ts's header comment.
+/drizzle
