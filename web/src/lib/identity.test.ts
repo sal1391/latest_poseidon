@@ -1,7 +1,47 @@
 import { describe, expect, it } from "vitest";
-import { resolveIdentity } from "./identity";
+import { AuthError, IdentityConfigError, resolveIdentity } from "./identity";
 
 const h = (o: Record<string, string>) => new Headers(o);
+
+/** Returns whatever `fn` threw, or `undefined` if it returned normally. */
+function caught(fn: () => unknown): unknown {
+  try {
+    fn();
+  } catch (err) {
+    return err;
+  }
+  return undefined;
+}
+
+/**
+ * The one 401 this module raises, asserted as the whole `(status, title,
+ * detail)` triple rather than as a substring of the message: all three fields
+ * reach the wire through `proxy.ts`'s RFC-7807 body, and all three are pinned
+ * to `identity_spcs.py:113-114,155`. `message` carries the detail, mirroring
+ * Python's `super().__init__(detail)` (`identity.py:100`).
+ */
+function expectMissingSpcsHeader(fn: () => unknown): void {
+  const err = caught(fn);
+  expect(err).toBeInstanceOf(AuthError);
+  const authError = err as AuthError;
+  expect(authError.status).toBe(401);
+  expect(authError.title).toBe("missing spcs identity header");
+  expect(authError.detail).toBe("no valid Sf-Context-Current-User header");
+  expect(authError.message).toBe(authError.detail);
+}
+
+/**
+ * A configuration fault, which must NOT be an `AuthError`: Python separates the
+ * two (`RuntimeError` vs `AuthError`) and `proxy.ts` picks 500 over 401 off
+ * exactly this distinction, so making one class a subclass of the other would
+ * silently turn an operator's mistake back into a user-facing 401.
+ */
+function expectConfigFault(fn: () => unknown, message: RegExp): void {
+  const err = caught(fn);
+  expect(err).toBeInstanceOf(IdentityConfigError);
+  expect(err).not.toBeInstanceOf(AuthError);
+  expect((err as Error).message).toMatch(message);
+}
 
 describe("resolveIdentity", () => {
   it("disabled mode returns the fixed dev identity", () => {
@@ -42,8 +82,9 @@ describe("resolveIdentity", () => {
 
   it("rejects a username over the 64-character cap", () => {
     process.env.SPCS_SALES_USERS = "*";
-    expect(() => resolveIdentity("spcs_ingress", "spcs", h({ "sf-context-current-user": "a".repeat(65) })))
-      .toThrow(/missing spcs identity header/i);
+    expectMissingSpcsHeader(() =>
+      resolveIdentity("spcs_ingress", "spcs", h({ "sf-context-current-user": "a".repeat(65) })),
+    );
   });
 
   it("rejects a dot, which Python's character class excludes", () => {
@@ -52,21 +93,24 @@ describe("resolveIdentity", () => {
   });
 
   it("spcs_ingress refuses to trust the header outside spcs deploy mode", () => {
-    expect(() => resolveIdentity("spcs_ingress", "local", h({ "sf-context-current-user": "CARLOS" })))
-      .toThrow(/deploy mode/i);
+    expectConfigFault(
+      () => resolveIdentity("spcs_ingress", "local", h({ "sf-context-current-user": "CARLOS" })),
+      /deploy mode/i,
+    );
   });
 
   it("spcs_ingress 401s when the header is absent", () => {
-    expect(() => resolveIdentity("spcs_ingress", "spcs", h({}))).toThrow(/missing spcs identity header/i);
+    expectMissingSpcsHeader(() => resolveIdentity("spcs_ingress", "spcs", h({})));
   });
 
   it("spcs_ingress 401s identically when the header is present but malformed", () => {
-    expect(() => resolveIdentity("spcs_ingress", "spcs", h({ "sf-context-current-user": "a b!" })))
-      .toThrow(/missing spcs identity header/i);
+    expectMissingSpcsHeader(() =>
+      resolveIdentity("spcs_ingress", "spcs", h({ "sf-context-current-user": "a b!" })),
+    );
   });
 
   it("auth0 is not wired in this phase", () => {
-    expect(() => resolveIdentity("auth0", "local", h({}))).toThrow(/not wired/i);
+    expectConfigFault(() => resolveIdentity("auth0", "local", h({})), /not wired/i);
   });
 });
 
@@ -112,8 +156,9 @@ describe("resolveIdentity parity with the Python providers", () => {
   });
 
   it("401s on an empty spcs header, the same as an absent one", () => {
-    expect(() => resolveIdentity("spcs_ingress", "spcs", h({ "sf-context-current-user": "" })))
-      .toThrow(/missing spcs identity header/i);
+    expectMissingSpcsHeader(() =>
+      resolveIdentity("spcs_ingress", "spcs", h({ "sf-context-current-user": "" })),
+    );
   });
 
   it("finds the headers regardless of the case the client sent them in", () => {
@@ -150,8 +195,10 @@ describe("resolveIdentity parity with the Python providers", () => {
     // union, so a typo reaches here. Python's resolve_provider (identity.py:
     // 301) echoes the bad value; falling through to the auth0 message would
     // send an operator to debug a mode they never configured.
-    expect(() => resolveIdentity("diabled" as never, "local", h({})))
-      .toThrow(/identity_mode="diabled" has no resolver/);
+    expectConfigFault(
+      () => resolveIdentity("diabled" as never, "local", h({})),
+      /identity_mode="diabled" has no resolver/,
+    );
   });
 
   it("never lets a caller mutate one identity into another", () => {

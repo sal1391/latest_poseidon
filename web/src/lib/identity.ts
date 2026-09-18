@@ -27,10 +27,58 @@ export type Identity = {
   roles: string[];
 };
 
+/**
+ * A credential/trust failure: the caller did not present an identity this app
+ * can accept.
+ *
+ * Carries Python's `(status, title, detail)` triple (`identity.py:99-103`) and,
+ * exactly as Python does, hands `detail` to `Error`'s message -- so
+ * `err.message` here is the string `str(exc)` gives there.
+ *
+ * The triple is what lets the ONE place that renders this (`proxy.ts`) emit the
+ * same RFC-7807 body every other failure in this codebase renders through
+ * `problem()` (`core/skills/result.py:72-79`, reached via `api/auth.py:179`),
+ * instead of hard-coding a status and a title of its own. A second, hand-rolled
+ * problem shape is precisely what `auth_error_response`'s docstring exists to
+ * forbid on the Python side.
+ */
 export class AuthError extends Error {
+  readonly status: number;
+  readonly title: string;
+  readonly detail: string;
+
+  constructor(status: number, title: string, detail: string) {
+    super(detail);
+    this.name = "AuthError";
+    this.status = status;
+    this.title = title;
+    this.detail = detail;
+  }
+}
+
+/**
+ * A CONFIGURATION fault: the operator's settings are wrong, and no credential
+ * the caller could present would change the outcome.
+ *
+ * Deliberately NOT a subclass of `AuthError`, because Python keeps
+ * exactly this split -- `RuntimeError` for a mode that is misconfigured or
+ * unimplemented (`identity.py:301-303`, `identity_spcs.py:131-137`), and
+ * `AuthError` only for a caller's credential (`api/auth.py:21`). Collapsing the
+ * two renders an operator's mistake as a 401, which tells the user to log in
+ * again for something only an operator can fix and buries the real fault in a
+ * wall of authentication failures. `proxy.ts` renders this as a 500 instead.
+ *
+ * Python's equivalents fire at BOOT (`resolve_provider` builds the provider
+ * once), so a misconfigured server there never accepts traffic at all. This
+ * port has no boot-time seam yet, so it fails per request. Both fail closed and
+ * neither ever trusts an untrustworthy header; the Python one is louder. If a
+ * later task adds boot-time config validation, this class is what it should
+ * raise there.
+ */
+export class IdentityConfigError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = "AuthError";
+    this.name = "IdentityConfigError";
   }
 }
 
@@ -83,6 +131,15 @@ const ACT_AS_HEADER = "x-dev-user";
  * visitor as a Snowflake user (`identity_spcs.py`'s `_SF_CONTEXT_HEADER`).
  */
 const SF_CONTEXT_HEADER = "sf-context-current-user";
+
+/**
+ * The title and detail of the one 401 this module raises, character for
+ * character from `identity_spcs.py:113-114` (`_MISSING_HEADER_TITLE` /
+ * `_MISSING_HEADER_DETAIL`). Both halves reach the wire through the RFC-7807
+ * body, so both are part of the same parity contract as the subs themselves.
+ */
+const MISSING_HEADER_TITLE = "missing spcs identity header";
+const MISSING_HEADER_DETAIL = "no valid Sf-Context-Current-User header";
 
 /** `identity_spcs.py`'s `_ALLOW_ALL`: "everyone the edge vouches for". */
 const ALLOW_ALL = "*";
@@ -157,11 +214,14 @@ export function resolveIdentity(
     // because the SPCS platform edge is the one component that can attach it
     // to a request reaching this app. Anywhere else -- a laptop, an EC2 box --
     // any caller could set it to any value and this code could not tell the
-    // difference. Python enforces this in `SpcsIngressProvider.__init__`, so
-    // it fails at BOOT; this port has no boot-time seam, so it fails on every
-    // request instead. Both fail closed; neither ever trusts the header.
+    // difference. Python enforces this in `SpcsIngressProvider.__init__`
+    // (identity_spcs.py:131-137), so it fails at BOOT; see
+    // `IdentityConfigError` for why this is that class and not an `AuthError`,
+    // and for what this port gives up by failing per request instead.
     if (deployMode !== "spcs") {
-      throw new AuthError("spcs identity header is not trusted outside spcs deploy mode");
+      throw new IdentityConfigError(
+        "spcs identity header is not trusted outside spcs deploy mode",
+      );
     }
     const raw = headers.get(SF_CONTEXT_HEADER);
     const username = raw === null ? null : sanitizeUsername(raw);
@@ -171,7 +231,7 @@ export function resolveIdentity(
     // runs under. Python has no separate "malformed" bucket here either
     // (identity_spcs.py's `resolve`).
     if (username === null) {
-      throw new AuthError("missing spcs identity header");
+      throw new AuthError(401, MISSING_HEADER_TITLE, MISSING_HEADER_DETAIL);
     }
     // Roles are ALLOWLIST-GATED, not granted to everyone the platform
     // authenticates -- identity_spcs.py:156,
@@ -194,7 +254,12 @@ export function resolveIdentity(
   }
 
   if (mode === "auth0") {
-    throw new AuthError("auth0 mode is not wired in this phase (decision M5)");
+    // A config fault, not a credential one: Python HAS an auth0 provider, so
+    // the only way to reach this in the port is an operator selecting a mode
+    // this phase has not built. That is the same fault as the unimplemented-mode
+    // tail below (identity.py:301-303's `RuntimeError`), and a caller's
+    // credential is irrelevant to it.
+    throw new IdentityConfigError("auth0 mode is not wired in this phase (decision M5)");
   }
 
   // Unreachable through the declared type, but `IDENTITY_MODE` is an
@@ -202,5 +267,7 @@ export function resolveIdentity(
   // arrive here. Naming the offending value beats letting it fall into the
   // auth0 branch and reporting a mode the operator never configured -- the
   // same defensive tail `resolve_provider` keeps in identity.py:301.
-  throw new AuthError(`identity_mode=${JSON.stringify(mode)} has no resolver implemented`);
+  throw new IdentityConfigError(
+    `identity_mode=${JSON.stringify(mode)} has no resolver implemented`,
+  );
 }
