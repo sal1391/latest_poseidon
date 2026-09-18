@@ -117,6 +117,28 @@ def test_dispatch_requires_a_sub_inside_the_identity(client):
     assert resp.status_code == 422
 
 
+def test_dispatch_rejects_an_empty_sub(client):
+    """``{"sub": ""}`` is the missing-key fault wearing a value: pydantic is
+    perfectly happy with an empty string, and what it would reach is
+    ``set_config('app.user_sub', '', true)`` -- an identity that matches no row
+    and writes rows nobody can read back."""
+    resp = client.post(
+        DISPATCH_PATH_TEMPLATE.format(skill_id="data_qa.metric_query"),
+        json={"args": {}, "identity": {"sub": "", "roles": ["Poseidon:Sales"]}},
+    )
+    assert resp.status_code == 422
+
+
+def test_dispatch_rejects_a_whitespace_only_sub(client):
+    """And the same fault with a length, which ``min_length`` alone does not
+    catch."""
+    resp = client.post(
+        DISPATCH_PATH_TEMPLATE.format(skill_id="data_qa.metric_query"),
+        json={"args": {}, "identity": {"sub": "   ", "roles": ["Poseidon:Sales"]}},
+    )
+    assert resp.status_code == 422
+
+
 def test_dispatch_rejects_an_unknown_skill(client):
     resp = client.post(
         DISPATCH_PATH_TEMPLATE.format(skill_id="does_not.exist"),

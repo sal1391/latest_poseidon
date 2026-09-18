@@ -26,11 +26,10 @@ here so it is a decision rather than an oversight.
 contract (see its module docstring) and deliberately not this one. A router
 loop reads a structured failure and reacts; the caller here is an HTTP client
 in another runtime (``web/src/lib/skills.ts``) that throws on a non-2xx, so
-the three faults that mean *no skill ran at all* are HTTP statuses:
+the two faults that mean *no skill ran at all* are HTTP statuses:
 
 * a body without a well-formed ``identity`` -> 422, from pydantic;
-* an unregistered ``skill_id`` -> 404;
-* a ``data_backend`` with no adapter -> 501.
+* an unregistered ``skill_id`` -> 404.
 
 Once a skill does run, its :class:`~poseidon.core.skills.result.SkillResult`
 comes back verbatim inside a 200 -- ``ok=False`` included. A skill that failed
@@ -40,7 +39,7 @@ answered the question, and the web tier renders that answer.
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # The wire shape is ``dev_runner``'s, imported rather than copied so the
 # ``ArtifactRef`` flattening exists once. It is a private name across a module
@@ -64,10 +63,34 @@ class _Identity(BaseModel):
     422 rather than an anonymous dispatch, because every persisted row and
     every RLS policy keys off the sub and an empty one silently matches
     nothing (or writes a row nobody can read back).
+
+    A *blank* sub is the same fault wearing a value. ``min_length=1`` catches
+    ``""``; the validator below catches every string that is only whitespace,
+    which pydantic would otherwise hand straight through to
+    ``set_config('app.user_sub', '   ', true)``.
     """
 
-    sub: str
+    sub: str = Field(min_length=1)
     roles: list[str] = Field(default_factory=list)
+
+    @field_validator("sub")
+    @classmethod
+    def _reject_a_blank_sub(cls, value: str) -> str:
+        """Reject a whitespace-only sub. ``ValueError`` on purpose: pydantic
+        wraps it into the ``ValidationError`` FastAPI renders as a 422, so this
+        fault reads exactly like the missing-key one it really is.
+
+        The value comes back UNCHANGED rather than stripped. A sub is the key
+        RLS matches on, and every provider mints it with no surrounding
+        whitespace (``core/identity.py``'s ``sanitize_username``), so silently
+        rewriting one here would make this route the only place in the system
+        where the sub that was sent is not the sub that was used -- a
+        normalisation that fixes a caller's bug invisibly instead of failing
+        closed on it.
+        """
+        if not value.strip():
+            raise ValueError("sub must not be blank")
+        return value
 
 
 class _DispatchRequest(BaseModel):
@@ -86,27 +109,13 @@ def dispatch_skill(skill_id: str, body: _DispatchRequest, request: Request) -> d
     ``SkillResult`` with ``ok=False`` -- so there is no error path after it to
     handle here, only a serialization.
     """
-    settings = request.app.state.settings
-    if settings.data_backend != "synthetic":
-        # Mirrors api/dev_runner.py:64-74's guard, as a status rather than a
-        # structured body (see the module docstring): there is no client to
-        # hand a skill when the configured backend has no adapter, so
-        # building a SyntheticDataClient anyway would point every query at
-        # DATABASE_URL while the operator believes they configured Snowflake.
-        raise HTTPException(
-            status_code=501,
-            detail=(
-                f"data_backend={settings.data_backend!r} has no adapter yet; "
-                "the internal dispatch contract only supports data_backend=synthetic today"
-            ),
-        )
-
     registry = request.app.state.skill_registry
     try:
         registry.get(skill_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
 
+    settings = request.app.state.settings
     ctx = SkillContext(
         data=SyntheticDataClient(settings.database_url),
         # Defensively, mirroring app.py's own pattern at app.py:177: the store
