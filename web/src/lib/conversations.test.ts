@@ -3,6 +3,12 @@ import { listConversations, loadConversation } from "./conversations";
 
 const live = process.env.DRIZZLE_DATABASE_URL ? describe : describe.skip;
 
+describe("loadConversation", () => {
+  it("returns null for a non-uuid id without touching the db", async () => {
+    expect(await loadConversation("dev|alice", "not-a-uuid")).toBeNull();
+  });
+});
+
 live("conversations", () => {
   it("lists only the caller's conversations", async () => {
     const alice = await listConversations("dev|alice");

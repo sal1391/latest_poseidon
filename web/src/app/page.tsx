@@ -1,10 +1,10 @@
 import Link from "next/link";
 import { headers } from "next/headers";
 import { listConversations } from "../lib/conversations";
+import { requireSub } from "../lib/request-identity";
 
 export default async function Home() {
-  const h = await headers();
-  const sub = h.get("x-poseidon-sub") ?? "dev|local";
+  const sub = requireSub(await headers());
   const rows = await listConversations(sub);
   return (
     <main className="p-8">
