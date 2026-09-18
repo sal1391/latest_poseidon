@@ -1098,6 +1098,57 @@ git commit -m "feat(web): list and open an existing conversation under RLS"
 
 ---
 
+## Task 7: Email source switch — Entra vs Snowflake stored procedure (PLACEHOLDER)
+
+**Status: PLACEHOLDER.** Carlos is waiting on the stored-procedure code from the Snowflake side.
+This task ships the **switch and the seam only**: a setting, a resolver interface, a stub that
+refuses loudly, and tests for the switch. It does **not** call Snowflake. When the procedure code
+arrives, a follow-up task fills the stub; nothing else should need to move.
+
+**Why it exists:** in `spcs_ingress` mode `Sf-Context-Current-User` carries a bare username and the
+provider leaves `email`/`name` as `None` (identity_spcs.py:81-88, mirrored in identity.ts:184-190).
+The email today is assumed to come from Entra (Microsoft Entra ID, the SSO in front of Snowflake).
+Carlos wants a configurable second source: a Snowflake stored procedure that maps the username to
+an email. Both runtimes resolve identity during coexistence, so both get the switch, or the two
+stacks will disagree on a user's email.
+
+**Model:** Sonnet. Small, mechanical, fully specified.
+
+**Files:**
+- Modify: `backend/poseidon/core/config.py` (two Settings fields)
+- Create: `backend/poseidon/core/email_source.py`
+- Create: `backend/poseidon/core/tests/test_email_source.py` (or wherever `core` tests live — check first)
+- Create: `web/src/lib/email-source.ts`
+- Create: `web/src/lib/email-source.test.ts`
+
+**Contract (both runtimes, same names):**
+
+| Setting | Values | Default | Meaning |
+|---|---|---|---|
+| `IDENTITY_EMAIL_SOURCE` | `entra` \| `snowflake_proc` | `entra` | `entra` = today's behaviour, unchanged. `snowflake_proc` = resolve via stored procedure. |
+| `SNOWFLAKE_EMAIL_PROC` | fully qualified procedure name, e.g. `DB.SCHEMA.GET_USER_EMAIL` | empty | Required when source is `snowflake_proc`. |
+
+Interface: `resolve_email(username: str) -> str | None` (Python) / `resolveEmail(username: string): Promise<string | null>` (TS).
+
+- `entra` resolver: returns exactly what the provider returns today (`None`/`null` in spcs mode). Zero behaviour change.
+- `snowflake_proc` resolver: **stub.** Raises `NotImplementedError("snowflake_proc email source is a placeholder; awaiting stored procedure code")`. It must fail at **settings load** if selected without `SNOWFLAKE_EMAIL_PROC`, so a misconfigured deploy dies at boot, not at first login.
+- An unknown value for `IDENTITY_EMAIL_SOURCE` fails settings validation (Python `Literal[...]`, TS a guard that throws).
+
+**Do NOT wire the resolver into `identity_spcs.py` or `identity.ts` yet.** The stub raises, so wiring it would break the default path's tests for nothing. Wiring is part of the follow-up when real code exists. This task proves the switch parses, defaults correctly, and the stub refuses.
+
+**Open questions for Carlos (recorded, not blocking the placeholder):**
+1. What is "the Entra email" today, concretely? In spcs mode no email reaches the app at all. If the Snowflake login name *is* the Entra UPN (an email address), note that `sanitize_username` rejects `@` and `.` — such a user would be rejected outright, not just left without an email. Needs a look before the real implementation.
+2. Which direction does the procedure go: username in, email out (assumed), or something else? What does it return for an unknown user?
+3. Who calls it: Python (already holds the Snowflake connection through the query builder) or Next.js? **Recommendation: Python owns the call**; Next.js gets the email through the Task 5 internal contract rather than opening its own Snowflake connection. The TS stub still exists so the setting is honoured on both sides.
+
+- [ ] **Step 1: Write the failing Python tests** — four cases: default is `entra`; `entra` resolver returns `None`; `snowflake_proc` without `SNOWFLAKE_EMAIL_PROC` fails at Settings construction; `snowflake_proc` with a name set raises `NotImplementedError` on `resolve_email`. Run with `.venv/Scripts/python.exe -B -m pytest -p no:cacheprovider <file>` and watch them fail on import.
+- [ ] **Step 2: Implement `config.py` fields and `email_source.py`.** Run the four tests to green, then the full offline suite with the standard marker exclusion and `env -u PERPLEXITY_API_KEY`. Baseline is 1679 passed / 13 skipped; the count goes up by four and nothing else moves.
+- [ ] **Step 3: Write the failing TS tests** — same four cases against `process.env`. `npx vitest run web/src/lib/email-source.test.ts`, watch them fail.
+- [ ] **Step 4: Implement `email-source.ts`.** Tests green; `npx tsc --noEmit` clean.
+- [ ] **Step 5: Commit** — `git add` the five files by explicit path. Message: `feat(identity): placeholder switch for Entra vs Snowflake-procedure email source`.
+
+---
+
 ## Deviations from the migration design, and why
 
 Two places where this plan does **not** do what the spec's Phase 15 description says. Both are
@@ -1127,4 +1178,4 @@ database loses its access controls quietly. Proposed as the first task of Phase 
 
 ## Explicitly not in this phase
 
-Streaming and AI SDK (Phase 16), any report work (Phase 17), sending a chat turn from Next.js, Drizzle taking over migrations, deleting anything from the Vite app, and Auth0 in any form.
+Streaming and AI SDK (Phase 16), any report work (Phase 17), sending a chat turn from Next.js, Drizzle taking over migrations, deleting anything from the Vite app, and Auth0 in any form. Also **not** in this phase: actually calling the Snowflake email stored procedure. Task 7 ships only the switch and a stub; the call lands when Carlos has the procedure code.
