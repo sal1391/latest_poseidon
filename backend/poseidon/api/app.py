@@ -3,7 +3,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from poseidon.api import auth, dev_runner, health, live_chat, me, mock_chat, turns
+from poseidon.api import auth, dev_runner, health, internal, live_chat, me, mock_chat, turns
 from poseidon.core.artifacts import ArtifactStore
 from poseidon.core.chat.dev_router import DevDeterministicRouter
 from poseidon.core.chat.feedback import FeedbackStore
@@ -116,14 +116,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # Discovery walks and imports the whole poseidon.tasks tree (SkillRegistry.
     # discover's own fail-fast contract) -- built ONCE per app/process here,
-    # ahead of both blocks below, and shared by whichever of them actually
-    # need it: live chat wiring, the local dev runner, or both at once when an
-    # operator runs CHAT_MODE=live locally (fix round 1, MINOR M1 -- these two
-    # conditions used to each build their own registry independently, quietly
-    # discarding one of the two identical walks whenever both fired). A
-    # mock-mode, non-local app needs neither and builds nothing, unchanged.
-    if app.state.settings.chat_mode == "live" or app.state.settings.deploy_mode == "local":
-        app.state.skill_registry = SkillRegistry.discover()
+    # ahead of every block below, and shared by all of them: live chat wiring,
+    # the local dev runner, the internal dispatch contract, or several at once
+    # when an operator runs CHAT_MODE=live locally (fix round 1, MINOR M1 --
+    # two of those conditions used to each build their own registry
+    # independently, quietly discarding one of the two identical walks
+    # whenever both fired).
+    #
+    # Phase 15 Task 5: UNCONDITIONAL. This used to be guarded by
+    # `chat_mode == "live" or deploy_mode == "local"`, a boot-cost
+    # optimisation for the one app that needed no skills -- an spcs/ec2 deploy
+    # left in the default chat_mode="mock". api/internal.py is mounted in
+    # every habitat (it is how the Next.js tier reaches every skill after the
+    # migration) and reads this attribute, so that app no longer exists: the
+    # guard's only remaining effect would be an AttributeError on the first
+    # dispatch of a real deploy. The cost it avoided is one import walk at
+    # boot.
+    app.state.skill_registry = SkillRegistry.discover()
+
+    # Phase 15 Task 5: the internal Next.js-to-Python contract, mounted
+    # unconditionally like health and auth above -- see api/internal.py's own
+    # module docstring for why it carries identity in its body rather than
+    # trusting the middleware's user, and for the network boundary that
+    # trust depends on.
+    app.include_router(internal.router)
 
     if app.state.settings.chat_mode == "live":
         _wire_live_chat(app)
@@ -150,9 +166,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     if app.state.settings.deploy_mode == "local":
         # The dev skill runner is a local-only surface (poseidon.api.dev_runner's
-        # module docstring): app.state.skill_registry is already built above,
-        # since deploy_mode == "local" is one of the two conditions that
-        # triggers it.
+        # module docstring): app.state.skill_registry is already built above --
+        # unconditionally, since Phase 15 Task 5.
         # One store per app/process, shared by every request (dev_runner's
         # _build_ctx reads it off app.state), and one bucket check at boot so
         # the first skill that writes a PDF does not meet a NoSuchBucket.

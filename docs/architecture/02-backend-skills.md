@@ -86,7 +86,8 @@ versa) — the drift bug class TM1 guards with `test_snowflake_mode_exposes_rend
 SkillContext:  user (UserContext, doc 05) · profile (user system instruction + memory doc,
                doc 05 §5) · conversation state (slots, mode) · data (DataClient, doc 04) ·
                llm (role-based model client, doc 03) · tools (external tool adapters via
-               backend/poseidon/mcp, §7) · artifacts (object-store client) · run (run-log recorder,
+               backend/poseidon/mcp, §7) · artifacts (object-store client; absent on SPCS per
+               D39 — report bytes go to Postgres, see doc 07 §4) · run (run-log recorder,
                doc 06) · settings
 SkillResult:   ok · parts: list[MessagePart]   (typed parts of doc 01 §4)
                proof: list[str]                (deterministic provenance block)

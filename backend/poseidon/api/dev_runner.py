@@ -2,12 +2,18 @@
 pipeline exists (Phase 6) and, forever after that, the fastest way to
 reproduce a skill's exact output outside a full conversation turn.
 
-``create_app`` includes this router — and builds ``app.state.skill_registry``
-via :meth:`~poseidon.core.skills.registry.SkillRegistry.discover` — only when
-``settings.deploy_mode == "local"``. Neither exists in ``spcs``/``ec2``: this
-is a development surface, never a production one, and the conditional include
-in ``app.py`` is what keeps it out of any deployed habitat, rather than a
-runtime permission check that could be bypassed or misconfigured.
+``create_app`` includes this router only when ``settings.deploy_mode ==
+"local"``. The ROUTE does not exist in ``spcs``/``ec2``: this is a development
+surface, never a production one, and the conditional include in ``app.py`` is
+what keeps it out of any deployed habitat, rather than a runtime permission
+check that could be bypassed or misconfigured.
+
+``app.state.skill_registry`` is no longer part of that gating. Since Phase 15
+Task 5, ``create_app`` builds it via
+:meth:`~poseidon.core.skills.registry.SkillRegistry.discover` **unconditionally**,
+because ``api/internal.py`` is mounted in every habitat and dispatches through
+it -- so the registry exists in ``spcs``/``ec2`` too, and only this router's
+route is local-only.
 
 **Every response is HTTP 200.** ``POST /api/dev/skills/{skill_id}/run`` hands
 its JSON body, unmodified, to

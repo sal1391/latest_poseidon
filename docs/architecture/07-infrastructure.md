@@ -51,8 +51,8 @@ same image, so the corporate deployment path stays compatible by construction.
 |---|---|---|
 | Runs as | multi-container **service** in a compute pool | docker-compose behind Caddy |
 | Data platform access | Snowpark session via auto-mounted OAuth token | Snowpark session via Secrets Manager credentials |
-| App state (Postgres) | second container in the service, block volume (D20) | RDS Postgres + pgvector (D17) |
-| Artifacts | MinIO container on a block volume (S3-over-EAI as config alternative) | S3 bucket + lifecycle rule |
+| App state (Postgres) | managed **Snowflake Postgres**; `DATABASE_URL` injected from a Snowflake secret (D39, revises D20) | RDS Postgres + pgvector (D17) |
+| Artifacts | **no object store in the service** — report HTML/PDF are bytes in Postgres, served through the API (D39) | S3 bucket + lifecycle rule |
 | LLM default | Cortex (D21) | Bedrock via instance profile (D21) |
 | Identity default | `spcs_ingress` (D22) | `auth0` |
 | Outbound calls | External Access Integration (§4) | security-group egress |
@@ -73,14 +73,30 @@ Poseidon's service shape:
 **Service specification** (`infra/spcs_spec.yaml`, inlined into `CREATE SERVICE`):
 
 - `containers`: `backend` (the app image; `DEPLOY_MODE=spcs`, `LLM_PROFILE=cortex`,
-  `IDENTITY_MODE=spcs_ingress`, `DATA_BACKEND=snowflake` once onlined per doc 08), `db`
-  (postgres:16 + pgvector), `minio`.
-- `volumes` + `volumeMounts`: block volumes for `PGDATA` and the MinIO data dir — **decision
-  D20**: the SPCS container filesystem is ephemeral, so app state (chat history, run log,
-  feedback, user memory) lives in the in-service Postgres on a mounted volume, exactly the wfs
-  state-DB-plus-volume pattern; Snowflake native/hybrid tables were rejected because they would
-  fork the RLS + pgvector + JSONB schema for zero functional gain.
+  `IDENTITY_MODE=spcs_ingress`, `DATA_BACKEND=snowflake` once onlined per doc 08) and `worker`
+  (same image, `python -m poseidon.scripts.worker`). **Decision D39 removed the `db` and `minio`
+  containers.**
+- `volumes` + `volumeMounts`: **none required for app state.** D20 originally put Postgres and
+  MinIO in the service on block volumes, because the SPCS container filesystem is ephemeral.
+  D39 supersedes that: app state lives in **managed Snowflake Postgres** outside the service, so
+  nothing durable sits on a container filesystem or a volume this service owns. `DATABASE_URL`
+  (carrying the Snowflake Postgres password) is injected from a Snowflake secret — never baked
+  into the image or the staged spec file. Snowflake native/hybrid tables remain rejected for the
+  original D20 reason: they would fork the RLS + pgvector + JSONB schema for zero functional gain.
 - `endpoints`: the single public `api` endpoint (serves SPA + API).
+
+> **Proven pattern, not a plan.** Triton (`sal1391/triton_marine_contract_app`,
+> `deploy/spec.yaml`) runs this exact shape in production today: one container, no `db` and no
+> `minio`, `DATABASE_URL` supplied via `snowflakeSecret: SANDBOX.MCA.TRITON_DATABASE_URL` →
+> `secretKeyRef: secret_string`, and Snowflake itself authenticated by the platform-injected
+> OAuth token with no stored credential. Two scars from that deployment carry over: the token
+> file at `/snowflake/session/token` **rotates**, so it must be read fresh on every connection,
+> and the role must **not** be set on an OAuth connection or the token breaks.
+>
+> One piece of D39 has no Triton precedent: Triton stores no binary in Postgres (no
+> `LargeBinary`/`BYTEA` column exists in its schema). Storing report HTML/PDF as bytes is
+> ordinary Postgres, but it is untested in this estate — treat sizing and retrieval latency as
+> things to measure at the Phase 16 gate, not as settled.
 
 **Platform mechanics** (all from the wfs pattern):
 
@@ -96,35 +112,39 @@ Poseidon's service shape:
   Integration** on the service: start with the provisioned allow-all EAI (`ALLOW_ALL_EAI`, the
   wfs default), tighten to a named EAI with per-host network rules as a hardening step.
 
-**Operating the in-service state** (`infra/runbooks/backup-restore-spcs.md`). A block volume is
-durable storage, not a backup: it does not survive a dropped service, a corrupt write, or a bad
-migration. So the Postgres and MinIO containers get an operations contract of their own.
+**Operating the state** (`infra/runbooks/backup-restore-spcs.md`). Under D39 the service holds no
+durable state at all: Postgres is managed by Snowflake and lives outside the service, and there is
+no object store. Dropping and recreating the service is therefore no longer a data event. What the
+service still owns is its image, its spec, and its schema revision.
 
-- **Scheduled logical backups.** A `pg_dump --format=custom` of the app database runs on a
-  schedule (default: every 6 hours) and is shipped **off-service** to an internal stage in the
-  Snowflake account, keyed by timestamp; MinIO's artifact bucket is mirrored to the same stage on
-  the same schedule. Backups off the service are the point — a dump sitting on the volume it is
-  protecting is not a backup. Each run verifies its own dump (`pg_restore --list`) and fails loudly
-  if the archive is unreadable.
-- **Documented restore.** The runbook states the full path: create the service from the current
-  image, `pg_restore` the chosen dump into the fresh `db` container, re-mirror the artifact bucket,
-  verify with the `smoke.md` checklist. The restore is rehearsed as part of the deploy phase gate
-  (doc 08 Phase 15) — an unrehearsed restore procedure is a hypothesis, not a procedure.
-- **Volume expansion.** Block volume size is a property of the service specification; growing it is
-  a service recreate from the spec with a larger `size` on the `PGDATA` volume, restoring from the
-  most recent verified dump. Free space on both volumes is checked in the post-deploy smoke run so
-  expansion is planned rather than discovered.
+- **Backups are Snowflake's mechanism now, not a sidecar.** The D32 obligation — a real backup
+  taken off the thing it protects, a rehearsed restore, and a stated RPO/RTO — is unchanged. What
+  satisfies it changes: instead of scheduled `pg_dump` runs shipped to an internal stage, the
+  backup and point-in-time-recovery guarantees of the managed Snowflake Postgres instance apply.
+  **Unverified as of 2026-09-07 and an owner/handoff item:** confirm what retention window,
+  PITR granularity and restore procedure that instance actually provides, and whether they meet
+  the RPO/RTO below. Do not assume they do. If they fall short, a scheduled `pg_dump` to an
+  internal stage returns as a supplement — the mechanism is negotiable, the obligation is not.
+- **Documented restore.** The runbook states the full path: restore or clone the Snowflake
+  Postgres instance to the chosen point, recreate the service from the current image against it,
+  verify with the `smoke.md` checklist. Because report HTML/PDF bytes now live in Postgres (D39),
+  a database restore recovers artifacts too — there is no second store to re-mirror and no way for
+  the two to disagree about what exists. The restore is rehearsed as part of the deploy phase gate
+  — an unrehearsed restore procedure is a hypothesis, not a procedure.
+- **Capacity.** Block-volume expansion no longer applies; storage is a property of the managed
+  instance. Because report bytes are rows now, database growth is driven by report volume and
+  retention (`RETENTION_ARTIFACT_DAYS`), which the post-deploy smoke run should report so growth
+  is planned rather than discovered.
 - **Migration rollback.** Every Alembic migration ships with a working `downgrade`. Rollback is
   therefore two paired steps: `alembic downgrade <rev>` then redeploy the **previous image tag**
   (the image and the schema revision move together; neither is rolled back alone). Migrations that
   cannot be reversed — a destructive column drop — are expand-and-contract instead, so the rollback
   path always exists.
-- **RPO / RTO.** Defaults: **RPO 6 hours** (the backup interval — at most one interval of chat
-  history and audit rows is lost) and **RTO 2 hours** (service recreate plus restore plus smoke).
-  Both are stated so they can be argued with; the final targets are an **owner decision**, and
-  tightening RPO means shortening the interval, which is a configuration change. Owner decision
-  2026-08-05: RPO 24h, RTO next business day (supersedes the defaults above; on EC2, satisfied
-  by RDS automated daily backups).
+- **RPO / RTO.** Owner decision 2026-08-05, unchanged by D39: **RPO 24 hours, RTO next business
+  day.** On EC2 this is satisfied by RDS automated daily backups. On SPCS it is now satisfied by
+  the managed Snowflake Postgres instance's own guarantees — **which must be confirmed against
+  these two numbers before the deploy gate passes**, per the backup bullet above. The targets are
+  the fixed part; the mechanism that meets them is what changed.
 
 **Deploy flow** (`infra/runbooks/deploy-spcs.md`):
 
@@ -137,9 +157,10 @@ migration. So the Postgres and MinIO containers get an operations contract of th
 5. Operate: `ALTER SERVICE ... SUSPEND / RESUME` to control spend; redeploy = push new tag +
    recreate service.
 
-Decision D32: the in-service Postgres and MinIO get scheduled logical backups shipped off-service,
-a rehearsed restore, and stated RPO/RTO — a mounted volume protects against container restarts and
-nothing else.
+Decision D32, as narrowed by D39: app state gets a real backup taken off the thing it protects, a
+rehearsed restore, and a stated RPO/RTO. On SPCS there is no longer an in-service Postgres or MinIO
+to run backup sidecars against — the managed instance's own guarantees are what must be verified
+to meet the target.
 
 ## 5. EC2 deployment (first-deployed)
 
@@ -190,8 +211,8 @@ flowchart LR
 | Variable | Local default | SPCS | EC2 |
 |----------|---------------|------|-----|
 | `DEPLOY_MODE` | `local` | `spcs` | `ec2` |
-| `DATABASE_URL` | compose `db` DSN | in-service `db` DSN | `/etc/poseidon/backend.env` (on-box, this phase; Secrets Manager arrives with the Snowflake credentials effort) |
-| `S3_ENDPOINT_URL` / `S3_BUCKET` | minio / `poseidon-artifacts` | in-service minio / bucket | unset (real S3) / bucket |
+| `DATABASE_URL` | compose `db` DSN | **managed Snowflake Postgres DSN, injected from a Snowflake secret** (D39) | `/etc/poseidon/backend.env` (on-box, this phase; Secrets Manager arrives with the Snowflake credentials effort) |
+| `S3_ENDPOINT_URL` / `S3_BUCKET` | minio / `poseidon-artifacts` | **unset — no object store on SPCS** (D39) | unset (real S3) / bucket |
 | `DATA_BACKEND` | `synthetic` | `synthetic` → `snowflake` (doc 08 gate) | `synthetic` or `snowflake` |
 | `SNOWFLAKE_*` | unset or password auth | injected by platform + OAuth token file | Secrets Manager (arrives with the Snowflake credentials effort; unset today) |
 | `IDENTITY_MODE` | `disabled` | `spcs_ingress` | `auth0` |
@@ -204,7 +225,7 @@ flowchart LR
 | `MEMORY_MAX_CHARS` / `MEMORY_KEEP_VERSIONS` | `8000` / `20` | same | same |
 | `MEMORY_IDLE_MINUTES` / `MEMORY_MAX_ATTEMPTS` | `30` / `5` | same | same |
 | `RETENTION_AUDIT_DAYS` / `RETENTION_ARTIFACT_DAYS` | `400` / `90` | same | same |
-| `BACKUP_INTERVAL_HOURS` / `BACKUP_TARGET` | unset (no-op locally) | `6` / internal stage | `6` / S3 prefix |
+| `BACKUP_INTERVAL_HOURS` / `BACKUP_TARGET` | unset (no-op locally) | **unset — managed instance's own backups** (D39; verify they meet RPO 24h / RTO next business day) | `6` / S3 prefix |
 
 Startup validates the full schema with pydantic-settings and **crashes on any missing or
 malformed value** — no half-configured server ever accepts traffic. `.env.example` is
