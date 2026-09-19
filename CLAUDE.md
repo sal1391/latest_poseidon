@@ -12,11 +12,12 @@ doc as current. Decisions taken in feature specs used to not propagate; that is 
 ## Stack (LOCKED)
 
 - **Python 3.14.4** in `backend/.venv` (`requires-python >=3.11`)
-- fastapi 0.140.13 · sqlalchemy 2.0.51 · pydantic 2.13.4 · pytest 9.1.1 · alembic · `psycopg[binary]`
-  · weasyprint · boto3 · rapidfuzz · `PyJWT[crypto]`
+- fastapi 0.140.13 · sqlalchemy 2.0.51 · pydantic 2.13.4 · pytest 9.1.1 · alembic (frozen; not run
+  at boot) · `psycopg[binary]` · weasyprint · boto3 · rapidfuzz · `PyJWT[crypto]`
 - **Node 24.14.1 / npm 11.13.0**
 - React 18.3.1 · Vite 8.1.1 · TypeScript ~6.0.2 · vitest 4.1.10 · zustand 5 · oxlint
-- Postgres 16 + pgvector · MinIO (local object store) · Alembic at revision **0010**
+- Postgres 16 + pgvector · MinIO (local object store) · Alembic frozen at **0010** (history
+  only) · **Drizzle migrates** (`web/drizzle`, D58)
 - Migrating to Next.js 16 / AI SDK 6 / Auth.js / Drizzle / Tailwind (M1–M5); Python is **retained**
   for analytics and PDF rendering. See `docs/superpowers/specs/2026-09-07-nextjs-migration-design.md`.
 
@@ -57,8 +58,9 @@ cd web && npx tsc --noEmit
 # Run the whole app locally (migrations + synthetic seed + uvicorn, then Vite)
 docker compose -f infra/docker-compose.yml up      # backend :8000, frontend :5173
 
-# Migrations (compose runs this on boot)
-cd backend && .venv/Scripts/python.exe -m alembic upgrade head
+# Migrations (compose's `migrate` service runs this on boot; Drizzle is the authority since Phase 16)
+cd web && npx drizzle-kit migrate      # reads DRIZZLE_DATABASE_URL
+# Fresh local database after the Phase 16 cutover: docker compose -f infra/docker-compose.yml down -v
 ```
 
 Web (Next.js) suite verified 2026-09-18: `npm test` → 60 passed, 9 skipped (9 test files, 1 skipped

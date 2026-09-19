@@ -22,11 +22,25 @@ services:
     ports: ["9000:9000", "9001:9001"]
     volumes: [miniodata:/data]
 
+  # Phase 16 Task 8 (decision D58): Drizzle owns the application schema.
+  # This one-shot service is the ONLY thing that migrates; `backend` and
+  # `worker` wait for it to complete. Alembic no longer runs at boot --
+  # backend/migrations/versions/0001-0010 are frozen history, and the
+  # `synthetic` schema (0002) is created by the seed step below.
+  migrate:
+    image: node:24-alpine
+    working_dir: /app
+    command: sh -c "npm ci && npx drizzle-kit migrate"
+    environment:
+      DRIZZLE_DATABASE_URL: postgresql://poseidon:poseidon@db:5432/poseidon
+    volumes: ["../web:/app", "/app/node_modules"]
+    depends_on:
+      db: { condition: service_healthy }
+
   backend:
     build: { context: ../backend, dockerfile: ../infra/backend.Dockerfile.dev }
     command: >
-      sh -c "python -m alembic upgrade head &&
-             python -m poseidon.scripts.seed_synthetic &&
+      sh -c "python -m poseidon.scripts.seed_synthetic &&
              python -m uvicorn poseidon.api.app:create_app --factory --host 0.0.0.0 --port 8000 --reload"
     environment:
       # Empty = read no dotenv, so a host `backend/.env` (bind-mounted at /app)
@@ -50,6 +64,9 @@ services:
       # -m pg). Default stays "mock" everywhere this variable is absent
       # (poseidon/core/config.py's own Settings field).
       CHAT_MODE: live
+      # Phase 16: the Next.js app dispatches skills to this backend over the
+      # internal HTTP contract, which is authenticated by a shared token.
+      POSEIDON_INTERNAL_TOKEN: dev-internal-token
     volumes:
       - "../backend:/app"
       # `poseidon.core.ontology.loader` and `poseidon.scripts.generate_synthetic`
@@ -65,6 +82,10 @@ services:
     depends_on:
       db: { condition: service_healthy }
       minio: { condition: service_started }
+      # Nothing here migrates any more -- the seed in this service's command
+      # creates only the `synthetic` schema. Every app table comes from the
+      # one-shot `migrate` service, so boot waits for it to exit 0.
+      migrate: { condition: service_completed_successfully }
 
   # Phase 13 Task 4 (doc 05 section 5, decision D31): the idle-triggered
   # memory-distillation worker. Same image and same environment as
@@ -72,12 +93,11 @@ services:
   # place of uvicorn -- this is the first long-running non-HTTP process in
   # this stack (every prior background job was a one-shot CLI script).
   #
-  # Deliberately runs NO `alembic upgrade head` and NO reseed of its own,
-  # unlike `backend`'s own start-up command: migrations must have exactly
-  # one owner, and two containers racing `alembic upgrade head` against the
-  # same database on every `docker compose up` is a real lock contention
-  # (and, on a fresh volume, a real duplicate-DDL) hazard for no benefit.
-  # `depends_on: backend` is what sequences it -- see that key below.
+  # Deliberately runs NO migration and NO reseed of its own: migrations have
+  # exactly one owner, the `migrate` service above, and two containers racing
+  # DDL against the same database on every `docker compose up` would be a real
+  # lock contention (and, on a fresh volume, a real duplicate-DDL) hazard for
+  # no benefit. `depends_on` is what sequences it -- see that key below.
   worker:
     build: { context: ../backend, dockerfile: ../infra/backend.Dockerfile.dev }
     command: python -m poseidon.scripts.memory_worker
@@ -108,13 +128,18 @@ services:
       - "../ontology:/ontology:ro"
     depends_on:
       db: { condition: service_healthy }
-      # Not merely ordering: `backend`'s start-up command owns `alembic
-      # upgrade head`, so this worker's very first claim query would hit a
-      # `memory_outbox` table that does not exist yet on a fresh volume.
+      # Not merely ordering: the `migrate` service owns the schema, so without
+      # this the worker's very first claim query would hit a `memory_outbox`
+      # table that does not exist yet on a fresh volume.
+      # `service_completed_successfully` is exact here -- unlike the old
+      # `backend: service_started`, it means the DDL has actually finished
+      # rather than merely started, so no window remains in which migrations
+      # are still running.
+      migrate: { condition: service_completed_successfully }
+      # Kept for ordering only, now that `migrate` covers the schema:
       # `service_started` (not `service_healthy` -- `backend` declares no
-      # healthcheck) is the strongest condition available here; the worker's
-      # own per-cycle error handling covers the remaining seconds in which
-      # migrations may still be running.
+      # healthcheck) is the strongest condition available here, and it keeps
+      # the seed ahead of the worker's first cycle.
       backend: { condition: service_started }
 
   frontend:

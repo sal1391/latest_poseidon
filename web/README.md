@@ -21,6 +21,10 @@ from Python's `DATABASE_URL`, which compose sets as
 `postgresql+psycopg://...`; `+psycopg` is SQLAlchemy syntax and Drizzle
 rejects it.
 
+**`DRIZZLE_DATABASE_URL` is required for every `drizzle-kit` command** —
+`drizzle.config.ts` has no fallback URL and throws without it (ruling P16-R9),
+because `npx drizzle-kit migrate` now writes to a real database.
+
 ## Testing
 
 `npm test` runs Vitest offline. Files that need a live database skip

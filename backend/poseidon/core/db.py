@@ -533,8 +533,9 @@ def _run_checks(
                 "with rolsuper or rolbypassrls: Postgres bypasses row-level security "
                 "unconditionally for such a role, so every RLS policy in this database is "
                 "silently inert for this process and every user's rows are readable by "
-                "every user. Fix: set DATABASE_APP_ROLE=poseidon_app (the role migration "
-                "0004 creates), or point DATABASE_URL at a role with neither attribute."
+                "every user. Fix: set DATABASE_APP_ROLE=poseidon_app (Drizzle migration "
+                "0000_roles creates it), or point DATABASE_URL at a role with neither "
+                "attribute."
             )
         if app_role is not None:
             _assert_app_role(conn, app_role)
@@ -591,9 +592,9 @@ def _assert_app_role(conn: Connection, app_role: str) -> None:
         raise RuntimeError(
             f"DATABASE_APP_ROLE={app_role!r} names a role that does not exist in "
             "pg_roles on this database, so SET LOCAL ROLE would fail on the first "
-            "request instead of here. Fix: run `python -m alembic upgrade head` "
-            "against this database (migration 0004 creates poseidon_app), or set "
-            "DATABASE_APP_ROLE empty if this DSN already authenticates as an "
+            "request instead of here. Fix: run `npx drizzle-kit migrate` in web/ "
+            "against this database (Drizzle migration 0000_roles creates poseidon_app), "
+            "or set DATABASE_APP_ROLE empty if this DSN already authenticates as an "
             "ordinary, non-privileged role that needs no switch."
         )
     exc = _role_switch_failure(conn, app_role)
@@ -604,8 +605,8 @@ def _assert_app_role(conn: Connection, app_role: str) -> None:
             "exists but that this DSN's user may not assume, so every request's "
             "transaction would fail at its second statement -- a 500 per request, for "
             "every user, from the first one. Only a superuser may assume a role it is "
-            "not a member of, and no RDS role is a superuser. Fix: run `python -m "
-            "alembic upgrade head` against this database (migration 0010 issues GRANT "
+            "not a member of, and no RDS role is a superuser. Fix: run `npx drizzle-kit "
+            "migrate` in web/ against this database (0002_grants_force_rls issues GRANT "
             f"{app_role} TO CURRENT_USER), or, if this deployment's application user is "
             f"not the user that runs migrations, GRANT {app_role} TO <this DSN's user> "
             "directly."
@@ -621,9 +622,9 @@ def _assert_worker_role(conn: Connection) -> None:
             "pg_roles on this database. Its claim query reads every user's memory_outbox "
             "rows and that visibility comes from this role's policy, so without it the "
             "worker distills nothing while logging healthy empty cycles. Fix: run "
-            "`python -m alembic upgrade head` against this database (migration 0009 "
-            f"creates {WORKER_ROLE}, grants it on memory_outbox, and grants membership "
-            "to the migration's own DSN user)."
+            "`npx drizzle-kit migrate` in web/ against this database (0000_roles "
+            f"creates {WORKER_ROLE}; 0002_grants_force_rls grants it on memory_outbox "
+            "and grants membership to the migrating DSN user)."
         )
     # The rehearsal: the real statement the claim path runs, in a
     # transaction that is thrown away (see _role_switch_failure for why the
@@ -634,9 +635,10 @@ def _assert_worker_role(conn: Connection) -> None:
             f'SET LOCAL ROLE "{WORKER_ROLE}" failed for this DATABASE_URL '
             f"({type(exc).__name__}), so the worker could not claim anything. Only a "
             "superuser may assume a role it is not a member of, and no RDS role is a "
-            f"superuser. Fix: GRANT {WORKER_ROLE} TO <this DSN's user> -- migration 0009 "
-            "does exactly that for the user that runs migrations, so a deployment whose "
-            "worker user differs from its migration user must issue the GRANT itself."
+            f"superuser. Fix: GRANT {WORKER_ROLE} TO <this DSN's user> -- Drizzle "
+            "migration 0002_grants_force_rls does exactly that for the user that runs "
+            "migrations, so a deployment whose worker user differs from its migration "
+            "user must issue the GRANT itself."
         ) from exc
 
 
