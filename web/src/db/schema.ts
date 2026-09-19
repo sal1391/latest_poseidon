@@ -123,7 +123,7 @@ export const conversations = pgTable("conversations", {
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 	archived: boolean().default(false).notNull(),
 }, (table) => [
-	index("ix_conversations_user_recency").on(table.userSub, table.updatedAt.desc(), table.id.desc()),
+	index("ix_conversations_user_recency").on(table.userSub, table.updatedAt.desc().nullsFirst(), table.id.desc().nullsFirst()),
 	owner("conversations"),
 	check("ck_conversations_mode", sql`mode = ANY (ARRAY['existing'::text, 'prospect'::text, 'default'::text])`),
 ]).enableRLS();
