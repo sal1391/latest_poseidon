@@ -46,7 +46,7 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 
-from poseidon.core.data.synthetic_client import SyntheticDataClient
+from poseidon.core.data.factory import DataBackendUnavailable, build_data_client
 from poseidon.core.skills.context import ConversationSlots, SkillContext
 from poseidon.core.skills.result import SkillResult, problem
 
@@ -67,7 +67,13 @@ def _build_ctx(request: Request) -> SkillContext | SkillResult:
     check happens once per process rather than never.
     """
     settings = request.app.state.settings
-    if settings.data_backend != "synthetic":
+    try:
+        data = build_data_client(settings)
+    except DataBackendUnavailable:
+        # No exception attribute used here on purpose -- this detail text is
+        # pinned byte-identical to what this guard said before Task 3
+        # (P16-R2), even though it now names the wrong phase; the factory's
+        # own message (raised at every OTHER construction site) says Phase 19.
         return SkillResult(
             ok=False,
             error=problem(
@@ -79,7 +85,7 @@ def _build_ctx(request: Request) -> SkillContext | SkillResult:
             ),
         )
     return SkillContext(
-        data=SyntheticDataClient(settings.database_url),
+        data=data,
         artifacts=request.app.state.artifact_store,
         settings=settings,
         state=ConversationSlots(),

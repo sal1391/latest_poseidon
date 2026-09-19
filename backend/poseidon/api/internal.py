@@ -41,6 +41,7 @@ answered the question, and the web tier renders that answer.
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 # The wire shape is ``dev_runner``'s, imported rather than copied so the
@@ -52,9 +53,10 @@ from pydantic import BaseModel, Field, field_validator
 # revisit is whenever the dev-only runner is retired.
 from poseidon.api.dev_runner import _serialize
 from poseidon.api.internal_auth import require_internal_token
-from poseidon.core.data.synthetic_client import SyntheticDataClient
+from poseidon.core.data.factory import DataBackendUnavailable, build_data_client
 from poseidon.core.identity import UserContext
 from poseidon.core.skills.context import ConversationSlots, SkillContext
+from poseidon.core.skills.result import problem
 
 router = APIRouter(
     prefix="/internal/v1",
@@ -111,7 +113,7 @@ class _DispatchRequest(BaseModel):
 
 
 @router.post("/skills/{skill_id}/dispatch")
-def dispatch_skill(skill_id: str, body: _DispatchRequest, request: Request) -> dict[str, Any]:
+def dispatch_skill(skill_id: str, body: _DispatchRequest, request: Request) -> Any:
     """Dispatch ``skill_id`` with ``body.args`` under ``body.identity`` and
     return the serialized :class:`~poseidon.core.skills.result.SkillResult`.
 
@@ -128,8 +130,14 @@ def dispatch_skill(skill_id: str, body: _DispatchRequest, request: Request) -> d
         raise HTTPException(status_code=404, detail=str(exc)) from None
 
     settings = request.app.state.settings
+    try:
+        data = build_data_client(settings)
+    except DataBackendUnavailable as exc:
+        return JSONResponse(
+            status_code=501, content=problem(501, "backend not implemented", str(exc))
+        )
     ctx = SkillContext(
-        data=SyntheticDataClient(settings.database_url),
+        data=data,
         # Defensively, mirroring app.py's own pattern at app.py:177: the store
         # is assigned in two places (``_wire_live_chat``, and the
         # ``deploy_mode == "local"`` block) and an spcs+mock app runs neither,

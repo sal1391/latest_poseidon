@@ -11,7 +11,7 @@ from poseidon.core.chat.dev_router import DevDeterministicRouter
 from poseidon.core.chat.feedback import FeedbackStore
 from poseidon.core.chat.history import HistoryStore
 from poseidon.core.config import Settings, get_settings
-from poseidon.core.data.synthetic_client import SyntheticDataClient
+from poseidon.core.data.factory import DataBackendUnavailable, build_data_client
 from poseidon.core.db import assert_boot_privileges, build_engine
 from poseidon.core.identity import AuthError, resolve_provider
 from poseidon.core.llm.bedrock import BedrockProvider
@@ -579,7 +579,15 @@ def _wire_live_chat(app: FastAPI) -> None:
     )
     prompts_dir = settings.prompts_dir if settings.prompts_dir is not None else DEFAULT_PROMPTS_DIR
     app.state.prompt_registry = PromptRegistry(prompts_dir)
-    app.state.data_client = SyntheticDataClient(settings.database_url)
+    try:
+        app.state.data_client = build_data_client(settings)
+    except DataBackendUnavailable as exc:
+        # Boot still succeeds: live_chat.py's own snowflake guard answers every
+        # turn with a structured 501 frame before app.state.data_client is
+        # ever read (see _snowflake_guard_response). None makes an accidental
+        # read fail loudly instead of querying an empty schema.
+        app.state.data_client = None
+        get_logger("app").warning("data_client_unavailable", backend=exc.backend)
     # Phase 14 final-review wave (C3): the artifact store, built HERE so it
     # exists in EVERY deploy_mode a live chat runs in -- not only "local".
     # `core/chat/orchestrator.py` threads this straight into both of its

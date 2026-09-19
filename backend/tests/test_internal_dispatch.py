@@ -286,6 +286,31 @@ def test_a_skills_result_is_passed_through_untouched():
 
 
 # ---------------------------------------------------------------------------
+# the data-client factory (Phase 16 Task 3, R24 follow-up): an unsupported
+# backend is a 501 raised at construction, before dispatch ever runs
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_on_a_backend_without_an_adapter_is_a_501_problem():
+    """P16-R1: ``probe.identity`` is registered here (it is not in ``_app()``'s
+    default registry) so the route's earlier ``registry.get`` succeeds and the
+    guard under test -- building the data client -- is what actually fires.
+    ``seen`` staying empty proves the 501 answers before the skill runs at
+    all, matching ``dev_runner``'s own "never build a client that doesn't
+    exist" contract."""
+    seen: list[object] = []
+    app = _app(data_backend="snowflake")
+    app.state.skill_registry = _registry_recording(seen)
+    resp = TestClient(app, headers=_TOKEN_HEADERS).post(
+        DISPATCH_PATH_TEMPLATE.format(skill_id=_PROBE_SKILL_ID),
+        json={"args": {}, "identity": _SALES_IDENTITY},
+    )
+    assert resp.status_code == 501
+    assert resp.json()["title"] == "backend not implemented"
+    assert seen == []
+
+
+# ---------------------------------------------------------------------------
 # identity: the body's, never the middleware's
 # ---------------------------------------------------------------------------
 
