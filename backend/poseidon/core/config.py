@@ -3,7 +3,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -179,7 +179,20 @@ class Settings(BaseSettings):
     # default on purpose -- unset means the internal routes answer 503 to
     # every caller rather than letting one through. Compose injects a dev
     # value into `backend`; the Next.js app reads the SAME variable name.
-    internal_token: str | None = None
+    #
+    # P16-R4: this ``Settings`` class has no ``env_prefix``, so pydantic-
+    # settings would otherwise bind this field to the env var ``INTERNAL_
+    # TOKEN`` (the field name, uppercased) rather than ``POSEIDON_INTERNAL_
+    # TOKEN`` -- silently leaving the field ``None`` (and every internal
+    # route 503ing forever) even with the intended variable set. The
+    # explicit ``validation_alias`` fixes the env binding while keeping
+    # ``internal_token`` itself as a valid alias too, so every existing
+    # test's direct ``Settings(internal_token=...)`` kwarg construction
+    # keeps working unchanged.
+    internal_token: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("internal_token", "POSEIDON_INTERNAL_TOKEN"),
+    )
     # Phase 11 Task 4 (doc 06 observability): the threshold poseidon.scripts.
     # cost_rollup's --spike-check mode reads to flag a turn_run row whose
     # input_tokens + output_tokens exceeds it -- a config choice, recorded

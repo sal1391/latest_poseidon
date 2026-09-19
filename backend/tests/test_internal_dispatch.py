@@ -138,6 +138,17 @@ def test_blank_internal_token_setting_means_unset():
     assert _settings(internal_token="   ").internal_token is None
 
 
+def test_internal_token_is_read_from_POSEIDON_INTERNAL_TOKEN(monkeypatch):
+    """P16-R4: ``Settings`` has no ``env_prefix``, so without an explicit
+    ``validation_alias`` this field would bind to the env var
+    ``INTERNAL_TOKEN`` (the field name, uppercased) rather than the actual
+    variable name (``POSEIDON_INTERNAL_TOKEN``) compose/Task 8 set -- every
+    internal route would 503 forever even with the intended variable set."""
+    monkeypatch.setenv("POSEIDON_INTERNAL_TOKEN", "from-env")
+    s = Settings(_env_file=None, database_url=_PLACEHOLDER_DSN, s3_bucket="poseidon-artifacts")
+    assert s.internal_token == "from-env"
+
+
 def test_internal_routes_adopt_a_well_formed_inbound_trace_id(client):
     trace = "0" * 31 + "a"
     resp = client.post(
