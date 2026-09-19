@@ -105,3 +105,39 @@ The reviewer verified the frozen surfaces intact and both spec deviations justif
   default), `npm test` script added, the web suite added to the root CLAUDE.md commands, decision
   log rows D55 (Phase 15 simplifications) and D56 (email-source placeholder seam), stale comments,
   the phantom `app` schema filter, scaffold metadata title.
+
+## PR and what to test tomorrow
+
+**PR #4:** https://github.com/sal1391/latest_poseidon/pull/4 — branch pushed, PR open against
+`main`, description written. You merge it in the GitHub UI after the checks below.
+
+### Test checklist (about 15 minutes)
+
+Setup, once:
+1. Start Docker Desktop. If another project's containers are still holding 5432/9000, leave them;
+   the override below avoids the clash.
+2. PowerShell, repo root:
+   `docker compose -f infra/docker-compose.yml -f .superpowers/sdd/2026-09-07-phase-15-migration-foundation/compose.db-5434.yml up -d`
+   If MinIO fails on 9000/9001, add a second `-f` with the minio override the Task 5 worker left
+   in that same folder (look for `compose.minio-*.yml`), or stop just MinIO: it is not needed for
+   this test.
+3. Second PowerShell: `cd web`, then
+   `$env:DRIZZLE_DATABASE_URL="postgresql://poseidon:poseidon@localhost:5434/poseidon"; npm run dev`
+
+Checks (tick each):
+- [ ] http://localhost:5173 loads the OLD Vite app. Send one chat turn so a fresh conversation exists.
+- [ ] http://localhost:3000 shows "Conversations for dev|local" with the conversation you just
+      created at the TOP of the list (newest first, capped at 50).
+- [ ] Click it. The page shows the messages with their role labels and the raw parts JSON. Plain
+      styling is expected; this phase proves the seam, not the UI.
+- [ ] Stop the Next dev server (Ctrl+C), start it again, reload. History still there.
+- [ ] http://localhost:3000/c/not-a-uuid → a 404 page, not an error page.
+- [ ] Copy a conversation id from the Vite app that belongs to a different dev user (any
+      `dev|alice-…` row; or ask the next agent to give you one) and open
+      http://localhost:3000/c/<that id> → 404, because RLS hides it from dev|local.
+- [ ] Both tabs (5173 and 3000) work at the same time.
+- [ ] Optional, terminal: `cd web; npm test` → 60 passed, 9 skipped. With
+      `$env:DRIZZLE_DATABASE_URL` set → 69 passed.
+
+If every box ticks, merge PR #4. Then answer the seven decisions at the top of this file when you
+have a minute; none blocks the merge.
