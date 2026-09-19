@@ -20,7 +20,9 @@ before calling (``web/src/proxy.ts``), and whatever network boundary keeps
 this route unreachable from outside is what makes that the only possible
 caller. Mount it where the internet can reach it and any caller can pose as
 any user. That is the same property the SPCS ingress seam already has, named
-here so it is a decision rather than an oversight.
+here so it is a decision rather than an oversight. Since Phase 16 the caller
+must also present ``POSEIDON_INTERNAL_TOKEN`` (``internal_auth.py``); the
+network boundary is defence in depth, no longer the only gate.
 
 **Not "every response is HTTP 200"**, which is ``api/dev_runner.py``'s
 contract (see its module docstring) and deliberately not this one. A router
@@ -38,7 +40,7 @@ answered the question, and the web tier renders that answer.
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
 # The wire shape is ``dev_runner``'s, imported rather than copied so the
@@ -49,11 +51,21 @@ from pydantic import BaseModel, Field, field_validator
 # so this import adds no coupling that boot did not already have. The seam to
 # revisit is whenever the dev-only runner is retired.
 from poseidon.api.dev_runner import _serialize
+from poseidon.api.internal_auth import require_internal_token
 from poseidon.core.data.synthetic_client import SyntheticDataClient
 from poseidon.core.identity import UserContext
 from poseidon.core.skills.context import ConversationSlots, SkillContext
 
-router = APIRouter(prefix="/internal/v1", tags=["internal"])
+router = APIRouter(
+    prefix="/internal/v1",
+    tags=["internal"],
+    # Phase 16 Task 1: never published. The OpenAPI document is a public
+    # surface; an internal contract listed there invites callers it must
+    # refuse. test_internal_dispatch.py proves the routes are still mounted
+    # by calling them.
+    include_in_schema=False,
+    dependencies=[Depends(require_internal_token)],
+)
 
 
 class _Identity(BaseModel):

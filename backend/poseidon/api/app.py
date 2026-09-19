@@ -1,3 +1,5 @@
+import re
+
 import anyio.to_thread
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -265,6 +267,12 @@ _DUPLICATE_HEADER_TITLE = "duplicate identity header"
 _IDENTITY_UNAVAILABLE_TITLE = "identity_unavailable"
 _IDENTITY_UNAVAILABLE_DETAIL = "the identity provider failed unexpectedly; try again shortly"
 
+# Phase 16 Task 1 (spec section 5.3): the exact shape new_trace_id() itself
+# produces (32 lowercase hex chars) -- the gate an inbound X-Trace-Id must
+# meet before _install_trace_middleware ever adopts it in place of minting
+# a fresh one.
+_TRACE_ID_SHAPE = re.compile(r"[0-9a-f]{32}")
+
 
 def _first_duplicate_identity_header(request: Request) -> str | None:
     """The first header name in :data:`_IDENTITY_BEARING_HEADERS` that
@@ -302,7 +310,16 @@ def _install_trace_middleware(app: FastAPI) -> None:
 
     @app.middleware("http")
     async def trace_middleware(request: Request, call_next):
-        trace_id = new_trace_id()
+        # Phase 16 Task 1 (spec section 5.3): the web tier mints one trace id
+        # per request and forwards it; adopting it makes one turn one trace
+        # across both runtimes. Only on /internal/ paths (the caller is our
+        # own service) and only when well-formed (new_trace_id()'s own
+        # 32-hex shape) -- a browser can never write our log correlation key.
+        inbound = request.headers.get("X-Trace-Id", "")
+        if request.url.path.startswith("/internal/") and _TRACE_ID_SHAPE.fullmatch(inbound):
+            trace_id = inbound
+        else:
+            trace_id = new_trace_id()
         token = trace_id_var.set(trace_id)
         try:
             response = await call_next(request)

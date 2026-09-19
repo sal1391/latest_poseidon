@@ -174,6 +174,12 @@ class Settings(BaseSettings):
     # every chat request fail closed on a permissions error instead of an
     # RLS filter.
     database_app_role: str | None = "poseidon_app"
+    # Phase 16 Task 1 (spec section 5.2): the shared secret every route under
+    # api/internal.py requires in the X-Poseidon-Internal-Token header. No
+    # default on purpose -- unset means the internal routes answer 503 to
+    # every caller rather than letting one through. Compose injects a dev
+    # value into `backend`; the Next.js app reads the SAME variable name.
+    internal_token: str | None = None
     # Phase 11 Task 4 (doc 06 observability): the threshold poseidon.scripts.
     # cost_rollup's --spike-check mode reads to flag a turn_run row whose
     # input_tokens + output_tokens exceeds it -- a config choice, recorded
@@ -225,6 +231,15 @@ class Settings(BaseSettings):
         rejects the empty string) instead of simply resolving to ``None``
         the way an operator setting it blank almost certainly means.
         """
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
+    @field_validator("internal_token", mode="before")
+    @classmethod
+    def blank_internal_token_means_none(cls, v: object) -> object:
+        """``POSEIDON_INTERNAL_TOKEN=`` in a compose file means unset, the
+        same way ``DATABASE_APP_ROLE=`` does (validator above)."""
         if isinstance(v, str) and not v.strip():
             return None
         return v
