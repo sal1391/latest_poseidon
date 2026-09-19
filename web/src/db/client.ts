@@ -60,6 +60,8 @@ export function appRole(): string | null {
  *
  * An UNREACHABLE database is not a verdict: `/ready`-style checks own that.
  * Log and continue, exactly as Python's `boot_privileges_unchecked` does.
+ * Only a failure to reach the server is "unchecked"; a server-reported error
+ * (`PostgresError`) propagates, mirroring Python's connect-only grace.
  */
 export async function assertBootPrivileges(
   client: ReturnType<typeof postgres>,
@@ -70,6 +72,10 @@ export async function assertBootPrivileges(
     [row] = await client<{ rolsuper: boolean; rolbypassrls: boolean }[]>`
       SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`;
   } catch (err) {
+    if (err instanceof postgres.PostgresError) {
+      // The server answered: this is a fault in the check itself, never "unreachable".
+      throw err;
+    }
     console.warn(
       JSON.stringify({ event: "boot_privileges_unchecked", reason: (err as Error).message }),
     );

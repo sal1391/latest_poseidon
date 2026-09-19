@@ -11,6 +11,23 @@ describe("assertBootPrivileges (offline)", () => {
     await client.end();
     warn.mockRestore();
   });
+
+  it("propagates a server-reported error instead of downgrading it to boot_privileges_unchecked", async () => {
+    // The server DID answer (a PostgresError), so this is a fault in the
+    // check itself -- bad SQL text, a permission problem reading pg_roles,
+    // whatever -- never "unreachable". P16-R5: the catch must discriminate.
+    const serverError = Object.assign(Object.create(postgres.PostgresError.prototype), {
+      message: "permission denied for table pg_roles",
+      code: "42501",
+    }) as InstanceType<typeof postgres.PostgresError>;
+    const fake = Object.assign(
+      async () => {
+        throw serverError;
+      },
+      { begin: async () => undefined, end: async () => undefined },
+    ) as unknown as ReturnType<typeof postgres>;
+    await expect(assertBootPrivileges(fake, "poseidon_app")).rejects.toBe(serverError);
+  });
 });
 
 // Requires the compose `db` service (its `poseidon` user is a superuser, which
