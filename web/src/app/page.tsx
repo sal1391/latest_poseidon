@@ -1,10 +1,10 @@
 import Link from "next/link";
 import { headers } from "next/headers";
 import { listConversations } from "../lib/conversations";
-import { requireSub } from "../lib/request-identity";
+import { requireSales } from "../lib/request-identity";
 
 export default async function Home() {
-  const sub = requireSub(await headers());
+  const { sub } = requireSales(await headers());
   const rows = await listConversations(sub);
   return (
     <main className="p-8">

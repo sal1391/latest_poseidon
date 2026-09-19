@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { AuthError, IdentityConfigError, resolveIdentity } from "./lib/identity";
+import { AuthError, IdentityConfigError, SALES_ROLE, resolveIdentity } from "./lib/identity";
 
 /**
  * The one RFC-7807 body shape this codebase emits, ported field for field --
@@ -17,6 +17,17 @@ import { AuthError, IdentityConfigError, resolveIdentity } from "./lib/identity"
 function problem(status: number, title: string, detail: string) {
   return { type: "about:blank", title, detail, status };
 }
+
+/**
+ * The 403 page rendered for a non-`/api/*` request that resolved an identity
+ * but lacks `Poseidon:Sales`. Kept minimal and dependency-free -- this is the
+ * proxy, not a page component, so it cannot render a React tree.
+ */
+const FORBIDDEN_PAGE =
+  '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>403</title></head>' +
+  '<body style="font-family:system-ui;padding:2rem"><h1>403 &mdash; not allowed</h1>' +
+  "<p>Your account is not in the Poseidon sales group. Ask an administrator to add you.</p>" +
+  "</body></html>";
 
 /**
  * Next 16 renamed this convention from `middleware` to `proxy`. Two things
@@ -65,6 +76,22 @@ export function proxy(request: NextRequest) {
     // Rethrowing hands it to Next's error handling instead of laundering it
     // into a problem body that would imply it was expected.
     throw err;
+  }
+
+  // Phase 16 Task 5 (P16-4): the role half of Python's `require_sales`
+  // (`backend/poseidon/api/auth.py`), with its exact detail string. Issued
+  // here rather than by a page because Next 16.3's `forbidden()` is still
+  // behind experimental.authInterrupts. /api/* gets the problem body a
+  // client expects; a page navigation gets a small HTML page.
+  if (!identity.roles.includes(SALES_ROLE)) {
+    const detail = `caller lacks required role '${SALES_ROLE}'`;
+    if (request.nextUrl.pathname.startsWith("/api/")) {
+      return NextResponse.json(problem(403, "insufficient role", detail), { status: 403 });
+    }
+    return new NextResponse(FORBIDDEN_PAGE, {
+      status: 403,
+      headers: { "content-type": "text/html; charset=utf-8" },
+    });
   }
 
   // `set`, never `append`: whatever the caller sent under these names is

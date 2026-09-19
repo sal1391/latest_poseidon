@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { headers } from "next/headers";
 import { loadConversation } from "../../../lib/conversations";
-import { requireSub } from "../../../lib/request-identity";
+import { requireSales } from "../../../lib/request-identity";
 
 export default async function Conversation({
   params,
@@ -9,7 +9,7 @@ export default async function Conversation({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const sub = requireSub(await headers());
+  const { sub } = requireSales(await headers());
   const loaded = await loadConversation(sub, id);
   if (!loaded) notFound();
   return (
