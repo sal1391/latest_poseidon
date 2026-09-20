@@ -32,6 +32,14 @@ describe("PartRenderer", () => {
     expect(screen.getByText(/Metric query/)).toBeTruthy();
   });
 
+  it("tool events show a pulsing dot while running (P16-R18), not a static glyph", () => {
+    const { container } = render(
+      <PartRenderer part={{ kind: "tool_event", payload: { tool_seq: 1, tool: "data_qa.metric_query", server: null, status: "start", label: "Metric query" } }} />,
+    );
+    expect(screen.getByText("Metric query")).toBeTruthy();
+    expect(container.querySelector(".animate-pulse")).toBeTruthy();
+  });
+
   it("tables render columns and rows", () => {
     render(<PartRenderer part={{ kind: "table", payload: { columns: ["Customer", "GP"], rows: [["Acme", 12.5]] } }} />);
     expect(screen.getByText("Acme")).toBeTruthy();
