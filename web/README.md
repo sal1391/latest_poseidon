@@ -25,6 +25,41 @@ rejects it.
 `drizzle.config.ts` has no fallback URL and throws without it (ruling P16-R9),
 because `npx drizzle-kit migrate` now writes to a real database.
 
+### Running with the backend
+
+Chat needs Python: `/api/chat/<id>` re-streams a turn from the internal
+contract, and that contract is shared-secret authenticated. Bring up compose
+(`docker compose -f ../infra/docker-compose.yml up`), which starts the backend
+with `CHAT_MODE=live` and `POSEIDON_INTERNAL_TOKEN=dev-internal-token`, then
+start this app with the **same** token:
+
+```powershell
+$env:POSEIDON_INTERNAL_TOKEN="dev-internal-token"
+$env:DRIZZLE_DATABASE_URL="postgresql://poseidon:poseidon@localhost:5434/poseidon"
+npm run dev
+```
+
+A mismatched or unset token fails on the first turn with the variable's name
+in the message, before any request leaves this process. Note that
+`/api/chat/<id>` is answered **here**, not by the `/api/*` rewrite: an array
+returned from `rewrites()` is `afterFiles`, so a route handler at that path
+wins and Python only ever sees `/internal/v1/...` for a turn.
+
+### Checking the 403
+
+Start the dev server in SPCS ingress mode with an allowlist that excludes the
+caller, and confirm the proxy refuses before any page or handler runs:
+
+```powershell
+$env:IDENTITY_MODE="spcs_ingress"; $env:DEPLOY_MODE="spcs"; $env:SPCS_SALES_USERS="alice"
+npm run dev
+# in another shell:
+curl -H "Sf-Context-Current-User: bob" http://localhost:3000/
+```
+
+`bob` is not in `SPCS_SALES_USERS`, so this returns **403** with the 403 page;
+`alice` gets the app.
+
 ## Testing
 
 `npm test` runs Vitest offline. Files that need a live database skip
@@ -43,6 +78,7 @@ against the compose `db` service.
 | `BACKEND_ORIGIN` | `http://localhost:8000` | Target of the `/api/*` dev rewrite |
 | `ANALYTICS_ORIGIN` | falls back to `BACKEND_ORIGIN`, then `http://localhost:8000` | Where skill dispatch is sent |
 | `ANALYTICS_TIMEOUT_MS` | `30000` | Skill dispatch deadline |
+| `POSEIDON_INTERNAL_TOKEN` | none (required) | Shared secret for the Python internal contract; must equal the backend's. Compose uses `dev-internal-token`. |
 | `IDENTITY_EMAIL_SOURCE` | `entra` | `entra` \| `snowflake_proc` (placeholder — see below) |
 | `SNOWFLAKE_EMAIL_PROC` | `""` (empty) | Placeholder only; the `snowflake_proc` source raises until the procedure code lands |
 
