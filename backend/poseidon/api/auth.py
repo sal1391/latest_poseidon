@@ -32,6 +32,13 @@ left to the first provider that could exercise them (see core/identity.py's
   ``/api/messages*`` route ``live_chat.py`` already serves today --
   composes ``current_user``'s 401 with its own 403 when the resolved
   identity lacks ``Poseidon:Sales``.
+- Phase 16 Task 9 split the two request-bound guards above into a
+  request-reading half and a plain-value half, so ``api/internal.py``'s
+  turns route -- whose identity arrives in the BODY -- reuses them instead
+  of re-implementing them: :func:`assert_sales` (the 403 on a
+  ``UserContext``) and :func:`check_chat_rate_limit` (the 429 on an
+  explicit key). ``require_sales``/``rate_limit_chat_send`` keep their
+  exact behaviour and are now thin wrappers.
 - ``AuthError`` -> RFC-7807: :func:`auth_error_response`, registered by
   ``api/app.py`` as the ``AuthError`` exception handler, is the ONE place
   that mapping happens, so every raiser (any provider's ``resolve``,
@@ -119,6 +126,28 @@ def require_sales(user: UserContext = Depends(current_user)) -> UserContext:  # 
     dependencies=[Depends(require_sales)])`` -- see ``api/app.py``'s own
     ``dev_runner.router`` inclusion) rather than composing the two halves
     itself every time.
+
+    Phase 16 Task 9: the role check itself now lives in :func:`assert_sales`
+    so a route whose identity did NOT arrive through the request can apply
+    the identical one. This function is unchanged in behaviour -- it is the
+    dependency wrapper (``Depends(current_user)`` for the require-USER half)
+    around that check.
+    """
+    return assert_sales(user)
+
+
+def assert_sales(user: UserContext) -> UserContext:
+    """The role half of :func:`require_sales`, callable on an identity that
+    did not arrive through the request (``api/internal.py``'s turns route
+    builds one from its body -- see that module's own "Identity is passed
+    explicitly and applied here").
+
+    Same 403, same title, same detail string, raised the same way, so both
+    call sites converge on the one ``AuthError`` handler ``api/app.py``
+    registers and therefore on identical wire bytes. Deliberately NOT a
+    FastAPI dependency: it takes a plain
+    :class:`~poseidon.core.identity.UserContext`, never a ``Request``, which
+    is what makes it usable on a body-supplied identity at all.
     """
     if _REQUIRED_ROLE not in user.roles:
         raise AuthError(
@@ -374,15 +403,35 @@ def rate_limit_chat_send(request: Request) -> None:
     dependency is attached to today, per the guarantee just described, but
     kept rather than removed so this function's own contract does not
     silently assume every future caller replicates that ordering).
+
+    Phase 16 Task 9: the key derivation stays here (it is the part that
+    reads the REQUEST's identity); the limiter lookup and the 429 moved to
+    :func:`check_chat_rate_limit`, so ``api/internal.py``'s turns route --
+    whose identity comes from its body, not from ``request.state.user`` --
+    applies the same bucket without re-deriving this function's key.
     """
-    limiter = getattr(request.app.state, "chat_rate_limiter", None)
-    if limiter is None:
-        return
     user = getattr(request.state, "user", None)
     if user is not None:
         key = user.sub
     else:
         key = request.client.host if request.client else "unknown"
+    check_chat_rate_limit(request, key)
+
+
+def check_chat_rate_limit(request: Request, key: str) -> None:
+    """Charge ``key``'s chat-send bucket, raising :class:`RateLimitExceeded`
+    when it is empty -- the half of :func:`rate_limit_chat_send` that does
+    not care WHERE the key came from.
+
+    No-ops on an unset/``None`` ``app.state.chat_rate_limiter`` for exactly
+    the reasons :func:`rate_limit_chat_send`'s own docstring gives (limit
+    off, or a mock-mode app that never ran ``_wire_live_chat``); the
+    ``getattr(..., None)`` is what makes the second case a pass rather than
+    an ``AttributeError``.
+    """
+    limiter = getattr(request.app.state, "chat_rate_limiter", None)
+    if limiter is None:
+        return
     retry_after = limiter.check(key)
     if retry_after is not None:
         raise RateLimitExceeded(retry_after_seconds=max(1, math.ceil(retry_after)))
@@ -391,7 +440,9 @@ def rate_limit_chat_send(request: Request) -> None:
 __all__ = [
     "ChatRateLimiter",
     "RateLimitExceeded",
+    "assert_sales",
     "auth_error_response",
+    "check_chat_rate_limit",
     "current_user",
     "rate_limit_chat_send",
     "rate_limit_exceeded_response",

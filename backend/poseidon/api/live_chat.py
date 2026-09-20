@@ -25,6 +25,15 @@ Seven routes:
   conversation and redacts its linked run-log audit rows in one transaction
   -- see :func:`delete_conversation`'s own docstring, doc 05 section 7.
 
+**The turn itself is :func:`stream_turn`, not the route** (Phase 16 Task
+9). ``send_message`` is a four-argument adapter onto it; ``api/internal.py``
+'s ``POST /internal/v1/conversations/{cid}/turns`` is the same adapter with
+its identity read out of the body instead of the request, for the Next.js
+tier to re-stream. Everything described below -- the bridge, the guard, the
+titles, the persistence ordering -- therefore belongs to that one function
+and happens identically on both routes; ``tests/test_internal_turns.py``
+pins that by comparing the frames the two of them stream.
+
 **Bridging a synchronous orchestrator into an async stream.**
 ``execute_turn`` is entirely synchronous -- it calls its sink's ``send``
 callable directly, with no ``await`` anywhere in the call chain (see
@@ -357,6 +366,7 @@ from poseidon.core.chat.history import (
 )
 from poseidon.core.chat.orchestrator import TurnOutcome, execute_turn
 from poseidon.core.db import rls_transaction
+from poseidon.core.identity import UserContext
 from poseidon.core.llm.titles import title_for
 from poseidon.core.runlog import redact_turns_for_conversation
 from poseidon.core.skills.registry import SkillRegistry
@@ -755,22 +765,60 @@ def list_skills(request: Request) -> list[dict[str, str]]:
 async def send_message(cid: str, body: SendBody, request: Request) -> StreamingResponse:
     """Drive one real chat turn through ``execute_turn`` and stream its SSE
     frames. See the module docstring for the thread+queue bridge, the
-    app-state objects read off ``request.app.state`` below, the snowflake
-    guard, the title-at-turn-one mechanism, and how each frame also gets
-    folded into the transcript buffer.
+    app-state objects read off ``request.app.state``, the snowflake guard,
+    the title-at-turn-one mechanism, and how each frame also gets folded
+    into the transcript buffer -- all of which now live in
+    :func:`stream_turn`, which this route is a four-argument adapter onto.
 
     Gated by BOTH ``require_sales`` and ``rate_limit_chat_send``, in that
     ORDER -- an unauthenticated/role-less caller must always get a 401/403
     from ``require_sales`` first, never a 429 from the rate limiter.
     FastAPI resolves a route's ``dependencies=[...]`` list in the order
     given, so this ordering is a direct, load-bearing property of this
-    list's literal element order.
+    list's literal element order. ``api/internal.py``'s turns route applies
+    the same two checks itself, in the same order, on its body's identity
+    (``auth.assert_sales``/``auth.check_chat_rate_limit``) -- the ONE thing
+    it cannot share with this route, because a dependency reads the request
+    and that route's identity is not in the request.
     """
-    app_state = request.app.state
+    return await stream_turn(
+        cid=cid,
+        text=body.text,
+        client_turn_key=body.client_turn_key,
+        user=request.state.user,
+        app_state=request.app.state,
+    )
+
+
+async def stream_turn(
+    *,
+    cid: str,
+    text: str,
+    client_turn_key: str | None,
+    user: UserContext,
+    app_state,
+) -> StreamingResponse:
+    """One chat turn as an SSE stream. Shared by the public route above and
+    the internal route in ``api/internal.py`` (Phase 16 Task 9), so the two
+    can never drift: identity is the ONLY thing that differs between them,
+    and it arrives here as a parameter rather than being read off a
+    ``Request``. See the module docstring for the thread+queue bridge, the
+    ``app_state`` objects read below, the snowflake guard, the
+    title-at-turn-one mechanism, and how each frame also gets folded into
+    the transcript buffer.
+
+    Takes ``app_state`` (``request.app.state``) rather than the ``Request``
+    itself deliberately: everything this function needs from the request is
+    the app's wiring plus the caller's identity, and taking the narrower
+    pair is what makes "the two routes run the same code" checkable rather
+    than merely asserted. ``tests/test_internal_turns.py`` checks it the
+    only way that really settles it -- by streaming the same scripted turn
+    through both routes and comparing the frames.
+    """
     settings = app_state.settings
     registry: SkillRegistry = app_state.skill_registry
     history_store: HistoryStore = app_state.history_store
-    user_history = history_store.for_user(request.state.user.sub)
+    user_history = history_store.for_user(user.sub)
 
     # Phase 10 Task 3: uuid7, never uuid4 -- these ids land in real uuid
     # columns now (module docstring's "Id minting"). turn_id is shared by
@@ -803,7 +851,7 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
     # (that only happens inside a task group, which this is not).
     try:
         await anyio.to_thread.run_sync(
-            user_history.append_user_message, cid, user_message_id, body.text, turn_id
+            user_history.append_user_message, cid, user_message_id, text, turn_id
         )
     except LookupError as exc:
         raise HTTPException(404, detail="unknown conversation") from exc
@@ -933,8 +981,8 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
         title = None
         if outcome.status == "ok" and turn_index == 1 and not outcome.replayed:
             try:
-                computed = title_for(body.text, app_state.role_client, app_state.prompt_registry)
-                title = computed if computed else body.text[:60]
+                computed = title_for(text, app_state.role_client, app_state.prompt_registry)
+                title = computed if computed else text[:60]
                 user_history.set_title(cid, title)
             except Exception as exc:  # noqa: BLE001 - a title failure must not break an already-finished turn's done frame
                 logger.error(
@@ -955,12 +1003,15 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
         try:
             outcome = execute_turn(
                 conversation_id=cid,
-                # Phase 9 Task 1: request.state.user is set by app.py's
-                # identity middleware for EVERY request, ahead of this
-                # handler ever running.
-                user=request.state.user,
-                text=body.text,
-                client_turn_key=body.client_turn_key,
+                # Phase 9 Task 1: the public route's identity is
+                # request.state.user, set by app.py's identity middleware for
+                # EVERY request ahead of the handler; Phase 16 Task 9: the
+                # internal route's is its body's, applied by that route.
+                # Either way it is already a resolved, role-checked
+                # UserContext by the time it reaches this parameter.
+                user=user,
+                text=text,
+                client_turn_key=client_turn_key,
                 settings=settings,
                 registry=registry,
                 data=app_state.data_client,
@@ -1021,12 +1072,12 @@ async def send_message(cid: str, body: SendBody, request: Request) -> StreamingR
                 # never-raises writer absorbs harmlessly. user_sub (Phase 11
                 # Task 1, additive): finalize now needs an identity to open
                 # rls_transaction with, same as every other writer call site
-                # in this module/orchestrator.py -- request.state.user is
-                # always set by this point (api/app.py's identity
-                # middleware runs ahead of every route).
+                # in this module/orchestrator.py -- `user` is always a
+                # resolved UserContext by this point, whichever route
+                # supplied it (see this function's own `user` parameter).
                 writer.finalize(
                     turn_run_id=sink.turn_id,
-                    user_sub=request.state.user.sub,
+                    user_sub=user.sub,
                     status="error",
                     message_id=None,
                     answer_summary=None,

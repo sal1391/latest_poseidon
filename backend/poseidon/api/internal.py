@@ -1,8 +1,17 @@
-"""The internal contract Next.js dispatches skills through.
+"""The internal contract Next.js dispatches skills and chat turns through.
 
 This router is NOT public. It exists because the application layer moved to
 Next.js (decision M1) while every skill stayed in Python (M2), so the caller
 is now another service rather than a browser.
+
+Two routes: ``POST /skills/{skill_id}/dispatch`` (Phase 15) runs one skill;
+``POST /conversations/{cid}/turns`` (Phase 16 Task 9) runs one whole chat
+turn and streams its SSE frames. The second is the PUBLIC chat-send route
+with its identity taken from the body -- not a re-implementation of it but
+the very same function, ``live_chat.stream_turn``, which the public route
+now also merely adapts onto. Everything below that seam (the thread+queue
+bridge, the snowflake guard, titles at turn one, persist-before-terminal-
+frame) therefore exists once.
 
 **Identity is passed explicitly and applied here.** app.py's identity
 middleware sets ``request.state.user`` on every request, but on THIS route
@@ -41,8 +50,14 @@ answered the question, and the web tier renders that answer.
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
+
+# The two shared halves of the public chat-send route's own guards -- see
+# ``api/auth.py``'s module docstring for why they exist as plain-value
+# functions: a FastAPI dependency reads the request, and this router's
+# identity is never in the request.
+from poseidon.api.auth import assert_sales, check_chat_rate_limit
 
 # The wire shape is ``dev_runner``'s, imported rather than copied so the
 # ``ArtifactRef`` flattening exists once. It is a private name across a module
@@ -53,6 +68,12 @@ from pydantic import BaseModel, Field, field_validator
 # revisit is whenever the dev-only runner is retired.
 from poseidon.api.dev_runner import _serialize
 from poseidon.api.internal_auth import require_internal_token
+
+# One direction only: this module imports ``live_chat``, ``live_chat`` never
+# imports this one. ``app.py`` imports both (its single ``from poseidon.api
+# import ...`` line), so the cycle this would create if the arrow were ever
+# reversed would break boot itself, not merely a test.
+from poseidon.api.live_chat import stream_turn
 from poseidon.core.data.factory import DataBackendUnavailable, build_data_client
 from poseidon.core.identity import UserContext
 from poseidon.core.skills.context import ConversationSlots, SkillContext
@@ -157,3 +178,66 @@ def dispatch_skill(skill_id: str, body: _DispatchRequest, request: Request) -> A
         ),
     )
     return _serialize(registry.dispatch(skill_id, body.args, ctx))
+
+
+class _TurnRequest(BaseModel):
+    """The public chat-send body (``live_chat.SendBody``: ``text`` plus an
+    optional ``client_turn_key``) with ``identity`` added -- the one field
+    that differs between the two routes, for the reason this module's own
+    docstring gives."""
+
+    identity: _Identity
+    text: str
+    client_turn_key: str | None = None
+
+
+@router.post("/conversations/{cid}/turns")
+async def stream_conversation_turn(
+    cid: str, body: _TurnRequest, request: Request
+) -> StreamingResponse:
+    """``POST /api/conversations/{cid}/messages`` with identity from the
+    body (spec section 5.1): the SAME turn, streaming the SAME SSE frames,
+    because it is literally the same function --
+    :func:`~poseidon.api.live_chat.stream_turn`, which the public route is
+    now also just an adapter onto. ``tests/test_internal_turns.py`` proves
+    it by streaming one scripted turn through both routes and comparing the
+    frames; nothing else here is allowed to grow, or that proof stops
+    meaning anything.
+
+    Requires ``CHAT_MODE=live``: the history store and the rest of the turn
+    wiring exist only then (``app.py``'s own ``_wire_live_chat``), so a
+    mock-mode app refuses with a 503 rather than an ``AttributeError``
+    halfway into a stream whose status line already said 200.
+
+    The two guards the public route attaches as dependencies
+    (``require_sales``, then ``rate_limit_chat_send``) are applied HERE,
+    inline, in that same order -- a FastAPI dependency reads the request,
+    and this route's identity is not in the request. They are the shared
+    halves of those same two functions (``auth.assert_sales`` /
+    ``auth.check_chat_rate_limit``), never a second copy of the rule.
+    """
+    app_state = request.app.state
+    if getattr(app_state, "history_store", None) is None:
+        raise HTTPException(status_code=503, detail="CHAT_MODE=live is required for internal turns")
+    user = assert_sales(
+        UserContext(
+            sub=body.identity.sub,
+            email=None,
+            name=None,
+            # A tuple, for the same reason dispatch_skill's own identity is
+            # one: UserContext is frozen and a list field would leave it
+            # mutable through the frozen wrapper.
+            roles=tuple(body.identity.roles),
+        )
+    )
+    # Keyed by the BODY's sub, not request.state.user's -- the latter is the
+    # web tier's own connection identity, shared by every person using the
+    # app, so keying on it would put everyone in one bucket.
+    check_chat_rate_limit(request, user.sub)
+    return await stream_turn(
+        cid=cid,
+        text=body.text,
+        client_turn_key=body.client_turn_key,
+        user=user,
+        app_state=app_state,
+    )
