@@ -5,7 +5,16 @@ export type EnvelopeFrame = {
   data: { turn_id: string; message_id: string; event_seq: number } & Record<string, unknown>;
 };
 
-export const TEXT_PART_ID = "text-1";
+/**
+ * The id of the nth streamed-text run of a turn, 1-based (P16-R17). One turn
+ * can hold several: a run is opened by a `token` frame and closed by the next
+ * non-token frame, so `text-1` is the first run, `text-2` the one after the
+ * part that interrupted it, and so on.
+ */
+export function textPartId(run: number): string {
+  return `text-${run}`;
+}
+
 const ENVELOPE_KEYS = new Set(["turn_id", "message_id", "event_seq"]);
 
 /** Port of frontend/src/api/sse.ts parseSseChunk; `id:` lines are ignored, the envelope carries event_seq. */
@@ -37,65 +46,85 @@ function payloadOf(frame: EnvelopeFrame): Record<string, unknown> {
 }
 
 /**
- * Spec section 6, frame by frame. Pure: no I/O, no clock. The only state is
- * whether the streamed text part is open and whether a terminal frame was
- * seen, so `end()` can close a cut-off stream honestly.
+ * Spec section 6, frame by frame. Pure: no I/O, no clock. The state is the
+ * open streamed-text run (if any), how many runs have been opened, and
+ * whether a terminal frame was seen, so `end()` can close a cut-off stream
+ * honestly.
+ *
+ * P16-R17 -- text runs are per-run ids, not one id per turn. A token run is
+ * closed by the NEXT non-token frame of any kind, so the streamed text part
+ * lands exactly where Python's `TurnTranscriptBuffer.fold_token` would leave
+ * it ("append to the trailing part only if that part is text"). With a single
+ * turn-wide id, `[token a][part table][token b]` folded `b` back into the
+ * FIRST text part -- ahead of the table -- where Python produces
+ * `[text a][table][text b]`. No producer can emit that today
+ * (`orchestrator.py`'s single `sink.push_token` per turn), but the two folds
+ * must agree by construction, not by luck.
  */
 export function createFrameTranslator() {
-  let textOpen = false;
+  let openTextId: string | null = null;
+  let textRuns = 0;
   let finished = false;
   let turnId: string | undefined;
 
   const closeText = (): UIMessageChunk[] => {
-    if (!textOpen) return [];
-    textOpen = false;
-    return [{ type: "text-end", id: TEXT_PART_ID }];
+    if (openTextId === null) return [];
+    const id = openTextId;
+    openTextId = null;
+    return [{ type: "text-end", id }];
   };
 
   return {
     translate(frame: EnvelopeFrame): UIMessageChunk[] {
       turnId ??= frame.data.turn_id;
       const p = payloadOf(frame);
+
+      if (frame.event === "token") {
+        const out: UIMessageChunk[] = [];
+        if (openTextId === null) {
+          openTextId = textPartId(++textRuns);
+          out.push({ type: "text-start", id: openTextId });
+        }
+        out.push({ type: "text-delta", id: openTextId, delta: String(p.text) });
+        return out;
+      }
+
+      // Every other frame kind ends the open run first -- including an unknown
+      // one, which contributes nothing of its own but is still a part boundary.
+      const out: UIMessageChunk[] = closeText();
       switch (frame.event) {
         case "accepted":
-          return [
-            {
-              type: "start",
-              messageId: frame.data.message_id,
-              messageMetadata: { turn_id: frame.data.turn_id, turn_index: p.turn_index },
-            },
-          ];
+          out.push({
+            type: "start",
+            messageId: frame.data.message_id,
+            messageMetadata: { turn_id: frame.data.turn_id, turn_index: p.turn_index },
+          });
+          break;
         case "phase":
-          return [{ type: "data-phase", id: String(p.phase), data: p, transient: true }];
+          out.push({ type: "data-phase", id: String(p.phase), data: p, transient: true });
+          break;
         case "tool":
-          return [{ type: "data-tool_event", id: `tool-${p.tool_seq}`, data: p }];
+          out.push({ type: "data-tool_event", id: `tool-${p.tool_seq}`, data: p });
+          break;
         case "part":
-          return [{ type: `data-${p.kind}`, data: p.payload } as UIMessageChunk];
-        case "token": {
-          const out: UIMessageChunk[] = [];
-          if (!textOpen) {
-            textOpen = true;
-            out.push({ type: "text-start", id: TEXT_PART_ID });
-          }
-          out.push({ type: "text-delta", id: TEXT_PART_ID, delta: String(p.text) });
-          return out;
-        }
+          out.push({ type: `data-${p.kind}`, data: p.payload } as UIMessageChunk);
+          break;
         case "done":
           finished = true;
-          return [
-            ...closeText(),
-            { type: "finish", messageMetadata: { turn_id: turnId, status: "ok", usage: p.usage, title: p.title } },
-          ];
+          out.push({
+            type: "finish",
+            messageMetadata: { turn_id: turnId, status: "ok", usage: p.usage, title: p.title },
+          });
+          break;
         case "error":
           finished = true;
-          return [
-            ...closeText(),
-            { type: "data-error", data: p } as UIMessageChunk,
-            { type: "finish", messageMetadata: { turn_id: turnId, status: "error" } },
-          ];
+          out.push({ type: "data-error", data: p } as UIMessageChunk);
+          out.push({ type: "finish", messageMetadata: { turn_id: turnId, status: "error" } });
+          break;
         default:
-          return []; // unknown frame kinds are ignored, never fatal
+          break; // unknown frame kinds are ignored, never fatal
       }
+      return out;
     },
     end(): UIMessageChunk[] {
       if (finished) return [];
