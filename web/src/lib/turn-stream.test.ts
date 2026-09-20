@@ -14,6 +14,27 @@ describe("parseSseChunk", () => {
     expect(frames).toEqual([{ event: "accepted", data: { turn_id: "t", message_id: "m", event_seq: 1, turn_index: 0 } }]);
     expect(rest).toBe("id: 2\nevent: tok");
   });
+
+  it("CRLF line endings parse the same as LF", () => {
+    const raw = 'event: accepted\r\ndata: {"turn_id":"t","message_id":"m","event_seq":1,"turn_index":0}\r\n\r\n';
+    const { frames, rest } = parseSseChunk(raw);
+    expect(frames).toEqual([{ event: "accepted", data: { turn_id: "t", message_id: "m", event_seq: 1, turn_index: 0 } }]);
+    expect(rest).toBe("");
+  });
+
+  it("skips a block whose data JSON is malformed and still returns the next well-formed block", () => {
+    const raw =
+      'event: accepted\ndata: {not valid json\n\n' +
+      'event: done\ndata: {"turn_id":"t","message_id":"m","event_seq":2}\n\n';
+    const { frames } = parseSseChunk(raw);
+    expect(frames).toEqual([{ event: "done", data: { turn_id: "t", message_id: "m", event_seq: 2 } }]);
+  });
+
+  it("joins multiple data: lines with \\n before JSON.parse", () => {
+    const raw = 'event: accepted\ndata: {"turn_id":"t","message_id":"m",\ndata: "event_seq":1}\n\n';
+    const { frames } = parseSseChunk(raw);
+    expect(frames).toEqual([{ event: "accepted", data: { turn_id: "t", message_id: "m", event_seq: 1 } }]);
+  });
 });
 
 describe("createFrameTranslator", () => {

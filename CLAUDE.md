@@ -33,10 +33,10 @@ doc as current. Decisions taken in feature specs used to not propagate; that is 
 - **Cortex via the SQL `COMPLETE` function with emulated tools.** D40 chose the Cortex REST
   Messages endpoint with native tool calling.
 
-## Commands — verified 2026-09-08, copy-pasteable
+## Commands — verified 2026-09-19, copy-pasteable
 
 ```bash
-# Offline Python suite -> 1717 passed, 13 skipped, 119 deselected (~164s)
+# Offline Python suite -> 1718 passed, 13 skipped, 119 deselected (~166s)
 cd backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest \
   -p no:cacheprovider \
   -m 'not pg and not minio and not pdf and not router_live and not research_live'
@@ -57,8 +57,9 @@ cd backend && POSEIDON_UPDATE_CONTRACTS=1 .venv/Scripts/python.exe -B -m pytest 
 cd frontend && npm test -- --run
 cd frontend && npm run lint
 
-# Web (Next.js) -> 139 passed, 13 skipped, offline (db-backed files skip without
-# DRIZZLE_DATABASE_URL); 152 passed with it set against the compose `db` service
+# Web (Next.js) -> 142 passed, 13 skipped, offline (db-backed files skip without
+# DRIZZLE_DATABASE_URL); 152 passed with it set against the compose `db` service (unverified this
+# pass -- not re-run against a live db)
 cd web && npm test
 cd web && npx tsc --noEmit
 
@@ -72,9 +73,9 @@ cd web && npx drizzle-kit migrate      # reads DRIZZLE_DATABASE_URL
 # Fresh local database after the Phase 16 cutover: docker compose -f infra/docker-compose.yml down -v
 ```
 
-Web (Next.js) suite verified 2026-09-19 (Phase 16 Task 14): `npm test` → 139 passed, 13 skipped
-offline (18 files: 17 passed, 1 skipped); 152 passed with `DRIZZLE_DATABASE_URL` set; `npx tsc
---noEmit` → clean.
+Web (Next.js) suite verified 2026-09-19 (final review): `npm test` → 142 passed, 13 skipped
+offline (18 files: 17 passed, 1 skipped); `npx tsc --noEmit` → clean. The 152-passed
+`DRIZZLE_DATABASE_URL`-set figure is from Phase 16 Task 14 and was not re-run this pass.
 
 **pg suite verified 2026-09-19 (Phase 16 Task 9, against a Drizzle-only database):** 337 passed,
 1 skipped. Supersedes the prior 334 passed / 1 skipped figure, which was the Alembic-era baseline.
@@ -101,6 +102,10 @@ above *are* the gate.
   endings and bash rejects them. One-line fix when someone wants it: `*.sh text eol=lf`.
 - **Windows CRLF in shell scripts:** `aws.exe` emits CRLF. `$(...)` strips the CR under MSYS but
   `mapfile < <(...)` does **not** — it lands on the last array element and fails silently.
+- **Never parallelise the `-m pg` suite.** `test_migrations.py`'s two Alembic round-trips revoke
+  and restore `poseidon_app`'s cluster-wide membership mid-run; a concurrent test would see
+  `SET LOCAL ROLE` fail, and a crash between revoke and restore leaves the shared dev database
+  unable to switch role until `upgrade head` is re-run.
 
 ## Frozen surfaces — call them, never change them
 
