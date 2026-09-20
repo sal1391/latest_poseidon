@@ -50,6 +50,12 @@ services:
     # in dev has re-run it for the whole project's life -- and doc 08's EC2
     # section explicitly wants "RDS with migrations + synthetic load", so the
     # demo data is part of a deploy rather than a manual follow-up step.
+    # STALE since D58 (Phase 16, 2026-09-19): Alembic no longer owns the application
+    # schema anywhere else in this repo -- Drizzle does (`web/drizzle/`), migrated by
+    # the dev compose's one-shot `migrate` service (`infra/docker-compose.yml`). EC2 is
+    # parked (M3) and its boot is NOT being redesigned here; an EC2 revival must add a
+    # migrate step equivalent to that `migrate` service before this line means anything.
+    # Left as-is on purpose.
     command: >
       sh -c "python -m alembic upgrade head &&
              python -m poseidon.scripts.seed_synthetic &&

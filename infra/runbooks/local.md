@@ -19,10 +19,12 @@ From the repo root:
 docker compose -f infra/docker-compose.yml up --build
 ```
 
-This starts four services: `db` (Postgres with pgvector), `minio` (S3-compatible
-object storage), `backend` (runs `alembic upgrade head`, then seeds the
-synthetic dataset, then serves the API via uvicorn with `--reload`), and
-`frontend` (Vite dev server).
+This starts `db` (Postgres with pgvector), `minio` (S3-compatible object storage),
+the one-shot `migrate` service (`npx drizzle-kit migrate` — Drizzle is the
+migration authority since Phase 16, D58; Alembic no longer runs at boot),
+`backend` (waits for `migrate` to exit 0, then seeds the synthetic dataset, then
+serves the API via uvicorn with `--reload`), `worker` (the memory-distillation
+worker), and `frontend` (Vite dev server).
 
 Once the stack is up:
 
@@ -37,15 +39,17 @@ restart; add `-v` to `down` to also drop those volumes and start clean.
 
 ## Synthetic data
 
-The local database ships with data. The `backend` service's start-up command is
-`alembic upgrade head && python -m poseidon.scripts.seed_synthetic && uvicorn …`,
-so a `docker compose up` on an empty volume leaves you with a queryable
-`synthetic` schema — roughly 24,000 marine sales rows and 16,200 GL rows,
-generated deterministically from `ontology/synthetic/profiles.yml` — with no
-manual step. The backend logs show all three phases in order:
+The local database ships with data. Since Phase 16 (D58) the one-shot `migrate`
+service runs `npx drizzle-kit migrate` and must exit 0 before `backend` starts;
+`backend`'s own start-up command is now
+`python -m poseidon.scripts.seed_synthetic && uvicorn …`, so a `docker compose up`
+on an empty volume leaves you with a queryable `synthetic` schema — roughly
+24,000 marine sales rows and 16,200 GL rows, generated deterministically from
+`ontology/synthetic/profiles.yml` — with no manual step. Watch the `migrate`
+container's logs for the Drizzle migration, then the backend logs for the seed
+and startup phases in order:
 
 ```
-INFO  [alembic.runtime.migration] Running upgrade 0001 -> 0002, synthetic schema
 seeded synthetic: 24000 sales rows / 16200 GL rows, checksum 221813a4…
 INFO:     Application startup complete.
 ```
@@ -507,15 +511,19 @@ npm test -- --run
 `Settings` refuses to build when a required value is missing, so a
 half-configured server never accepts traffic. To see it, comment out
 `S3_BUCKET` from the `backend` service's `environment` block in
-`infra/docker-compose.yml` and bring the stack up: `alembic upgrade head`
-still succeeds, then uvicorn's app factory raises a `ValidationError` for the
-missing field and the container exits instead of serving.
+`infra/docker-compose.yml` and bring the stack up: the one-shot `migrate`
+service still completes (it only runs Drizzle migrations, unrelated to
+`S3_BUCKET`), the seed step still succeeds, then uvicorn's app factory raises
+a `ValidationError` for the missing field and the container exits instead of
+serving.
 
-Use `S3_BUCKET`, not `DATABASE_URL`, for this check. The backend command runs
-`alembic upgrade head` first, and `migrations/env.py` raises its own
-`RuntimeError: DATABASE_URL is required to run migrations` before the app is
-ever imported — so dropping `DATABASE_URL` proves the migration guard, not the
-Settings validator.
+Use `S3_BUCKET`, not `DATABASE_URL`, for this check. Since Phase 16 (D58)
+Alembic no longer runs at boot, so `migrations/env.py`'s old
+`RuntimeError: DATABASE_URL is required to run migrations` cannot fire here
+any more. The backend command now runs `seed_synthetic` first, and its own
+guard (`DATABASE_URL is required to seed the synthetic schema ...`) exits
+before the app is ever imported — so dropping `DATABASE_URL` proves the seed
+script's guard, not the Settings validator.
 
 The container ignores any `backend/.env` you have on the host, even though
 `../backend` is bind-mounted at `/app`: compose sets `POSEIDON_ENV_FILE=""`,

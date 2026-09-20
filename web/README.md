@@ -10,7 +10,9 @@ than reimplementing anything.
 
 1. Bring up the database: `docker compose -f ../infra/docker-compose.yml up -d db`
 2. Start the backend on :8000 (see the root `CLAUDE.md` for the compose command,
-   or run it directly with `.venv/Scripts/python.exe`).
+   or run it directly with `.venv/Scripts/python.exe`). For chat specifically, see
+   **Running with the backend** below — it needs the full compose stack,
+   `CHAT_MODE=live`, and a matching `POSEIDON_INTERNAL_TOKEN`.
 3. `npm run dev` here — serves on **:3000**.
 4. The existing Vite app keeps running separately on **:5173**; this app does
    not replace it yet.
