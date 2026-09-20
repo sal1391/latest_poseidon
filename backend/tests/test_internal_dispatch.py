@@ -149,6 +149,15 @@ def test_internal_token_is_read_from_POSEIDON_INTERNAL_TOKEN(monkeypatch):
     assert s.internal_token == "from-env"
 
 
+def test_generic_INTERNAL_TOKEN_env_var_is_ignored(monkeypatch):
+    from poseidon.core.config import Settings
+
+    monkeypatch.delenv("POSEIDON_INTERNAL_TOKEN", raising=False)
+    monkeypatch.setenv("INTERNAL_TOKEN", "should-not-bind")
+    s = Settings(_env_file=None, database_url=_PLACEHOLDER_DSN, s3_bucket="poseidon-artifacts")
+    assert s.internal_token is None
+
+
 def test_internal_routes_adopt_a_well_formed_inbound_trace_id(client):
     trace = "0" * 31 + "a"
     resp = client.post(

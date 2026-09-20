@@ -3,7 +3,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AliasChoices, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -184,15 +184,37 @@ class Settings(BaseSettings):
     # settings would otherwise bind this field to the env var ``INTERNAL_
     # TOKEN`` (the field name, uppercased) rather than ``POSEIDON_INTERNAL_
     # TOKEN`` -- silently leaving the field ``None`` (and every internal
-    # route 503ing forever) even with the intended variable set. The
-    # explicit ``validation_alias`` fixes the env binding while keeping
-    # ``internal_token`` itself as a valid alias too, so every existing
-    # test's direct ``Settings(internal_token=...)`` kwarg construction
-    # keeps working unchanged.
+    # route 503ing forever) even with the intended variable set.
+    #
+    # Final review: an ``AliasChoices("internal_token", "POSEIDON_INTERNAL_
+    # TOKEN")`` here previously let a GENERIC ``INTERNAL_TOKEN`` env var bind
+    # first (and alone) -- pydantic-settings tries aliases in the order
+    # given, and env vars always outrank a Python-default kwarg, so a
+    # coincidental ``INTERNAL_TOKEN`` in the environment would silently win
+    # over the intended ``POSEIDON_INTERNAL_TOKEN``. The single explicit
+    # ``validation_alias`` below makes ``POSEIDON_INTERNAL_TOKEN`` the ONLY
+    # env name this field binds to.
+    #
+    # Deliberately NOT ``model_config``'s ``populate_by_name=True``: in
+    # pydantic-settings 2.14.2, ``EnvSettingsSource._extract_field_info``
+    # adds a field's OWN name as a second env-var candidate whenever
+    # ``populate_by_name`` is set -- for EVERY field, not just this one's
+    # ``__init__`` kwargs -- which would silently re-admit ``INTERNAL_TOKEN``
+    # as a working alias for this field's environment lookup and reopen
+    # exactly the bug this fix closes. ``__init__`` below instead maps a
+    # direct ``internal_token=`` kwarg (every existing test's construction)
+    # onto the real alias name before delegating to ``BaseSettings``, so the
+    # env source is never given a reason to look at the field's own name.
     internal_token: str | None = Field(
         default=None,
-        validation_alias=AliasChoices("internal_token", "POSEIDON_INTERNAL_TOKEN"),
+        validation_alias="POSEIDON_INTERNAL_TOKEN",
     )
+
+    def __init__(self, **values: object) -> None:
+        if "internal_token" in values:
+            values.setdefault("POSEIDON_INTERNAL_TOKEN", values.pop("internal_token"))
+        super().__init__(**values)
+
     # Phase 11 Task 4 (doc 06 observability): the threshold poseidon.scripts.
     # cost_rollup's --spike-check mode reads to flag a turn_run row whose
     # input_tokens + output_tokens exceeds it -- a config choice, recorded
