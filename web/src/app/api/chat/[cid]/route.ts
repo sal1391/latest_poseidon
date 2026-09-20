@@ -45,7 +45,18 @@ export async function POST(request: Request, { params }: { params: Promise<{ cid
     idle = setTimeout(() => controller.abort(), IDLE_MS);
   };
 
-  const upstream = await streamTurn(cid, { text, client_turn_key }, identity, controller.signal);
+  // The timer is armed before the call, so every way out has to disarm it.
+  // The two normal exits do it below; a `streamTurn` that throws outright -- an
+  // unset token, a refused connection -- would otherwise leave a live
+  // two-minute timer behind for every request a misconfigured deployment
+  // receives.
+  let upstream: Response;
+  try {
+    upstream = await streamTurn(cid, { text, client_turn_key }, identity, controller.signal);
+  } catch (err) {
+    clearTimeout(idle);
+    throw err;
+  }
   if (!upstream.ok || !upstream.body) {
     clearTimeout(idle);
     // Status AND body: Python's refusals are RFC-7807 problem details naming

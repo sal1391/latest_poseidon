@@ -56,7 +56,7 @@ function uiChunksFromSse(res: Response): ReadableStream<UIMessageChunk> {
 const salesHeaders = { "x-poseidon-sub": "dev|local", "x-poseidon-roles": "Poseidon:Sales", "content-type": "application/json" };
 const params = Promise.resolve({ cid: "c1" });
 
-afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.useRealTimers(); });
 
 describe("POST /api/chat/[cid]", () => {
   it("re-streams Python's frames as a UI message stream whose parts match the persisted shape", async () => {
@@ -116,6 +116,24 @@ describe("POST /api/chat/[cid]", () => {
     const body = await res.text();
     expect(body).toContain('"type":"error"');
     expect(body).toContain("turn stream ended without a done or error frame");
+  });
+
+  /**
+   * The idle timer is armed BEFORE the upstream call, so every way out of the
+   * handler has to disarm it. The streaming path does so in its `finally` and
+   * the non-2xx path inline; a `streamTurn` that throws outright -- an unset
+   * token, a refused connection -- had neither, and left a live two-minute
+   * timer behind per failed request. That is unbounded accumulation on exactly
+   * the path a misconfigured deployment takes for every request it receives.
+   */
+  it("clears the idle timer when the upstream call itself throws", async () => {
+    vi.stubEnv("POSEIDON_INTERNAL_TOKEN", "t");
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")));
+    await expect(
+      POST(new Request("http://x/api/chat/c1", { method: "POST", headers: salesHeaders, body: JSON.stringify({ text: "hi", client_turn_key: null }) }), { params }),
+    ).rejects.toThrow(/ECONNREFUSED/);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("passes a pre-stream non-2xx from Python through with its body", async () => {
