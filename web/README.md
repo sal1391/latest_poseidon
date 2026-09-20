@@ -40,10 +40,16 @@ npm run dev
 ```
 
 A mismatched or unset token fails on the first turn with the variable's name
-in the message, before any request leaves this process. Note that
-`/api/chat/<id>` is answered **here**, not by the `/api/*` rewrite: an array
-returned from `rewrites()` is `afterFiles`, so a route handler at that path
-wins and Python only ever sees `/internal/v1/...` for a turn.
+in the message, before any request leaves this process.
+
+`/api/chat/<id>` is answered **here**, and only because the `/api/*` rewrite
+is a `fallback`. The array form of `rewrites()` is the `afterFiles` phase, and
+Next applies afterFiles rewrites **before dynamic routes** — so as an array
+the rewrite swallows `/api/chat/[cid]` and the handler never runs (observed
+live: Python answered `{"detail":"Not Found"}`). Under `fallback` Next serves
+the routes it defines and anything else under `/api/` falls through to Python,
+so Python's access log shows only `/internal/v1/...` for a turn. Do not
+restore the array form.
 
 ### Checking the 403
 

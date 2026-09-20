@@ -3,22 +3,6 @@ import { requireSales } from "../../../../lib/request-identity";
 import { createFrameTranslator, parseSseChunk } from "../../../../lib/turn-stream";
 import { streamTurn } from "../../../../lib/turns";
 
-/**
- * One chat turn, re-streamed.
- *
- * Python runs the turn and emits the envelope frames this app has no business
- * reinventing; this handler is the adapter between that stream and the one the
- * AI SDK's `useChat` reads. It owns exactly three things -- the role check, the
- * idle deadline, and the frame-to-chunk translation -- and no chat logic at
- * all.
- *
- * **It must win over the `/api/*` rewrite.** `next.config.ts` rewrites
- * `/api/:path*` to the FastAPI backend, but `rewrites()`'s array form is
- * `afterFiles`, which runs only after the filesystem routes miss. A route
- * handler at this path is a filesystem route, so it answers first and the
- * rewrite never sees the request -- which is why Python's access log shows
- * only `/internal/v1/...` for a turn.
- */
 export const dynamic = "force-dynamic";
 
 /**
@@ -30,6 +14,24 @@ export const dynamic = "force-dynamic";
  */
 const IDLE_MS = 120_000;
 
+/**
+ * One chat turn, re-streamed.
+ *
+ * Python runs the turn and emits the envelope frames this app has no business
+ * reinventing; this handler is the adapter between that stream and the one the
+ * AI SDK's `useChat` reads. It owns exactly three things -- the role check, the
+ * idle deadline, and the frame-to-chunk translation -- and no chat logic at
+ * all.
+ *
+ * **This path reaches here only because the rewrite is a `fallback`** (P16-R19).
+ * `rewrites()`'s array form is the `afterFiles` phase, and Next applies
+ * afterFiles rewrites BEFORE dynamic routes -- so as an array, a rewrite of
+ * `/api/:path*` swallows `/api/chat/[cid]` and this handler never runs.
+ * Observed live: Python answered `{"detail":"Not Found"}`, with no error and
+ * no warning. `next.config.ts` therefore puts the rewrite under `fallback`:
+ * Next serves the routes it defines, and anything else under `/api/` falls
+ * through to Python. Do not restore the array form.
+ */
 export async function POST(request: Request, { params }: { params: Promise<{ cid: string }> }) {
   const { cid } = await params;
   // Before the body is even read: `proxy.ts` already answered 403 to anything
