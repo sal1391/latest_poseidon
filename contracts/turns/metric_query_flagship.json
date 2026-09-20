@@ -1,0 +1,175 @@
+{
+ "frames": [
+  {
+   "data": {
+    "event_seq": 1,
+    "message_id": "msg-1",
+    "turn_id": "turn-1",
+    "turn_index": 1
+   },
+   "event": "accepted"
+  },
+  {
+   "data": {
+    "event_seq": 2,
+    "label": "Metric query",
+    "message_id": "msg-1",
+    "server": null,
+    "status": "start",
+    "tool": "data_qa.metric_query",
+    "tool_seq": 1,
+    "turn_id": "turn-1"
+   },
+   "event": "tool"
+  },
+  {
+   "data": {
+    "event_seq": 3,
+    "label": "Metric query",
+    "message_id": "msg-1",
+    "server": null,
+    "status": "done",
+    "tool": "data_qa.metric_query",
+    "tool_seq": 1,
+    "turn_id": "turn-1"
+   },
+   "event": "tool"
+  },
+  {
+   "data": {
+    "event_seq": 4,
+    "kind": "table",
+    "message_id": "msg-1",
+    "payload": {
+     "columns": [
+      "Customer",
+      "Gross Profit"
+     ],
+     "rows": [
+      [
+       "Northstar Lines",
+       412000
+      ],
+      [
+       "Blue Anchor Marine",
+       268500
+      ],
+      [
+       "Crestline Freight",
+       155250
+      ]
+     ]
+    },
+    "turn_id": "turn-1"
+   },
+   "event": "part"
+  },
+  {
+   "data": {
+    "event_seq": 5,
+    "kind": "proof",
+    "message_id": "msg-1",
+    "payload": {
+     "lines": [
+      "Entity: SANDBOX.MCA.MARINE_SALES_PLANNING_V",
+      "Backend: synthetic",
+      "Period: 2026-04-01..2026-05-01",
+      "Filters: LOC_NM IN (SINGAPORE)",
+      "Group by: CUST_NM (top 5)",
+      "Rows: 3"
+     ]
+    },
+    "turn_id": "turn-1"
+   },
+   "event": "part"
+  },
+  {
+   "data": {
+    "event_seq": 6,
+    "message_id": "msg-1",
+    "text": "Certified answer for SINGAPORE \u2014 2026-04-01..2026-05-01.",
+    "turn_id": "turn-1"
+   },
+   "event": "token"
+  },
+  {
+   "data": {
+    "event_seq": 7,
+    "message_id": "msg-1",
+    "turn_id": "turn-1",
+    "usage": {
+     "input_tokens": 0,
+     "output_tokens": 0
+    }
+   },
+   "event": "done"
+  }
+ ],
+ "parts": [
+  {
+   "kind": "tool_event",
+   "payload": {
+    "label": "Metric query",
+    "server": null,
+    "status": "done",
+    "tool": "data_qa.metric_query",
+    "tool_seq": 1
+   }
+  },
+  {
+   "kind": "table",
+   "payload": {
+    "columns": [
+     "Customer",
+     "Gross Profit"
+    ],
+    "rows": [
+     [
+      "Northstar Lines",
+      412000
+     ],
+     [
+      "Blue Anchor Marine",
+      268500
+     ],
+     [
+      "Crestline Freight",
+      155250
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "proof",
+   "payload": {
+    "lines": [
+     "Entity: SANDBOX.MCA.MARINE_SALES_PLANNING_V",
+     "Backend: synthetic",
+     "Period: 2026-04-01..2026-05-01",
+     "Filters: LOC_NM IN (SINGAPORE)",
+     "Group by: CUST_NM (top 5)",
+     "Rows: 3"
+    ]
+   }
+  },
+  {
+   "kind": "text",
+   "payload": {
+    "markdown": "Certified answer for SINGAPORE \u2014 2026-04-01..2026-05-01."
+   }
+  }
+ ],
+ "scenario": "metric_query_flagship",
+ "terminal": {
+  "data": {
+   "event_seq": 7,
+   "message_id": "msg-1",
+   "turn_id": "turn-1",
+   "usage": {
+    "input_tokens": 0,
+    "output_tokens": 0
+   }
+  },
+  "event": "done"
+ }
+}

@@ -1,0 +1,108 @@
+{
+ "frames": [
+  {
+   "data": {
+    "event_seq": 1,
+    "message_id": "msg-1",
+    "turn_id": "turn-1",
+    "turn_index": 1
+   },
+   "event": "accepted"
+  },
+  {
+   "data": {
+    "event_seq": 2,
+    "label": "Made up",
+    "message_id": "msg-1",
+    "server": null,
+    "status": "start",
+    "tool": "data_qa.made_up",
+    "tool_seq": 1,
+    "turn_id": "turn-1"
+   },
+   "event": "tool"
+  },
+  {
+   "data": {
+    "event_seq": 3,
+    "label": "Made up",
+    "message_id": "msg-1",
+    "server": null,
+    "status": "error",
+    "tool": "data_qa.made_up",
+    "tool_seq": 1,
+    "turn_id": "turn-1"
+   },
+   "event": "tool"
+  },
+  {
+   "data": {
+    "event_seq": 4,
+    "label": "Made up",
+    "message_id": "msg-1",
+    "server": null,
+    "status": "start",
+    "tool": "data_qa.made_up",
+    "tool_seq": 2,
+    "turn_id": "turn-1"
+   },
+   "event": "tool"
+  },
+  {
+   "data": {
+    "event_seq": 5,
+    "label": "Made up",
+    "message_id": "msg-1",
+    "server": null,
+    "status": "error",
+    "tool": "data_qa.made_up",
+    "tool_seq": 2,
+    "turn_id": "turn-1"
+   },
+   "event": "tool"
+  },
+  {
+   "data": {
+    "code": "unknown skill",
+    "event_seq": 6,
+    "message": "no skill is registered as 'data_qa.made_up'; registered: customer_insight.existing_customer_brief, customer_insight.new_prospect_brief, data_qa.metric_query, research.web_research",
+    "message_id": "msg-1",
+    "turn_id": "turn-1"
+   },
+   "event": "error"
+  }
+ ],
+ "parts": [
+  {
+   "kind": "tool_event",
+   "payload": {
+    "label": "Made up",
+    "server": null,
+    "status": "error",
+    "tool": "data_qa.made_up",
+    "tool_seq": 1
+   }
+  },
+  {
+   "kind": "tool_event",
+   "payload": {
+    "label": "Made up",
+    "server": null,
+    "status": "error",
+    "tool": "data_qa.made_up",
+    "tool_seq": 2
+   }
+  }
+ ],
+ "scenario": "error_mid_turn",
+ "terminal": {
+  "data": {
+   "code": "unknown skill",
+   "event_seq": 6,
+   "message": "no skill is registered as 'data_qa.made_up'; registered: customer_insight.existing_customer_brief, customer_insight.new_prospect_brief, data_qa.metric_query, research.web_research",
+   "message_id": "msg-1",
+   "turn_id": "turn-1"
+  },
+  "event": "error"
+ }
+}
