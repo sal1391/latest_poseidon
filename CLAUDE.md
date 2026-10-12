@@ -36,7 +36,7 @@ doc as current. Decisions taken in feature specs used to not propagate; that is 
 ## Commands — verified 2026-10-12 (Phase 17 PR 0) (frontend line excepted), copy-pasteable
 
 ```bash
-# Offline Python suite -> 2008 passed, 13 skipped, 120 deselected (~236s)
+# Offline Python suite -> 2040 passed, 13 skipped, 120 deselected (~236s)
 cd backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest \
   -p no:cacheprovider \
   -m 'not pg and not minio and not pdf and not router_live and not research_live'
