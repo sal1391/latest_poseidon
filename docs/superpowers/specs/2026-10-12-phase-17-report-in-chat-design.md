@@ -35,6 +35,12 @@ Everything Python computes; the model only writes prose over computed JSON and r
 
 Each PR is reviewable and mergeable on its own; the owner may stop after any of them.
 
+**Execution model (owner rule):** every PR runs in a fresh chat from a handoff prompt the previous
+chat writes. Fable supervises only (plan, dispatch, review, morning-review list, PR description) and
+never writes implementation code; Haiku and Sonnet implement, Opus only where judgment is real and
+for reviewing the riskiest diffs. Implementers run the tests and their report is the evidence;
+reviewers never re-run the suite.
+
 ### Out of scope (and where it goes)
 
 - Charts (§4.9 of the reports design) — Phase 18 (D66).

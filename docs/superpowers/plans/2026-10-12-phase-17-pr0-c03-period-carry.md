@@ -28,6 +28,14 @@
 - Commit after every task with the message given; every commit ends with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 - Implementers run the tests and show the failing-first output in their report; reviewers never re-run the suite.
 
+## Execution model (owner rule, applies to every Phase 17 PR)
+
+- **Each PR runs in a fresh chat.** This plan is PR 0; PRs A, B and C each get their own plan and their own chat, started from a handoff prompt the previous chat writes.
+- **Fable is the supervisor only.** It reads the plan, dispatches one implementer per task, dispatches a fresh reviewer per diff, judges the reports, writes the morning-review list and the PR description. It never writes implementation code. The one exception: an implementer stuck after two or three real attempts, in which case Fable writes the smallest unblocking fix and hands back.
+- **Cheap models do the work.** Haiku for tasks whose code the plan already carries in full (here: Tasks 1, 2, 5, 6). Sonnet for routine code with some judgment (Tasks 4, 7) and for reviewing the Haiku tasks. Opus only where the judgment is real (Task 3, the parser) and for reviewing Tasks 3 and 4. Default lower when in doubt.
+- **The implementer runs the tests and its report is the evidence; the reviewer never re-runs the suite.**
+- Ledger directory for this PR: `.superpowers/sdd/2026-10-12-phase-17-pr0-c03/` (self-ignored).
+
 ## Review Focus
 
 Inputs the spec implies but did not spell out, each pinned to a test in the task that owns the code:
