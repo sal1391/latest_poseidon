@@ -32,21 +32,30 @@ phrase on the same side is ignored.
   ``year-to-date`` for ``[Jan 1 of the reference year, reference_date)``.
 * **Quarters** -- ``q1 2026``, or a bare ``q3`` under the same most-recent
   rule as a bare month (compared on the quarter's first month).
-* **Comparison** -- ``vs``/``versus``/``compared to`` splits the text once;
-  the left side resolves ``period_a`` and the right side ``period_b``. When
+* **Comparison** -- ``vs``/``versus``/``compared to``/``compare to``/
+  ``compare with``/``compared with`` splits the text once; the left side
+  resolves ``period_a`` and the right side ``period_b``. When
   the right side is only a "one year back" phrase (``vs last year``) and
   ``period_a`` resolved, ``period_b`` becomes ``period_a`` shifted back one
   year IN THE SAME SHAPE -- a month stays a month, a quarter a quarter, a
-  year-to-date window keeps its partial-year cut-off. The shift rebuilds the
-  window from its first-of-period anchor rather than moving raw bounds; the
-  one bound that is not a first-of-period date (a year-to-date end) is
-  day-clamped, so a February 29 reference shifts to February 28.
+  year-to-date window keeps its partial-year cut-off, a carried day range
+  keeps its days. The shift rebuilds the window from its first-of-period
+  anchor rather than moving raw bounds; the bounds that are not
+  first-of-period dates (a year-to-date end, a carried day range's bounds)
+  are day-clamped, so a February 29 shifts to February 28. A day range's
+  shifted end is floored at its shifted start + 1 day, so a range whose
+  bounds both clamp to the same day still comes back non-empty.
   ``prior year vs ytd`` needs no shift -- both sides name a period.
-* **Carry-over** -- when the text names no period on the left, ``period_a``
-  falls back to ``slots.period_a`` (source ``"carry"``); a new left-hand
-  phrase replaces it (source ``"text"``). ``period_b`` is NEVER carried: a
-  comparison has to be asked for again, so ``b_source`` is only ever
-  ``"text"`` or ``"none"``.
+* **Carry-over** -- when the text names no period on the left,
+  ``period_a`` is last turn's stored WINDOW
+  (``slots.period_a``..``slots.period_a_end``, read through
+  ``period_labels.slot_window`` so a slot with no end is still the month
+  containing its start) with source ``"carry"``; a new left-hand phrase
+  replaces it (source ``"text"``). ``period_b`` is carried the same way
+  (source ``"carry"``) when the text names no left-hand period and no
+  resolvable comparison, so "why did GP drop?" after "July vs June" still
+  compares. A left-hand phrase alone ("GP for August") reports no
+  comparison, and the pipeline clears the slot (decision D62).
 * **Validation** -- a resolved window that does not intersect ``available``
   still comes back, alongside a ``period_unavailable`` issue. ``PeriodRange``
   ends INCLUSIVE while ``PeriodWindow`` ends EXCLUSIVE, so the availability
@@ -61,18 +70,6 @@ Only one ``ParseIssue`` fits in a ``PeriodParse``, so when several apply the
 order is: a phrase that could not resolve at all (year-to-date at a January 1
 reference) first, then a ``period_a`` availability miss, then ``period_b``'s.
 
-CARRIED GRANULARITY -- KNOWN v1 LIMITATION
-------------------------------------------
-``ConversationSlots.period_a`` stores a first-of-period DATE, not a window,
-so the carry path cannot know which granularity produced it and always
-reconstructs the MONTH containing that date. If the previous turn parsed a
-quarter or a year, Phase 6 stores that period's first month and this parser
-carries a month -- the carried period silently degrades in granularity. It is
-deliberate for v1 and deliberately silent: no ``ParseIssue`` is emitted for
-it, because nothing about the current turn is wrong. Widening the slot to
-carry a granularity (or the window itself) is the fix, and it belongs to
-whichever phase revisits ``ConversationSlots``, not here.
-
 AMBIGUOUS BARE MONTHS
 ---------------------
 ``may`` is a month AND the modal verb that opens most polite requests, so a
@@ -84,6 +81,14 @@ returns none instead of silently scoping the answer to May. The cost is
 deliberate -- ``show me may`` no longer parses, and a non-parse the user can
 recover from beats a silently wrong answer. ``AMBIGUOUS_BARE_MONTHS`` is the
 extension point; ``may 2026`` and every other month are untouched.
+
+The comparison connective is the one other gate context: a bare ``may``
+that opens the right-hand side (only whitespace between it and the
+connective, as in ``vs may`` or ``compare to may instead``) is a month.
+The connective is cut off before that side is scanned, so without this
+rule the month would see no preceding word and read as the verb, and a
+carried comparison would survive silently. A ``may`` anywhere else on
+either side still needs its preposition.
 
 Known residual: a customer whose name is a month (``May Shipping``) still
 collides when a preposition precedes it. Masking customer spans before the
@@ -98,6 +103,7 @@ from datetime import date, timedelta
 from poseidon.core.data.client import PeriodRange
 from poseidon.core.data.specs import PeriodWindow
 from poseidon.core.parsing.normalize import normalize
+from poseidon.core.parsing.period_labels import KIND_RANGE, slot_window, window_kind
 from poseidon.core.parsing.types import ParseIssue
 from poseidon.core.skills.context import ConversationSlots
 
@@ -180,13 +186,17 @@ _PHRASE_RE = re.compile(
 
 # ``\bvs\b\.?`` and not ``\bvs\.?\b``: a word boundary cannot follow the dot
 # in "vs. march" (dot and space are both non-word), so the boundary has to be
-# taken on the ``s`` and the dot consumed afterwards.
-_COMPARISON_RE = re.compile(r"\bvs\b\.?|\bversus\b|\bcompared\s+to\b")
+# taken on the ``s`` and the dot consumed afterwards. ``compare(d) to/with``
+# (D62) lets "compare to may instead" replace only the comparison side.
+_COMPARISON_RE = re.compile(
+    r"\bvs\b\.?|\bversus\b|\bcompared?\s+(?:to|with)\b"
+)
 
 _KIND_MONTH = "month"
 _KIND_QUARTER = "quarter"
 _KIND_YEAR = "year"
 _KIND_YTD = "ytd"
+_KIND_RANGE = KIND_RANGE
 
 
 @dataclass(frozen=True)
@@ -201,7 +211,7 @@ class PeriodParse:
     period_a: PeriodWindow | None
     period_b: PeriodWindow | None
     a_source: str  # "text" | "carry" | "none"
-    b_source: str  # "text" | "none" -- period_b is never carried
+    b_source: str  # "text" | "carry" | "none"
     issue: ParseIssue | None  # period_unavailable
 
 
@@ -271,8 +281,8 @@ def _ytd_window(reference: date) -> PeriodWindow | None:
 def _same_day_prior_year(day: date) -> date:
     """``day`` one year earlier, clamped to the last day of that month.
 
-    Only February 29 needs the clamp, and only a year-to-date window can put
-    a non-first-of-month date in a window bound at all.
+    Only February 29 needs the clamp, and only a year-to-date window or a
+    carried day range can put a non-first-of-month date in a window bound.
     """
     year = day.year - 1
     last_day_of_month = calendar.monthrange(year, day.month)[1]
@@ -284,7 +294,9 @@ def _shift_back_one_year(resolved: _Resolved) -> _Resolved:
 
     Rebuilt from the shape's own anchor rather than by moving both bounds, so
     a month stays a whole month and a quarter a whole quarter regardless of
-    how many days each has.
+    how many days each has. A day range is the exception: it has no anchor,
+    so both of its bounds move back a year (day-clamped, end floored at
+    start + 1 day).
     """
     start = resolved.window.start
     if resolved.kind == _KIND_MONTH:
@@ -294,6 +306,15 @@ def _shift_back_one_year(resolved: _Resolved) -> _Resolved:
         return _Resolved(_quarter_window(start.year - 1, quarter), _KIND_QUARTER)
     if resolved.kind == _KIND_YEAR:
         return _Resolved(_year_window(start.year - 1), _KIND_YEAR)
+    if resolved.kind == _KIND_RANGE:
+        # The end is floored at start + 1 day because both bounds can clamp
+        # to the same day when the range ends on Feb 29 and the prior year
+        # is not a leap year; an empty window would raise mid-turn.
+        shifted_start = _same_day_prior_year(start)
+        shifted_end = max(
+            _same_day_prior_year(resolved.window.end), shifted_start + timedelta(days=1)
+        )
+        return _Resolved(PeriodWindow(shifted_start, shifted_end), _KIND_RANGE)
     shifted_end = _same_day_prior_year(resolved.window.end)
     return _Resolved(PeriodWindow(date(start.year - 1, 1, 1), shifted_end), _KIND_YTD)
 
@@ -309,32 +330,49 @@ def _preceding_word(side: str, start: int) -> str:
     ``for may`` and ``for, may`` read alike.
 
     ``side`` is one side of a comparison, so a right-hand match sees no
-    preceding word rather than the connective that split the text. The two
-    readings cannot disagree: no connective ends in a gate preposition.
+    preceding word rather than the connective that split the text; the
+    gate treats that position as the connective's (see
+    ``_bare_month_is_gated_out``).
     """
     match = _PRECEDING_WORD_RE.search(side[:start])
     return match.group(1) if match is not None else ""
 
 
-def _bare_month_is_gated_out(side: str, match: re.Match[str]) -> bool:
-    """Whether an ambiguous bare month (``may``) lacks the preposition that
+def _bare_month_is_gated_out(
+    side: str, match: re.Match[str], after_connective: bool = False
+) -> bool:
+    """Whether an ambiguous bare month (``may``) lacks the context that
     makes it a date. Every other month, and every month-year spelling,
-    matches unconditionally."""
+    matches unconditionally.
+
+    Two contexts open the gate: a preposition from
+    ``_BARE_MONTH_PREPOSITIONS`` immediately before the word, or -- when
+    ``side`` is the right-hand side of a comparison (``after_connective``)
+    -- nothing but whitespace before it, i.e. the word directly follows the
+    connective (``vs may``, ``compare to may instead``). A ``may`` later on
+    the right-hand side, or anywhere on the left, still needs its
+    preposition.
+    """
     if match.group("bm_m") not in AMBIGUOUS_BARE_MONTHS:
+        return False
+    if after_connective and not side[: match.start()].strip():
         return False
     return _preceding_word(side, match.start()) not in _BARE_MONTH_PREPOSITIONS
 
 
-def _parse_side(side: str, reference: date) -> _SideParse:
+def _parse_side(side: str, reference: date, after_connective: bool = False) -> _SideParse:
     """Resolve the first period phrase in ``side`` against ``reference``.
 
     A gated-out bare month does not end the scan: the text reads on exactly
     as if the word were not a month at all, so a real phrase further along
     the same side is still found, and a side left with nothing takes the
-    ordinary no-phrase path (carry, else none).
+    ordinary no-phrase path (carry, else none). ``after_connective`` marks
+    the right-hand side of a comparison, whose start is a gate context.
     """
     for match in _PHRASE_RE.finditer(side):
-        if match.group("baremonth") is not None and _bare_month_is_gated_out(side, match):
+        if match.group("baremonth") is not None and _bare_month_is_gated_out(
+            side, match, after_connective
+        ):
             continue
         return _resolve(match, reference)
     return _NO_PHRASE
@@ -439,10 +477,9 @@ def parse_periods(
 ) -> PeriodParse:
     """Resolve ``text`` into ``period_a``/``period_b`` windows.
 
-    See the module docstring for the grammar, the carry rule (and its
-    documented granularity limitation), the shift rule, and the issue
-    precedence. ``text`` is raw user input: it is normalized and casefolded
-    here.
+    See the module docstring for the grammar, the carry rule (both sides,
+    D62), the shift rule, and the issue precedence. ``text`` is raw user
+    input: it is normalized and casefolded here.
     """
     cleaned = normalize(text).casefold()
 
@@ -452,23 +489,31 @@ def parse_periods(
         right = _NO_PHRASE
     else:
         left = _parse_side(cleaned[: split.start()], reference_date)
-        right = _parse_side(cleaned[split.end() :], reference_date)
+        right = _parse_side(cleaned[split.end() :], reference_date, after_connective=True)
 
-    # period_a: the left-hand phrase, or last turn's period when the text
-    # named none. An explicit phrase suppresses the carry even when it
-    # resolved to nothing -- the user asked for a period, not for last turn's.
+    # period_a: the left-hand phrase, or last turn's WINDOW when the text
+    # named none (D62: the stored end makes a carried year stay a year). An
+    # explicit phrase suppresses the carry even when it resolved to nothing
+    # -- the user asked for a period, not for last turn's.
     resolved_a = left.resolved
     a_source = _SOURCE_TEXT if resolved_a is not None else _SOURCE_NONE
     if not left.matched and slots.period_a is not None:
-        carried = slots.period_a
-        resolved_a = _Resolved(_month_window(carried.year, carried.month), _KIND_MONTH)
+        window_a = slot_window(slots.period_a, slots.period_a_end)
+        resolved_a = _Resolved(window_a, window_kind(window_a))
         a_source = _SOURCE_CARRY
 
-    # period_b: only ever from this turn's text.
+    # period_b: this turn's right-hand phrase; otherwise, when the text named
+    # no left-hand period either, last turn's comparison carries (D62). A
+    # left-hand phrase with no comparison names a single period, so nothing
+    # is carried here and the pipeline clears the slot.
     resolved_b = right.resolved
     if right.prior_year_relative and resolved_a is not None:
         resolved_b = _shift_back_one_year(resolved_a)
     b_source = _SOURCE_TEXT if resolved_b is not None else _SOURCE_NONE
+    if resolved_b is None and not left.matched and slots.period_b is not None:
+        window_b = slot_window(slots.period_b, slots.period_b_end)
+        resolved_b = _Resolved(window_b, window_kind(window_b))
+        b_source = _SOURCE_CARRY
 
     if left.ytd_unavailable or right.ytd_unavailable:
         issue = ParseIssue(_ISSUE_CODE, _YTD_AT_YEAR_START)

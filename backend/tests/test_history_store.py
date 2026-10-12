@@ -92,7 +92,7 @@ from poseidon.core.util.uuid7 import uuid7
 def test_slots_to_json_and_back_round_trips_a_populated_instance():
     """Dates become ISO strings, pass_through becomes a list of pairs -- the
     two shapes that cannot survive a raw dataclasses.asdict() through
-    json.dumps unchanged."""
+    json.dumps unchanged. D62: the window ends ride along as ISO dates."""
     slots = ConversationSlots(
         customer="ACME MARINE",
         port="SGSIN",
@@ -102,6 +102,8 @@ def test_slots_to_json_and_back_round_trips_a_populated_instance():
         region="APAC",
         topic="gp",
         pass_through=(("customer", "ACME MARINE"), ("port", "SGSIN")),
+        period_a_end=date(2026, 5, 1),
+        period_b_end=date(2026, 4, 1),
     )
 
     raw = slots_to_json(slots)
@@ -115,6 +117,8 @@ def test_slots_to_json_and_back_round_trips_a_populated_instance():
         "region": "APAC",
         "topic": "gp",
         "pass_through": [["customer", "ACME MARINE"], ["port", "SGSIN"]],
+        "period_a_end": "2026-05-01",
+        "period_b_end": "2026-04-01",
     }
     assert slots_from_json(raw) == slots
 
@@ -133,6 +137,8 @@ def test_slots_to_json_and_back_round_trips_the_empty_default_instance():
         "region": None,
         "topic": None,
         "pass_through": [],
+        "period_a_end": None,
+        "period_b_end": None,
     }
     assert slots_from_json(raw) == slots
 
@@ -147,6 +153,32 @@ def test_slots_from_json_ignores_unknown_keys():
 
 def test_slots_from_json_defaults_missing_keys_like_the_dataclass():
     assert slots_from_json({}) == ConversationSlots()
+
+
+def test_slots_from_json_without_end_keys_leaves_the_ends_none():
+    """A row written before Phase 17 PR 0 has starts but no ends. The
+    serializer is a faithful inverse: the ends come back None and the
+    month fallback happens later, in period_labels.slot_window, at parse
+    time -- so this reload must not invent a date the row never held."""
+    raw = {"period_a": "2025-01-01", "period_b": "2024-12-01"}
+
+    slots = slots_from_json(raw)
+
+    assert slots.period_a == date(2025, 1, 1)
+    assert slots.period_a_end is None
+    assert slots.period_b == date(2024, 12, 1)
+    assert slots.period_b_end is None
+
+
+def test_slots_to_json_writes_a_year_window_as_two_iso_dates():
+    slots = ConversationSlots(period_a=date(2025, 1, 1), period_a_end=date(2026, 1, 1))
+
+    raw = slots_to_json(slots)
+
+    assert raw["period_a"] == "2025-01-01"
+    assert raw["period_a_end"] == "2026-01-01"
+    assert raw["period_b"] is None
+    assert raw["period_b_end"] is None
 
 
 # ===========================================================================
@@ -946,6 +978,27 @@ def test_db_state_store_round_trip_through_real_jsonb(history_store):
     state_store.put(conversation["id"], slots)
 
     assert state_store.get(conversation["id"]) == slots
+
+
+@pytest.mark.pg
+def test_db_state_store_round_trips_period_window_ends_through_real_jsonb(history_store):
+    """D62: the window ends survive the jsonb write and read. A full-year A
+    and a one-month B, the exact shape a report conversation stores."""
+    user_history = history_store.for_user(_fresh_user_sub())
+    conversation, _opener = user_history.create_conversation()
+    state_store = DbStateStore(user_history)
+    slots = ConversationSlots(
+        period_a=date(2025, 1, 1),
+        period_b=date(2024, 12, 1),
+        period_a_end=date(2026, 1, 1),
+        period_b_end=date(2025, 1, 1),
+    )
+
+    state_store.put(conversation["id"], slots)
+
+    reloaded = state_store.get(conversation["id"])
+    assert reloaded == slots
+    assert reloaded.period_a_end == date(2026, 1, 1)
 
 
 @pytest.mark.pg

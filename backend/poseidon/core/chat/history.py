@@ -846,6 +846,8 @@ def slots_to_json(slots: ConversationSlots) -> dict:
         "region": slots.region,
         "topic": slots.topic,
         "pass_through": [[key, value] for key, value in slots.pass_through],
+        "period_a_end": slots.period_a_end.isoformat() if slots.period_a_end is not None else None,
+        "period_b_end": slots.period_b_end.isoformat() if slots.period_b_end is not None else None,
     }
 
 
@@ -854,20 +856,27 @@ def slots_from_json(raw: dict) -> ConversationSlots:
     (forward compatibility: a newer app version's extra key is simply never
     read); a missing key defaults exactly like the dataclass field it
     represents, via ``.get(key, default)`` -- there is no branch here that
-    treats "absent" specially, ``.get`` already does."""
-    period_a_raw = raw.get("period_a")
-    period_b_raw = raw.get("period_b")
+    treats "absent" specially, ``.get`` already does. That includes the
+    D62 window ends: a pre-Phase-17 row has none, and they come back
+    ``None`` -- the month fallback is ``period_labels.slot_window``'s job
+    at parse time, so this function stays a faithful inverse."""
     pass_through_raw = raw.get("pass_through", ())
     return ConversationSlots(
         customer=raw.get("customer"),
         port=raw.get("port"),
-        period_a=date.fromisoformat(period_a_raw) if period_a_raw is not None else None,
-        period_b=date.fromisoformat(period_b_raw) if period_b_raw is not None else None,
+        period_a=_iso_date(raw.get("period_a")),
+        period_b=_iso_date(raw.get("period_b")),
         mode=raw.get("mode", "default"),
         region=raw.get("region"),
         topic=raw.get("topic"),
         pass_through=tuple((pair[0], pair[1]) for pair in pass_through_raw),
+        period_a_end=_iso_date(raw.get("period_a_end")),
+        period_b_end=_iso_date(raw.get("period_b_end")),
     )
+
+
+def _iso_date(raw: str | None) -> date | None:
+    return date.fromisoformat(raw) if raw is not None else None
 
 
 __all__ = [

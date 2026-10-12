@@ -200,7 +200,7 @@ poseidon/
 - D33 **(timing revised by D40, interface unchanged)** Phase 5 ships Bedrock + stub; Cortex
   arrives with a provider-parity contract test — prove the seam with one live provider before
   paying for two (doc 03 §1, doc 08). D40 moves Cortex earlier than "the SPCS phase's
-  preparation" and fixes its transport; the one-interface, parity-tested requirement stands.
+  preparation" and fixes its transport; the one-interface, parity-tested requirement stands. **(Cortex availability revised by D68)**
 
 ### Monthly performance reports (D34–D45)
 
@@ -217,7 +217,7 @@ remains authoritative for the feature, this table for the fact that the decision
 | D37 | Report definitions, runs and sends are shared org documents granted to the app role, no per-user row policies. Writes gated by a new role `Poseidon:ReportAdmin`; reads by `Poseidon:Sales`. | — |
 | D38 | One `Mailer` interface. Microsoft Graph is the production transport on SPCS (its egress allows only ports 22, 80, 443, 1024+); SMTP serves local Mailpit and EC2; a stub serves tests. The mail path is a new egress processor: report content to allow-listed internal domains, never conversation content. | — |
 | **D39** | **On SPCS the app database is managed Snowflake Postgres, injected as `DATABASE_URL` from a Snowflake secret. Report HTML and PDF are stored as bytes in Postgres and served through the API in every habitat; MinIO is not part of the SPCS service.** | **D20** |
-| D40 | `CortexProvider` is built now, over the Cortex REST Messages endpoint with native tool calling — not the SQL `COMPLETE` function with emulated tools. | D33 (timing) |
+| D40 | `CortexProvider` is built now, over the Cortex REST Messages endpoint with native tool calling — not the SQL `COMPLETE` function with emulated tools. **(timing revised by D68)** | D33 (timing) |
 | D41 | Report chat carries the office filter and month pair by default. Scope is an explicit validated skill argument; the model chooses the value, code applies the filter. Share-of-total is computed in Python. The report's figures reach the model only through `reporting.report_lookup`. | — |
 | D42 | The EC2 deployment (Phase 14) is paused after its completed offline half; report work sequences first. | doc 08 order |
 | D43 | Report content and math follow mom-comparison exactly where it already works: two single-month frames merged in Python, its KPI, top-mover, driver and new/lost rules, its narrative templates. | — |
@@ -238,6 +238,15 @@ remains authoritative for the feature, this table for the fact that the decision
 | D58 | Drizzle is the migration authority for application tables (Q3 applied): `web/drizzle/0000_roles`, `0001_baseline`, `0002_grants_force_rls` re-derived from Alembic 0003–0010. Alembic no longer runs at boot; 0001–0010 are frozen history; the `synthetic` schema (0002) is created by the seed path. Tripwires: `web/src/db/migrations.test.ts` and the pg suite against a Drizzle-only database. | — |
 | D59 | The internal contract is authenticated by a shared secret (`POSEIDON_INTERNAL_TOKEN`, header `X-Poseidon-Internal-Token`, constant-time compare, 503 when unset) and hidden from OpenAPI. The web tier requires `Poseidon:Sales` in the proxy (403) and in every page/handler. | closes R25, P16-4 |
 | D60 | The deterministic parser reads a port after the cues "port of", "at" and "in", including a lowercase name. The new paths (the "in" cue and any lowercase name) run in strict mode: only an exact or word-set match applies; a fuzzy match asks "did you mean". A port clarification reuses the `customer_ambiguous`/`customer_unknown` codes, told apart by `ParseIssue.kind == "port"`; the orchestrator sends port chips (`Port of <port>`) or a text-only "which port?" question (P16-R23). | revises `parsing/pipeline.py`'s docstring claim that a weak-cue miss emits no issue |
+| D61 | Phase 17 ships as four PRs: C03 fix, report in chat, metric_query extensions, providers. All eleven router cases of the reports design §7.6 are in scope across PRs A and B. (`2026-10-12-phase-17-report-in-chat-design.md`) | migration design §10 row 17 (adds the split) |
+| D62 | `ConversationSlots` carries full period windows through two additive fields, `period_a_end` and `period_b_end`. The comparison (`period_b`) is carried until replaced: a single named period replaces A and clears B; a named comparison replaces both; a comparison-only phrase replaces B and keeps A. Orientation: slot A is the period being asked about, slot B is what it is compared to; a report seeds A = report month, B = prior month. | period parser's "B is never carried" contract; pipeline's "B clears every turn" rule |
+| D63 | Report perspective is an explicit enum `customer \| supplier \| book`. It alone decides the office column (`CUSTOMER_TEAM_NAME` / `PRIMARY_SUPPLY_TEAM_OFFICE` / none) and the primary entity (`CUST_NM` / `SUPPLIER_NM` / `CUST_NM`). Supplier figures are our certified sales GP on deals that supplier supplied. The customer breakdown of a supplier report is a chat follow-up over pass-through, not a table in the report. | completes the deferred supplier-perspective requirement |
+| D64 | Month to date exists only when asked for in words ("month to date", "mtd", "so far this month") or by naming the running month. Chips never offer it. It is chat-only; the payload records `window_kind: complete \| mtd` so Phase 18 refuses to save or email the latter. | refines D50 for ad-hoc chat |
+| D65 | `report_run` lands in Phase 17 as Drizzle migration `0003`, shaped for Phase 18 (nullable definition and superseded-by columns). It is a shared org document (no row policy, app-role grants). Report bytes are served by Next.js route handlers reading Postgres behind the Sales-role check, linked from a plain anchor. | resolves C07 and the downgraded C08 for this phase |
+| D66 | Charts are deferred to Phase 18. The payload has no `charts` key in `payload_version: 1`; adding it is additive. | reports design §4.9 timing |
+| D67 | The grounding check is entity-scoped: each numeric token in a sentence must match a display string belonging to an entity named in that sentence (or a KPI / period-level figure when the sentence names none). The suite carries a must-reject fixture. | resolves C09 |
+| D68 | Three live provider profiles: `bedrock` (unchanged), `anthropic` (new, Messages API over the existing HTTP client, no new SDK), `cortex` (REST Messages endpoint with native tool calling, built offline against recorded fixtures). One provider-parity contract test runs against all three plus the stub. Cortex's live proof is a handoff to the Snowflake-side owner. | D33's "Cortex not before SPCS"; D40's timing (was Phase 19) |
+| D69 | An ad-hoc in-chat run, including its PDF, is readable by any `Poseidon:Sales` user. | follows D37, D44, D47 |
 
 ### Migration decisions (M1-M5)
 
@@ -248,10 +257,7 @@ service; **M3** the deployment target is SPCS, with EC2 parked; **M4** the SPCS 
 managed Snowflake Postgres (D39); **M5** no Auth0 — production identity is SPCS ingress, local
 development stays on the fixed dev user, and Auth0 remains documented but unwired.
 
-**Still not folded into any design:** supplier-office reports must rank **suppliers**, with
-customers as a secondary breakdown (owner-confirmed in the Codex review). This touches the report
-contract, grounded chat, labels and the email/PDF content equally, and is the largest outstanding
-piece of design work.
+**Supplier perspective:** folded into Phase 17's design as D63 (`docs/superpowers/specs/2026-10-12-phase-17-report-in-chat-design.md` §5).
 
 ## 9. Document map
 

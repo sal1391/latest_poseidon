@@ -459,6 +459,10 @@ def test_render_state_block_empty_slots_golden():
 
 
 def test_render_state_block_carried_customer_and_period_golden():
+    """D62: carried periods render as a labelled window with its ISO bounds,
+    so the router sees "2025" rather than a bare first-of-year date. Slots
+    with no stored end (pre-Phase-17 rows, code-built slots) read as the
+    month containing the start, exactly as the parser carries them."""
     slots = ConversationSlots(
         customer="MAERSK LINE",
         period_a=date(2026, 4, 1),
@@ -470,8 +474,25 @@ def test_render_state_block_carried_customer_and_period_golden():
     assert result == (
         "Mode: default\n"
         "Carried customer: MAERSK LINE\n"
-        "Carried period A: 2026-04-01\n"
-        "Carried period B: 2026-05-01"
+        "Carried period A: April 2026 (2026-04-01..2026-05-01)\n"
+        "Carried period B: May 2026 (2026-05-01..2026-06-01)"
+    )
+
+
+def test_render_state_block_carried_year_and_range_windows_golden():
+    slots = ConversationSlots(
+        period_a=date(2025, 1, 1),
+        period_a_end=date(2026, 1, 1),
+        period_b=date(2026, 10, 1),
+        period_b_end=date(2026, 10, 12),
+    )
+
+    result = render_state_block(slots, None)
+
+    assert result == (
+        "Mode: default\n"
+        "Carried period A: 2025 (2025-01-01..2026-01-01)\n"
+        "Carried period B: October 1 to 11, 2026 (2026-10-01..2026-10-12)"
     )
 
 

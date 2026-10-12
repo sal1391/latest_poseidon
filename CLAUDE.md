@@ -33,15 +33,15 @@ doc as current. Decisions taken in feature specs used to not propagate; that is 
 - **Cortex via the SQL `COMPLETE` function with emulated tools.** D40 chose the Cortex REST
   Messages endpoint with native tool calling.
 
-## Commands — verified 2026-10-12 (frontend line excepted), copy-pasteable
+## Commands — verified 2026-10-12 (Phase 17 PR 0) (frontend line excepted), copy-pasteable
 
 ```bash
-# Offline Python suite -> 1911 passed, 13 skipped, 119 deselected (~236s)
+# Offline Python suite -> 2040 passed, 13 skipped, 120 deselected (~236s)
 cd backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest \
   -p no:cacheprovider \
   -m 'not pg and not minio and not pdf and not router_live and not research_live'
 
-# Postgres-backed suite (needs the compose `db` service up) -> 337 passed, 1 skipped
+# Postgres-backed suite (needs the compose `db` service up) -> 338 passed, 1 skipped
 # (Drizzle-only database; Alembic no longer owns this schema, D58)
 cd backend && .venv/Scripts/python.exe -B -m pytest -p no:cacheprovider -m pg
 
@@ -78,8 +78,8 @@ Web (Next.js) suite verified 2026-10-12: `npm test` → 149 passed, 13 skipped o
 `DRIZZLE_DATABASE_URL`-set figure was reported by an implementer on 2026-10-12 and not re-run by
 the orchestrator. The frontend (Vite) figure above was not re-run 2026-10-12.
 
-**pg suite verified 2026-10-12 (after the P16-R24 chip-text test fix):** 337 passed, 1 skipped.
-Offline Python suite and `ruff check` were also re-run 2026-10-12.
+**pg suite verified 2026-10-12 (Phase 17 PR 0) (after the P16-R24 chip-text test fix):** 338 passed, 1 skipped.
+Offline Python suite and `ruff check` were also re-run 2026-10-12 (Phase 17 PR 0).
 
 **CI: there is none.** No `.github/workflows`. Nothing gates a merge except Carlos, so the suites
 above *are* the gate.

@@ -24,8 +24,9 @@ Four things are pinned here:
   the port cue rules (P16-R23: "port of", "at" and "in" cues, lowercase
   port phrases, strict "did you mean" for the new detection paths, and the
   period-like/customer-like guards that keep ordinary English after "at"/
-  "in" silent), the ``period_b`` slot clearing when a follow-up
-  turn asks no comparison, and multi-issue ordering (customer, then port,
+  "in" silent), the D62 period write rule (a comparison carries; a single
+  named period clears it; a comparison side alone replaces it), and
+  multi-issue ordering (customer, then port,
   then period).
 * ``@pytest.mark.pg`` goldens -- the resolver and the full pipeline against
   the live seeded Postgres database (the established skip-guard pattern from
@@ -42,7 +43,7 @@ mirrors.
 
 import ast
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from typing import NamedTuple
@@ -420,6 +421,14 @@ def _turn(
     hints: tuple[CandidateSkill, ...] = (),
     issues: tuple[ParseIssue, ...] = (),
 ) -> ParsedTurn:
+    # D62: every written window also writes its exclusive end, and the end
+    # always equals the resolved window's end. Derive the expected end
+    # fields here so each golden case states only the starts it cares about;
+    # the dedicated D62 tests below assert the ends explicitly.
+    if slots.period_a_end is None and period_a is not None:
+        slots = replace(slots, period_a_end=period_a.end)
+    if slots.period_b_end is None and slots.period_b is not None and period_b is not None:
+        slots = replace(slots, period_b_end=period_b.end)
     return ParsedTurn(
         normalized_text=text,
         slots=slots,
@@ -936,23 +945,108 @@ def test_parse_turn_slots_is_post_carry():
     assert prior.customer == "Northstar Lines"  # the input is never mutated
 
 
-def test_period_b_slot_clears_when_the_next_turn_asks_no_comparison():
-    """``period_b`` is NEVER carried (``period_parser``'s own contract: a
-    comparison has to be asked for again). The slot has to follow the same
-    rule as the field, or turn 2 answers a comparison the user only asked
-    for in turn 1 -- run as a real two-turn sequence so the stale value can
-    only come from turn 1's own write-back, never from a hand-built prior.
-    """
+def test_period_b_slot_carries_when_the_next_turn_asks_no_comparison():
+    """D62: a comparison is carried until something replaces it. Run as a
+    real two-turn sequence so the carried value can only come from turn
+    1's own write-back, never from a hand-built prior."""
     client = FakeDataClient()
     first = parse_turn("gp april 2026 vs march 2026", NO_SLOTS, REF, client)
     assert first.period_b == _month(2026, 3)
     assert first.slots.period_b == date(2026, 3, 1)
+    assert first.slots.period_b_end == date(2026, 4, 1)
 
     second = parse_turn("and volume?", first.slots, REF, client)
-    assert second.period_a == _month(2026, 4)  # period_a still carries
+    assert second.period_a == _month(2026, 4)
+    assert second.period_b == _month(2026, 3)
     assert second.slots.period_a == date(2026, 4, 1)
+    assert second.slots.period_a_end == date(2026, 5, 1)
+    assert second.slots.period_b == date(2026, 3, 1)
+    assert second.slots.period_b_end == date(2026, 4, 1)
+
+
+def test_a_single_named_period_clears_the_carried_comparison():
+    """D62: "GP for August" after "July vs June" is a question about August
+    alone -- A is replaced and B is cleared, ends included."""
+    client = FakeDataClient()
+    first = parse_turn("gp april 2026 vs march 2026", NO_SLOTS, REF, client)
+    second = parse_turn("gp for may 2026", first.slots, REF, client)
+
+    assert second.period_a == _month(2026, 5)
     assert second.period_b is None
+    assert second.slots.period_a == date(2026, 5, 1)
+    assert second.slots.period_a_end == date(2026, 6, 1)
     assert second.slots.period_b is None
+    assert second.slots.period_b_end is None
+
+
+def test_a_comparison_side_only_replaces_period_b_and_keeps_period_a():
+    client = FakeDataClient()
+    first = parse_turn("gp april 2026 vs march 2026", NO_SLOTS, REF, client)
+    second = parse_turn("compare to february 2026 instead", first.slots, REF, client)
+
+    assert second.period_a == _month(2026, 4)
+    assert second.period_b == _month(2026, 2)
+    assert second.slots.period_a == date(2026, 4, 1)
+    assert second.slots.period_a_end == date(2026, 5, 1)
+    assert second.slots.period_b == date(2026, 2, 1)
+    assert second.slots.period_b_end == date(2026, 3, 1)
+
+
+def test_a_bare_month_right_after_compare_to_replaces_period_b():
+    """The spec's literal text: "compare to may instead". The connective is
+    the gate context for a bare "may", so it names May, not the verb."""
+    client = FakeDataClient()
+    first = parse_turn("gp april 2026 vs march 2026", NO_SLOTS, REF, client)
+    second = parse_turn("compare to may instead", first.slots, REF, client)
+
+    assert second.period_a == _month(2026, 4)
+    assert second.period_b == _month(2026, 5)
+    assert second.slots.period_b == date(2026, 5, 1)
+    assert second.slots.period_b_end == date(2026, 6, 1)
+
+
+def test_an_unresolvable_left_phrase_clears_the_carried_comparison():
+    """B's slot follows b_source alone: "gp ytd" on January 1 names a period
+    that cannot resolve, so the parser reports no comparison (b_source
+    "none") and the slot is cleared to match -- parsed and stored B agree."""
+    prior = ConversationSlots(
+        period_a=date(2025, 12, 1),
+        period_a_end=date(2026, 1, 1),
+        period_b=date(2025, 11, 1),
+        period_b_end=date(2025, 12, 1),
+    )
+    result = parse_turn("gp ytd", prior, date(2026, 1, 1), FakeDataClient())
+
+    assert result.period_b is None
+    assert result.slots.period_b is None
+    assert result.slots.period_b_end is None
+
+
+def test_an_unresolvable_comparison_side_keeps_the_carried_comparison_slot():
+    """"compared to acme corp" names a connective but no period: the carried
+    comparison is NOT a silent reset (the same principle customer/port carry
+    already follows for an unresolved mention)."""
+    client = FakeDataClient()
+    first = parse_turn("gp april 2026 vs march 2026", NO_SLOTS, REF, client)
+    second = parse_turn("compared to acme corp", first.slots, REF, client)
+
+    assert second.period_b == _month(2026, 3)
+    assert second.slots.period_b == date(2026, 3, 1)
+    assert second.slots.period_b_end == date(2026, 4, 1)
+
+
+def test_a_full_year_carries_as_a_full_year_into_a_bare_follow_up():
+    """The C03 headline case: "for 2025 by month" then "then by port" must
+    still be about the whole of 2025, not January."""
+    client = FakeDataClient()
+    first = parse_turn("gp for 2025 by month", NO_SLOTS, REF, client)
+    assert first.period_a == PeriodWindow(date(2025, 1, 1), date(2026, 1, 1))
+    assert first.slots.period_a_end == date(2026, 1, 1)
+
+    second = parse_turn("then by port", first.slots, REF, client)
+    assert second.period_a == PeriodWindow(date(2025, 1, 1), date(2026, 1, 1))
+    assert second.slots.period_a == date(2025, 1, 1)
+    assert second.slots.period_a_end == date(2026, 1, 1)
 
 
 def test_parse_turn_mode_region_topic_pass_through_carry_untouched():
