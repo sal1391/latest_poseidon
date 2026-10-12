@@ -121,6 +121,14 @@ class ConversationSlots:
     the router can inject certified values into its next call instead of
     re-deriving them from prose history. Like every other slot it replaces
     wholesale on a new turn; it never merges or accumulates across turns.
+
+    ``period_a_end``/``period_b_end`` (Phase 17 PR 0, D62) are the EXCLUSIVE
+    ends of the windows whose first days ``period_a``/``period_b`` hold, so a
+    carried year stays a year. They are appended after ``pass_through`` --
+    additive growth only -- and default to ``None``: a slot with a start and
+    no end is read as the month containing the start by
+    ``parsing.period_labels.slot_window``, which is the ONLY place that
+    fallback lives. Nothing here or in the serializer invents an end.
     """
 
     customer: str | None = None
@@ -131,6 +139,8 @@ class ConversationSlots:
     region: str | None = None
     topic: str | None = None
     pass_through: tuple[tuple[str, str], ...] = ()
+    period_a_end: date | None = None
+    period_b_end: date | None = None
 
 
 @dataclass(frozen=True)
