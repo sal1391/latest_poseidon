@@ -52,15 +52,18 @@ values list with only one strong match surfaces ONLY that match. A values
 list with 2-3 entries that all clear the floor still shows all of them,
 best-first, capped at 3.
 
-Ties -- identical scores, or more than one value exact/token-matching the
-same phrase -- break alphabetically on the certified VALUE string (Python's
-default codepoint ordering, not a locale collation): every tier sorts its
-matches by ``(-score, value)`` (score 1.0 for tiers 1-2) before taking the
-first entry, so ranking is a total order and two calls with the same inputs
-can never disagree about which value is "best." Tier 3's floor filter and
-``_MAX_CANDIDATES`` cap both apply AFTER this sort, so they only ever trim
-the tail of an already-deterministic ranking -- neither can change the
-relative order of whichever values survive.
+Ties: every tier sorts its matches by ``(-score, value)`` (score 1.0 for
+tiers 1-2; Python's codepoint ordering on the certified VALUE string, not a
+locale collation), so ranking is a total order. More than one value
+exact/token-matching the phrase resolves to the alphabetically first. In
+tier 3, a tie at the BEST score >= ``AUTO_APPLY_THRESHOLD`` never
+auto-applies: ``token_set_ratio`` scores 1.0 whenever the phrase's words are
+a subset of a value's ("meridian" vs. every "Meridian *" customer), so
+guessing would hand the user another customer's numbers. It returns a
+``customer_ambiguous`` issue instead, listing the tied values alphabetically,
+capped at ``_MAX_CANDIDATES``, with "(and N more)" when the cap trims some.
+The candidate band's floor filter and cap likewise apply AFTER the sort, so
+they only trim the tail of an already-deterministic ranking.
 
 rapidfuzz and case: ``fuzz.token_set_ratio`` is CASE-SENSITIVE by default
 (verified against the installed rapidfuzz>=3.9 -- there is no hidden
@@ -120,7 +123,7 @@ class Resolution:
     """
 
     entity: ResolvedEntity | None
-    candidates: tuple[str, ...]  # fuzzy band only: each >= CANDIDATE_THRESHOLD, best-first, max 3
+    candidates: tuple[str, ...]  # fuzzy only: candidate band or tied auto-apply scores, max 3
     issue: ParseIssue | None  # "customer_ambiguous" (with candidates) | "customer_unknown"
 
 
@@ -229,7 +232,22 @@ def resolve(phrase: str, values: Sequence[str], kind: str = "customer") -> Resol
 
     best_score, best_value = scored[0]
     if best_score >= AUTO_APPLY_THRESHOLD:
-        return _resolved(best_value, phrase, best_score, _TIER_FUZZY)
+        # Exact float equality is safe: every score came from the same
+        # _score call, so equal inputs give equal floats. scored is sorted
+        # (-score, value), so the tied values are a prefix, already
+        # alphabetical.
+        tied = [value for score, value in scored if score == best_score]
+        if len(tied) == 1:
+            return _resolved(best_value, phrase, best_score, _TIER_FUZZY)
+        # Two or more values share the best auto-apply score (typically a
+        # short name that is a word-subset of several values, which
+        # token_set_ratio scores 1.0) -- applying one would hand the user
+        # another customer's numbers, so ask instead.
+        top = tuple(tied[:_MAX_CANDIDATES])
+        more = len(tied) - len(top)
+        tail = f" (and {more} more)" if more else ""
+        issue = ParseIssue(_ISSUE_AMBIGUOUS, f"did you mean one of: {', '.join(top)}{tail}?", top)
+        return Resolution(entity=None, candidates=top, issue=issue)
 
     if best_score >= CANDIDATE_THRESHOLD:
         # Filter to the floor BEFORE the cap: a "did you mean...?" chip is
