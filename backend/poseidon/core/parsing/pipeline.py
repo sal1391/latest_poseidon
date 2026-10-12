@@ -227,30 +227,23 @@ slot:
   UNSET` (carry). A mention that fails to resolve deliberately does NOT
   clear the slot: the issue is the signal to the user, not a silent reset
   of context that might still be correct.
-* ``period_a``: mirrors ``PeriodParse.a_source`` directly -- ``"text"``
-  REPLACES the slot with that window's first-of-period start date (even
-  when the window is also flagged ``period_unavailable``: the user did name
-  a period this turn, in their own words, and persisting it is more
-  transparent than silently reverting to something they did not ask for);
-  ``"carry"``/``"none"`` are both UNSET, since neither reflects a NEW value
-  from this turn's own text. One consequence worth naming: an
-  explicit-but-unresolvable phrase (year-to-date at a January 1 reference,
-  ``a_source == "none"`` despite text being present -- see
-  ``period_parser``'s own docstring) also leaves the slot untouched rather
-  than clearing it, for the same "an issue is not a silent reset" reason as
-  customer/port above.
-* ``period_b`` does NOT mirror ``period_a``'s rule: ``b_source == "text"``
-  replaces, and anything else CLEARS the slot to ``None`` -- never UNSET.
-  ``period_parser``'s own contract is that ``period_b`` is never carried (a
-  comparison has to be asked for again, so ``b_source`` is only ever
-  ``"text"`` or ``"none"``), and the slot has to obey that same rule or the
-  two disagree: ``ParsedTurn.period_b`` would correctly go ``None`` on a
-  follow-up turn while ``ParsedTurn.slots.period_b`` still held turn 1's
-  comparison window, ready to be picked back up by a later turn the user
-  never asked to compare. Note this is a genuine exception to the
-  "an issue is not a silent reset" reasoning above, and deliberately so:
-  clearing here reflects the ABSENCE of a comparison phrase, not a failure
-  to resolve one.
+* ``period_a``/``period_a_end``: ``a_source == "text"`` REPLACES both with
+  the window's start and exclusive end (even when the window is also
+  flagged ``period_unavailable``: the user named a period this turn, in
+  their own words, and persisting it is more transparent than silently
+  reverting to something they did not ask for); ``"carry"``/``"none"`` are
+  UNSET, since neither reflects a NEW value from this turn's text. An
+  explicit-but-unresolvable phrase (year-to-date at a January 1 reference)
+  therefore leaves the slot untouched rather than clearing it -- an issue
+  is not a silent reset.
+* ``period_b``/``period_b_end`` (decision D62): ``b_source == "text"``
+  replaces both; ``a_source == "text"`` with no comparison -- a SINGLE
+  named period -- CLEARS both to ``None``, because "GP for August" after
+  "July vs June" is a question about August alone; anything else is UNSET,
+  so a carried comparison survives "why did GP drop?" and an unresolvable
+  "compared to acme corp". ``period_parser`` carries ``period_b`` under
+  the same rule, so ``ParsedTurn.period_b`` and ``ParsedTurn.slots.
+  period_b`` agree on every turn.
 * ``mode``/``region``/``topic``/``pass_through`` are never touched here
   (``SlotUpdates`` has no fields for them) -- ``apply_carry`` always carries
   them forward unchanged; ``pass_through`` population is wired by whichever
@@ -789,13 +782,29 @@ def parse_turn(
     available = data.available_periods(entity)
     period_parse = parse_periods(working_text, slots, reference_date, available)
 
+    # Slot write-back for periods (decision D62; see "Slot write-back" in
+    # the module docstring). A: a left-hand phrase replaces, anything else
+    # carries. B: a right-hand phrase replaces; a left-hand phrase ALONE
+    # (a single named period) clears; otherwise carries.
+    a_named = period_parse.a_source == "text"
+    b_named = period_parse.b_source == "text"
+    if b_named:
+        period_b_update = period_parse.period_b.start
+        period_b_end_update = period_parse.period_b.end
+    elif a_named:
+        period_b_update = None
+        period_b_end_update = None
+    else:
+        period_b_update = UNSET
+        period_b_end_update = UNSET
+
     updates = SlotUpdates(
         customer=customer_plan.slot_update,
         port=port_plan.slot_update,
-        period_a=(period_parse.period_a.start if period_parse.a_source == "text" else UNSET),
-        # Not UNSET: period_b CLEARS whenever this turn's text did not ask
-        # for a comparison -- see "Slot write-back" above.
-        period_b=(period_parse.period_b.start if period_parse.b_source == "text" else None),
+        period_a=period_parse.period_a.start if a_named else UNSET,
+        period_a_end=period_parse.period_a.end if a_named else UNSET,
+        period_b=period_b_update,
+        period_b_end=period_b_end_update,
     )
     post_carry_slots = apply_carry(slots, updates)
 

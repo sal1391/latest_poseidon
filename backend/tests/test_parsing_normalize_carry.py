@@ -332,6 +332,34 @@ def test_apply_carry_can_replace_every_managed_slot_at_once():
     )
 
 
+def test_apply_carry_folds_the_period_window_ends_under_the_tri_state_rule():
+    """D62: the end fields are tri-state like their starts. UNSET keeps,
+    None clears, a date replaces -- and the starts and ends are
+    independent fields, folded one by one."""
+    prior = ConversationSlots(
+        period_a=date(2025, 1, 1),
+        period_a_end=date(2026, 1, 1),
+        period_b=date(2024, 1, 1),
+        period_b_end=date(2025, 1, 1),
+    )
+
+    kept = apply_carry(prior, SlotUpdates())
+    assert kept.period_a_end == date(2026, 1, 1)
+    assert kept.period_b_end == date(2025, 1, 1)
+
+    cleared = apply_carry(prior, SlotUpdates(period_b=None, period_b_end=None))
+    assert cleared.period_a_end == date(2026, 1, 1)
+    assert cleared.period_b is None
+    assert cleared.period_b_end is None
+
+    replaced = apply_carry(
+        prior, SlotUpdates(period_a=date(2026, 4, 1), period_a_end=date(2026, 5, 1))
+    )
+    assert replaced.period_a == date(2026, 4, 1)
+    assert replaced.period_a_end == date(2026, 5, 1)
+    assert replaced.period_b_end == date(2025, 1, 1)
+
+
 def test_apply_carry_leaves_mode_region_topic_pass_through_untouched():
     """SlotUpdates has no opinion about mode/region/topic/pass_through --
     apply_carry must carry these four through byte-for-byte regardless of

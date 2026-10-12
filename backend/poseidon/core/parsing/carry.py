@@ -40,7 +40,7 @@ UNSET = _UnsetType()
 
 @dataclass(frozen=True)
 class SlotUpdates:
-    """What one turn resolved for the four slots that carry across turns.
+    """What one turn resolved for the six slot fields that carry across turns.
 
     Each field is tri-state: :data:`UNSET` (default) -- the turn did not
     mention this slot, carry the prior value; ``None`` -- the turn
@@ -56,6 +56,8 @@ class SlotUpdates:
     port: str | None | _UnsetType = UNSET
     period_a: date | None | _UnsetType = UNSET
     period_b: date | None | _UnsetType = UNSET
+    period_a_end: date | None | _UnsetType = UNSET
+    period_b_end: date | None | _UnsetType = UNSET
 
 
 def _carried(prior: object, update: object) -> object:
@@ -67,7 +69,7 @@ def _carried(prior: object, update: object) -> object:
 def apply_carry(slots: ConversationSlots, updates: SlotUpdates) -> ConversationSlots:
     """Fold ``updates`` onto ``slots`` under the tri-state carry rule.
 
-    Only the four slots :class:`SlotUpdates` knows about can change here;
+    Only the six slot fields :class:`SlotUpdates` knows about can change here;
     every other :class:`ConversationSlots` field (``mode``, ``region``,
     ``topic``, ``pass_through``) is carried forward untouched via
     :func:`dataclasses.replace` -- so a later, additive growth of
@@ -82,4 +84,6 @@ def apply_carry(slots: ConversationSlots, updates: SlotUpdates) -> ConversationS
         port=_carried(slots.port, updates.port),
         period_a=_carried(slots.period_a, updates.period_a),
         period_b=_carried(slots.period_b, updates.period_b),
+        period_a_end=_carried(slots.period_a_end, updates.period_a_end),
+        period_b_end=_carried(slots.period_b_end, updates.period_b_end),
     )
