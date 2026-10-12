@@ -7,6 +7,52 @@ import pytest
 
 BACKEND = Path(__file__).resolve().parents[1]
 
+# Phase 16 Task 8 / ruling P16-R10: the name of the throwaway database the two
+# pg round-trips below migrate. Drizzle owns the application schema now (D58),
+# so Alembic must never be pointed at the app database again -- `upgrade head`
+# there restarts from revision zero (no `alembic_version` table) and dies on
+# Drizzle's tables. These tests create this database, migrate it, and drop it.
+_PROBE_DB = "poseidon_alembic_probe"
+
+
+@pytest.fixture
+def alembic_probe():
+    """Yield the DSN of a freshly created, Alembic-only throwaway database.
+
+    Migrations 0001-0010 are frozen history and still have to be proven to be
+    *valid* history -- their DDL applied and reversed against a real Postgres,
+    which SQLite cannot show (every migration since 0002 is a dialect no-op
+    there). What they no longer get to do is own the database the application
+    uses. So each test gets its own database, created here and dropped in the
+    teardown whether it passed or not.
+
+    The DSN is yielded in SQLAlchemy spelling (``postgresql+psycopg://``),
+    because that is what ``_alembic`` hands to Alembic through ``DATABASE_URL``;
+    callers that open their own psycopg connection normalize it first, exactly
+    as the rest of this suite does.
+
+    **What this fixture cannot isolate, and no fixture could.** Roles and role
+    memberships are CLUSTER-wide objects, not per-database ones, so 0009's
+    ``CREATE ROLE``/``DROP ROLE`` and 0009's and 0010's ``GRANT ... TO
+    CURRENT_USER`` still reach across every database on the server, including
+    the application's. Each test therefore still restores cluster state in a
+    ``finally`` -- see their own comments.
+    """
+    dsn = os.environ.get("DATABASE_URL", "")
+    if not dsn:
+        pytest.skip("DATABASE_URL is not set")
+    psycopg = pytest.importorskip("psycopg")
+    from poseidon.core.data.synthetic_client import normalize_dsn
+
+    admin = psycopg.connect(normalize_dsn(dsn), autocommit=True, connect_timeout=5)
+    try:
+        admin.execute(f"DROP DATABASE IF EXISTS {_PROBE_DB}")
+        admin.execute(f"CREATE DATABASE {_PROBE_DB}")
+        yield dsn.rsplit("/", 1)[0] + "/" + _PROBE_DB
+    finally:
+        admin.execute(f"DROP DATABASE IF EXISTS {_PROBE_DB}")
+        admin.close()
+
 
 def _alembic(*args, env_overrides: dict) -> subprocess.CompletedProcess:
     """One ``python -m alembic ...`` run against ``BACKEND``, with
@@ -75,91 +121,122 @@ def test_upgrade_head_on_sqlite(tmp_path):
 
 
 @pytest.mark.pg
-def test_0009_round_trips_against_postgres():
-    """0009's actual DDL, down and back up, against a real Postgres.
+def test_0009_round_trips_against_postgres(alembic_probe):
+    """0009's per-database DDL, down and back up, against a real Postgres.
 
-    The SQLite test above cannot reach any of this: roles, policies and
-    grants have no SQLite equivalent, so every migration since 0002 returns
-    immediately there. This is therefore the only place the things 0009
-    claims to do are observed -- the role exists, its ``memory_outbox``
-    policy exists, both disappear on downgrade, and both come back.
+    The SQLite test above cannot reach any of this: policies and grants have
+    no SQLite equivalent, so every migration since 0002 returns immediately
+    there. This is where 0009's ``memory_outbox`` policy and its SELECT/UPDATE
+    grants are observed being created, dropped and recreated for real.
 
-    Restoring the database is done in a ``finally`` and asserted, not hoped
-    for: this suite runs against a long-lived shared dev database that the
-    compose worker and every other pg suite also use, and leaving it at
-    0008 would break them all.
+    **Phase 16 Task 8 / ruling P16-R10: this runs on a throwaway database.**
+    It used to migrate the shared dev database, guarded by "if the state is
+    not already (True, True, True), skip -- migrate it first". That guard was
+    a proxy for "this database is at Alembic 0009", and D58 broke the proxy:
+    Drizzle makes those facts true on a database Alembic has never touched, so
+    the guard stopped skipping and the downgrade failed with "Destination 0008
+    is not a valid downgrade target". The guard is **gone** -- ``alembic_probe``
+    hands over a database this test migrates from zero itself.
 
-    Since Task 3b the walk down to 0008 also passes THROUGH 0010's revoke
-    and back up through its grant; that revision has its own round-trip
-    below, and this test's ``finally`` restores both.
+    **What this test can no longer prove, and why (ruling P16-R13).** Roles and
+    role memberships are CLUSTER-wide objects, not per-database ones. On any
+    cluster that hosts the application database, Drizzle's ``0000_roles.sql``
+    has already created ``poseidon_worker`` and ``0002_grants_force_rls.sql``
+    has already granted it to CURRENT_USER before this test runs -- measured on
+    a freshly created probe database, with Alembic not yet invoked:
+    ``role=True, member=True, policy=False, grants=()``. So an assertion that
+    the role or the membership exists after ``upgrade head`` would pass whether
+    or not 0009 issued its ``CREATE ROLE`` and ``GRANT ... TO CURRENT_USER`` at
+    all, and an assertion that they vanish on downgrade would depend on the app
+    database's Drizzle grant keeping the role alive -- true here, false on a
+    bare cluster holding only the probe. Both would be pins that test the
+    environment rather than the migration, so **neither is asserted**. Those
+    two objects are covered where they now actually live: by the Drizzle
+    migrations on the application database, and by ``test_rls_policies.py``.
+
+    Everything asserted below is therefore per-database, and each fact is
+    checked on the fresh probe first, so a value that was already true before
+    Alembic ran cannot masquerade as something 0009 did.
+
+    Restoring is still done in a ``finally`` and asserted, not hoped for --
+    the probe database is dropped either way, but the walk down to 0008 passes
+    THROUGH 0010's ``REVOKE poseidon_app FROM CURRENT_USER``, which is
+    cluster-wide and would otherwise leave the real application database
+    unable to ``SET LOCAL ROLE`` on every request.
     """
-    dsn = os.environ.get("DATABASE_URL", "")
-    if not dsn:
-        pytest.skip("DATABASE_URL is not set")
     psycopg = pytest.importorskip("psycopg")
     from poseidon.core.data.synthetic_client import normalize_dsn
 
+    dsn = alembic_probe
     env = {"DATABASE_URL": dsn, "S3_BUCKET": "poseidon-artifacts"}
 
-    def _state() -> tuple[bool, bool, bool]:
-        """``(role exists, policy exists, DSN user is a member of the role)``.
+    def _policy() -> bool:
+        """Whether 0009's ``memory_outbox_worker`` policy exists **on this
+        database**.
 
-        The third element pins ``GRANT poseidon_worker TO CURRENT_USER`` --
-        0009's single most RDS-critical statement, since a non-superuser may
-        only ``SET ROLE`` to a role it is a MEMBER of, and without it the
-        worker's claim raises on every cycle. Nothing else in either suite
-        fails if that line is deleted.
-
-        It reads ``pg_auth_members`` directly rather than asking
-        ``pg_has_role(current_user, 'poseidon_worker', 'MEMBER')``, which
-        would be VACUOUS here: a superuser passes ``pg_has_role`` for every
-        role in the cluster whether granted or not, and this project's
-        compose DSN is a superuser. Verified on that database --
-        ``pg_has_role`` answers true for ``poseidon_app``, which the DSN
-        user has never been granted, while the catalog query below correctly
-        answers false. Only the catalog distinguishes a real GRANT.
+        ``pg_policies`` is a per-database catalog, so unlike the role and the
+        membership this is genuinely 0009's doing on the probe and nobody
+        else's -- it reads False on the fresh probe, which the test asserts
+        before it migrates anything.
         """
-        with psycopg.connect(normalize_dsn(dsn), connect_timeout=2) as conn:
+        with psycopg.connect(normalize_dsn(dsn), connect_timeout=5) as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT 1 FROM pg_roles WHERE rolname = 'poseidon_worker'")
-                role = cur.fetchone() is not None
                 cur.execute(
                     "SELECT 1 FROM pg_policies WHERE tablename = 'memory_outbox' "
                     "AND policyname = 'memory_outbox_worker'"
                 )
-                policy = cur.fetchone() is not None
-                cur.execute(
-                    "SELECT 1 FROM pg_auth_members m "
-                    "JOIN pg_roles granted ON granted.oid = m.roleid "
-                    "JOIN pg_roles grantee ON grantee.oid = m.member "
-                    "WHERE granted.rolname = 'poseidon_worker' "
-                    "AND grantee.rolname = current_user"
-                )
-                member = cur.fetchone() is not None
-        return role, policy, member
+                return cur.fetchone() is not None
 
-    if _state() != (True, True, True):
-        pytest.skip("this database is not at 0009 - migrate it first")
+    def _outbox_grants() -> tuple[str, ...]:
+        """The privileges ``poseidon_worker`` explicitly holds on this
+        database's ``memory_outbox``.
+
+        Per-database, like the policy and unlike the role and the membership,
+        so this is 0009's own work on the probe and observable going away and
+        coming back. ``information_schema.role_table_grants`` lists only real
+        GRANTs, which is the point -- ``has_table_privilege`` would also answer
+        true for anything PUBLIC happens to hold.
+        """
+        with psycopg.connect(normalize_dsn(dsn), connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT privilege_type FROM information_schema.role_table_grants "
+                    "WHERE grantee = 'poseidon_worker' AND table_name = 'memory_outbox' "
+                    "ORDER BY privilege_type"
+                )
+                return tuple(row[0] for row in cur.fetchall())
+
+    # The baseline, taken BEFORE Alembic runs: neither fact is true yet on this
+    # database, so what the upgrade below turns True is 0009's own work and not
+    # something the cluster already happened to hold.
+    assert _policy() is False, "a fresh probe database cannot already carry 0009's policy"
+    assert _outbox_grants() == (), "a fresh probe database cannot already carry 0009's grants"
+
+    at_head = _alembic("upgrade", "head", env_overrides=env)
+    assert at_head.returncode == 0, at_head.stderr
+    assert _policy() is True, "upgrade must create the memory_outbox_worker policy"
+    assert _outbox_grants() == ("SELECT", "UPDATE"), (
+        "the claim is SELECT ... FOR UPDATE SKIP LOCKED, and row locking is checked "
+        "against UPDATE -- both grants are load-bearing"
+    )
 
     try:
         down = _alembic("downgrade", "0008", env_overrides=env)
         assert down.returncode == 0, down.stderr
-        assert _state() == (False, False, False), (
-            "downgrade must drop the worker policy, the role it was written for, and "
-            "(with the role) the membership 0009 granted"
+        assert _policy() is False, "downgrade must drop the memory_outbox_worker policy"
+        assert _outbox_grants() == (), (
+            "downgrade must revoke the worker's SELECT and UPDATE on memory_outbox"
         )
     finally:
         up = _alembic("upgrade", "head", env_overrides=env)
         assert up.returncode == 0, up.stderr
 
-    assert _state() == (True, True, True), (
-        "upgrade must put the role, its policy, and the DSN user's membership in it back -- "
-        "the membership is what makes SET ROLE legal for a non-superuser, i.e. on RDS"
-    )
+    assert _policy() is True, "upgrade must put the policy back"
+    assert _outbox_grants() == ("SELECT", "UPDATE"), "upgrade must re-grant both privileges"
 
 
 @pytest.mark.pg
-def test_0010_round_trips_against_postgres():
+def test_0010_round_trips_against_postgres(alembic_probe):
     """0010's one statement -- ``GRANT poseidon_app TO CURRENT_USER`` --
     revoked and re-granted against a real Postgres.
 
@@ -169,24 +246,24 @@ def test_0010_round_trips_against_postgres():
     its ``down_revision`` links up) and nothing about the grant.
 
     **Why this one migrates the database itself instead of skipping when it
-    finds one that is behind.** 0009's round-trip above opens with "if the
-    state is not already (True, True, True), skip -- migrate it first",
-    which is the right guard for a revision that was already applied
-    everywhere by the time its test was written. Here the row being pinned
-    is created by the very revision under test, so that guard would have
-    turned the RED run -- against the compose database, at 0009, with this
-    membership genuinely absent -- into a SKIP, which is indistinguishable
-    from a pass and would have proven nothing. Running ``upgrade head``
-    first makes "this database is behind" this test's own business, and
-    leaves the skips above for the differences that really are habitat (no
-    ``DATABASE_URL``, no psycopg).
+    finds one that is behind.** This test always ran ``upgrade head`` first,
+    because the row it pins is created by the very revision under test, so a
+    "skip if the state looks wrong" guard would have turned its RED run into
+    a SKIP -- indistinguishable from a pass, proving nothing. Phase 16 Task 8
+    (ruling P16-R10) kept that shape and gave it a database of its own: the
+    upgrade now runs against ``alembic_probe`` rather than the application
+    database, which Drizzle owns since D58. Every assertion below is
+    unchanged.
+
+    The membership itself is CLUSTER-wide, so unlike 0009's policy and table
+    grants it cannot be isolated by a throwaway database -- this test really
+    does revoke, and restore, the membership the running application relies
+    on. Hence the ``finally``.
     """
-    dsn = os.environ.get("DATABASE_URL", "")
-    if not dsn:
-        pytest.skip("DATABASE_URL is not set")
     psycopg = pytest.importorskip("psycopg")
     from poseidon.core.data.synthetic_client import normalize_dsn
 
+    dsn = alembic_probe
     env = {"DATABASE_URL": dsn, "S3_BUCKET": "poseidon-artifacts"}
 
     def _member() -> bool:
@@ -231,10 +308,11 @@ def test_0010_round_trips_against_postgres():
             "here to take the membership away with it"
         )
     finally:
-        # Same discipline as 0009's round-trip: this is a long-lived shared
-        # dev database, and leaving it at 0009 would leave the compose
-        # backend's every request unable to SET LOCAL ROLE the moment its DSN
-        # stops being a superuser.
+        # Same discipline as 0009's round-trip, and for a reason the probe
+        # database does NOT remove: this membership is cluster-wide, so
+        # leaving it revoked would leave the real application database's
+        # every request unable to SET LOCAL ROLE the moment its DSN stops
+        # being a superuser.
         up = _alembic("upgrade", "head", env_overrides=env)
         assert up.returncode == 0, up.stderr
 

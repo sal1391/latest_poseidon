@@ -329,7 +329,7 @@ def test_an_app_role_that_does_not_exist_is_refused_by_name(pg_engine):
         )
 
     assert "DATABASE_APP_ROLE" in str(excinfo.value)
-    assert "alembic" in str(excinfo.value), "the message must name the fix"
+    assert "drizzle-kit" in str(excinfo.value), "the message must name the fix"
 
 
 @pytest.mark.pg
@@ -386,8 +386,8 @@ def test_a_missing_worker_role_is_refused_by_name(pg_engine, monkeypatch):
             pg_engine, _settings(database_app_role=_APP_ROLE), require_worker_role=True
         )
 
-    assert "alembic" in str(excinfo.value), "the message must name the fix"
-    assert "0009" in str(excinfo.value), "the message must name the migration that creates it"
+    assert "drizzle-kit" in str(excinfo.value), "the message must name the fix"
+    assert "0000_roles" in str(excinfo.value), "the message must name the migration"
 
 
 # ===========================================================================
@@ -472,7 +472,9 @@ def test_a_dsn_that_is_not_a_member_of_the_app_role_is_refused_then_passes_after
         message = str(excinfo.value)
         assert "DATABASE_APP_ROLE" in message, "the message must name the variable at fault"
         assert "GRANT" in message, "the message must name the fix"
-        assert "0010" in message, "the message must name the migration that grants it"
+        assert (
+            "0002_grants_force_rls" in message
+        ), "the message must name the migration that grants it"
 
         with pg_engine.begin() as conn:
             conn.execute(text(f"GRANT {_APP_ROLE} TO {role}"))

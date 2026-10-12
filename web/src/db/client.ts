@@ -38,7 +38,7 @@ const SET_IDENTITY_SQL = (sub: string) =>
  */
 const APP_ROLE_PATTERN = /^[a-z_][a-z0-9_]{0,62}$/;
 
-function appRole(): string | null {
+export function appRole(): string | null {
   const raw = process.env.DATABASE_APP_ROLE ?? "poseidon_app";
   if (raw === "") return null; // the ergonomic "unset", same as Python
   if (!APP_ROLE_PATTERN.test(raw)) {
@@ -48,6 +48,74 @@ function appRole(): string | null {
     );
   }
   return raw;
+}
+
+/**
+ * Port of Python's `assert_boot_privileges` (`backend/poseidon/core/db.py`,
+ * `_run_checks` / `_assert_app_role`), ruling R21. Python refuses to boot when
+ * the DSN is a superuser or BYPASSRLS role and no app role is set, because
+ * every RLS policy is then silently inert for the whole process. Until Phase
+ * 16 this client had no such check, so `DATABASE_APP_ROLE=""` against
+ * compose's superuser DSN ran with RLS off and nothing said so.
+ *
+ * An UNREACHABLE database is not a verdict: `/ready`-style checks own that.
+ * Log and continue, exactly as Python's `boot_privileges_unchecked` does.
+ * Only a failure to reach the server is "unchecked"; a server-reported error
+ * (`PostgresError`) propagates, mirroring Python's connect-only grace.
+ */
+export async function assertBootPrivileges(
+  client: ReturnType<typeof postgres>,
+  role: string | null,
+): Promise<void> {
+  let row: { rolsuper: boolean; rolbypassrls: boolean } | undefined;
+  try {
+    [row] = await client<{ rolsuper: boolean; rolbypassrls: boolean }[]>`
+      SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`;
+  } catch (err) {
+    if (err instanceof postgres.PostgresError) {
+      // The server answered: this is a fault in the check itself, never "unreachable".
+      throw err;
+    }
+    console.warn(
+      JSON.stringify({ event: "boot_privileges_unchecked", reason: (err as Error).message }),
+    );
+    return;
+  }
+  if (role === null) {
+    if (row?.rolsuper || row?.rolbypassrls) {
+      throw new Error(
+        "DATABASE_APP_ROLE is unset, but this DRIZZLE_DATABASE_URL authenticates as a role " +
+          "with rolsuper or rolbypassrls: Postgres bypasses row-level security " +
+          "unconditionally for such a role, so every RLS policy in this database is " +
+          "silently inert for this process and every user's rows are readable by " +
+          "every user. Fix: set DATABASE_APP_ROLE=poseidon_app (Drizzle migration " +
+          "0000_roles creates it), or point DRIZZLE_DATABASE_URL at a role with neither attribute.",
+      );
+    }
+    return;
+  }
+  // `role` has already passed APP_ROLE_PATTERN in appRole(); this is the only
+  // other interpolation site and it reuses that guarantee.
+  if (!APP_ROLE_PATTERN.test(role)) {
+    throw new Error(`refusing to rehearse an invalid role identifier ${JSON.stringify(role)}`);
+  }
+  const ROLLBACK = Symbol("rollback");
+  try {
+    await client.begin(async (tx) => {
+      await tx.unsafe(`SET LOCAL ROLE "${role}"`);
+      throw ROLLBACK; // rehearsal only: never commit a role switch at boot
+    });
+  } catch (err) {
+    if (err === ROLLBACK) return;
+    throw new Error(
+      `SET LOCAL ROLE "${role}" failed for this DRIZZLE_DATABASE_URL (${(err as Error).message}): ` +
+        `DATABASE_APP_ROLE=${JSON.stringify(role)} names a role that does not exist or that this ` +
+        "DSN's user may not assume, so every request's transaction would fail at its second " +
+        "statement. Fix: run `npx drizzle-kit migrate` in web/ (migration 0000_roles creates " +
+        `the role, 0002_grants_force_rls grants membership to the migrating user), or GRANT ${role} ` +
+        "TO <this DSN's user> directly.",
+    );
+  }
 }
 
 interface RlsClientOptions {
@@ -102,10 +170,32 @@ export function createRlsClient(
   return { withUser };
 }
 
-const connectionString =
-  process.env.DRIZZLE_DATABASE_URL ??
-  "postgresql://poseidon:poseidon@localhost:5432/poseidon";
+/**
+ * The runtime DSN, read on every call. There is deliberately NO fallback: a
+ * guessed `localhost:5432` can belong to an unrelated Postgres on a developer
+ * machine, and `drizzle.config.ts` already refuses to guess (ruling P16-R9).
+ * The runtime refuses the same way (P16-R14). Blank counts as unset.
+ */
+export function databaseUrl(): string {
+  const url = process.env.DRIZZLE_DATABASE_URL;
+  if (url === undefined || url.trim() === "") {
+    throw new Error(
+      "DRIZZLE_DATABASE_URL is unset: refusing to guess which database to connect to",
+    );
+  }
+  return url;
+}
+
+/** Built on the first `withUser` call, never at import: modules that import
+ * `withUser` must stay importable with the variable unset (the offline suite). */
+let defaultClient: RlsClient | undefined;
 
 /** The default instance every caller uses. Same signature as before the
  * factory existed, so no call site changes. */
-export const { withUser } = createRlsClient(connectionString);
+export async function withUser<T>(
+  sub: string,
+  fn: (tx: Database) => Promise<T> | T,
+): Promise<T> {
+  defaultClient ??= createRlsClient(databaseUrl());
+  return defaultClient.withUser(sub, fn);
+}

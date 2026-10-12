@@ -1,0 +1,108 @@
+{
+ "frames": [
+  {
+   "data": {
+    "event_seq": 1,
+    "message_id": "msg-1",
+    "turn_id": "turn-1",
+    "turn_index": 1
+   },
+   "event": "accepted"
+  },
+  {
+   "data": {
+    "event_seq": 2,
+    "kind": "chips",
+    "message_id": "msg-1",
+    "payload": {
+     "options": [
+      {
+       "id": "Meridian Tankers",
+       "label": "Meridian Tankers",
+       "send_text": "gp for Meridian Tankers in April 2026"
+      },
+      {
+       "id": "Meridian Lines",
+       "label": "Meridian Lines",
+       "send_text": "gp for Meridian Lines in April 2026"
+      },
+      {
+       "id": "Meridian Shipping",
+       "label": "Meridian Shipping",
+       "send_text": "gp for Meridian Shipping in April 2026"
+      }
+     ]
+    },
+    "turn_id": "turn-1"
+   },
+   "event": "part"
+  },
+  {
+   "data": {
+    "event_seq": 3,
+    "kind": "text",
+    "message_id": "msg-1",
+    "payload": {
+     "markdown": "did you mean one of: Meridian Tankers, Meridian Lines, Meridian Shipping?"
+    },
+    "turn_id": "turn-1"
+   },
+   "event": "part"
+  },
+  {
+   "data": {
+    "event_seq": 4,
+    "message_id": "msg-1",
+    "turn_id": "turn-1",
+    "usage": {
+     "input_tokens": 0,
+     "output_tokens": 0
+    }
+   },
+   "event": "done"
+  }
+ ],
+ "parts": [
+  {
+   "kind": "chips",
+   "payload": {
+    "options": [
+     {
+      "id": "Meridian Tankers",
+      "label": "Meridian Tankers",
+      "send_text": "gp for Meridian Tankers in April 2026"
+     },
+     {
+      "id": "Meridian Lines",
+      "label": "Meridian Lines",
+      "send_text": "gp for Meridian Lines in April 2026"
+     },
+     {
+      "id": "Meridian Shipping",
+      "label": "Meridian Shipping",
+      "send_text": "gp for Meridian Shipping in April 2026"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "text",
+   "payload": {
+    "markdown": "did you mean one of: Meridian Tankers, Meridian Lines, Meridian Shipping?"
+   }
+  }
+ ],
+ "scenario": "clarify_ambiguous_customer",
+ "terminal": {
+  "data": {
+   "event_seq": 4,
+   "message_id": "msg-1",
+   "turn_id": "turn-1",
+   "usage": {
+    "input_tokens": 0,
+    "output_tokens": 0
+   }
+  },
+  "event": "done"
+ }
+}

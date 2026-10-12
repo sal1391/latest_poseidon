@@ -1,0 +1,311 @@
+{
+ "frames": [
+  {
+   "data": {
+    "event_seq": 1,
+    "message_id": "msg-1",
+    "turn_id": "turn-1",
+    "turn_index": 1
+   },
+   "event": "accepted"
+  },
+  {
+   "data": {
+    "event_seq": 2,
+    "message_id": "msg-1",
+    "phase": "contextualize",
+    "status": "start",
+    "turn_id": "turn-1"
+   },
+   "event": "phase"
+  },
+  {
+   "data": {
+    "event_seq": 3,
+    "label": "Metric query",
+    "message_id": "msg-1",
+    "server": null,
+    "status": "start",
+    "tool": "data_qa.metric_query",
+    "tool_seq": 1,
+    "turn_id": "turn-1"
+   },
+   "event": "tool"
+  },
+  {
+   "data": {
+    "event_seq": 4,
+    "kind": "metric_grid",
+    "message_id": "msg-1",
+    "payload": {
+     "metrics": [
+      {
+       "a": 204000,
+       "b": 180501,
+       "friendly": "Gross Profit",
+       "name": "GP",
+       "unit": "USD"
+      },
+      {
+       "a": 4103,
+       "b": 3900,
+       "friendly": "Volume",
+       "name": "VOLUME",
+       "unit": "tons"
+      }
+     ],
+     "periods": {
+      "a": {
+       "end": "2026-05-01",
+       "start": "2026-04-01"
+      },
+      "b": {
+       "end": "2025-05-01",
+       "start": "2025-04-01"
+      }
+     }
+    },
+    "turn_id": "turn-1"
+   },
+   "event": "part"
+  },
+  {
+   "data": {
+    "event_seq": 5,
+    "kind": "table",
+    "message_id": "msg-1",
+    "payload": {
+     "columns": [
+      "Customer",
+      "Gross Profit"
+     ],
+     "rows": [
+      [
+       "Northstar Lines",
+       412000
+      ]
+     ]
+    },
+    "turn_id": "turn-1"
+   },
+   "event": "part"
+  },
+  {
+   "data": {
+    "event_seq": 6,
+    "kind": "proof",
+    "message_id": "msg-1",
+    "payload": {
+     "lines": [
+      "Entity: SANDBOX.MCA.MARINE_SALES_PLANNING_V",
+      "Rows: 1"
+     ]
+    },
+    "turn_id": "turn-1"
+   },
+   "event": "part"
+  },
+  {
+   "data": {
+    "event_seq": 7,
+    "kind": "phase_section",
+    "message_id": "msg-1",
+    "payload": {
+     "markdown": "What we already know about this account.",
+     "title": "Contextualize"
+    },
+    "turn_id": "turn-1"
+   },
+   "event": "part"
+  },
+  {
+   "data": {
+    "event_seq": 8,
+    "kind": "artifact",
+    "message_id": "msg-1",
+    "payload": {
+     "mime": "application/pdf",
+     "name": "brief.pdf",
+     "url": "https://example.invalid/brief.pdf"
+    },
+    "turn_id": "turn-1"
+   },
+   "event": "part"
+  },
+  {
+   "data": {
+    "event_seq": 9,
+    "label": "Metric query",
+    "message_id": "msg-1",
+    "server": null,
+    "status": "done",
+    "tool": "data_qa.metric_query",
+    "tool_seq": 1,
+    "turn_id": "turn-1"
+   },
+   "event": "tool"
+  },
+  {
+   "data": {
+    "event_seq": 10,
+    "kind": "text",
+    "message_id": "msg-1",
+    "payload": {
+     "markdown": "Certified answer"
+    },
+    "turn_id": "turn-1"
+   },
+   "event": "part"
+  },
+  {
+   "data": {
+    "event_seq": 11,
+    "message_id": "msg-1",
+    "text": " for SINGAPORE.",
+    "turn_id": "turn-1"
+   },
+   "event": "token"
+  },
+  {
+   "data": {
+    "event_seq": 12,
+    "kind": "chips",
+    "message_id": "msg-1",
+    "payload": {
+     "options": [
+      {
+       "id": "new_prospect",
+       "label": "New customer prospect"
+      }
+     ]
+    },
+    "turn_id": "turn-1"
+   },
+   "event": "part"
+  },
+  {
+   "data": {
+    "event_seq": 13,
+    "message_id": "msg-1",
+    "turn_id": "turn-1",
+    "usage": {
+     "input_tokens": 0,
+     "output_tokens": 0
+    }
+   },
+   "event": "done"
+  }
+ ],
+ "parts": [
+  {
+   "kind": "tool_event",
+   "payload": {
+    "label": "Metric query",
+    "server": null,
+    "status": "done",
+    "tool": "data_qa.metric_query",
+    "tool_seq": 1
+   }
+  },
+  {
+   "kind": "metric_grid",
+   "payload": {
+    "metrics": [
+     {
+      "a": 204000,
+      "b": 180501,
+      "friendly": "Gross Profit",
+      "name": "GP",
+      "unit": "USD"
+     },
+     {
+      "a": 4103,
+      "b": 3900,
+      "friendly": "Volume",
+      "name": "VOLUME",
+      "unit": "tons"
+     }
+    ],
+    "periods": {
+     "a": {
+      "end": "2026-05-01",
+      "start": "2026-04-01"
+     },
+     "b": {
+      "end": "2025-05-01",
+      "start": "2025-04-01"
+     }
+    }
+   }
+  },
+  {
+   "kind": "table",
+   "payload": {
+    "columns": [
+     "Customer",
+     "Gross Profit"
+    ],
+    "rows": [
+     [
+      "Northstar Lines",
+      412000
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "proof",
+   "payload": {
+    "lines": [
+     "Entity: SANDBOX.MCA.MARINE_SALES_PLANNING_V",
+     "Rows: 1"
+    ]
+   }
+  },
+  {
+   "kind": "phase_section",
+   "payload": {
+    "markdown": "What we already know about this account.",
+    "title": "Contextualize"
+   }
+  },
+  {
+   "kind": "artifact",
+   "payload": {
+    "mime": "application/pdf",
+    "name": "brief.pdf",
+    "url": "https://example.invalid/brief.pdf"
+   }
+  },
+  {
+   "kind": "text",
+   "payload": {
+    "markdown": "Certified answer for SINGAPORE."
+   }
+  },
+  {
+   "kind": "chips",
+   "payload": {
+    "options": [
+     {
+      "id": "new_prospect",
+      "label": "New customer prospect"
+     }
+    ]
+   }
+  }
+ ],
+ "scenario": "all_part_kinds",
+ "terminal": {
+  "data": {
+   "event_seq": 13,
+   "message_id": "msg-1",
+   "turn_id": "turn-1",
+   "usage": {
+    "input_tokens": 0,
+    "output_tokens": 0
+   }
+  },
+  "event": "done"
+ }
+}

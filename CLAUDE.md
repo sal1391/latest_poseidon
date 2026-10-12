@@ -12,11 +12,12 @@ doc as current. Decisions taken in feature specs used to not propagate; that is 
 ## Stack (LOCKED)
 
 - **Python 3.14.4** in `backend/.venv` (`requires-python >=3.11`)
-- fastapi 0.140.13 · sqlalchemy 2.0.51 · pydantic 2.13.4 · pytest 9.1.1 · alembic · `psycopg[binary]`
-  · weasyprint · boto3 · rapidfuzz · `PyJWT[crypto]`
+- fastapi 0.140.13 · sqlalchemy 2.0.51 · pydantic 2.13.4 · pytest 9.1.1 · alembic (frozen; not run
+  at boot) · `psycopg[binary]` · weasyprint · boto3 · rapidfuzz · `PyJWT[crypto]`
 - **Node 24.14.1 / npm 11.13.0**
 - React 18.3.1 · Vite 8.1.1 · TypeScript ~6.0.2 · vitest 4.1.10 · zustand 5 · oxlint
-- Postgres 16 + pgvector · MinIO (local object store) · Alembic at revision **0010**
+- Postgres 16 + pgvector · MinIO (local object store) · Alembic frozen at **0010** (history
+  only) · **Drizzle migrates** (`web/drizzle`, D58)
 - Migrating to Next.js 16 / AI SDK 6 / Auth.js / Drizzle / Tailwind (M1–M5); Python is **retained**
   for analytics and PDF rendering. See `docs/superpowers/specs/2026-09-07-nextjs-migration-design.md`.
 
@@ -32,40 +33,52 @@ doc as current. Decisions taken in feature specs used to not propagate; that is 
 - **Cortex via the SQL `COMPLETE` function with emulated tools.** D40 chose the Cortex REST
   Messages endpoint with native tool calling.
 
-## Commands — verified 2026-09-08, copy-pasteable
+## Commands — verified 2026-09-19, copy-pasteable
 
 ```bash
-# Offline Python suite -> 1679 passed, 13 skipped, 116 deselected (~131s)
+# Offline Python suite -> 1718 passed, 13 skipped, 119 deselected (~166s)
 cd backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest \
   -p no:cacheprovider \
   -m 'not pg and not minio and not pdf and not router_live and not research_live'
 
-# Postgres-backed suite (needs the compose `db` service up)
+# Postgres-backed suite (needs the compose `db` service up) -> 337 passed, 1 skipped
+# (Drizzle-only database; Alembic no longer owns this schema, D58)
 cd backend && .venv/Scripts/python.exe -B -m pytest -p no:cacheprovider -m pg
 
 # Python lint -> clean today
 cd backend && .venv/Scripts/python.exe -m ruff check .
 
+# Regenerate the turn-contract corpus (contracts/turns/) -- only with a reviewed diff in the
+# same commit; see contracts/turns/README.md
+cd backend && POSEIDON_UPDATE_CONTRACTS=1 .venv/Scripts/python.exe -B -m pytest \
+  -p no:cacheprovider tests/contracts -q
+
 # Frontend -> 171 passed, 18 files; lint clean
 cd frontend && npm test -- --run
 cd frontend && npm run lint
 
-# Web (Next.js) -> 60 passed, 9 skipped, offline (db-backed files skip without DRIZZLE_DATABASE_URL)
+# Web (Next.js) -> 142 passed, 13 skipped, offline (db-backed files skip without
+# DRIZZLE_DATABASE_URL); 152 passed with it set against the compose `db` service (unverified this
+# pass -- not re-run against a live db)
 cd web && npm test
 cd web && npx tsc --noEmit
 
-# Run the whole app locally (migrations + synthetic seed + uvicorn, then Vite)
+# Run the whole app locally (Drizzle migrate + synthetic seed + uvicorn, then Vite). Compose sets
+# POSEIDON_INTERNAL_TOKEN=dev-internal-token for the backend; a host-run Next dev server
+# (web/README.md) must export the SAME value to reach the internal contract.
 docker compose -f infra/docker-compose.yml up      # backend :8000, frontend :5173
 
-# Migrations (compose runs this on boot)
-cd backend && .venv/Scripts/python.exe -m alembic upgrade head
+# Migrations (compose's `migrate` service runs this on boot; Drizzle is the authority since Phase 16)
+cd web && npx drizzle-kit migrate      # reads DRIZZLE_DATABASE_URL
+# Fresh local database after the Phase 16 cutover: docker compose -f infra/docker-compose.yml down -v
 ```
 
-Web (Next.js) suite verified 2026-09-18: `npm test` → 60 passed, 9 skipped (9 test files, 1 skipped
-file); `npx tsc --noEmit` → clean.
+Web (Next.js) suite verified 2026-09-19 (final review): `npm test` → 142 passed, 13 skipped
+offline (18 files: 17 passed, 1 skipped); `npx tsc --noEmit` → clean. The 152-passed
+`DRIZZLE_DATABASE_URL`-set figure is from Phase 16 Task 14 and was not re-run this pass.
 
-**Unverified:** the `-m pg` baseline was not run on 2026-09-08 — Docker Desktop was not running.
-The last recorded figure was 334 passed / 1 skipped. Treat it as stale until re-run.
+**pg suite verified 2026-09-19 (Phase 16 Task 9, against a Drizzle-only database):** 337 passed,
+1 skipped. Supersedes the prior 334 passed / 1 skipped figure, which was the Alembic-era baseline.
 
 **CI: there is none.** No `.github/workflows`. Nothing gates a merge except Carlos, so the suites
 above *are* the gate.
@@ -89,18 +102,27 @@ above *are* the gate.
   endings and bash rejects them. One-line fix when someone wants it: `*.sh text eol=lf`.
 - **Windows CRLF in shell scripts:** `aws.exe` emits CRLF. `$(...)` strips the CR under MSYS but
   `mapfile < <(...)` does **not** — it lands on the last array element and fails silently.
+- **Never parallelise the `-m pg` suite.** `test_migrations.py`'s two Alembic round-trips revoke
+  and restore `poseidon_app`'s cluster-wide membership mid-run; a concurrent test would see
+  `SET LOCAL ROLE` fail, and a crash between revoke and restore leaves the shared dev database
+  unable to switch role until `upgrade head` is re-run.
 
 ## Frozen surfaces — call them, never change them
 
 - **The certified ontology and metric formulas.** `ontology/ontology.yml` is vendored from the WFS
   workspace and changes only through certification. The six certified metrics and the query
   builder's SQL construction produce the numbers the sales team acts on.
-- **Applied migrations 0001–0010.** Only ever add a new one. 0009 and 0010 encode the
-  `poseidon_worker` role and `poseidon_app` membership that exist because RDS has no superuser.
+- **Migrations 0001–0010 (Alembic) are frozen history.** Never edited, never deleted, never run at
+  boot. 0009 and 0010 encode the `poseidon_worker` role and `poseidon_app` membership that exist
+  because RDS has no superuser. New schema changes are Drizzle migrations under `web/drizzle/`
+  (D58).
 - **The SSE envelope and message-part contract.** Frame kinds
   (`accepted`/`phase`/`tool`/`part`/`token`/`done`/`error`) carrying `turn_id`/`message_id`/
   `event_seq`, and the ten part kinds. The renderer registry and run-log reconciliation both key
   off these; changing the shape breaks replay.
+- **The `contracts/turns` corpus.** Golden frame/part sequences pinned on both sides; a change
+  lands only with `POSEIDON_UPDATE_CONTRACTS=1` regeneration in the same commit and a reviewer
+  reading the diff.
 - **Identity subs and the RLS wiring.** Provider-prefixed subs (`dev|`, `sf|`, `auth0|`),
   `rls_transaction`'s `set_config('app.user_sub', ..., true)` and `SET LOCAL ROLE poseidon_app`.
   Every persisted row keys on the sub; the trailing `true` (`is_local`) is what stops identity

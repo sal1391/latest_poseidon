@@ -1,6 +1,8 @@
 import { asc, desc, eq } from "drizzle-orm";
+import { v7 as uuidv7 } from "uuid";
 import { withUser } from "../db/client";
 import { conversations, messages } from "../db/schema";
+import { OPENER_PARTS } from "./opener";
 
 /**
  * Ruling R18: newest-first, capped at 50, id as a tiebreaker on equal
@@ -16,6 +18,17 @@ export async function listConversations(sub: string) {
       .orderBy(desc(conversations.updatedAt), desc(conversations.id))
       .limit(50),
   );
+}
+
+/** Mirrors HistoryStore.create_conversation (history.py:397): uuid7 ids, title "New chat", mode default, opener assistant message, one transaction. */
+export async function createConversation(sub: string): Promise<string> {
+  const id = uuidv7();
+  const openerId = uuidv7();
+  await withUser(sub, async (tx) => {
+    await tx.insert(conversations).values({ id, userSub: sub, title: "New chat", mode: "default", state: {} });
+    await tx.insert(messages).values({ id: openerId, conversationId: id, userSub: sub, role: "assistant", parts: OPENER_PARTS, turnId: null });
+  });
+  return id;
 }
 
 /**

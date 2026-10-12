@@ -78,15 +78,21 @@ describe("proxy header forwarding", () => {
     expect(forwarded(res, "x-poseidon-sub")).toBe("dev|alice");
   });
 
-  it("forwards an empty roles header for an authenticated but unlisted spcs user", async () => {
+  it("gates an authenticated but unlisted spcs user instead of forwarding empty roles", async () => {
+    // Pre-Task-5 this asserted the identity resolved with an empty roles
+    // header forwarded onward. `resolveIdentity` still does exactly that --
+    // see `identity.test.ts`'s "mallory" case -- but the Sales gate added in
+    // Phase 16 Task 5 now intercepts an authenticated-but-unauthorised caller
+    // before any header is forwarded, so there is nothing left to read off
+    // `forwarded()` here; the 403 is the up-to-date behaviour to pin.
     vi.stubEnv("IDENTITY_MODE", "spcs_ingress");
     vi.stubEnv("DEPLOY_MODE", "spcs");
     vi.stubEnv("SPCS_SALES_USERS", "");
 
     const res = proxy(req("/chat", { "sf-context-current-user": "MALLORY" }));
 
-    expect(forwarded(res, "x-poseidon-sub")).toBe("sf|mallory");
-    expect(forwarded(res, "x-poseidon-roles")).toBe("");
+    expect(res.status).toBe(403);
+    expect(res.headers.get("content-type")).toContain("text/html");
   });
 });
 
@@ -162,6 +168,41 @@ describe("proxy failure rendering", () => {
 
     expect(() => proxy(request)).toThrow(TypeError);
     expect(() => proxy(request)).toThrow(/headers exploded/);
+  });
+});
+
+describe("Sales gate", () => {
+  it("answers 403 with Python's problem body on /api/* when the identity lacks Poseidon:Sales", async () => {
+    vi.stubEnv("IDENTITY_MODE", "spcs_ingress");
+    vi.stubEnv("DEPLOY_MODE", "spcs");
+    vi.stubEnv("SPCS_SALES_USERS", "alice");
+    const res = proxy(req("/api/conversations", { "sf-context-current-user": "bob" }));
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({
+      type: "about:blank",
+      title: "insufficient role",
+      detail: "caller lacks required role 'Poseidon:Sales'",
+      status: 403,
+    });
+  });
+
+  it("answers a 403 HTML page on a page route", async () => {
+    vi.stubEnv("IDENTITY_MODE", "spcs_ingress");
+    vi.stubEnv("DEPLOY_MODE", "spcs");
+    vi.stubEnv("SPCS_SALES_USERS", "alice");
+    const res = proxy(req("/", { "sf-context-current-user": "bob" }));
+    expect(res.status).toBe(403);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(await res.text()).toContain("403");
+  });
+
+  it("lets a Sales user through and forwards the roles header", () => {
+    vi.stubEnv("IDENTITY_MODE", "spcs_ingress");
+    vi.stubEnv("DEPLOY_MODE", "spcs");
+    vi.stubEnv("SPCS_SALES_USERS", "alice");
+    const res = proxy(req("/", { "sf-context-current-user": "alice" }));
+    expect(res.status).toBe(200);
+    expect(forwarded(res, "x-poseidon-roles")).toBe("Poseidon:Sales");
   });
 });
 

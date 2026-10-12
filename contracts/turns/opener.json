@@ -1,0 +1,27 @@
+{
+ "parts": [
+  {
+   "kind": "text",
+   "payload": {
+    "markdown": "Ask about your data, or pick a flow:"
+   }
+  },
+  {
+   "kind": "chips",
+   "payload": {
+    "options": [
+     {
+      "id": "existing_customer",
+      "label": "Existing customer",
+      "send_text": "start an existing-customer brief"
+     },
+     {
+      "id": "new_prospect",
+      "label": "New customer prospect",
+      "send_text": "start a new-prospect brief"
+     }
+    ]
+   }
+  }
+ ]
+}

@@ -1,7 +1,9 @@
 import { notFound } from "next/navigation";
 import { headers } from "next/headers";
+import { Chat } from "./Chat";
 import { loadConversation } from "../../../lib/conversations";
-import { requireSub } from "../../../lib/request-identity";
+import { fromMessageParts, type PoseidonUIMessage } from "../../../lib/message-parts";
+import { requireSales } from "../../../lib/request-identity";
 
 export default async function Conversation({
   params,
@@ -9,20 +11,25 @@ export default async function Conversation({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const sub = requireSub(await headers());
+  const { sub } = requireSales(await headers());
   const loaded = await loadConversation(sub, id);
   if (!loaded) notFound();
+  /**
+   * The history, in the UI-message shape `useChat` starts from. Loaded on the
+   * server under the same RLS the rest of this app reads through, then handed
+   * to the client component as its initial state -- so a reload shows exactly
+   * the parts Python persisted, through the same renderers that drew them
+   * live.
+   */
+  const initial: PoseidonUIMessage[] = loaded.messages.map((m) => ({
+    id: m.id,
+    role: m.role === "user" ? "user" : "assistant",
+    parts: fromMessageParts(m.parts as { kind: string; payload: unknown }[]),
+  }));
   return (
-    <main className="p-8">
+    <main className="mx-auto max-w-3xl p-8">
       <h1 className="text-xl font-semibold">{loaded.conversation.title ?? "(untitled)"}</h1>
-      <ol className="mt-4 space-y-4">
-        {loaded.messages.map((m) => (
-          <li key={m.id}>
-            <span className="text-xs uppercase opacity-60">{m.role}</span>
-            <pre className="whitespace-pre-wrap text-sm">{JSON.stringify(m.parts, null, 2)}</pre>
-          </li>
-        ))}
-      </ol>
+      <Chat conversationId={id} initialMessages={initial} />
     </main>
   );
 }

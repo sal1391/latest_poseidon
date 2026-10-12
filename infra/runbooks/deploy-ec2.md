@@ -280,6 +280,12 @@ pg_roles on this database. ... Fix: run `python -m alembic upgrade head` against
 the migration's own DSN user).
 ```
 
+**Stale since D58 (Phase 16, 2026-09-19):** this whole section, and `docker-compose.ec2.yml`'s
+`alembic upgrade head` line it describes, still assume Alembic owns the schema. Application
+tables are migrated by Drizzle (`web/drizzle/`) everywhere else in this repo now; EC2 is parked
+(M3) and this runbook is not being rewritten for that here, but do not trust this fix instruction
+against a database Drizzle has already migrated without checking `poseidon_worker` by hand first.
+
 `restart: unless-stopped` (every service in this compose file) brings it back up automatically;
 once `backend`'s migration step has finished, the next restart succeeds and the worker settles
 into its normal idle-poll cycle. Watch it settle with:

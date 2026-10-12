@@ -52,15 +52,18 @@ values list with only one strong match surfaces ONLY that match. A values
 list with 2-3 entries that all clear the floor still shows all of them,
 best-first, capped at 3.
 
-Ties -- identical scores, or more than one value exact/token-matching the
-same phrase -- break alphabetically on the certified VALUE string (Python's
-default codepoint ordering, not a locale collation): every tier sorts its
-matches by ``(-score, value)`` (score 1.0 for tiers 1-2) before taking the
-first entry, so ranking is a total order and two calls with the same inputs
-can never disagree about which value is "best." Tier 3's floor filter and
-``_MAX_CANDIDATES`` cap both apply AFTER this sort, so they only ever trim
-the tail of an already-deterministic ranking -- neither can change the
-relative order of whichever values survive.
+Ties: every tier sorts its matches by ``(-score, value)`` (score 1.0 for
+tiers 1-2; Python's codepoint ordering on the certified VALUE string, not a
+locale collation), so ranking is a total order. More than one value
+exact/token-matching the phrase resolves to the alphabetically first. In
+tier 3, a tie at the BEST score >= ``AUTO_APPLY_THRESHOLD`` never
+auto-applies: ``token_set_ratio`` scores 1.0 whenever the phrase's words are
+a subset of a value's ("meridian" vs. every "Meridian *" customer), so
+guessing would hand the user another customer's numbers. It returns a
+``customer_ambiguous`` issue instead, listing the tied values alphabetically,
+capped at ``_MAX_CANDIDATES``, with "(and N more)" when the cap trims some.
+The candidate band's floor filter and cap likewise apply AFTER the sort, so
+they only trim the tail of an already-deterministic ranking.
 
 rapidfuzz and case: ``fuzz.token_set_ratio`` is CASE-SENSITIVE by default
 (verified against the installed rapidfuzz>=3.9 -- there is no hidden
@@ -68,6 +71,16 @@ casefolding unless the caller passes ``processor=utils.default_process``).
 Both sides of every tier-3 comparison are casefolded before scoring so tier
 3 stays case-insensitive like tiers 1 and 2; see ``_score`` for exactly
 where that happens and why it is its own function.
+
+Strict mode (P16-R23): ``resolve(..., auto_apply_fuzzy=False)`` keeps tiers
+1 and 2 exactly as above but never auto-applies tier 3. A fuzzy best score
+>= ``AUTO_APPLY_THRESHOLD`` -- even a UNIQUE one -- returns the same
+``customer_ambiguous`` result as the candidate band (values clearing
+``CANDIDATE_THRESHOLD``, best-first, capped at 3); a TIE at that score
+keeps the tie message above, "(and N more)" tail included. The pipeline uses it for
+port phrases found on its newer, looser detection paths (the "in" cue and
+lowercase phrases), where a typo is a question, not a fact. The default
+(``True``) is unchanged.
 
 ``kind`` (``"customer"`` or ``"port"``) changes only the
 ``customer_unknown`` message's wording ("no customer matching ..." vs.
@@ -120,7 +133,7 @@ class Resolution:
     """
 
     entity: ResolvedEntity | None
-    candidates: tuple[str, ...]  # fuzzy band only: each >= CANDIDATE_THRESHOLD, best-first, max 3
+    candidates: tuple[str, ...]  # fuzzy only: candidate band or tied auto-apply scores, max 3
     issue: ParseIssue | None  # "customer_ambiguous" (with candidates) | "customer_unknown"
 
 
@@ -186,12 +199,33 @@ def _unknown(phrase: str, kind: str) -> Resolution:
     return Resolution(entity=None, candidates=(), issue=issue)
 
 
+def _candidates(scored: Sequence[tuple[float, str]]) -> Resolution:
+    """The "did you mean...?" result for a best-first ``scored`` list.
+
+    Filters to the floor BEFORE the cap: a "did you mean...?" chip is
+    itself a claim that a value is plausible, so a weak runner-up under
+    ``CANDIDATE_THRESHOLD`` must not ride along just to pad the list out to
+    3 (see the module docstring). ``scored`` is already ordered best-first,
+    so filtering preserves that order.
+    """
+    above_floor = [value for score, value in scored if score >= CANDIDATE_THRESHOLD]
+    top = tuple(above_floor[:_MAX_CANDIDATES])
+    issue = ParseIssue(_ISSUE_AMBIGUOUS, f"did you mean one of: {', '.join(top)}?", top)
+    return Resolution(entity=None, candidates=top, issue=issue)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 
-def resolve(phrase: str, values: Sequence[str], kind: str = "customer") -> Resolution:
+def resolve(
+    phrase: str,
+    values: Sequence[str],
+    kind: str = "customer",
+    *,
+    auto_apply_fuzzy: bool = True,
+) -> Resolution:
     """Resolve ``phrase`` to one of ``values`` under the three-tier contract
     described in the module docstring: exact, then token-set, then fuzzy.
 
@@ -201,6 +235,10 @@ def resolve(phrase: str, values: Sequence[str], kind: str = "customer") -> Resol
     ``kind`` (``"customer"`` or ``"port"``) only changes the
     ``customer_unknown`` message's wording -- see the module docstring for
     why the issue CODE never becomes ``port_unknown``.
+
+    ``auto_apply_fuzzy=False`` is STRICT mode (see the module docstring's
+    "Strict mode"): exact and token still resolve, but a fuzzy best score
+    that would auto-apply asks instead.
     """
     phrase_cf = phrase.casefold()
 
@@ -229,17 +267,30 @@ def resolve(phrase: str, values: Sequence[str], kind: str = "customer") -> Resol
 
     best_score, best_value = scored[0]
     if best_score >= AUTO_APPLY_THRESHOLD:
-        return _resolved(best_value, phrase, best_score, _TIER_FUZZY)
+        # Exact float equality is safe: every score came from the same
+        # _score call, so equal inputs give equal floats. scored is sorted
+        # (-score, value), so the tied values are a prefix, already
+        # alphabetical.
+        tied = [value for score, value in scored if score == best_score]
+        if len(tied) == 1:
+            if not auto_apply_fuzzy:
+                # Strict mode: even a unique high score is only a
+                # suggestion. The chips follow the candidate band's own
+                # floor-then-cap rule, so a strong match surfaces alone
+                # rather than padded with weak ones.
+                return _candidates(scored)
+            return _resolved(best_value, phrase, best_score, _TIER_FUZZY)
+        # Two or more values share the best auto-apply score (typically a
+        # short name that is a word-subset of several values, which
+        # token_set_ratio scores 1.0) -- applying one would hand the user
+        # another customer's numbers, so ask instead.
+        top = tuple(tied[:_MAX_CANDIDATES])
+        more = len(tied) - len(top)
+        tail = f" (and {more} more)" if more else ""
+        issue = ParseIssue(_ISSUE_AMBIGUOUS, f"did you mean one of: {', '.join(top)}{tail}?", top)
+        return Resolution(entity=None, candidates=top, issue=issue)
 
     if best_score >= CANDIDATE_THRESHOLD:
-        # Filter to the floor BEFORE the cap: a "did you mean...?" chip is
-        # itself a claim that a value is plausible, so a weak runner-up
-        # under CANDIDATE_THRESHOLD must not ride along just to pad the
-        # list out to 3 (see the module docstring). scored is already
-        # ordered best-first, so filtering preserves that order.
-        above_floor = [value for score, value in scored if score >= CANDIDATE_THRESHOLD]
-        top = tuple(above_floor[:_MAX_CANDIDATES])
-        issue = ParseIssue(_ISSUE_AMBIGUOUS, f"did you mean one of: {', '.join(top)}?", top)
-        return Resolution(entity=None, candidates=top, issue=issue)
+        return _candidates(scored)
 
     return _unknown(phrase, kind)

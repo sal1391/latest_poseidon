@@ -1,0 +1,80 @@
+{
+ "frames": [
+  {
+   "data": {
+    "event_seq": 1,
+    "message_id": "msg-2",
+    "turn_id": "turn-2",
+    "turn_index": 2
+   },
+   "event": "accepted"
+  },
+  {
+   "data": {
+    "event_seq": 2,
+    "kind": "text",
+    "message_id": "msg-2",
+    "payload": {
+     "markdown": "the cached answer from turn one"
+    },
+    "turn_id": "turn-2"
+   },
+   "event": "part"
+  },
+  {
+   "data": {
+    "event_seq": 3,
+    "kind": "proof",
+    "message_id": "msg-2",
+    "payload": {
+     "lines": [
+      "Backend: synthetic"
+     ]
+    },
+    "turn_id": "turn-2"
+   },
+   "event": "part"
+  },
+  {
+   "data": {
+    "event_seq": 4,
+    "message_id": "msg-2",
+    "turn_id": "turn-2",
+    "usage": {
+     "input_tokens": 0,
+     "output_tokens": 0
+    }
+   },
+   "event": "done"
+  }
+ ],
+ "parts": [
+  {
+   "kind": "text",
+   "payload": {
+    "markdown": "the cached answer from turn one"
+   }
+  },
+  {
+   "kind": "proof",
+   "payload": {
+    "lines": [
+     "Backend: synthetic"
+    ]
+   }
+  }
+ ],
+ "scenario": "replay_after_ok",
+ "terminal": {
+  "data": {
+   "event_seq": 4,
+   "message_id": "msg-2",
+   "turn_id": "turn-2",
+   "usage": {
+    "input_tokens": 0,
+    "output_tokens": 0
+   }
+  },
+  "event": "done"
+ }
+}

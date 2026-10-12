@@ -88,7 +88,7 @@ export class IdentityConfigError extends Error {
  * and `identity_spcs.py`'s `_SALES_ROLE`) because its providers may not import
  * the api layer; this port needs only one.
  */
-const SALES_ROLE = "Poseidon:Sales";
+export const SALES_ROLE = "Poseidon:Sales";
 
 /**
  * Mirrors `DISABLED_DEFAULT_USER` (identity.py:130) field for field.

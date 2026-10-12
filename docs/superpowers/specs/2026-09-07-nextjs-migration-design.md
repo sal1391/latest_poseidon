@@ -5,6 +5,9 @@ Status: **Owner-approved on its five open decisions (2026-09-07).** Section 9 re
 decided rather than open. The phase plan in §10 is the sequence they imply; it has not itself been
 approved as an implementation plan, and no code should be written from it until a Phase 15 plan is
 written and passed.
+Revised by D57/D58/D59 (Phase 16, 2026-09-19) — see `docs/architecture/00-overview.md`'s decision
+log; §3's orchestration/agent-loop/streaming rows and §7's route list are updated below, the rest
+of this document still describes pre-Phase-16 intent.
 Addresses: Codex review finding **C00 (P1)** —
 `docs/superpowers/specs/2026-09-05-monthly-performance-reports-codex-review.md`.
 
@@ -63,9 +66,9 @@ them (§9).
 | Seam | Today | Target owner | Notes |
 |---|---|---|---|
 | HTTP + routing | `api/app.py`, FastAPI | **Next.js** App Router | Public/authenticated/API boundaries in §5. |
-| Chat streaming | `core/chat/events.py` `SseEnvelopeSink`, hand-rolled SSE envelopes | **Next.js** + AI SDK 6 | Contract translation in §4. The riskiest single item. |
-| Turn orchestration | `core/chat/orchestrator.py` (1,615 lines) | **Next.js** + AI SDK | Replaced, not ported. |
-| Model providers, agent loop | `core/llm/` | **Next.js** + AI SDK | Bedrock and Cortex both need AI SDK providers. §7. |
+| Chat streaming | `core/chat/events.py` `SseEnvelopeSink`, hand-rolled SSE envelopes | **Next.js** + AI SDK 6 (transport and client); envelope produced by Python | Contract translation in §4. The riskiest single item. |
+| Turn orchestration | `core/chat/orchestrator.py` (1,615 lines) | **Python** (Phase 16, D57); Next.js + AI SDK 6 deferred | Bridge: Next.js re-streams Python's turn; the `contracts/turns` corpus is the entry point for a later port. |
+| Model providers, agent loop | `core/llm/` | **Python** (Phase 16, D57); Next.js + AI SDK 6 deferred | Bridge: Next.js re-streams Python's turn; the `contracts/turns` corpus is the entry point for a later port. |
 | Identity | `identity.py`, `identity_auth0.py`, `identity_spcs.py` | **SPCS ingress** (prod) / fixed dev user (local), behind Auth.js's session seam | **M5/Q4.** Auth0 documented but unwired. §6. |
 | RLS enforcement | `db.py` `rls_transaction`, `set_config('app.user_sub', …, true)` + `SET LOCAL ROLE` | **Both** — shared discipline | Two clients now touch the same rows. §6. |
 | Conversation history, slots | `core/chat/history.py`, `state.py` | **Next.js** + Drizzle | Explicit serializer at `history.py:836–869` must be ported deliberately, not regenerated. |
@@ -196,8 +199,11 @@ This is the cost the owner accepted with M2. It needs to be explicit rather than
 deterministic operations, not a general API.
 
 **What crosses it:**
-- `POST /internal/v1/skills/{skill_id}:dispatch` — validated args in, `SkillResult` out (parts,
+- `POST /internal/v1/skills/{skill_id}/dispatch` — validated args in, `SkillResult` out (parts,
   proof, payload). This is the existing `SkillResult` shape, so the seam is already the natural one.
+  (Spelled `:dispatch` in this document's original draft; implemented as `/dispatch`, P16-5.)
+- `POST /internal/v1/conversations/{cid}/turns` — turn text + identity in, the SSE envelope out
+  (Phase 16).
 - `POST /internal/v1/reports/{run_id}:render` — payload in, HTML/PDF bytes out.
 - Read paths for ontology metadata and dimension type-ahead.
 
@@ -211,6 +217,7 @@ deterministic operations, not a general API.
   "just for display" — that is how two answers to the same question appear.
 - Timeouts, retries and trace-id propagation are specified, not left to defaults. `core/obs.py`
   already carries a trace-id contextvar; the header must cross the boundary.
+- **Authenticated by `POSEIDON_INTERNAL_TOKEN`** in the `X-Poseidon-Internal-Token` header (D59).
 
 **Deployment:** two containers in the SPCS service, `web` (Next.js) and `analytics` (Python),
 talking over the service-internal network. Triton proves the single-container shape works; this is

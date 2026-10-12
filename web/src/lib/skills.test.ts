@@ -1,5 +1,9 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { dispatchSkill } from "./skills";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { dispatchSkill, internalHeaders, newTraceId } from "./skills";
+
+beforeEach(() => {
+  vi.stubEnv("POSEIDON_INTERNAL_TOKEN", "test-internal-token");
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -202,4 +206,35 @@ describe("dispatchSkill timeout", () => {
       await settled;
     },
   );
+});
+
+describe("internal contract headers", () => {
+  it("sends the token and a fresh 32-hex trace id on every dispatch", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true, parts: [], proof: [], artifacts: [], error: null }));
+    vi.stubGlobal("fetch", fetchMock);
+    await dispatchSkill("data_qa.metric_query", {}, { sub: "dev|local", roles: ["Poseidon:Sales"] });
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.headers["x-poseidon-internal-token"]).toBe("test-internal-token");
+    expect(init.headers["x-trace-id"]).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it("throws before calling fetch when POSEIDON_INTERNAL_TOKEN is unset", async () => {
+    vi.stubEnv("POSEIDON_INTERNAL_TOKEN", "");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(
+      dispatchSkill("data_qa.metric_query", {}, { sub: "dev|local", roles: [] }),
+    ).rejects.toThrow(/POSEIDON_INTERNAL_TOKEN is unset/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("internalHeaders honours a caller-supplied trace id", () => {
+    const h = internalHeaders("a".repeat(32));
+    expect(h["x-trace-id"]).toBe("a".repeat(32));
+    expect(h["content-type"]).toBe("application/json");
+  });
+
+  it("newTraceId is 32 lower-case hex characters", () => {
+    expect(newTraceId()).toMatch(/^[0-9a-f]{32}$/);
+  });
 });

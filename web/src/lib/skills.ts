@@ -52,7 +52,7 @@ const DEFAULT_TIMEOUT_MS = 30_000;
  * the quietest possible way: an operator who sets only the one the rewrite
  * needs gets a working UI whose skill dispatches all go to localhost.
  */
-function analyticsOrigin(): string {
+export function analyticsOrigin(): string {
   return process.env.ANALYTICS_ORIGIN ?? process.env.BACKEND_ORIGIN ?? DEFAULT_ORIGIN;
 }
 
@@ -72,11 +72,47 @@ function timeoutMs(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TIMEOUT_MS;
 }
 
+export const INTERNAL_TOKEN_HEADER = "x-poseidon-internal-token";
+export const TRACE_ID_HEADER = "x-trace-id";
+
+/**
+ * The shared secret Python's `require_internal_token` compares against
+ * (`backend/poseidon/api/internal_auth.py`). Same variable name in both
+ * runtimes on purpose (ruling R26: one name per value). Read per call, like
+ * `analyticsOrigin()`. Unset or blank throws BEFORE any request is made, so a
+ * misconfigured web tier fails on the first turn with the variable's name in
+ * the message, not with a 503 it cannot explain.
+ */
+function internalToken(): string {
+  const raw = process.env.POSEIDON_INTERNAL_TOKEN;
+  if (raw === undefined || raw.trim() === "") {
+    throw new Error(
+      "POSEIDON_INTERNAL_TOKEN is unset: the internal contract cannot be called " +
+        "(set it to the same value the analytics service was started with)",
+    );
+  }
+  return raw;
+}
+
+/** Same shape as Python's `new_trace_id()` (`core/obs.py`): 32 lower-case hex, no dashes. */
+export function newTraceId(): string {
+  return crypto.randomUUID().replace(/-/g, "");
+}
+
+export function internalHeaders(traceId: string = newTraceId()): Record<string, string> {
+  return {
+    "content-type": "application/json",
+    [INTERNAL_TOKEN_HEADER]: internalToken(),
+    [TRACE_ID_HEADER]: traceId,
+  };
+}
+
 export async function dispatchSkill(
   skillId: string,
   args: Record<string, unknown>,
   identity: Pick<Identity, "sub" | "roles">,
 ): Promise<SkillResult> {
+  const headers = internalHeaders(); // throws when the token is unset -- before any timer or fetch
   const limit = timeoutMs();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), limit);
@@ -89,7 +125,7 @@ export async function dispatchSkill(
   try {
     const resp = await fetch(url, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       // Only `sub` and `roles`: the route builds its `UserContext` with
       // `email`/`name` as `None` regardless, so sending them would state a
       // contract that does not exist. Written out field by field rather than

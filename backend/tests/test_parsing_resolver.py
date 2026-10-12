@@ -492,3 +492,209 @@ def test_both_files_are_ascii_on_disk():
     for path in (Path(customer_resolver.__file__), Path(__file__)):
         offending = sorted({byte for byte in path.read_bytes() if byte > 0x7F})
         assert not offending, f"{path.name} holds non-ASCII bytes: {offending}"
+
+
+# ---------------------------------------------------------------------------
+# Fuzzy auto-apply ties ASK instead of guessing (P16-R22)
+# ---------------------------------------------------------------------------
+
+# token_set_ratio scores 100 whenever the phrase's words are a subset of a
+# value's words, so a short shared prefix ("meridian") ties every value
+# that contains it. Before P16-R22 the alphabetical tie-break silently
+# applied the first one -- another customer's certified numbers, no warning.
+MERIDIANS = (
+    "Meridian Bunkering",
+    "Meridian Carriers",
+    "Meridian Energy",
+    "Meridian Freight",
+    "Meridian Holdings",
+    "Meridian Logistics",
+    "Meridian Marine",
+    "Meridian Shipping",
+    "Meridian Tankers",
+    "Meridian Trading",
+)
+
+
+def test_short_name_shared_by_ten_customers_asks_with_three_and_a_tail_count():
+    values = (*MERIDIANS, "Northstar Lines", "Acme Corporation", "Zenith Freight")
+
+    result = resolve("meridian", values)
+
+    top = ("Meridian Bunkering", "Meridian Carriers", "Meridian Energy")
+    assert result.entity is None
+    assert result.candidates == top
+    assert result.issue == ParseIssue(
+        "customer_ambiguous",
+        "did you mean one of: Meridian Bunkering, Meridian Carriers, Meridian Energy (and 7 more)?",
+        top,
+    )
+    assert result.issue.message.endswith("(and 7 more)?")
+
+
+def test_exactly_two_tied_auto_apply_scores_ask_without_a_tail_count():
+    result = resolve("acme", ("Acme Beta", "Zed Corp", "Acme Alpha"))
+
+    assert result.entity is None
+    assert result.candidates == ("Acme Alpha", "Acme Beta")
+    assert result.issue == ParseIssue(
+        "customer_ambiguous",
+        "did you mean one of: Acme Alpha, Acme Beta?",
+        ("Acme Alpha", "Acme Beta"),
+    )
+    assert "more)" not in result.issue.message
+
+
+def test_unique_subset_match_still_auto_applies():
+    values = (*MERIDIANS, "Northstar Lines", "Acme Corporation")
+
+    result = resolve("northstar", values)
+
+    assert result.issue is None
+    assert result.candidates == ()
+    assert result.entity == ResolvedEntity(
+        value="Northstar Lines", source_text="northstar", confidence=1.0, tier="fuzzy"
+    )
+
+
+def test_trailing_word_shared_by_several_customers_asks():
+    values = ("Atlas Marine", "Harbor Marine", "Pacific Marine", "Northstar Lines")
+
+    result = resolve("marine", values)
+
+    top = ("Atlas Marine", "Harbor Marine", "Pacific Marine")
+    assert result.entity is None
+    assert result.candidates == top
+    assert result.issue == ParseIssue(
+        "customer_ambiguous",
+        "did you mean one of: Atlas Marine, Harbor Marine, Pacific Marine?",
+        top,
+    )
+
+
+def test_port_kind_ties_ask_with_a_kind_neutral_message():
+    values = ("Klang North", "Klang South", "Klang West", "Klang East", "Rotterdam")
+
+    result = resolve("klang", values, kind="port")
+
+    top = ("Klang East", "Klang North", "Klang South")
+    assert result.entity is None
+    assert result.candidates == top
+    assert result.issue == ParseIssue(
+        "customer_ambiguous",
+        "did you mean one of: Klang East, Klang North, Klang South (and 1 more)?",
+        top,
+    )
+    assert "port" not in result.issue.message
+
+
+def test_tie_at_the_auto_apply_threshold_asks_not_only_at_a_perfect_score(monkeypatch):
+    """Ties are detected at ANY score >= AUTO_APPLY_THRESHOLD, not just 1.0;
+    a strictly lower runner-up is not part of the tie."""
+    scores_by_value_cf = {"beta corp": 0.85, "alpha corp": 0.85, "gamma corp": 0.84}
+    monkeypatch.setattr(
+        customer_resolver, "_score", lambda phrase_cf, value_cf: scores_by_value_cf[value_cf]
+    )
+
+    result = resolve("garbled", ("Gamma Corp", "Beta Corp", "Alpha Corp"))
+
+    assert result.entity is None
+    assert result.candidates == ("Alpha Corp", "Beta Corp")
+    assert result.issue == ParseIssue(
+        "customer_ambiguous",
+        "did you mean one of: Alpha Corp, Beta Corp?",
+        ("Alpha Corp", "Beta Corp"),
+    )
+
+
+def test_tied_ambiguity_is_order_independent():
+    values = (*MERIDIANS, "Northstar Lines")
+    assert resolve("meridian", values) == resolve("meridian", tuple(reversed(values)))
+
+
+# ---------------------------------------------------------------------------
+# auto_apply_fuzzy=False (strict mode, P16-R23): only exact/token apply on
+# their own; a fuzzy best score that would auto-apply asks instead.
+# ---------------------------------------------------------------------------
+
+
+def test_strict_mode_unique_high_fuzzy_match_asks_instead_of_applying():
+    # "singpore" vs "Singapore" scores ~0.94 -- a UNIQUE auto-apply score.
+    result = resolve("singpore", PORTS, kind="port", auto_apply_fuzzy=False)
+
+    assert result.entity is None
+    assert result.candidates == ("Singapore",)
+    assert result.issue == ParseIssue(
+        "customer_ambiguous", "did you mean one of: Singapore?", ("Singapore",)
+    )
+
+
+def test_default_mode_still_auto_applies_the_same_unique_fuzzy_match():
+    result = resolve("singpore", PORTS, kind="port")
+
+    assert result.entity is not None
+    assert result.entity.value == "Singapore"
+    assert result.entity.tier == "fuzzy"
+    assert result.issue is None
+
+
+def test_strict_mode_candidates_are_floor_filtered_best_first_and_capped(monkeypatch):
+    scores_by_value_cf = {"alpha": 0.95, "beta": 0.70, "gamma": 0.65, "delta": 0.62, "eps": 0.5}
+    monkeypatch.setattr(
+        customer_resolver, "_score", lambda phrase_cf, value_cf: scores_by_value_cf[value_cf]
+    )
+
+    result = resolve("garbled", ("Eps", "Delta", "Gamma", "Beta", "Alpha"), auto_apply_fuzzy=False)
+
+    assert result.entity is None
+    assert result.candidates == ("Alpha", "Beta", "Gamma")
+    assert result.issue is not None
+    assert result.issue.code == "customer_ambiguous"
+
+
+@pytest.mark.parametrize("auto_apply_fuzzy", [True, False])
+def test_exact_tier_applies_in_both_modes(auto_apply_fuzzy: bool):
+    result = resolve("singapore", PORTS, kind="port", auto_apply_fuzzy=auto_apply_fuzzy)
+
+    assert result.entity == ResolvedEntity(
+        value="Singapore", source_text="singapore", confidence=1.0, tier="exact"
+    )
+    assert result.issue is None
+
+
+@pytest.mark.parametrize("auto_apply_fuzzy", [True, False])
+def test_token_tier_applies_in_both_modes(auto_apply_fuzzy: bool):
+    result = resolve("beach long", PORTS, kind="port", auto_apply_fuzzy=auto_apply_fuzzy)
+
+    assert result.entity == ResolvedEntity(
+        value="Long Beach", source_text="beach long", confidence=1.0, tier="token"
+    )
+    assert result.issue is None
+
+
+def test_strict_mode_unknown_is_still_unknown():
+    result = resolve("narnia", PORTS, kind="port", auto_apply_fuzzy=False)
+
+    assert result.entity is None
+    assert result.candidates == ()
+    assert result.issue == ParseIssue("customer_unknown", "no port matching 'narnia'")
+
+
+def test_auto_apply_fuzzy_is_keyword_only():
+    with pytest.raises(TypeError):
+        resolve("singpore", PORTS, "port", False)  # type: ignore[misc]
+
+
+def test_parse_issue_new_fields_default_so_old_constructor_calls_still_compare_equal():
+    issue = ParseIssue("customer_unknown", "no customer matching 'x'")
+    assert issue.kind == "customer"
+    assert issue.phrase == ""
+    assert issue == ParseIssue("customer_unknown", "no customer matching 'x'", (), "customer", "")
+
+
+def test_strict_mode_tie_keeps_the_tie_message_with_its_tail():
+    values = ("Klang North", "Klang South", "Klang West", "Klang East", "Rotterdam")
+
+    assert resolve("klang", values, kind="port", auto_apply_fuzzy=False) == resolve(
+        "klang", values, kind="port"
+    )

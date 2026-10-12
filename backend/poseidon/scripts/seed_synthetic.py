@@ -1,13 +1,17 @@
 """Load the deterministic synthetic dataset into the local ``synthetic`` schema.
 
 This is the bridge between ``generate_synthetic.generate()`` (pure Python, no
-database) and the Postgres tables migration ``0002`` creates. The compose
-backend runs it on every start-up, between ``alembic upgrade head`` and
-uvicorn, so a fresh ``docker compose up`` yields a queryable database with no
-manual step — which is why the default behaviour is *skip when already
-populated*, not *reload*. Restarting the backend twenty times must not
-truncate and rewrite 40k rows twenty times, and must never change what a
-running demo is looking at.
+database) and the Postgres tables that hold the data. Since Phase 16 (decision
+D58) it also *creates* those tables: Drizzle owns the application schema and
+deliberately does not own ``synthetic``, so this script calls
+:func:`poseidon.core.data.synthetic_schema.ensure_synthetic_schema` — the
+idempotent re-statement of migration ``0002``'s DDL — before it counts rows.
+The compose ``backend`` service runs this on every start-up, after the
+one-shot ``migrate`` service has completed and before uvicorn, so a fresh
+``docker compose up`` yields a queryable database with no manual step — which
+is why the default behaviour is *skip when already populated*, not *reload*.
+Restarting the backend twenty times must not truncate and rewrite 40k rows
+twenty times, and must never change what a running demo is looking at.
 
 Idempotence is by construction: the only two paths that write are "the sales
 table is empty" and "``--force`` was passed", and both begin by truncating
@@ -47,6 +51,7 @@ from collections.abc import Iterable
 import psycopg
 
 from poseidon.core.data.synthetic_client import normalize_dsn
+from poseidon.core.data.synthetic_schema import ensure_synthetic_schema
 from poseidon.core.ontology.loader import get_ontology
 from poseidon.scripts.generate_synthetic import Dataset, dataset_checksum, generate
 
@@ -55,16 +60,17 @@ SALES_ENTITY = "MARINE_SALES_PLANNING_V"
 GL_ENTITY = "W_MARINE_GL_SOURCE_AI"
 
 _MIGRATE_HINT = (
-    "run `python -m alembic upgrade head` first (migration 0002 creates the "
-    "`synthetic` schema)"
+    "the seed step creates the synthetic schema itself now (Phase 16); an "
+    "UndefinedTable here means ensure_synthetic_schema failed - read the error "
+    "above"
 )
 
 # libpq's default is "wait as long as the OS takes", which on a wrong host or a
 # firewalled port means minutes of silence — unacceptable on the container's
 # start-up critical path, where a misconfigured DATABASE_URL should surface as a
-# fast, readable failure. `alembic upgrade head` has already proven the database
-# reachable by the time this runs in compose, so this only ever bites a genuine
-# misconfiguration.
+# fast, readable failure. The compose `migrate` service has already proven the
+# database reachable by the time this runs in compose, so this only ever bites a
+# genuine misconfiguration.
 CONNECT_TIMEOUT_SECONDS = 10
 
 
@@ -156,6 +162,11 @@ def main(argv: list[str] | None = None) -> int:
         with psycopg.connect(
             normalize_dsn(url), connect_timeout=CONNECT_TIMEOUT_SECONDS
         ) as conn:
+            # Drizzle owns the app schema; `synthetic` is created here (D58).
+            # Committed on its own so the DDL is durable even if the load
+            # below fails, and so the COPY runs in a clean transaction.
+            ensure_synthetic_schema(conn)
+            conn.commit()
             try:
                 sales_rows, gl_rows = _row_counts(conn)
             except psycopg.errors.UndefinedTable:

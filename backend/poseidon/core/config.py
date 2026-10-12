@@ -3,7 +3,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -174,6 +174,47 @@ class Settings(BaseSettings):
     # every chat request fail closed on a permissions error instead of an
     # RLS filter.
     database_app_role: str | None = "poseidon_app"
+    # Phase 16 Task 1 (spec section 5.2): the shared secret every route under
+    # api/internal.py requires in the X-Poseidon-Internal-Token header. No
+    # default on purpose -- unset means the internal routes answer 503 to
+    # every caller rather than letting one through. Compose injects a dev
+    # value into `backend`; the Next.js app reads the SAME variable name.
+    #
+    # P16-R4: this ``Settings`` class has no ``env_prefix``, so pydantic-
+    # settings would otherwise bind this field to the env var ``INTERNAL_
+    # TOKEN`` (the field name, uppercased) rather than ``POSEIDON_INTERNAL_
+    # TOKEN`` -- silently leaving the field ``None`` (and every internal
+    # route 503ing forever) even with the intended variable set.
+    #
+    # Final review: an ``AliasChoices("internal_token", "POSEIDON_INTERNAL_
+    # TOKEN")`` here previously let a GENERIC ``INTERNAL_TOKEN`` env var bind
+    # first (and alone) -- pydantic-settings tries aliases in the order
+    # given, and env vars always outrank a Python-default kwarg, so a
+    # coincidental ``INTERNAL_TOKEN`` in the environment would silently win
+    # over the intended ``POSEIDON_INTERNAL_TOKEN``. The single explicit
+    # ``validation_alias`` below makes ``POSEIDON_INTERNAL_TOKEN`` the ONLY
+    # env name this field binds to.
+    #
+    # Deliberately NOT ``model_config``'s ``populate_by_name=True``: in
+    # pydantic-settings 2.14.2, ``EnvSettingsSource._extract_field_info``
+    # adds a field's OWN name as a second env-var candidate whenever
+    # ``populate_by_name`` is set -- for EVERY field, not just this one's
+    # ``__init__`` kwargs -- which would silently re-admit ``INTERNAL_TOKEN``
+    # as a working alias for this field's environment lookup and reopen
+    # exactly the bug this fix closes. ``__init__`` below instead maps a
+    # direct ``internal_token=`` kwarg (every existing test's construction)
+    # onto the real alias name before delegating to ``BaseSettings``, so the
+    # env source is never given a reason to look at the field's own name.
+    internal_token: str | None = Field(
+        default=None,
+        validation_alias="POSEIDON_INTERNAL_TOKEN",
+    )
+
+    def __init__(self, **values: object) -> None:
+        if "internal_token" in values:
+            values.setdefault("POSEIDON_INTERNAL_TOKEN", values.pop("internal_token"))
+        super().__init__(**values)
+
     # Phase 11 Task 4 (doc 06 observability): the threshold poseidon.scripts.
     # cost_rollup's --spike-check mode reads to flag a turn_run row whose
     # input_tokens + output_tokens exceeds it -- a config choice, recorded
@@ -225,6 +266,15 @@ class Settings(BaseSettings):
         rejects the empty string) instead of simply resolving to ``None``
         the way an operator setting it blank almost certainly means.
         """
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
+    @field_validator("internal_token", mode="before")
+    @classmethod
+    def blank_internal_token_means_none(cls, v: object) -> object:
+        """``POSEIDON_INTERNAL_TOKEN=`` in a compose file means unset, the
+        same way ``DATABASE_APP_ROLE=`` does (validator above)."""
         if isinstance(v, str) and not v.strip():
             return None
         return v

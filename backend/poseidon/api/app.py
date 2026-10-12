@@ -1,3 +1,5 @@
+import re
+
 import anyio.to_thread
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,7 +11,7 @@ from poseidon.core.chat.dev_router import DevDeterministicRouter
 from poseidon.core.chat.feedback import FeedbackStore
 from poseidon.core.chat.history import HistoryStore
 from poseidon.core.config import Settings, get_settings
-from poseidon.core.data.synthetic_client import SyntheticDataClient
+from poseidon.core.data.factory import DataBackendUnavailable, build_data_client
 from poseidon.core.db import assert_boot_privileges, build_engine
 from poseidon.core.identity import AuthError, resolve_provider
 from poseidon.core.llm.bedrock import BedrockProvider
@@ -265,6 +267,12 @@ _DUPLICATE_HEADER_TITLE = "duplicate identity header"
 _IDENTITY_UNAVAILABLE_TITLE = "identity_unavailable"
 _IDENTITY_UNAVAILABLE_DETAIL = "the identity provider failed unexpectedly; try again shortly"
 
+# Phase 16 Task 1 (spec section 5.3): the exact shape new_trace_id() itself
+# produces (32 lowercase hex chars) -- the gate an inbound X-Trace-Id must
+# meet before _install_trace_middleware ever adopts it in place of minting
+# a fresh one.
+_TRACE_ID_SHAPE = re.compile(r"[0-9a-f]{32}")
+
 
 def _first_duplicate_identity_header(request: Request) -> str | None:
     """The first header name in :data:`_IDENTITY_BEARING_HEADERS` that
@@ -302,7 +310,16 @@ def _install_trace_middleware(app: FastAPI) -> None:
 
     @app.middleware("http")
     async def trace_middleware(request: Request, call_next):
-        trace_id = new_trace_id()
+        # Phase 16 Task 1 (spec section 5.3): the web tier mints one trace id
+        # per request and forwards it; adopting it makes one turn one trace
+        # across both runtimes. Only on /internal/ paths (the caller is our
+        # own service) and only when well-formed (new_trace_id()'s own
+        # 32-hex shape) -- a browser can never write our log correlation key.
+        inbound = request.headers.get("X-Trace-Id", "")
+        if request.url.path.startswith("/internal/") and _TRACE_ID_SHAPE.fullmatch(inbound):
+            trace_id = inbound
+        else:
+            trace_id = new_trace_id()
         token = trace_id_var.set(trace_id)
         try:
             response = await call_next(request)
@@ -562,7 +579,15 @@ def _wire_live_chat(app: FastAPI) -> None:
     )
     prompts_dir = settings.prompts_dir if settings.prompts_dir is not None else DEFAULT_PROMPTS_DIR
     app.state.prompt_registry = PromptRegistry(prompts_dir)
-    app.state.data_client = SyntheticDataClient(settings.database_url)
+    try:
+        app.state.data_client = build_data_client(settings)
+    except DataBackendUnavailable as exc:
+        # Boot still succeeds: live_chat.py's own snowflake guard answers every
+        # turn with a structured 501 frame before app.state.data_client is
+        # ever read (see _snowflake_guard_response). None makes an accidental
+        # read fail loudly instead of querying an empty schema.
+        app.state.data_client = None
+        get_logger("app").warning("data_client_unavailable", backend=exc.backend)
     # Phase 14 final-review wave (C3): the artifact store, built HERE so it
     # exists in EVERY deploy_mode a live chat runs in -- not only "local".
     # `core/chat/orchestrator.py` threads this straight into both of its

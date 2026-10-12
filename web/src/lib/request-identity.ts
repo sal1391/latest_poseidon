@@ -1,4 +1,5 @@
 import type { ReadonlyHeaders } from "next/dist/server/web/spec-extension/adapters/headers";
+import { SALES_ROLE } from "./identity";
 
 /**
  * `web/src/proxy.ts` is the ONLY thing that sets `x-poseidon-sub` on a
@@ -19,4 +20,20 @@ export function requireSub(h: Headers | ReadonlyHeaders): string {
     throw new Error("x-poseidon-sub missing: the proxy did not run for this request");
   }
   return sub;
+}
+
+/**
+ * The role half, for handlers and pages. The proxy already answered 403 to
+ * any request lacking the role, so reaching here without it is the same
+ * class of fault as a missing sub: the proxy did not run. Throw, never render.
+ */
+export function requireSales(h: Headers | ReadonlyHeaders): { sub: string; roles: string[] } {
+  const sub = requireSub(h);
+  const roles = (h.get("x-poseidon-roles") ?? "").split(",").filter((r) => r !== "");
+  if (!roles.includes(SALES_ROLE)) {
+    throw new Error(
+      `x-poseidon-roles lacks ${SALES_ROLE}: the proxy should have answered 403 before this request reached a handler`,
+    );
+  }
+  return { sub, roles };
 }

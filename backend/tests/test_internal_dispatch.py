@@ -26,6 +26,8 @@ test module; re-driving it here would buy a second copy of the same
 assertion, not new coverage.
 """
 
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
@@ -52,7 +54,10 @@ def _settings(**overrides) -> Settings:
     for both their pass and their meaning. Same helper shape as
     tests/test_dev_runner.py."""
     defaults: dict = dict(
-        _env_file=None, database_url=_PLACEHOLDER_DSN, s3_bucket="poseidon-artifacts"
+        _env_file=None,
+        database_url=_PLACEHOLDER_DSN,
+        s3_bucket="poseidon-artifacts",
+        internal_token="test-internal-token",
     )
     defaults.update(overrides)
     return Settings(**defaults)
@@ -64,9 +69,12 @@ def _app(**overrides):
     return create_app(_settings(**overrides))
 
 
+_TOKEN_HEADERS = {"X-Poseidon-Internal-Token": "test-internal-token"}
+
+
 @pytest.fixture()
 def client():
-    return TestClient(_app())
+    return TestClient(_app(), headers=_TOKEN_HEADERS)
 
 
 # ---------------------------------------------------------------------------
@@ -74,19 +82,104 @@ def client():
 # ---------------------------------------------------------------------------
 
 
-def test_the_route_is_mounted_in_every_habitat():
-    """The internal contract is how the web tier dispatches EVERY skill, so
-    unlike ``dev_runner``'s local-only surface it must exist in ``spcs`` and
-    ``ec2`` too -- and the registry it reads off ``app.state`` must exist
-    with it. ``spcs`` + the default ``chat_mode="mock"`` is the combination
-    that used to build no registry at all (the deleted conditional at
-    app.py's discovery call), which would have made this route an
-    ``AttributeError`` on a real deploy."""
-    for deploy_mode in ("local", "spcs", "ec2"):
-        app = _app(deploy_mode=deploy_mode)
-        assert DISPATCH_PATH_TEMPLATE in app.openapi()["paths"], deploy_mode
-        assert hasattr(app.state, "skill_registry"), deploy_mode
-        assert "data_qa.metric_query" in app.state.skill_registry.skill_ids, deploy_mode
+@pytest.mark.parametrize("deploy_mode", ["local", "spcs", "ec2"])
+def test_the_route_is_mounted_in_every_habitat_but_hidden_from_openapi(deploy_mode):
+    app = _app(deploy_mode=deploy_mode)
+    assert DISPATCH_PATH_TEMPLATE not in app.openapi()["paths"], deploy_mode
+    resp = TestClient(app, headers=_TOKEN_HEADERS).post(
+        DISPATCH_PATH_TEMPLATE.format(skill_id="no.such_skill"),
+        json={"args": {}, "identity": _SALES_IDENTITY},
+    )
+    # 404 with the route's OWN detail (naming the skill) proves the route ran;
+    # an unmounted path would be FastAPI's bare {"detail": "Not Found"}.
+    assert resp.status_code == 404, deploy_mode
+    assert "no.such_skill" in resp.json()["detail"], deploy_mode
+
+
+# ---------------------------------------------------------------------------
+# the shared-secret gate (R25) and trace-id adoption
+# ---------------------------------------------------------------------------
+
+
+def _dispatch_body():
+    return {"args": {}, "identity": _SALES_IDENTITY}
+
+
+def test_missing_internal_token_is_401_problem():
+    resp = TestClient(_app()).post(
+        DISPATCH_PATH_TEMPLATE.format(skill_id="no.such_skill"), json=_dispatch_body()
+    )
+    assert resp.status_code == 401
+    assert resp.json() == {
+        "type": "about:blank",
+        "title": "internal token invalid",
+        "detail": "missing or wrong X-Poseidon-Internal-Token header",
+        "status": 401,
+    }
+
+
+def test_wrong_internal_token_is_401():
+    resp = TestClient(_app(), headers={"X-Poseidon-Internal-Token": "nope"}).post(
+        DISPATCH_PATH_TEMPLATE.format(skill_id="no.such_skill"), json=_dispatch_body()
+    )
+    assert resp.status_code == 401
+
+
+def test_unset_internal_token_refuses_every_caller_with_503():
+    resp = TestClient(_app(internal_token=None), headers=_TOKEN_HEADERS).post(
+        DISPATCH_PATH_TEMPLATE.format(skill_id="no.such_skill"), json=_dispatch_body()
+    )
+    assert resp.status_code == 503
+    assert resp.json()["title"] == "internal contract not configured"
+    assert "POSEIDON_INTERNAL_TOKEN" in resp.json()["detail"]
+
+
+def test_blank_internal_token_setting_means_unset():
+    assert _settings(internal_token="   ").internal_token is None
+
+
+def test_internal_token_is_read_from_POSEIDON_INTERNAL_TOKEN(monkeypatch):
+    """P16-R4: ``Settings`` has no ``env_prefix``, so without an explicit
+    ``validation_alias`` this field would bind to the env var
+    ``INTERNAL_TOKEN`` (the field name, uppercased) rather than the actual
+    variable name (``POSEIDON_INTERNAL_TOKEN``) compose/Task 8 set -- every
+    internal route would 503 forever even with the intended variable set."""
+    monkeypatch.setenv("POSEIDON_INTERNAL_TOKEN", "from-env")
+    s = Settings(_env_file=None, database_url=_PLACEHOLDER_DSN, s3_bucket="poseidon-artifacts")
+    assert s.internal_token == "from-env"
+
+
+def test_generic_INTERNAL_TOKEN_env_var_is_ignored(monkeypatch):
+    from poseidon.core.config import Settings
+
+    monkeypatch.delenv("POSEIDON_INTERNAL_TOKEN", raising=False)
+    monkeypatch.setenv("INTERNAL_TOKEN", "should-not-bind")
+    s = Settings(_env_file=None, database_url=_PLACEHOLDER_DSN, s3_bucket="poseidon-artifacts")
+    assert s.internal_token is None
+
+
+def test_internal_routes_adopt_a_well_formed_inbound_trace_id(client):
+    trace = "0" * 31 + "a"
+    resp = client.post(
+        DISPATCH_PATH_TEMPLATE.format(skill_id="no.such_skill"),
+        json=_dispatch_body(),
+        headers={"X-Trace-Id": trace},
+    )
+    assert resp.headers["X-Trace-Id"] == trace
+
+
+def test_internal_routes_ignore_a_malformed_inbound_trace_id(client):
+    resp = client.post(
+        DISPATCH_PATH_TEMPLATE.format(skill_id="no.such_skill"),
+        json=_dispatch_body(),
+        headers={"X-Trace-Id": "not-hex; drop table"},
+    )
+    assert re.fullmatch(r"[0-9a-f]{32}", resp.headers["X-Trace-Id"])
+
+
+def test_public_routes_never_adopt_an_inbound_trace_id():
+    resp = TestClient(_app()).get("/health/live", headers={"X-Trace-Id": "0" * 32})
+    assert resp.headers["X-Trace-Id"] != "0" * 32
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +280,7 @@ def test_a_skills_result_is_passed_through_untouched():
     app.state.skill_registry = _registry_returning(
         SkillResult(ok=True, parts=parts, proof=["ontology:probe"])
     )
-    resp = TestClient(app).post(
+    resp = TestClient(app, headers=_TOKEN_HEADERS).post(
         DISPATCH_PATH_TEMPLATE.format(skill_id=_PROBE_SKILL_ID),
         json={"args": {}, "identity": _SALES_IDENTITY},
     )
@@ -199,6 +292,31 @@ def test_a_skills_result_is_passed_through_untouched():
         "artifacts": [],
         "error": None,
     }
+
+
+# ---------------------------------------------------------------------------
+# the data-client factory (Phase 16 Task 3, R24 follow-up): an unsupported
+# backend is a 501 raised at construction, before dispatch ever runs
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_on_a_backend_without_an_adapter_is_a_501_problem():
+    """P16-R1: ``probe.identity`` is registered here (it is not in ``_app()``'s
+    default registry) so the route's earlier ``registry.get`` succeeds and the
+    guard under test -- building the data client -- is what actually fires.
+    ``seen`` staying empty proves the 501 answers before the skill runs at
+    all, matching ``dev_runner``'s own "never build a client that doesn't
+    exist" contract."""
+    seen: list[object] = []
+    app = _app(data_backend="snowflake")
+    app.state.skill_registry = _registry_recording(seen)
+    resp = TestClient(app, headers=_TOKEN_HEADERS).post(
+        DISPATCH_PATH_TEMPLATE.format(skill_id=_PROBE_SKILL_ID),
+        json={"args": {}, "identity": _SALES_IDENTITY},
+    )
+    assert resp.status_code == 501
+    assert resp.json()["title"] == "backend not implemented"
+    assert seen == []
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +334,7 @@ def test_the_body_identity_reaches_the_skill_not_the_middleware_user():
     seen: list[object] = []
     app = _app()
     app.state.skill_registry = _registry_recording(seen)
-    resp = TestClient(app).post(
+    resp = TestClient(app, headers=_TOKEN_HEADERS).post(
         DISPATCH_PATH_TEMPLATE.format(skill_id=_PROBE_SKILL_ID),
         json={
             "args": {},
@@ -241,7 +359,7 @@ def test_roles_default_to_empty_and_are_a_tuple():
     seen: list[object] = []
     app = _app()
     app.state.skill_registry = _registry_recording(seen)
-    resp = TestClient(app).post(
+    resp = TestClient(app, headers=_TOKEN_HEADERS).post(
         DISPATCH_PATH_TEMPLATE.format(skill_id=_PROBE_SKILL_ID),
         json={"args": {}, "identity": {"sub": "dev|nobody"}},
     )
