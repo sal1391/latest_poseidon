@@ -33,10 +33,10 @@ doc as current. Decisions taken in feature specs used to not propagate; that is 
 - **Cortex via the SQL `COMPLETE` function with emulated tools.** D40 chose the Cortex REST
   Messages endpoint with native tool calling.
 
-## Commands — verified 2026-09-19, copy-pasteable
+## Commands — verified 2026-10-12 (frontend line excepted), copy-pasteable
 
 ```bash
-# Offline Python suite -> 1718 passed, 13 skipped, 119 deselected (~166s)
+# Offline Python suite -> 1911 passed, 13 skipped, 119 deselected (~236s)
 cd backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest \
   -p no:cacheprovider \
   -m 'not pg and not minio and not pdf and not router_live and not research_live'
@@ -53,13 +53,13 @@ cd backend && .venv/Scripts/python.exe -m ruff check .
 cd backend && POSEIDON_UPDATE_CONTRACTS=1 .venv/Scripts/python.exe -B -m pytest \
   -p no:cacheprovider tests/contracts -q
 
-# Frontend -> 171 passed, 18 files; lint clean
+# Frontend -> 171 passed, 18 files; lint clean (not re-run 2026-10-12)
 cd frontend && npm test -- --run
 cd frontend && npm run lint
 
-# Web (Next.js) -> 142 passed, 13 skipped, offline (db-backed files skip without
-# DRIZZLE_DATABASE_URL); 152 passed with it set against the compose `db` service (unverified this
-# pass -- not re-run against a live db)
+# Web (Next.js) -> 149 passed, 13 skipped, offline (db-backed files skip without
+# DRIZZLE_DATABASE_URL); 162 passed with it set against the compose `db` service (reported by an
+# implementer on 2026-10-12, not re-run by the orchestrator)
 cd web && npm test
 cd web && npx tsc --noEmit
 
@@ -73,12 +73,13 @@ cd web && npx drizzle-kit migrate      # reads DRIZZLE_DATABASE_URL
 # Fresh local database after the Phase 16 cutover: docker compose -f infra/docker-compose.yml down -v
 ```
 
-Web (Next.js) suite verified 2026-09-19 (final review): `npm test` → 142 passed, 13 skipped
-offline (18 files: 17 passed, 1 skipped); `npx tsc --noEmit` → clean. The 152-passed
-`DRIZZLE_DATABASE_URL`-set figure is from Phase 16 Task 14 and was not re-run this pass.
+Web (Next.js) suite verified 2026-10-12: `npm test` → 149 passed, 13 skipped offline
+(18 files: 17 passed, 1 skipped); `npx tsc --noEmit` → clean. The 162-passed
+`DRIZZLE_DATABASE_URL`-set figure was reported by an implementer on 2026-10-12 and not re-run by
+the orchestrator. The frontend (Vite) figure above was not re-run 2026-10-12.
 
-**pg suite verified 2026-09-19 (Phase 16 Task 9, against a Drizzle-only database):** 337 passed,
-1 skipped. Supersedes the prior 334 passed / 1 skipped figure, which was the Alembic-era baseline.
+**pg suite verified 2026-10-12 (after the P16-R24 chip-text test fix):** 337 passed, 1 skipped.
+Offline Python suite and `ruff check` were also re-run 2026-10-12.
 
 **CI: there is none.** No `.github/workflows`. Nothing gates a merge except Carlos, so the suites
 above *are* the gate.
@@ -106,6 +107,9 @@ above *are* the gate.
   and restore `poseidon_app`'s cluster-wide membership mid-run; a concurrent test would see
   `SET LOCAL ROLE` fail, and a crash between revoke and restore leaves the shared dev database
   unable to switch role until `upgrade head` is re-run.
+- **The offline run excludes `-m pg`, so a green offline suite does not cover chat output text.**
+  Any change to chips, clarify text or part payloads must also run the pg suite. On 2026-10-12 a
+  chip-text change left `test_live_chat_sse.py` failing on main until the pg suite was run.
 
 ## Frozen surfaces — call them, never change them
 
