@@ -24,6 +24,16 @@ class ParseIssue:
     code: str  # "period_unavailable" | "customer_ambiguous" | "customer_unknown"
     message: str  # human text, pinned in tests
     candidates: tuple[str, ...] = ()
+    # What the issue is ABOUT, independent of ``code``: a port lookup still
+    # reports the ``customer_*`` codes (customer_resolver's documented
+    # vocabulary), so ``kind`` is how a consumer tells a port clarification
+    # from a customer one. "customer" | "port"; period issues keep the
+    # default, which they never read.
+    kind: str = "customer"
+    # The phrase the user typed that failed to resolve ("" when not
+    # recorded). The pipeline sets it on every port issue so a "which
+    # port?" question can quote the user's own words.
+    phrase: str = ""
 
 
 @dataclass(frozen=True)

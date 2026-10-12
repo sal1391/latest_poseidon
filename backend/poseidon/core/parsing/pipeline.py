@@ -9,25 +9,27 @@ Order
 1. ``normalize`` the raw message once. The result is ``ParsedTurn.
    normalized_text`` verbatim -- the record of what the user said -- and
    the base text every later step works from.
-2. Detect a PORT phrase in the normalized text: a "port of X" (strong) or
-   "at X" (weak) cue immediately followed by a TitleCase run (see "Phrase
-   detection" and "Strong and weak port cues" below). Detection only -- no
-   data call yet.
+2. Detect and resolve the PORT: every "port of X" (strong), "at X" and
+   "in X" (weak) cue followed by a TitleCase run or a short lowercase
+   phrase is a candidate, tried in that priority order; the first one that
+   is a claim (it resolves, or its miss keeps an issue) decides the port
+   (see "Phrase detection" and "Strong and weak port cues" below).
 3. Detect a CUSTOMER phrase, in priority order: a quoted span, then a
    "for/about/on X" cue + TitleCase run (scanned over a scratch copy with
-   the port span already blanked out -- see "Why the port span is blanked
-   first"), then -- only if neither found anything -- the carried
+   the claimed port span already blanked out -- see "Why the port span is
+   blanked first"), then -- only if neither found anything -- the carried
    ``slots.customer`` itself, used AS the phrase. An explicit "clear the
    customer"/"reset the customer" phrase short-circuits this entirely.
-4. Resolve whatever was detected (customer, then port) via
-   ``customer_resolver.resolve``, against ``data.list_dimension_values``
-   pools fetched LAZILY -- only when step 2/3 actually found something to
-   resolve, so an ordinary message that names neither never pays for either
-   fetch. Each AUTO-APPLIED resolution's span (tier exact/token, or fuzzy
-   ``>= customer_resolver.AUTO_APPLY_THRESHOLD``) is recorded for masking;
-   a candidate-band or unknown result is not (it produces an issue instead
-   -- see "Masking" below). A carry-derived customer phrase has no span in
-   THIS turn's text, so it is never a masking candidate either way.
+4. Resolve the customer via ``customer_resolver.resolve``. Both dimension
+   pools (``data.list_dimension_values``) are fetched LAZILY and at most
+   once per turn -- the port pool only when step 2 found a candidate
+   phrase, the customer pool only when step 3 found a phrase or step 2's
+   customer-like guard needed it -- so an ordinary message that names
+   neither never pays for either fetch. Each AUTO-APPLIED resolution's span
+   is recorded for masking; a candidate-band or unknown result is not (it
+   produces an issue, or for a weak port cue possibly nothing -- see
+   "Masking" below). A carry-derived customer phrase has no span in THIS
+   turn's text, so it is never a masking candidate either way.
 5. Mask every recorded span out of a working copy of the text (spaces,
    same length, so every other offset stays stable) before period parsing.
 6. Parse periods over the MASKED working text, via
@@ -61,15 +63,20 @@ ordinary sentences.
 Conservative detection (hard requirement, doc 02 section 6: clarification,
 never a guess): an unmatched TitleCase run with NO cue word nearby produces
 NO customer/port and NO issue -- resolution is only ever attempted when a
-cue word (quotes, for/about/on, port of, at) is actually present. This
+cue word (quotes, for/about/on, port of, at, in) is actually present. This
 guards against false "unknown customer" issues on ordinary capitalized
 text (a sentence-initial word, an entity name that is not a cue target).
 The other direction holds too, on purpose: a STRONG cue word (quotes,
 for/about/on, port of) PLUS a TitleCase run that fails to resolve DOES
 produce an issue -- the cue is exactly what turns an ordinary sentence into
-a claim worth checking. The one exception is the weak "at X" port cue,
-which stays silent on a miss for precisely the same reason the no-cue case
-does; see "Strong and weak port cues" below.
+a claim worth checking. The weak "at X"/"in X" port cues are the
+exception: whether their miss is worth a question depends on the phrase;
+see "Strong and weak port cues" below.
+
+Lowercase phrases are a PORT-only detection path. Customer names typed in
+lowercase after "for" are still never detected (``_CUSTOMER_CUE_RE``
+needs a TitleCase run) -- the symmetric change is a parked carry-forward
+(P16-R23 plan, Decision 5), not an oversight.
 
 The run regex is ASCII-only (``[A-Z][\\w'-]*`` -- the ``[A-Z]`` initial
 does not include accented capitals), so a name whose first letter is
@@ -97,28 +104,66 @@ the strongest possible signal and overrides the heuristic.
 
 Strong and weak port cues
 ---------------------------
-The two port cues do NOT carry the same weight, and the difference decides
-whether a miss is worth telling the user about:
+Three cue words, case-insensitive, tried in priority order: "port of"
+(STRONG), then "at" (weak), then "in" (weak). Every occurrence of every cue
+is a candidate when a phrase follows it:
 
-* **"port of X" is a STRONG cue.** Nobody writes "port of" by accident, so
-  the phrase is a claim that a port was named. It always resolves, and a
-  miss always surfaces its issue (``customer_unknown`` on nothing close,
-  ``customer_ambiguous`` with chips on a candidate-band near-miss).
-* **"at X" is a WEAK cue.** "at" is an ordinary English preposition that
-  happens to precede ports often enough to be worth trying. When the phrase
-  does NOT auto-resolve -- ``entity is None``, whether the result was
-  unknown OR candidate-band -- the conclusion is simply that the sentence
-  did not contain a port: NO issue is emitted and no slot is written. "gp
-  at Q3" and "take a look at Northstar Lines" are not failed port lookups;
-  they are sentences with no port in them, and a clarification prompt on
-  either is noise the user never invited. A weak cue that DOES auto-resolve
-  behaves exactly like a strong one (resolved entity, masked span, slot
-  replaced) -- the weakness only ever governs what happens on a miss.
+* **TitleCase phrase**: a capitalised word right after the cue starts a
+  TitleCase run, captured exactly as in "Phrase detection" (a bare month
+  word is skipped).
+* **Lowercase (or mixed) phrase**: otherwise, up to 3 words after the cue,
+  stopping at the first stop token -- any punctuation mark; the words in,
+  on, at, for, of, and, by, during, from, to, vs, versus, with, than, the,
+  a, an, this, last, next, previous, past, ytd, mtd, qtd; a ``q[1-4]``,
+  ``h[1-2]`` or ``fy\\d*`` token; a four-digit year; or a month word. A cue
+  whose FIRST following word is a stop token has no phrase at all ("in the
+  last quarter", "in april 2026", "at the moment"), and when no cue has a
+  phrase the port pool is never fetched.
 
-Mechanically ``_detect_port`` reports which pattern matched and
-``parse_turn`` drops the resolver's issue for a weak-cue miss; nothing else
-about the plan changes, since a non-auto-applied result already masks
-nothing and already leaves the slot UNSET.
+How a phrase resolves (``customer_resolver.resolve``):
+
+* A TitleCase run after "port of" or "at" -- the two paths that predate
+  P16-R23 -- resolves in the default mode: a unique fuzzy match >= 0.80
+  still auto-applies ("at Singpore" applies Singapore, as it always did).
+* Everything newer -- a TitleCase run after "in", and every lowercase
+  phrase after any cue -- resolves in STRICT mode
+  (``auto_apply_fuzzy=False``): only an exact or word-set match applies; a
+  fuzzy match, however strong, asks "did you mean". A lowercase phrase is
+  tried whole, then as its shorter prefixes ("in hong kong today"
+  resolves "hong kong"); the first prefix that matches exact/token wins and
+  only ITS span is masked. If none does, the full phrase's own result
+  (candidates or unknown) stands.
+
+Issue retention -- what a phrase that did NOT resolve does to the turn:
+
+* **Candidates (a near-miss) on ANY cue**: the ``customer_ambiguous``
+  issue is kept, with chips. A phrase that scores within reach of a real
+  port is worth one question ("in singpore", "at Rottervale").
+* **Unknown after "port of"**: kept (``customer_unknown``). Nobody writes
+  "port of" by accident.
+* **Unknown after "at"/"in", TitleCase phrase**: kept ONLY IF the phrase
+  is not period-like (its first word is not a ``q[1-4]``/``h[1-2]``/
+  ``fy\\d*`` token, a four-digit year, a month word, or week, quarter,
+  year, ytd, mtd, qtd) AND it does not match the CUSTOMER pool (exact/
+  token, or fuzzy >= ``CANDIDATE_THRESHOLD``). So "in Narnia" asks which
+  port, while "gp at Q3" (a period) and "take a look at Northstar Lines"
+  (a customer) stay silent. The customer pool is fetched for this check
+  only once every cheaper condition has already passed.
+* **Unknown after "at"/"in", lowercase phrase**: dropped, silently. "in
+  general", "at risk", "in total" are English, not failed port lookups.
+
+Every kept port issue carries ``kind="port"`` and ``phrase=<the full
+captured phrase>`` (``ParseIssue``), so the orchestrator can tell a port
+question from a customer one -- the CODES stay ``customer_*``.
+
+The first candidate that is a CLAIM (it resolved, or its miss kept an
+issue) decides the turn; a silent miss is skipped, so "gross profit at
+risk in singapore" still finds Singapore. Known gaps, accepted for now: a
+capitalised non-port place after a weak cue ("in Europe", "in APAC") asks
+"which port?", because it is neither period-like nor customer-like; and a
+lowercase English word that happens to sit within fuzzy reach of a real
+port name is asked about rather than ignored ("in tons" scores 0.80
+against "Santos" in the seeded pool).
 
 Why the port span is blanked first
 ------------------------------------
@@ -126,11 +171,13 @@ Why the port span is blanked first
 a one-word TitleCase run ("Port", since "of" breaks the run immediately
 after) -- ``resolve("Port", ...)`` would then almost certainly fail
 ("customer_unknown"), turning the flagship phrase ("Top GP customers for
-Port of Singapore in April 2026") into a false clarification. Detecting the
-port span FIRST and blanking it out of a scratch copy used only for
-customer-cue scanning (never the real working text) removes the false
-"Port" candidate regardless of which customer cue word happened to precede
-it, without hardcoding "port" as a stopword inside the customer regex.
+Port of Singapore in April 2026") into a false clarification. Settling the
+port FIRST and blanking its claimed span (cue word through the phrase
+used) out of a scratch copy used only for customer-cue scanning (never the
+real working text) removes the false "Port" candidate regardless of which
+customer cue word happened to precede it, without hardcoding "port" as a
+stopword inside the customer regex. Only a CLAIMED candidate is blanked: a
+silent weak-cue miss leaves the scan text as it was.
 
 Known limitation, quoted spans: the quoted-span branch of
 ``_detect_customer`` runs BEFORE the port blanking is consulted (quotes win
@@ -147,11 +194,14 @@ quotes is unaffected.
 Masking
 -------
 Only an AUTO-APPLIED resolution's span is masked; a candidate-band or
-unknown result is never masked (that phrase's own issue already flags the
-turn for clarification -- a "did you mean...?" is never a silent answer,
-so there is nothing to protect it from). Only the CAPTURED phrase span is
-blanked, not the cue word ("for "/quotes/"port of "/"at ") -- the cue
-carries no period-parsing risk on its own. Documented residual: a customer
+unknown result is never masked -- whether its issue was kept (a "did you
+mean...?" is never a silent answer, so there is nothing to protect it from)
+or dropped as a silent weak-cue miss (a lowercase capture stops before any
+month, year or quarter token, so there is no period text inside it to
+protect). For a lowercase port phrase that resolved on a shorter prefix,
+only that prefix is masked ("hong kong" in "in hong kong today"). Only the
+CAPTURED phrase span is blanked, not the cue word ("for "/quotes/"port of
+"/"at "/"in ") -- the cue carries no period-parsing risk on its own. Documented residual: a customer
 mention that CONTAINS a month word but does not auto-apply (e.g. "May
 Traders", unresolved) is left in the working text untouched, so its
 embedded "May" can still shadow-parse as a bare-month period if a gating
@@ -207,7 +257,7 @@ Customer carry is a detection source, port carry is not
 The brief's phrase-detection heuristic list for the customer step
 explicitly includes "slot carry" as a third, peer source alongside quoted
 spans and the cue-word run; the port step's own heuristic ("port of
-X"/"at X") does not. This module follows that literally: when neither a
+X"/"at X"/"in X") does not. This module follows that literally: when neither a
 quoted span nor a cue-run is found in the text, a customer detection still
 resolves against the CARRIED ``slots.customer`` name (re-run through
 ``resolve`` -- trivially an exact match, since a slot can only ever hold an
@@ -222,7 +272,7 @@ oversight -- disclosed in the task report.
 """
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import date
 
@@ -249,8 +299,60 @@ _TITLECASE_RUN = rf"{_TITLECASE_WORD}(?:\s+{_TITLECASE_WORD})*"
 
 _QUOTED_RE = re.compile(r'"([^"]+)"')
 _CUSTOMER_CUE_RE = re.compile(rf"\b(?i:for|about|on)\s+({_TITLECASE_RUN})\b")
-_PORT_OF_RE = re.compile(rf"\b(?i:port\s+of)\s+({_TITLECASE_RUN})\b")
-_PORT_AT_RE = re.compile(rf"\b(?i:at)\s+({_TITLECASE_RUN})\b")
+
+# Port cues, in priority order (see "Strong and weak port cues"). Each regex
+# matches the cue word plus the whitespace after it; the phrase itself is
+# captured by ``_port_candidates``, because a TitleCase phrase and a
+# lowercase one are captured by different rules.
+_CUE_PORT_OF = "port of"
+_CUE_AT = "at"
+_CUE_IN = "in"
+_PORT_CUES = (
+    (_CUE_PORT_OF, re.compile(r"\b(?i:port\s+of)\s+")),
+    (_CUE_AT, re.compile(r"\b(?i:at)\s+")),
+    (_CUE_IN, re.compile(r"\b(?i:in)\s+")),
+)
+_TITLECASE_RUN_RE = re.compile(rf"({_TITLECASE_RUN})\b")
+
+# A lowercase (or mixed-case) port phrase is at most this many words.
+_LOWERCASE_MAX_WORDS = 3
+# One token of a lowercase capture: a word, or a single punctuation mark
+# (every punctuation mark ends the capture).
+_CAPTURE_TOKEN_RE = re.compile(r"\w[\w'-]*|[^\w\s]")
+# Words that end a lowercase capture (and, as the FIRST word, mean there is
+# no phrase at all -- the port pool is then never fetched).
+_CAPTURE_STOP_WORDS = frozenset(
+    {
+        "in",
+        "on",
+        "at",
+        "for",
+        "of",
+        "and",
+        "by",
+        "during",
+        "from",
+        "to",
+        "vs",
+        "versus",
+        "with",
+        "than",
+        "the",
+        "a",
+        "an",
+        "this",
+        "last",
+        "next",
+        "previous",
+        "past",
+        "ytd",
+        "mtd",
+        "qtd",
+    }
+)
+# Quarter, half, fiscal-year and four-digit-year tokens: period words that
+# end a capture and make a capitalised phrase "period-like".
+_PERIOD_TOKEN_RE = re.compile(r"q[1-4]|h[12]|fy\d*|\d{4}", re.IGNORECASE)
 
 _CLEAR_CUSTOMER_RE = re.compile(r"\b(?i:clear|reset)\s+(?:the\s+)?customer\b")
 _CLEAR_PORT_RE = re.compile(r"\b(?i:clear|reset)\s+(?:the\s+)?port\b")
@@ -291,6 +393,11 @@ _MONTH_WORDS = frozenset(
     }
 )
 
+# First words that make a capitalised weak-cue phrase "period-like" (so an
+# unknown "at Q3"/"in FY2026" is a period, never a "which port?" question),
+# on top of every ``_PERIOD_TOKEN_RE`` match and every month word.
+_PERIOD_LIKE_WORDS = _MONTH_WORDS | frozenset({"week", "quarter", "year", "ytd", "mtd", "qtd"})
+
 
 @dataclass(frozen=True)
 class _Detected:
@@ -306,6 +413,22 @@ class _Detected:
 
     phrase: str
     span: tuple[int, int] | None
+
+
+@dataclass(frozen=True)
+class _PortCandidate:
+    """One cue + phrase pair the port step will try to resolve.
+
+    ``options`` is the phrase to resolve, longest first: one entry for a
+    TitleCase run, and for a lowercase capture of N words the N-, (N-1)-,
+    ..., 1-word prefixes (see "Strong and weak port cues"). ``options[0]``
+    is always the full captured phrase.
+    """
+
+    cue: str  # _CUE_PORT_OF | _CUE_AT | _CUE_IN
+    cue_start: int
+    capitalised: bool
+    options: tuple[_Detected, ...]
 
 
 @dataclass(frozen=True)
@@ -337,8 +460,7 @@ def _titlecase_run_match(
     """The first match of ``pattern`` in ``text`` whose captured TitleCase
     run is not a bare month word -- the ``_Detected`` (captured phrase only,
     for resolution/masking) alongside the raw ``re.Match`` (whole cue+run
-    span, for callers that need to exclude more than just the captured
-    name -- see ``_detect_port``).
+    span, for callers that need more than just the captured name).
 
     A rejected (bare-month) match does not end the scan -- ``finditer``
     tries the next occurrence, mirroring ``period_parser._parse_side``'s
@@ -362,26 +484,143 @@ def _quoted_match(text: str) -> _Detected | None:
     return _Detected(match.group(1), (match.start(1), match.end(1)))
 
 
-def _detect_port(text: str) -> tuple[_Detected, tuple[int, int], bool] | None:
-    """ "port of X" first, then "at X" -- the brief's own cue ordering.
+def _is_capture_stop(token: str) -> bool:
+    """Whether ``token`` ends a lowercase capture: any punctuation mark, a
+    stop word, a month word, or a quarter/half/fiscal/year token."""
+    if not token[0].isalnum() and token[0] != "_":
+        return True
+    folded = token.casefold()
+    return (
+        folded in _CAPTURE_STOP_WORDS
+        or folded in _MONTH_WORDS
+        or _PERIOD_TOKEN_RE.fullmatch(folded) is not None
+    )
 
-    Returns the detected phrase (captured name only), the WHOLE cue+run
-    match span, and whether the cue was the STRONG one ("port of") -- see
-    the module docstring's "Strong and weak port cues" for what the last
-    flag decides.
 
-    The span is the whole match, not just the captured name: it is what
-    ``_detect_customer`` blanks out of its scratch copy, and it must cover
-    the cue word too ("Port of"), or "for Port of Singapore" would still
-    read as customer cue "for" + a false one-word TitleCase run "Port"; see
-    the module docstring's "Why the port span is blanked first".
+def _lowercase_options(text: str, start: int) -> tuple[_Detected, ...]:
+    """The lowercase capture at ``start`` as its prefixes, longest first --
+    up to ``_LOWERCASE_MAX_WORDS`` words, stopping at the first stop token.
+    Empty when the very first token is a stop token."""
+    words: list[re.Match[str]] = []
+    for token in _CAPTURE_TOKEN_RE.finditer(text, start):
+        if _is_capture_stop(token.group(0)):
+            break
+        words.append(token)
+        if len(words) == _LOWERCASE_MAX_WORDS:
+            break
+    phrase_start = words[0].start() if words else start
+    return tuple(
+        _Detected(text[phrase_start : words[n - 1].end()], (phrase_start, words[n - 1].end()))
+        for n in range(len(words), 0, -1)
+    )
+
+
+def _port_candidates(text: str) -> list[_PortCandidate]:
+    """Every cue + phrase pair in ``text``, in priority order: all "port of"
+    occurrences, then all "at", then all "in", each in text order.
+
+    A capitalised word after the cue starts a TitleCase run (a bare month
+    word is skipped, see "Phrase detection"); anything else starts a
+    lowercase capture. A cue with no phrase after it is no candidate at all.
+    Detection only -- nothing here touches a ``DataClient``.
     """
-    for pattern in (_PORT_OF_RE, _PORT_AT_RE):
-        found = _titlecase_run_match(pattern, text)
-        if found is not None:
-            detected, match = found
-            return detected, (match.start(0), match.end(0)), pattern is _PORT_OF_RE
-    return None
+    candidates: list[_PortCandidate] = []
+    for cue, pattern in _PORT_CUES:
+        for match in pattern.finditer(text):
+            pos = match.end()
+            if pos >= len(text):
+                continue
+            if "A" <= text[pos] <= "Z":
+                run = _TITLECASE_RUN_RE.match(text, pos)
+                if run is None or _is_bare_month_word(run.group(1)):
+                    continue
+                options = (_Detected(run.group(1), (run.start(1), run.end(1))),)
+                candidates.append(_PortCandidate(cue, match.start(), True, options))
+                continue
+            options = _lowercase_options(text, pos)
+            if options:
+                candidates.append(_PortCandidate(cue, match.start(), False, options))
+    return candidates
+
+
+def _is_period_like(phrase: str) -> bool:
+    """Whether ``phrase``'s first word reads as a period ("Q3", "FY2026",
+    "2026", "April ...", "Quarter ...") rather than a place name."""
+    first = phrase.split(" ", 1)[0].casefold()
+    return first in _PERIOD_LIKE_WORDS or _PERIOD_TOKEN_RE.fullmatch(first) is not None
+
+
+def _is_customer_like(phrase: str, customer_values: Sequence[str]) -> bool:
+    """Whether ``phrase`` names (or nearly names) a customer: an exact/token
+    hit, or any fuzzy score >= ``CANDIDATE_THRESHOLD``."""
+    resolution = resolve(phrase, customer_values, _KIND_CUSTOMER)
+    return resolution.entity is not None or bool(resolution.candidates)
+
+
+def _keeps_port_issue(
+    candidate: _PortCandidate,
+    candidates_found: bool,
+    customer_pool: Callable[[], Sequence[str]],
+) -> bool:
+    """The issue-retention rule for a port phrase that did not resolve; see
+    "Strong and weak port cues". The customer pool is fetched only when
+    every cheaper condition has already passed."""
+    if candidates_found or candidate.cue == _CUE_PORT_OF:
+        return True
+    if not candidate.capitalised:
+        return False
+    phrase = candidate.options[0].phrase
+    if _is_period_like(phrase):
+        return False
+    return not _is_customer_like(phrase, customer_pool())
+
+
+def _plan_port(
+    candidates: Sequence[_PortCandidate],
+    port_pool: Callable[[], Sequence[str]],
+    customer_pool: Callable[[], Sequence[str]],
+) -> tuple[_SlotPlan, tuple[int, int] | None]:
+    """The port slot's plan plus the span ``_detect_customer`` must blank.
+
+    Candidates are tried in priority order; the first one that is a CLAIM --
+    it resolves, or its miss keeps an issue -- decides the turn. A silent
+    miss ("in total", "at Q3") is skipped so a later real port is still
+    found. The returned span covers the cue word through the phrase used
+    (see "Why the port span is blanked first"); ``None`` when nothing was
+    claimed.
+    """
+    for candidate in candidates:
+        # Strict for everything except the two pre-P16-R23 paths (a
+        # TitleCase run after "port of" or "at"), which keep auto-applying a
+        # unique fuzzy match.
+        strict = candidate.cue == _CUE_IN or not candidate.capitalised
+        values = port_pool()
+        # Longest first; a shorter prefix only ever wins on exact/token
+        # (strict mode never auto-applies fuzzy). Lazy, so a full-phrase
+        # hit never resolves its prefixes.
+        results = (
+            (option, resolve(option.phrase, values, _KIND_PORT, auto_apply_fuzzy=not strict))
+            for option in candidate.options
+        )
+        full = candidate.options[0]
+        full_result = None
+        for option, result in results:
+            if result.entity is not None:
+                plan = _SlotPlan(
+                    entity=result.entity,
+                    mask_span=option.span,
+                    issue=None,
+                    slot_update=result.entity.value,
+                )
+                return plan, (candidate.cue_start, option.span[1])
+            full_result = full_result or result
+        if full_result is None or full_result.issue is None:  # pragma: no cover - resolve contract
+            continue
+        if _keeps_port_issue(candidate, bool(full_result.candidates), customer_pool):
+            issue = replace(full_result.issue, kind=_KIND_PORT, phrase=full.phrase)
+            plan = _SlotPlan(entity=None, mask_span=None, issue=issue, slot_update=UNSET)
+            return plan, (candidate.cue_start, full.span[1])
+    return _SlotPlan(entity=None, mask_span=None, issue=None, slot_update=UNSET), None
 
 
 def _blank(text: str, span: tuple[int, int]) -> str:
@@ -398,8 +637,8 @@ def _detect_customer(
     docstring's "Phrase detection" and "Customer carry is a detection
     source, port carry is not" sections.
 
-    ``port_exclude_span`` is the port detection's WHOLE cue+run span (see
-    ``_detect_port``), blanked out of a scratch copy before the cue-run scan
+    ``port_exclude_span`` is the port step's WHOLE cue+phrase span (see
+    ``_plan_port``), blanked out of a scratch copy before the cue-run scan
     only -- it never touches ``text`` itself, so the real working text (and
     any span this function returns) is unaffected.
     """
@@ -446,6 +685,19 @@ def _plan_resolution(
     return _SlotPlan(entity=None, mask_span=None, issue=resolution.issue, slot_update=UNSET)
 
 
+def _lazy_pool(data: DataClient, entity: str, column: str) -> Callable[[], Sequence[str]]:
+    """A zero-argument fetcher for one dimension pool that calls the
+    ``DataClient`` at most once, and only if somebody asks."""
+    cache: list[Sequence[str]] = []
+
+    def fetch() -> Sequence[str]:
+        if not cache:
+            cache.append(data.list_dimension_values(entity, column))
+        return cache[0]
+
+    return fetch
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -465,33 +717,28 @@ def parse_turn(
     ``message`` is raw user text -- this function normalizes it itself.
     """
     normalized = normalize(message)
+    customer_pool = _lazy_pool(data, entity, _CUST_NM)
+    port_pool = _lazy_pool(data, entity, _LOC_NM)
 
+    # Port first: its claimed span is what the customer cue scan blanks.
     port_clear = _CLEAR_PORT_RE.search(normalized) is not None
-    port_found = None if port_clear else _detect_port(normalized)
-    port_detected = port_found[0] if port_found is not None else None
-    port_exclude_span = port_found[1] if port_found is not None else None
-    port_cue_is_weak = port_found is not None and not port_found[2]
+    if port_clear:
+        port_plan = _plan_resolution(None, True, (), _KIND_PORT)
+        port_exclude_span = None
+    else:
+        port_plan, port_exclude_span = _plan_port(
+            _port_candidates(normalized), port_pool, customer_pool
+        )
 
     customer_clear = _CLEAR_CUSTOMER_RE.search(normalized) is not None
     customer_detected = (
         None if customer_clear else _detect_customer(normalized, port_exclude_span, slots)
     )
 
-    customer_values = (
-        data.list_dimension_values(entity, _CUST_NM) if customer_detected is not None else ()
-    )
+    customer_values = customer_pool() if customer_detected is not None else ()
     customer_plan = _plan_resolution(
         customer_detected, customer_clear, customer_values, _KIND_CUSTOMER
     )
-
-    port_values = data.list_dimension_values(entity, _LOC_NM) if port_detected is not None else ()
-    port_plan = _plan_resolution(port_detected, port_clear, port_values, _KIND_PORT)
-    # A WEAK cue that did not auto-resolve made no claim to check -- drop the
-    # resolver's issue (see "Strong and weak port cues"). Everything else the
-    # plan holds stays as it is: no entity, no mask, and slot_update already
-    # UNSET, so nothing is written either way.
-    if port_cue_is_weak and port_plan.entity is None:
-        port_plan = replace(port_plan, issue=None)
 
     working_text = normalized
     for span in (customer_plan.mask_span, port_plan.mask_span):

@@ -72,6 +72,16 @@ Both sides of every tier-3 comparison are casefolded before scoring so tier
 3 stays case-insensitive like tiers 1 and 2; see ``_score`` for exactly
 where that happens and why it is its own function.
 
+Strict mode (P16-R23): ``resolve(..., auto_apply_fuzzy=False)`` keeps tiers
+1 and 2 exactly as above but never auto-applies tier 3. A fuzzy best score
+>= ``AUTO_APPLY_THRESHOLD`` -- even a UNIQUE one -- returns the same
+``customer_ambiguous`` result as the candidate band (values clearing
+``CANDIDATE_THRESHOLD``, best-first, capped at 3); a TIE at that score
+keeps the tie message above, "(and N more)" tail included. The pipeline uses it for
+port phrases found on its newer, looser detection paths (the "in" cue and
+lowercase phrases), where a typo is a question, not a fact. The default
+(``True``) is unchanged.
+
 ``kind`` (``"customer"`` or ``"port"``) changes only the
 ``customer_unknown`` message's wording ("no customer matching ..." vs.
 "no port matching ..."); the ``customer_ambiguous`` message never names a
@@ -189,12 +199,33 @@ def _unknown(phrase: str, kind: str) -> Resolution:
     return Resolution(entity=None, candidates=(), issue=issue)
 
 
+def _candidates(scored: Sequence[tuple[float, str]]) -> Resolution:
+    """The "did you mean...?" result for a best-first ``scored`` list.
+
+    Filters to the floor BEFORE the cap: a "did you mean...?" chip is
+    itself a claim that a value is plausible, so a weak runner-up under
+    ``CANDIDATE_THRESHOLD`` must not ride along just to pad the list out to
+    3 (see the module docstring). ``scored`` is already ordered best-first,
+    so filtering preserves that order.
+    """
+    above_floor = [value for score, value in scored if score >= CANDIDATE_THRESHOLD]
+    top = tuple(above_floor[:_MAX_CANDIDATES])
+    issue = ParseIssue(_ISSUE_AMBIGUOUS, f"did you mean one of: {', '.join(top)}?", top)
+    return Resolution(entity=None, candidates=top, issue=issue)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 
-def resolve(phrase: str, values: Sequence[str], kind: str = "customer") -> Resolution:
+def resolve(
+    phrase: str,
+    values: Sequence[str],
+    kind: str = "customer",
+    *,
+    auto_apply_fuzzy: bool = True,
+) -> Resolution:
     """Resolve ``phrase`` to one of ``values`` under the three-tier contract
     described in the module docstring: exact, then token-set, then fuzzy.
 
@@ -204,6 +235,10 @@ def resolve(phrase: str, values: Sequence[str], kind: str = "customer") -> Resol
     ``kind`` (``"customer"`` or ``"port"``) only changes the
     ``customer_unknown`` message's wording -- see the module docstring for
     why the issue CODE never becomes ``port_unknown``.
+
+    ``auto_apply_fuzzy=False`` is STRICT mode (see the module docstring's
+    "Strict mode"): exact and token still resolve, but a fuzzy best score
+    that would auto-apply asks instead.
     """
     phrase_cf = phrase.casefold()
 
@@ -238,6 +273,12 @@ def resolve(phrase: str, values: Sequence[str], kind: str = "customer") -> Resol
         # alphabetical.
         tied = [value for score, value in scored if score == best_score]
         if len(tied) == 1:
+            if not auto_apply_fuzzy:
+                # Strict mode: even a unique high score is only a
+                # suggestion. The chips follow the candidate band's own
+                # floor-then-cap rule, so a strong match surfaces alone
+                # rather than padded with weak ones.
+                return _candidates(scored)
             return _resolved(best_value, phrase, best_score, _TIER_FUZZY)
         # Two or more values share the best auto-apply score (typically a
         # short name that is a word-subset of several values, which
@@ -250,14 +291,6 @@ def resolve(phrase: str, values: Sequence[str], kind: str = "customer") -> Resol
         return Resolution(entity=None, candidates=top, issue=issue)
 
     if best_score >= CANDIDATE_THRESHOLD:
-        # Filter to the floor BEFORE the cap: a "did you mean...?" chip is
-        # itself a claim that a value is plausible, so a weak runner-up
-        # under CANDIDATE_THRESHOLD must not ride along just to pad the
-        # list out to 3 (see the module docstring). scored is already
-        # ordered best-first, so filtering preserves that order.
-        above_floor = [value for score, value in scored if score >= CANDIDATE_THRESHOLD]
-        top = tuple(above_floor[:_MAX_CANDIDATES])
-        issue = ParseIssue(_ISSUE_AMBIGUOUS, f"did you mean one of: {', '.join(top)}?", top)
-        return Resolution(entity=None, candidates=top, issue=issue)
+        return _candidates(scored)
 
     return _unknown(phrase, kind)

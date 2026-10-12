@@ -21,9 +21,10 @@ Four things are pinned here:
   conservative detection rule in BOTH directions (an unmatched TitleCase run
   with no cue word never produces an issue, even when it exactly names a
   real customer; a STRONG cue word plus a run that fails to resolve DOES),
-  the strong/weak port cue split (the same missing port surfaces an issue
-  after "port of" and stays silent after "at", for both the unknown and the
-  candidate-band outcome), the ``period_b`` slot clearing when a follow-up
+  the port cue rules (P16-R23: "port of", "at" and "in" cues, lowercase
+  port phrases, strict "did you mean" for the new detection paths, and the
+  period-like/customer-like guards that keep ordinary English after "at"/
+  "in" silent), the ``period_b`` slot clearing when a follow-up
   turn asks no comparison, and multi-issue ordering (customer, then port,
   then period).
 * ``@pytest.mark.pg`` goldens -- the resolver and the full pipeline against
@@ -573,16 +574,26 @@ PIPELINE_CASES = [
             ConversationSlots(period_a=date(2026, 4, 1)),
             period_a=_month(2026, 4),
             hints=(CandidateSkill(METRIC_QUERY, 1.0),),
-            issues=(ParseIssue("customer_unknown", "no port matching 'Nowhereland'"),),
+            issues=(
+                ParseIssue(
+                    "customer_unknown",
+                    "no port matching 'Nowhereland'",
+                    kind="port",
+                    phrase="Nowhereland",
+                ),
+            ),
         ),
     ),
     PipelineCase(
-        # WEAK port cue ("at X") resolving to nothing: same phrase, same
-        # empty pool, but "at" is an ordinary English preposition, so a miss
-        # means the sentence simply did not name a port -- silence, not a
-        # clarification the user never invited (see pipeline.py's "Strong
-        # and weak port cues").
-        "port_cue_at_unknown_value_is_silent",
+        # WEAK port cue ("at X") resolving to nothing (P16-R23 revision):
+        # a CAPITALISED phrase that is neither period-like nor customer-like
+        # now asks "which port?" -- the user typed a proper name after "at"
+        # and it named no port we know. Before P16-R23 this was silent. The
+        # ordinary-English protections ("gp at Q3", "take a look at
+        # Northstar Lines") stay silent through the period-like and
+        # customer-like guards instead (see pipeline.py's "Strong and weak
+        # port cues").
+        "port_cue_at_unknown_capitalised_value_asks",
         "gp at Nowhereland in april 2026",
         NO_SLOTS,
         _turn(
@@ -590,6 +601,14 @@ PIPELINE_CASES = [
             ConversationSlots(period_a=date(2026, 4, 1)),
             period_a=_month(2026, 4),
             hints=(CandidateSkill(METRIC_QUERY, 1.0),),
+            issues=(
+                ParseIssue(
+                    "customer_unknown",
+                    "no port matching 'Nowhereland'",
+                    kind="port",
+                    phrase="Nowhereland",
+                ),
+            ),
         ),
     ),
     PipelineCase(
@@ -605,15 +624,22 @@ PIPELINE_CASES = [
             period_a=_month(2026, 4),
             hints=(CandidateSkill(METRIC_QUERY, 1.0),),
             issues=(
-                ParseIssue("customer_ambiguous", "did you mean one of: Rotterdam?", ("Rotterdam",)),
+                ParseIssue(
+                    "customer_ambiguous",
+                    "did you mean one of: Rotterdam?",
+                    ("Rotterdam",),
+                    kind="port",
+                    phrase="Rottervale",
+                ),
             ),
         ),
     ),
     PipelineCase(
-        # Weak cue, same candidate band: the weak-cue rule covers the WHOLE
-        # not-auto-resolved space, band as well as unknown -- "at" plus a
-        # near-miss is still not a port claim.
-        "port_cue_at_candidate_band_is_silent",
+        # Weak cue, same candidate band (P16-R23 revision): a near-miss on
+        # ANY cue keeps its "did you mean" issue -- a phrase that scores
+        # within reach of a real port is worth one question. Before P16-R23
+        # this was silent.
+        "port_cue_at_candidate_band_asks",
         "gp at Rottervale in april 2026",
         NO_SLOTS,
         _turn(
@@ -621,6 +647,15 @@ PIPELINE_CASES = [
             ConversationSlots(period_a=date(2026, 4, 1)),
             period_a=_month(2026, 4),
             hints=(CandidateSkill(METRIC_QUERY, 1.0),),
+            issues=(
+                ParseIssue(
+                    "customer_ambiguous",
+                    "did you mean one of: Rotterdam?",
+                    ("Rotterdam",),
+                    kind="port",
+                    phrase="Rottervale",
+                ),
+            ),
         ),
     ),
     PipelineCase(
@@ -737,7 +772,12 @@ PIPELINE_CASES = [
                     "did you mean one of: Acme Corporation?",
                     ("Acme Corporation",),
                 ),
-                ParseIssue("customer_unknown", "no port matching 'Nowhereland'"),
+                ParseIssue(
+                    "customer_unknown",
+                    "no port matching 'Nowhereland'",
+                    kind="port",
+                    phrase="Nowhereland",
+                ),
                 ParseIssue("period_unavailable", _UNAVAILABLE_2019_04),
             ),
         ),
@@ -915,6 +955,281 @@ def test_parse_turn_mode_region_topic_pass_through_carry_untouched():
     assert result.slots.region == "APAC"
     assert result.slots.topic == "pricing"
     assert result.slots.pass_through == (("Top GP customer", "Northstar Lines"),)
+
+
+# ===========================================================================
+# P16-R23: the "in" port cue, lowercase port phrases, strict "did you mean"
+# on the new detection paths, and the guards that keep ordinary English
+# after "at"/"in" silent. See pipeline.py's "Strong and weak port cues".
+# ===========================================================================
+
+# Ports some rows need beyond the shared PORTS constant -- passed per test
+# via FakeDataClient(ports=...) rather than widening the shared fixture.
+_WIDE_PORTS = (*PORTS, "New Orleans", "Las Palmas", "Jebel Ali", "Hong Kong")
+
+
+def _wide_client() -> FakeDataClient:
+    return FakeDataClient(ports=_WIDE_PORTS)
+
+
+def _port_issues(parsed: ParsedTurn) -> list[ParseIssue]:
+    return [issue for issue in parsed.issues if issue.kind == "port"]
+
+
+class PortCueCase(NamedTuple):
+    message: str
+    without_place: str  # the same message with the cue + place text removed
+    expected: str  # expected port value, first candidate, or unknown phrase
+
+
+_APPLIES_CASES = [
+    PortCueCase(
+        "top customers by gross profit in Singapore in April 2026",
+        "top customers by gross profit in April 2026",
+        "Singapore",
+    ),
+    PortCueCase(
+        "top customers by gross profit in singapore in April 2026",
+        "top customers by gross profit in April 2026",
+        "Singapore",
+    ),
+    PortCueCase(
+        "gross profit at singapore in April 2026", "gross profit in April 2026", "Singapore"
+    ),
+    PortCueCase(
+        "gross profit in new orleans in April 2026", "gross profit in April 2026", "New Orleans"
+    ),
+    PortCueCase(
+        "gross profit in Jebel Ali in April 2026", "gross profit in April 2026", "Jebel Ali"
+    ),
+    PortCueCase(
+        "gross profit in hong kong in April 2026", "gross profit in April 2026", "Hong Kong"
+    ),
+    PortCueCase(
+        "gross profit at Las Palmas in April 2026", "gross profit in April 2026", "Las Palmas"
+    ),
+    PortCueCase(
+        "gross profit in jebel ali in April 2026", "gross profit in April 2026", "Jebel Ali"
+    ),
+    PortCueCase(
+        "gross profit in New Orleans in April 2026", "gross profit in April 2026", "New Orleans"
+    ),
+    # Regressions: the two pre-existing capitalised paths.
+    PortCueCase(
+        "gross profit for Port of Singapore in April 2026",
+        "gross profit in April 2026",
+        "Singapore",
+    ),
+    PortCueCase(
+        "gross profit at Singapore in April 2026", "gross profit in April 2026", "Singapore"
+    ),
+]
+
+
+@pytest.mark.parametrize("case", _APPLIES_CASES, ids=[c.message for c in _APPLIES_CASES])
+def test_port_cue_applies_the_port(case: PortCueCase):
+    parsed = parse_turn(case.message, NO_SLOTS, REF, _wide_client())
+    baseline = parse_turn(case.without_place, NO_SLOTS, REF, _wide_client())
+
+    assert parsed.port is not None
+    assert parsed.port.value == case.expected
+    assert parsed.slots.port == case.expected
+    assert parsed.issues == ()
+    assert parsed.period_a == baseline.period_a
+    assert parsed.period_a == _month(2026, 4)
+
+
+_ASKS_CASES = [
+    PortCueCase(
+        "gross profit in singpore in April 2026", "gross profit in April 2026", "Singapore"
+    ),
+    PortCueCase(
+        "gross profit lifted at signpore in April 2026",
+        "gross profit lifted in April 2026",
+        "Singapore",
+    ),
+    PortCueCase(
+        "gross profit in Singpore in April 2026", "gross profit in April 2026", "Singapore"
+    ),
+]
+
+
+@pytest.mark.parametrize("case", _ASKS_CASES, ids=[c.message for c in _ASKS_CASES])
+def test_port_cue_fuzzy_match_on_a_new_path_asks_did_you_mean(case: PortCueCase):
+    parsed = parse_turn(case.message, NO_SLOTS, REF, _wide_client())
+    baseline = parse_turn(case.without_place, NO_SLOTS, REF, _wide_client())
+
+    assert parsed.port is None
+    assert parsed.slots.port is None  # UNSET over empty slots: never written
+    assert len(parsed.issues) == 1
+    (issue,) = parsed.issues
+    assert issue.code == "customer_ambiguous"
+    assert issue.kind == "port"
+    assert issue.candidates[0] == case.expected
+    assert issue.phrase.casefold() in case.message.casefold()
+    assert parsed.period_a == baseline.period_a
+
+
+def test_capitalised_at_fuzzy_match_keeps_the_legacy_auto_apply():
+    """Decision 3: the pre-existing capitalised "at X" path is unchanged --
+    a unique fuzzy match >= 0.80 still applies. Pinned from the pre-change
+    code's actual output."""
+    parsed = parse_turn("gross profit at Singpore in April 2026", NO_SLOTS, REF, _wide_client())
+
+    assert parsed.port == ResolvedEntity(
+        value="Singapore", source_text="Singpore", confidence=0.9411764705882354, tier="fuzzy"
+    )
+    assert parsed.issues == ()
+    assert parsed.period_a == _month(2026, 4)
+
+
+_UNKNOWN_CASES = [
+    PortCueCase("gross profit in Narnia in April 2026", "gross profit in April 2026", "Narnia"),
+    PortCueCase(
+        "gross profit for Port of Atlantis in April 2026",
+        "gross profit in April 2026",
+        "Atlantis",
+    ),
+]
+
+
+@pytest.mark.parametrize("case", _UNKNOWN_CASES, ids=[c.message for c in _UNKNOWN_CASES])
+def test_port_cue_unknown_place_asks_which_port(case: PortCueCase):
+    parsed = parse_turn(case.message, NO_SLOTS, REF, _wide_client())
+    baseline = parse_turn(case.without_place, NO_SLOTS, REF, _wide_client())
+
+    assert parsed.port is None
+    assert len(parsed.issues) == 1
+    (issue,) = parsed.issues
+    assert issue.code == "customer_unknown"
+    assert issue.kind == "port"
+    assert issue.phrase == case.expected
+    assert issue.candidates == ()
+    assert parsed.period_a == baseline.period_a
+
+
+class SilentCase(NamedTuple):
+    message: str
+    without_place: str
+
+
+_SILENT_CASES = [
+    SilentCase("gross profit in total in April 2026", "gross profit in April 2026"),
+    SilentCase(
+        "show me the numbers in general for April 2026", "show me the numbers for April 2026"
+    ),
+    SilentCase("gross profit in detail for April 2026", "gross profit for April 2026"),
+    SilentCase("what is our exposure at risk in April 2026", "what is our exposure in April 2026"),
+    SilentCase("gross profit at the moment in April 2026", "gross profit in April 2026"),
+    SilentCase("gp at Q3", "gp Q3"),
+    SilentCase("gross profit in Q1 2026", "gross profit Q1 2026"),
+    SilentCase("gross profit in FY2026", "gross profit FY2026"),
+    SilentCase("gross profit in 2026", "gross profit 2026"),
+    SilentCase("gross profit in the last quarter", "gross profit the last quarter"),
+    SilentCase("gross profit in H2 2026", "gross profit H2 2026"),
+    SilentCase("take a look at Northstar Lines", "take a look"),
+    # A customer, not a port: "Meridian Marine" scores ~0.70 against the
+    # pool's "Meridian Shipping", so the customer-like guard holds.
+    SilentCase("gross profit at Meridian Marine in April 2026", "gross profit in April 2026"),
+]
+
+
+@pytest.mark.parametrize("case", _SILENT_CASES, ids=[c.message for c in _SILENT_CASES])
+def test_ordinary_english_after_a_weak_cue_stays_silent(case: SilentCase):
+    parsed = parse_turn(case.message, NO_SLOTS, REF, _wide_client())
+    baseline = parse_turn(case.without_place, NO_SLOTS, REF, _wide_client())
+
+    assert _port_issues(parsed) == []
+    assert parsed.port is None
+    assert parsed.period_a == baseline.period_a
+
+
+def _sweep_messages() -> list[tuple[str, str, ConversationSlots]]:
+    """Every pipeline-table message whose expectation names no port issue,
+    plus every period-parser table message (cheaply importable)."""
+    from tests.test_parsing_periods import CASES as PERIOD_CASES
+
+    rows = [
+        (f"pipeline:{case.id}", case.message, case.slots)
+        for case in PIPELINE_CASES
+        if not any(issue.kind == "port" for issue in case.expected.issues)
+    ]
+    rows += [(f"periods:{case.id}", case.text, case.slots) for case in PERIOD_CASES]
+    return rows
+
+
+_SWEEP = _sweep_messages()
+
+
+@pytest.mark.parametrize("row", _SWEEP, ids=[row[0] for row in _SWEEP])
+def test_sweep_existing_messages_raise_no_port_issue(row):
+    _, message, slots = row
+    for client in (FakeDataClient(), _wide_client()):
+        parsed = parse_turn(message, slots, REF, client)
+        assert _port_issues(parsed) == []
+
+
+def test_customer_issues_keep_the_customer_kind():
+    parsed = parse_turn("gp for Acme Corp in april 2026", NO_SLOTS, REF, FakeDataClient())
+    (issue,) = parsed.issues
+    assert issue.kind == "customer"
+
+
+def test_no_candidate_phrase_never_fetches_the_port_pool():
+    client = FakeDataClient()
+    parse_turn("gross profit in the last quarter", NO_SLOTS, REF, client)
+    assert ("list_dimension_values", "LOC_NM") not in client.calls
+
+
+def test_lowercase_port_phrase_fetches_the_port_pool_exactly_once():
+    client = FakeDataClient()
+    parse_turn("gross profit in singapore in April 2026", NO_SLOTS, REF, client)
+    assert client.calls.count(("list_dimension_values", "LOC_NM")) == 1
+
+
+def test_lowercase_prefix_retry_resolves_the_shorter_prefix_with_one_fetch():
+    """A 3-word capture that only resolves on a shorter prefix still costs
+    one pool fetch, not one per prefix tried -- and reads no customer."""
+    client = _wide_client()
+    parsed = parse_turn("gross profit in hong kong today please", NO_SLOTS, REF, client)
+
+    assert parsed.port is not None
+    assert parsed.port.value == "Hong Kong"
+    assert parsed.port.source_text == "hong kong"
+    assert parsed.customer is None
+    assert parsed.issues == ()
+    assert client.calls.count(("list_dimension_values", "LOC_NM")) == 1
+
+
+def test_a_silent_weak_cue_miss_does_not_hide_a_later_port():
+    """ "at risk" is the first candidate by cue priority and stays silent;
+    the scan moves on to "in singapore" rather than stopping."""
+    parsed = parse_turn("gross profit at risk in singapore", NO_SLOTS, REF, FakeDataClient())
+
+    assert parsed.port is not None
+    assert parsed.port.value == "Singapore"
+    assert parsed.issues == ()
+
+
+def test_port_chip_text_round_trips_to_the_port():
+    """What a Task 2 port chip sends back: the bare chip label."""
+    parsed = parse_turn("Port of Singapore", NO_SLOTS, REF, FakeDataClient())
+
+    assert parsed.port is not None
+    assert parsed.port.value == "Singapore"
+    assert parsed.customer is None
+    assert parsed.issues == ()
+
+
+def test_lowercase_port_of_cue_uses_strict_mode():
+    parsed = parse_turn("gp for port of singpore in april 2026", NO_SLOTS, REF, FakeDataClient())
+
+    assert parsed.port is None
+    (issue,) = parsed.issues
+    assert issue.code == "customer_ambiguous"
+    assert issue.kind == "port"
+    assert issue.phrase == "singpore"
+    assert issue.candidates == ("Singapore",)
 
 
 # ===========================================================================

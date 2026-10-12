@@ -610,3 +610,91 @@ def test_tie_at_the_auto_apply_threshold_asks_not_only_at_a_perfect_score(monkey
 def test_tied_ambiguity_is_order_independent():
     values = (*MERIDIANS, "Northstar Lines")
     assert resolve("meridian", values) == resolve("meridian", tuple(reversed(values)))
+
+
+# ---------------------------------------------------------------------------
+# auto_apply_fuzzy=False (strict mode, P16-R23): only exact/token apply on
+# their own; a fuzzy best score that would auto-apply asks instead.
+# ---------------------------------------------------------------------------
+
+
+def test_strict_mode_unique_high_fuzzy_match_asks_instead_of_applying():
+    # "singpore" vs "Singapore" scores ~0.94 -- a UNIQUE auto-apply score.
+    result = resolve("singpore", PORTS, kind="port", auto_apply_fuzzy=False)
+
+    assert result.entity is None
+    assert result.candidates == ("Singapore",)
+    assert result.issue == ParseIssue(
+        "customer_ambiguous", "did you mean one of: Singapore?", ("Singapore",)
+    )
+
+
+def test_default_mode_still_auto_applies_the_same_unique_fuzzy_match():
+    result = resolve("singpore", PORTS, kind="port")
+
+    assert result.entity is not None
+    assert result.entity.value == "Singapore"
+    assert result.entity.tier == "fuzzy"
+    assert result.issue is None
+
+
+def test_strict_mode_candidates_are_floor_filtered_best_first_and_capped(monkeypatch):
+    scores_by_value_cf = {"alpha": 0.95, "beta": 0.70, "gamma": 0.65, "delta": 0.62, "eps": 0.5}
+    monkeypatch.setattr(
+        customer_resolver, "_score", lambda phrase_cf, value_cf: scores_by_value_cf[value_cf]
+    )
+
+    result = resolve("garbled", ("Eps", "Delta", "Gamma", "Beta", "Alpha"), auto_apply_fuzzy=False)
+
+    assert result.entity is None
+    assert result.candidates == ("Alpha", "Beta", "Gamma")
+    assert result.issue is not None
+    assert result.issue.code == "customer_ambiguous"
+
+
+@pytest.mark.parametrize("auto_apply_fuzzy", [True, False])
+def test_exact_tier_applies_in_both_modes(auto_apply_fuzzy: bool):
+    result = resolve("singapore", PORTS, kind="port", auto_apply_fuzzy=auto_apply_fuzzy)
+
+    assert result.entity == ResolvedEntity(
+        value="Singapore", source_text="singapore", confidence=1.0, tier="exact"
+    )
+    assert result.issue is None
+
+
+@pytest.mark.parametrize("auto_apply_fuzzy", [True, False])
+def test_token_tier_applies_in_both_modes(auto_apply_fuzzy: bool):
+    result = resolve("beach long", PORTS, kind="port", auto_apply_fuzzy=auto_apply_fuzzy)
+
+    assert result.entity == ResolvedEntity(
+        value="Long Beach", source_text="beach long", confidence=1.0, tier="token"
+    )
+    assert result.issue is None
+
+
+def test_strict_mode_unknown_is_still_unknown():
+    result = resolve("narnia", PORTS, kind="port", auto_apply_fuzzy=False)
+
+    assert result.entity is None
+    assert result.candidates == ()
+    assert result.issue == ParseIssue("customer_unknown", "no port matching 'narnia'")
+
+
+def test_auto_apply_fuzzy_is_keyword_only():
+    with pytest.raises(TypeError):
+        resolve("singpore", PORTS, "port", False)  # type: ignore[misc]
+
+
+def test_parse_issue_new_fields_default_so_old_constructor_calls_still_compare_equal():
+    issue = ParseIssue("customer_unknown", "no customer matching 'x'")
+    assert issue.kind == "customer"
+    assert issue.phrase == ""
+    assert issue == ParseIssue("customer_unknown", "no customer matching 'x'", (), "customer", "")
+
+
+def test_strict_mode_tie_keeps_the_tie_message_with_its_tail():
+    values = ("Klang North", "Klang South", "Klang West", "Klang East", "Rotterdam")
+
+    assert resolve("klang", values, kind="port", auto_apply_fuzzy=False) == resolve(
+        "klang", values, kind="port"
+    )
