@@ -25,8 +25,8 @@ What the table pins, bullet by bullet:
 * all three comparison connectives, the ``vs last year`` shift (on a month,
   on a quarter, and on a year-to-date window -- the last across a leap day),
   and ``prior year vs ytd``;
-* carry-over present / absent / replaced, and the "period_b is never
-  carried" rule;
+* carry-over present / absent / replaced, and the D62 carry rule for both
+  sides (a comparison stays until replaced);
 * availability hit and miss, including the case that can only pass if the
   INCLUSIVE ``PeriodRange.end`` is converted to a half-open bound (+1 day),
   with both miss messages byte-pinned, and the dual miss where period_a's
@@ -562,10 +562,109 @@ CASES = [
         PeriodParse(None, None, "none", "none", None),
     ),
     Case(
-        # period_b is never carried: a comparison must be re-asked for.
-        "period_b_is_never_carried",
+        # D62: a carried comparison stays until something replaces it.
+        "period_b_is_carried_when_the_text_names_nothing",
         "how about volume",
         ConversationSlots(period_a=date(2026, 4, 1), period_b=date(2025, 4, 1)),
+        REF,
+        WIDE,
+        PeriodParse(_month(2026, 4), _month(2025, 4), "carry", "carry", None),
+    ),
+    Case(
+        # The stored window, not the month containing its start (C03).
+        "a_carried_year_window_stays_a_year",
+        "then by port",
+        ConversationSlots(period_a=date(2025, 1, 1), period_a_end=date(2026, 1, 1)),
+        REF,
+        WIDE,
+        PeriodParse(_year(2025), None, "carry", "none", None),
+    ),
+    Case(
+        "a_carried_quarter_window_stays_a_quarter",
+        "and margin",
+        ConversationSlots(period_a=date(2026, 4, 1), period_a_end=date(2026, 7, 1)),
+        REF,
+        WIDE,
+        PeriodParse(_quarter(2026, 2), None, "carry", "none", None),
+    ),
+    Case(
+        # Only the right side names a period: A carries, B is replaced.
+        "a_comparison_side_only_replaces_b_and_keeps_a",
+        "compare to may 2026 instead",
+        ConversationSlots(
+            period_a=date(2026, 7, 1),
+            period_a_end=date(2026, 8, 1),
+            period_b=date(2026, 6, 1),
+            period_b_end=date(2026, 7, 1),
+        ),
+        REF,
+        WIDE,
+        PeriodParse(_month(2026, 7), _month(2026, 5), "carry", "text", None),
+    ),
+    Case(
+        "compared_with_is_a_connective_too",
+        "april 2026 compared with march 2026",
+        NO_SLOTS,
+        REF,
+        WIDE,
+        PeriodParse(_month(2026, 4), _month(2026, 3), "text", "text", None),
+    ),
+    Case(
+        # A single named period: A is replaced; the parser reports no B and
+        # the pipeline (not the parser) turns that into a slot clear.
+        "a_single_period_phrase_names_no_comparison",
+        "volume in may 2026",
+        ConversationSlots(
+            period_a=date(2026, 4, 1),
+            period_a_end=date(2026, 5, 1),
+            period_b=date(2026, 3, 1),
+            period_b_end=date(2026, 4, 1),
+        ),
+        REF,
+        WIDE,
+        PeriodParse(_month(2026, 5), None, "text", "none", None),
+    ),
+    Case(
+        "vs_last_year_shifts_a_carried_year_window_by_a_year",
+        "vs last year",
+        ConversationSlots(period_a=date(2025, 1, 1), period_a_end=date(2026, 1, 1)),
+        REF,
+        WIDE,
+        PeriodParse(_year(2025), _year(2024), "carry", "text", None),
+    ),
+    Case(
+        "vs_last_year_shifts_a_carried_day_range_by_a_year",
+        "vs last year",
+        ConversationSlots(period_a=date(2026, 10, 1), period_a_end=date(2026, 10, 12)),
+        REF,
+        WIDE,
+        PeriodParse(
+            PeriodWindow(date(2026, 10, 1), date(2026, 10, 12)),
+            PeriodWindow(date(2025, 10, 1), date(2025, 10, 12)),
+            "carry",
+            "text",
+            None,
+        ),
+    ),
+    Case(
+        # An unresolvable right side is not a silent reset of the comparison.
+        "an_unresolvable_comparison_side_keeps_the_carried_comparison",
+        "compared to acme corp",
+        ConversationSlots(
+            period_a=date(2026, 7, 1),
+            period_a_end=date(2026, 8, 1),
+            period_b=date(2026, 6, 1),
+            period_b_end=date(2026, 7, 1),
+        ),
+        REF,
+        WIDE,
+        PeriodParse(_month(2026, 7), _month(2026, 6), "carry", "carry", None),
+    ),
+    Case(
+        # A corrupt end never raises; the month containing the start is used.
+        "a_stored_end_at_or_before_the_start_falls_back_to_the_month",
+        "how about volume",
+        ConversationSlots(period_a=date(2026, 4, 1), period_a_end=date(2026, 4, 1)),
         REF,
         WIDE,
         PeriodParse(_month(2026, 4), None, "carry", "none", None),
@@ -812,8 +911,7 @@ def test_source_is_none_exactly_when_the_window_is_none(case: Case):
 def test_sources_are_from_the_declared_vocabulary(case: Case):
     result = parse_periods(case.text, case.slots, case.reference, case.available)
     assert result.a_source in {"text", "carry", "none"}
-    # period_b is never carried, so "carry" can never appear on the b side.
-    assert result.b_source in {"text", "none"}
+    assert result.b_source in {"text", "carry", "none"}
 
 
 @pytest.mark.parametrize("case", CASES, ids=[c.id for c in CASES])
@@ -923,10 +1021,10 @@ def test_both_files_are_ascii_on_disk():
         assert not offending, f"{path.name} holds non-ASCII bytes: {offending}"
 
 
-def test_module_documents_the_carried_granularity_limitation():
-    """The carry path reconstructs a MONTH window from ``slots.period_a``,
-    so a carried quarter or year silently degrades to a month. That is a
-    deliberate v1 limitation and must stay documented where a reader of the
-    module will find it."""
+def test_module_documents_window_carry_and_no_longer_claims_a_limitation():
+    """D62 retired the v1 'carried granularity' limitation: the carry path
+    now reads the stored window. The docstring must describe the new rule
+    (both sides carry) and must not still advertise the old limitation."""
     doc = period_parser.__doc__ or ""
-    assert "granularity" in doc.casefold()
+    assert "KNOWN v1 LIMITATION" not in doc
+    assert "period_b" in doc and "carried" in doc.casefold()
