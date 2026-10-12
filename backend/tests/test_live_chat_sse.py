@@ -1177,11 +1177,11 @@ async def test_a_clarify_turn_is_recorded_into_the_transcript_as_chips_then_text
     assistant_msg = msgs[-1]
     kinds = [p["kind"] for p in assistant_msg["parts"]]
     assert kinds == ["chips", "text"]
-    # The clarification chips carry the same "for <name>" send_text
-    # orchestrator.py now emits (final-review wave item 2) -- the transcript
+    # P16-R24: the clarification chips re-ask the original sentence with the
+    # chosen name swapped in for the unresolved phrase -- the transcript
     # records the part payload verbatim, envelope stripped.
     first_option = assistant_msg["parts"][0]["payload"]["options"][0]
-    assert first_option["send_text"] == f"for {first_option['label']}"
+    assert first_option["send_text"] == f"gp for {first_option['label']} in April 2026"
 
 
 @pytest.mark.pg
