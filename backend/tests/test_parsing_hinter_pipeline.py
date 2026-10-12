@@ -525,6 +525,7 @@ PIPELINE_CASES = [
                     "customer_ambiguous",
                     "did you mean one of: Acme Corporation?",
                     ("Acme Corporation",),
+                    phrase="Acme Corp",
                 ),
             ),
         ),
@@ -559,7 +560,11 @@ PIPELINE_CASES = [
             ConversationSlots(period_a=date(2026, 5, 1)),
             period_a=_month(2026, 5),
             hints=(CandidateSkill(METRIC_QUERY, 1.0),),
-            issues=(ParseIssue("customer_unknown", "no customer matching 'May Traders'"),),
+            issues=(
+                ParseIssue(
+                    "customer_unknown", "no customer matching 'May Traders'", phrase="May Traders"
+                ),
+            ),
         ),
     ),
     PipelineCase(
@@ -750,7 +755,13 @@ PIPELINE_CASES = [
             ConversationSlots(period_a=date(2026, 4, 1)),
             period_a=_month(2026, 4),
             hints=(CandidateSkill(METRIC_QUERY, 1.0),),
-            issues=(ParseIssue("customer_unknown", "no customer matching 'Utopia Traders'"),),
+            issues=(
+                ParseIssue(
+                    "customer_unknown",
+                    "no customer matching 'Utopia Traders'",
+                    phrase="Utopia Traders",
+                ),
+            ),
         ),
     ),
     PipelineCase(
@@ -771,6 +782,7 @@ PIPELINE_CASES = [
                     "customer_ambiguous",
                     "did you mean one of: Acme Corporation?",
                     ("Acme Corporation",),
+                    phrase="Acme Corp",
                 ),
                 ParseIssue(
                     "customer_unknown",
@@ -1182,6 +1194,25 @@ def test_customer_issues_keep_the_customer_kind():
     parsed = parse_turn("gp for Acme Corp in april 2026", NO_SLOTS, REF, FakeDataClient())
     (issue,) = parsed.issues
     assert issue.kind == "customer"
+
+
+# P16-R24: a customer issue records the phrase the user typed (quotes
+# stripped), exactly as a port issue does, so a clarify chip can rewrite the
+# original question in place.
+@pytest.mark.parametrize(
+    ("message", "code", "phrase"),
+    [
+        ("gp for Acme Corp in april 2026", "customer_ambiguous", "Acme Corp"),
+        ('gp for "Acme Corp" in april 2026', "customer_ambiguous", "Acme Corp"),
+        ("gp for Utopia Traders in april 2026", "customer_unknown", "Utopia Traders"),
+    ],
+)
+def test_customer_issues_carry_the_detected_phrase(message, code, phrase):
+    parsed = parse_turn(message, NO_SLOTS, REF, FakeDataClient())
+    (issue,) = parsed.issues
+    assert issue.code == code
+    assert issue.kind == "customer"
+    assert issue.phrase == phrase
 
 
 def _seed_port_client() -> FakeDataClient:

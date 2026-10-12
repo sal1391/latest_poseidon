@@ -264,6 +264,7 @@ one ``UserContext`` the middleware already resolved.
 
 import dataclasses
 import logging
+import re
 from dataclasses import dataclass
 from datetime import date
 from time import monotonic
@@ -382,17 +383,22 @@ _KIND_PORT = "port"
 
 # User-visible port clarification copy (P16-R23). Kept in these three named
 # constants so the wording can be changed in one place.
-# - PORT_CHIP_SEND_TEXT: what a port chip sends back when clicked. The
+# - PORT_CHIP_SEND_TEXT: what a port chip sends back when clicked, but only
+#   as the FALLBACK (P16-R24): a chip normally re-sends the user's original
+#   question with the candidate swapped in (see _rewrite_for_chip). The
 #   "Port of" cue is a strong port cue to parse_turn, so the click resolves
 #   the port and is never read as a customer (unlike the customer chips'
 #   "for <name>" cue).
 # - PORT_AMBIGUOUS_TEXT: the question shown under the port chips. The
 #   resolver's kind-neutral "did you mean one of: ..." message is NOT reused.
 # - PORT_UNKNOWN_TEXT: the text-only question for a place that matched no
-#   port at all (no chips part is sent).
+#   port at all (no chips part is sent). The example steers the user to a
+#   cued reply, since a bare port name with no "in"/"at" is not understood.
 PORT_CHIP_SEND_TEXT = "Port of {candidate}"
 PORT_AMBIGUOUS_TEXT = "Which port did you mean?"
-PORT_UNKNOWN_TEXT = 'I don\'t recognise "{phrase}" as a port. Which port do you mean?'
+PORT_UNKNOWN_TEXT = (
+    'I don\'t recognise "{phrase}" as a port. Which port do you mean? For example: "in Singapore".'
+)
 _ROUTER_SYSTEM_PROMPT_NAME = "router/system"
 
 # U+2014 EM DASH, built via chr() rather than typed literally so this file
@@ -893,10 +899,15 @@ def _finish_clarify(
     disclosed scope: this function does not attempt to merge in an
     unrelated period/other issue also present the same turn.
 
-    P16-R23: a port-kind ambiguous issue gets port chips (each sends
-    ``PORT_CHIP_SEND_TEXT``) under ``PORT_AMBIGUOUS_TEXT``; a port-kind
-    ``customer_unknown`` gets ONE text part, ``PORT_UNKNOWN_TEXT``, and no
-    chips part at all. The customer path is unchanged.
+    P16-R23: a port-kind ambiguous issue gets port chips under
+    ``PORT_AMBIGUOUS_TEXT``; a port-kind ``customer_unknown`` gets ONE text
+    part, ``PORT_UNKNOWN_TEXT``, and no chips part at all.
+
+    P16-R24: every chip's ``send_text`` is the turn's
+    ``parsed.normalized_text`` with the issue's phrase replaced by the
+    candidate (:func:`_rewrite_for_chip`), so a click re-asks the whole
+    original question. Only when the phrase is not found does a chip fall
+    back to the short form (``PORT_CHIP_SEND_TEXT`` / ``for <name>``).
 
     ``user`` (Phase 11 Task 1, additive) is new: ``writer.finalize`` below
     now takes a ``user_sub`` (``core/runlog.py``'s own docstring), and this
@@ -923,7 +934,12 @@ def _finish_clarify(
                     {
                         "id": candidate,
                         "label": candidate,
-                        "send_text": PORT_CHIP_SEND_TEXT.format(candidate=candidate),
+                        "send_text": _chip_send_text(
+                            parsed.normalized_text,
+                            ambiguous_issue.phrase,
+                            candidate,
+                            fallback=PORT_CHIP_SEND_TEXT.format(candidate=candidate),
+                        ),
                     }
                     for candidate in ambiguous_issue.candidates
                 ]
@@ -931,7 +947,7 @@ def _finish_clarify(
         )
     else:
         message = ambiguous_issue.message
-        _push_customer_chips(sink, ambiguous_issue)
+        _push_customer_chips(sink, ambiguous_issue, parsed.normalized_text)
     sink.push_part("text", {"markdown": message})
     sink.done({"input_tokens": 0, "output_tokens": 0})
 
@@ -954,8 +970,40 @@ def _finish_clarify(
     return TurnOutcome(status="clarify", message_id=sink.message_id, turn_run_id=turn_run_id)
 
 
-def _push_customer_chips(sink: SseEnvelopeSink, ambiguous_issue) -> None:
-    """The customer clarify chips, unchanged: each sends ``for <name>``."""
+def _rewrite_for_chip(text: str, phrase: str, candidate: str) -> str | None:
+    """``text`` with the first whole-phrase, case-insensitive occurrence of
+    ``phrase`` replaced by ``candidate``; ``None`` when ``phrase`` is empty
+    or has no such occurrence (P16-R24).
+
+    "Whole-phrase": the match is not flanked by an alphanumeric character on
+    either side, so "singpore" inside "singporex" is skipped. Surrounding
+    punctuation (a quoted customer's quotes) is kept as typed.
+    """
+    if not phrase:
+        return None
+    pattern = re.compile(re.escape(phrase), re.IGNORECASE)
+    pos = 0
+    while (match := pattern.search(text, pos)) is not None:
+        start, end = match.span()
+        before_ok = start == 0 or not text[start - 1].isalnum()
+        after_ok = end == len(text) or not text[end].isalnum()
+        if before_ok and after_ok:
+            return text[:start] + candidate + text[end:]
+        pos = start + 1
+    return None
+
+
+def _chip_send_text(text: str, phrase: str, candidate: str, *, fallback: str) -> str:
+    """A clarify chip's ``send_text``: the rewritten original question, or
+    ``fallback`` (the pre-P16-R24 short form) when the phrase is not found."""
+    rewritten = _rewrite_for_chip(text, phrase, candidate)
+    return rewritten if rewritten is not None else fallback
+
+
+def _push_customer_chips(sink: SseEnvelopeSink, ambiguous_issue, normalized_text: str) -> None:
+    """The customer clarify chips. Each re-sends ``normalized_text`` with the
+    customer phrase swapped for the candidate (P16-R24), else ``for <name>``.
+    """
     sink.push_part(
         "chips",
         {
@@ -976,7 +1024,20 @@ def _push_customer_chips(sink: SseEnvelopeSink, ambiguous_issue) -> None:
                 # now-stale claim that opener chips carried none whatsoever.
                 # See ChipsPart.tsx's own option.send_text ?? option.label
                 # for the frontend fallback either shape relies on.
-                {"id": candidate, "label": candidate, "send_text": f"for {candidate}"}
+                # P16-R24: the "for <name>" form is now the FALLBACK only;
+                # normally the chip re-sends the original question with the
+                # candidate swapped in, whose own cue ("for", quotes) still
+                # makes the resolver read it as a customer.
+                {
+                    "id": candidate,
+                    "label": candidate,
+                    "send_text": _chip_send_text(
+                        normalized_text,
+                        ambiguous_issue.phrase,
+                        candidate,
+                        fallback=f"for {candidate}",
+                    ),
+                }
                 for candidate in ambiguous_issue.candidates
             ]
         },

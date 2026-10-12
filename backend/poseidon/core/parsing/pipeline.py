@@ -720,8 +720,10 @@ def _plan_resolution(
         )
     # Candidate-band or unknown: never masked, never clears the slot -- the
     # issue is the signal, not a silent overwrite of context that might
-    # still be correct.
-    return _SlotPlan(entity=None, mask_span=None, issue=resolution.issue, slot_update=UNSET)
+    # still be correct. The issue records the detected phrase (P16-R24), as
+    # a port issue does, so a clarify chip can rewrite the user's question.
+    issue = replace(resolution.issue, phrase=detected.phrase) if resolution.issue else None
+    return _SlotPlan(entity=None, mask_span=None, issue=issue, slot_update=UNSET)
 
 
 def _lazy_pool(data: DataClient, entity: str, column: str) -> Callable[[], Sequence[str]]:

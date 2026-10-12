@@ -59,6 +59,7 @@ from poseidon.core.llm.roles import RoleClient
 from poseidon.core.llm.stub import StubProvider
 from poseidon.core.llm.types import LLMResponse, ToolCall
 from poseidon.core.parsing.pipeline import parse_turn
+from poseidon.core.parsing.types import ParseIssue
 from poseidon.core.runlog import ReplayTurn, TurnHandle
 from poseidon.core.skills.context import ArtifactRef, ConversationSlots
 from poseidon.core.skills.registry import SkillRegistry
@@ -1170,25 +1171,25 @@ def test_ambiguous_turn_produces_chips_and_text_parts_clarify_status_no_dispatch
     chips_data = decoded[1][2]
     assert chips_data["kind"] == "chips"
     # Final-review wave item 2 (I1 + M6): clarification chips carry a
-    # "for <name>" send_text -- SCOPED to clarify chips only (never a blanket
-    # prefix; see ChipsPart.tsx's own option.send_text ?? option.label and
-    # the opener flow chips, which carry no send_text at all).
+    # send_text -- SCOPED to clarify chips only (never a blanket prefix; see
+    # ChipsPart.tsx's own option.send_text ?? option.label). P16-R24: the
+    # send_text is the original question with the chosen name swapped in.
     assert chips_data["payload"] == {
         "options": [
             {
                 "id": "Meridian Tankers",
                 "label": "Meridian Tankers",
-                "send_text": "for Meridian Tankers",
+                "send_text": "gp for Meridian Tankers in April 2026",
             },
             {
                 "id": "Meridian Lines",
                 "label": "Meridian Lines",
-                "send_text": "for Meridian Lines",
+                "send_text": "gp for Meridian Lines in April 2026",
             },
             {
                 "id": "Meridian Shipping",
                 "label": "Meridian Shipping",
-                "send_text": "for Meridian Shipping",
+                "send_text": "gp for Meridian Shipping in April 2026",
             },
         ]
     }
@@ -1269,18 +1270,17 @@ def test_port_near_miss_turn_produces_port_chips_and_port_question_no_dispatch(m
     chips_data = decoded[1][2]
     assert chips_data["kind"] == "chips"
     # The candidate is the pool's own spelling (the fake pool, like the real
-    # seed, stores ports upper-case); the send_text is the "Port of" cue, never
-    # the customer chips' "for" cue.
+    # seed, stores ports upper-case); P16-R24: the send_text is the original
+    # question with the candidate swapped in for the misspelled phrase.
     assert chips_data["payload"] == {
         "options": [
             {
                 "id": "SINGAPORE",
                 "label": "SINGAPORE",
-                "send_text": orchestrator.PORT_CHIP_SEND_TEXT.format(candidate="SINGAPORE"),
+                "send_text": "gross profit in SINGAPORE in April 2026",
             }
         ]
     }
-    assert chips_data["payload"]["options"][0]["send_text"] == "Port of SINGAPORE"
 
     text_data = decoded[2][2]
     assert text_data["kind"] == "text"
@@ -1316,7 +1316,11 @@ def test_unknown_port_turn_asks_a_text_only_question_no_chips_no_dispatch(monkey
     assert part["kind"] == "text"
     expected = orchestrator.PORT_UNKNOWN_TEXT.format(phrase="Narnia")
     assert part["payload"] == {"markdown": expected}
-    assert expected == 'I don\'t recognise "Narnia" as a port. Which port do you mean?'
+    # P16-R24: the copy steers the user to a cued reply ("in Singapore").
+    assert expected == (
+        'I don\'t recognise "Narnia" as a port. Which port do you mean? '
+        'For example: "in Singapore".'
+    )
     assert all(d.get("kind") != "chips" for _s, _n, d in decoded)
 
     assert writer.append_llm_calls == []
@@ -1342,10 +1346,10 @@ def test_customer_ambiguity_still_wins_over_a_port_issue(monkeypatch, text):
     assert names == ["accepted", "part", "part", "done"]
     chips_data = decoded[1][2]
     assert chips_data["kind"] == "chips"
+    # P16-R24: only the customer phrase is rewritten; the port phrase stays.
     assert [o["send_text"] for o in chips_data["payload"]["options"]] == [
-        "for Meridian Tankers",
-        "for Meridian Lines",
-        "for Meridian Shipping",
+        text.replace("Meridiann", name)
+        for name in ("Meridian Tankers", "Meridian Lines", "Meridian Shipping")
     ]
     assert decoded[2][2]["payload"] == {
         "markdown": "did you mean one of: Meridian Tankers, Meridian Lines, Meridian Shipping?"
@@ -1379,6 +1383,250 @@ def test_port_chip_send_text_round_trips_through_parse_turn(monkeypatch):
     assert reparsed.slots.customer is None
     assert reparsed.slots.period_a == date(2026, 4, 1)  # carried period retained
     assert reparsed.issues == ()
+
+
+# ===========================================================================
+# P16-R24: a clarify chip re-asks the ORIGINAL question with the chosen name
+# swapped in for the unresolved phrase (send_text only; id/label stay the
+# bare candidate). Falls back to the short form when the phrase is absent.
+# ===========================================================================
+
+
+@pytest.mark.parametrize(
+    ("text", "phrase", "candidate", "expected"),
+    [
+        (
+            "top customers by gross profit in singpore in April 2026",
+            "singpore",
+            "Singapore",
+            "top customers by gross profit in Singapore in April 2026",
+        ),
+        (
+            "top customers by gross profit lifted at signpore in April 2026",
+            "signpore",
+            "Singapore",
+            "top customers by gross profit lifted at Singapore in April 2026",
+        ),
+        (
+            "top customers by gross profit for Meridian in April 2026",
+            "Meridian",
+            "Meridian Marine",
+            "top customers by gross profit for Meridian Marine in April 2026",
+        ),
+        (
+            'top customers by gross profit for "Meridian" in April 2026',
+            "Meridian",
+            "Meridian Marine",
+            'top customers by gross profit for "Meridian Marine" in April 2026',
+        ),
+    ],
+)
+def test_rewrite_for_chip_swaps_the_phrase_for_the_candidate(text, phrase, candidate, expected):
+    assert orchestrator._rewrite_for_chip(text, phrase, candidate) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "phrase", "candidate", "expected"),
+    [
+        # Case-insensitive, first occurrence only.
+        (
+            "gp for meridian vs Meridian",
+            "Meridian",
+            "Meridian Lines",
+            "gp for Meridian Lines vs Meridian",
+        ),
+        # Whole-phrase: an occurrence inside a longer word is skipped.
+        ("gp in singporex at singpore", "singpore", "SINGAPORE", "gp in singporex at SINGAPORE"),
+        (
+            "gp for XMeridian and Meridian",
+            "Meridian",
+            "Meridian Lines",
+            "gp for XMeridian and Meridian Lines",
+        ),
+        # Not found anywhere as a whole phrase, or no phrase at all -> None.
+        ("gp in singporex", "singpore", "SINGAPORE", None),
+        ("gp in April 2026", "singpore", "SINGAPORE", None),
+        ("gp for Meridian", "", "Meridian Lines", None),
+    ],
+)
+def test_rewrite_for_chip_matches_whole_phrases_only(text, phrase, candidate, expected):
+    assert orchestrator._rewrite_for_chip(text, phrase, candidate) == expected
+
+
+def test_port_chip_rewrites_the_original_question(monkeypatch):
+    outcome, decoded, _writer, _state, _data = _run_turn_for(
+        monkeypatch, "top customers by gross profit in singpore in April 2026"
+    )
+    assert outcome.status == "clarify"
+    (option,) = decoded[1][2]["payload"]["options"]
+    assert option == {
+        "id": "SINGAPORE",
+        "label": "SINGAPORE",
+        "send_text": "top customers by gross profit in SINGAPORE in April 2026",
+    }
+
+
+def test_port_chip_rewrites_an_at_cued_question(monkeypatch):
+    _outcome, decoded, _writer, _state, _data = _run_turn_for(
+        monkeypatch, "top customers by gross profit lifted at signpore in April 2026"
+    )
+    (option,) = decoded[1][2]["payload"]["options"]
+    assert option["label"] == "SINGAPORE"
+    assert option["send_text"] == "top customers by gross profit lifted at SINGAPORE in April 2026"
+
+
+@pytest.mark.parametrize(
+    ("text", "template"),
+    [
+        (
+            "top customers by gross profit for Meridian in April 2026",
+            "top customers by gross profit for {name} in April 2026",
+        ),
+        (
+            'top customers by gross profit for "Meridian" in April 2026',
+            'top customers by gross profit for "{name}" in April 2026',
+        ),
+    ],
+)
+def test_customer_chips_rewrite_the_original_question(monkeypatch, text, template):
+    outcome, decoded, _writer, state, _data = _run_turn_for(monkeypatch, text)
+    assert outcome.status == "clarify"
+    options = decoded[1][2]["payload"]["options"]
+    names = ["Meridian Lines", "Meridian Shipping", "Meridian Tankers"]
+    assert options == [
+        {"id": name, "label": name, "send_text": template.format(name=name)} for name in names
+    ]
+
+    # Round trip: the rewritten sentence resolves the chosen customer, keeps
+    # the period, and raises no issue. (The plan's "Meridian Marine" is not in
+    # this fake pool; its pool candidate "Meridian Lines" stands in.)
+    reparsed = parse_turn(
+        options[0]["send_text"], state.get("conv-port"), REFERENCE_DATE, FakeDataClient()
+    )
+    assert reparsed.customer is not None
+    assert reparsed.customer.value == "Meridian Lines"
+    assert reparsed.period_a is not None
+    assert reparsed.period_a.start == date(2026, 4, 1)
+    assert reparsed.issues == ()
+
+
+def test_port_chip_rewrite_round_trips_through_parse_turn(monkeypatch):
+    _outcome, decoded, _writer, state, _data = _run_turn_for(
+        monkeypatch, "top customers by gross profit in singpore in April 2026"
+    )
+    send_text = decoded[1][2]["payload"]["options"][0]["send_text"]
+    reparsed = parse_turn(send_text, state.get("conv-port"), REFERENCE_DATE, FakeDataClient())
+    assert reparsed.port is not None
+    assert reparsed.port.value == "SINGAPORE"
+    assert reparsed.customer is None
+    assert reparsed.period_a is not None
+    assert reparsed.period_a.start == date(2026, 4, 1)
+    assert reparsed.issues == ()
+
+
+def test_clicked_port_chip_runs_the_original_top_customers_question(monkeypatch):
+    # The live bug: the click used to send only "Port of SINGAPORE", which
+    # lost "top customers" and answered a single GP total.
+    settings = _settings(monkeypatch, LLM_MODE="stub", LLM_PROFILE="bedrock")
+    data = FakeDataClient()
+    state = ConversationStateStore()
+    writer = RecordingWriter()
+
+    def run(text, turn):
+        frames, send = _capturing_send()
+        outcome = execute_turn(
+            user=DISABLED_DEFAULT_USER,
+            conversation_id="conv-chip-rerun",
+            text=text,
+            client_turn_key=None,
+            settings=settings,
+            registry=REGISTRY,
+            data=data,
+            state=state,
+            writer=writer,
+            role_client=_dev_role_client(settings),
+            prompt_registry=PromptRegistry(DEFAULT_PROMPTS_DIR),
+            sink=SseEnvelopeSink(
+                turn_id=f"t{turn}", message_id=f"m{turn}", send=send, registry=REGISTRY
+            ),
+            reference_date=REFERENCE_DATE,
+        )
+        return outcome, [_parse_frame(f) for f in frames]
+
+    first, decoded = run("top customers by gross profit in singpore in April 2026", 1)
+    assert first.status == "clarify"
+    send_text = decoded[1][2]["payload"]["options"][0]["send_text"]
+
+    second, _decoded = run(send_text, 2)
+    assert second.status != "clarify"
+    (tool_call,) = writer.append_tool_calls
+    assert tool_call["args"]["group_by"] == "CUST_NM"
+    assert {"column": "LOC_NM", "values": ["SINGAPORE"]} in tool_call["args"]["filters"]
+    assert tool_call["args"]["period"] == {"start": "2026-04-01", "end": "2026-05-01"}
+
+
+def test_two_issues_customer_chips_rewrite_only_the_customer_phrase(monkeypatch):
+    _outcome, decoded, _writer, _state, _data = _run_turn_for(
+        monkeypatch, "top customers by gross profit for Meridiann in singpore in April 2026"
+    )
+    options = decoded[1][2]["payload"]["options"]
+    assert [o["label"] for o in options] == [
+        "Meridian Tankers",
+        "Meridian Lines",
+        "Meridian Shipping",
+    ]
+    for option in options:
+        assert option["send_text"] == (
+            f"top customers by gross profit for {option['label']} in singpore in April 2026"
+        )
+
+
+def _finish_clarify_with(issue, text):
+    frames, send = _capturing_send()
+    sink = SseEnvelopeSink(turn_id="t", message_id="m", send=send, registry=REGISTRY)
+    parsed = parse_turn(text, ConversationSlots(), REFERENCE_DATE, FakeDataClient())
+    outcome = orchestrator._finish_clarify(
+        ambiguous_issue=issue,
+        parsed=parsed,
+        sink=sink,
+        writer=None,
+        turn_run_id=None,
+        state=ConversationStateStore(),
+        conversation_id="conv-fallback",
+        user=DISABLED_DEFAULT_USER,
+        started=0.0,
+    )
+    assert outcome.status == "clarify"
+    decoded = [_parse_frame(f) for f in frames]
+    chips = next(d for _s, n, d in decoded if n == "part" and d["kind"] == "chips")
+    return chips["payload"]["options"]
+
+
+def test_port_chip_falls_back_to_the_short_form_when_the_phrase_is_absent():
+    issue = ParseIssue(
+        "customer_ambiguous",
+        "did you mean one of: Singapore?",
+        ("Singapore",),
+        kind="port",
+        phrase="singpore",
+    )
+    (option,) = _finish_clarify_with(issue, "gross profit in April 2026")
+    assert option == {"id": "Singapore", "label": "Singapore", "send_text": "Port of Singapore"}
+
+
+def test_customer_chip_falls_back_to_the_short_form_when_the_phrase_is_empty():
+    issue = ParseIssue(
+        "customer_ambiguous",
+        "did you mean one of: Meridian Tankers?",
+        ("Meridian Tankers",),
+    )
+    assert issue.phrase == ""
+    (option,) = _finish_clarify_with(issue, "gp for Meridian in April 2026")
+    assert option == {
+        "id": "Meridian Tankers",
+        "label": "Meridian Tankers",
+        "send_text": "for Meridian Tankers",
+    }
 
 
 # ===========================================================================
