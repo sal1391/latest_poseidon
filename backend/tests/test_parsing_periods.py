@@ -22,7 +22,7 @@ What the table pins, bullet by bullet:
   ``this year``/``ytd``/``year to date``) and the January-1 year-to-date
   edge, whose message is byte-pinned;
 * quarters in both forms, again in both directions of the recency rule;
-* all three comparison connectives, the ``vs last year`` shift (on a month,
+* the comparison connectives, the ``vs last year`` shift (on a month,
   on a quarter, and on a year-to-date window -- the last across a leap day),
   and ``prior year vs ytd``;
 * carry-over present / absent / replaced, and the D62 carry rule for both
@@ -641,6 +641,20 @@ CASES = [
         PeriodParse(
             PeriodWindow(date(2026, 10, 1), date(2026, 10, 12)),
             PeriodWindow(date(2025, 10, 1), date(2025, 10, 12)),
+            "carry",
+            "text",
+            None,
+        ),
+    ),
+    Case(
+        "vs_last_year_on_a_day_range_ending_feb_29_never_raises",
+        "vs last year",
+        ConversationSlots(period_a=date(2024, 2, 28), period_a_end=date(2024, 2, 29)),
+        REF,
+        WIDE,
+        PeriodParse(
+            PeriodWindow(date(2024, 2, 28), date(2024, 2, 29)),
+            PeriodWindow(date(2023, 2, 28), date(2023, 3, 1)),
             "carry",
             "text",
             None,

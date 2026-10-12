@@ -295,12 +295,14 @@ def _shift_back_one_year(resolved: _Resolved) -> _Resolved:
     if resolved.kind == _KIND_YEAR:
         return _Resolved(_year_window(start.year - 1), _KIND_YEAR)
     if resolved.kind == _KIND_RANGE:
-        return _Resolved(
-            PeriodWindow(
-                _same_day_prior_year(start), _same_day_prior_year(resolved.window.end)
-            ),
-            _KIND_RANGE,
+        # The end is floored at start + 1 day because both bounds can clamp
+        # to the same day when the range ends on Feb 29 and the prior year
+        # is not a leap year; an empty window would raise mid-turn.
+        shifted_start = _same_day_prior_year(start)
+        shifted_end = max(
+            _same_day_prior_year(resolved.window.end), shifted_start + timedelta(days=1)
         )
+        return _Resolved(PeriodWindow(shifted_start, shifted_end), _KIND_RANGE)
     shifted_end = _same_day_prior_year(resolved.window.end)
     return _Resolved(PeriodWindow(date(start.year - 1, 1, 1), shifted_end), _KIND_YTD)
 
