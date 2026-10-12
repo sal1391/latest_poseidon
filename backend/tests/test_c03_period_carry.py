@@ -85,7 +85,7 @@ def test_2_a_report_comparison_survives_why_did_gp_drop():
 
 def test_3_compare_to_another_month_swaps_only_the_comparison():
     turns = _conversation(
-        "gp in july 2026 vs june 2026", "why did gp drop?", "compare to may 2026 instead"
+        "gp in july 2026 vs june 2026", "why did gp drop?", "compare to may instead"
     )
     third = turns[-1]
 

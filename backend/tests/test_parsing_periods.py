@@ -23,8 +23,12 @@ What the table pins, bullet by bullet:
   edge, whose message is byte-pinned;
 * quarters in both forms, again in both directions of the recency rule;
 * the comparison connectives, the ``vs last year`` shift (on a month,
-  on a quarter, and on a year-to-date window -- the last across a leap day),
-  and ``prior year vs ytd``;
+  on a quarter, on a year-to-date window -- across a leap day -- on a
+  carried year, and on a carried day range, including one ending on
+  February 29), and ``prior year vs ytd``;
+* a bare ``may`` right after a connective (``vs may``, ``compare to may
+  instead``) is a month, while a verb ``may`` later on that side stays
+  gated;
 * carry-over present / absent / replaced, and the D62 carry rule for both
   sides (a comparison stays until replaced);
 * availability hit and miss, including the case that can only pass if the
@@ -608,6 +612,67 @@ CASES = [
         REF,
         WIDE,
         PeriodParse(_month(2026, 4), _month(2026, 3), "text", "text", None),
+    ),
+    Case(
+        "compare_with_is_a_connective_too",
+        "april 2026 compare with march 2026",
+        NO_SLOTS,
+        REF,
+        WIDE,
+        PeriodParse(_month(2026, 4), _month(2026, 3), "text", "text", None),
+    ),
+    # -- A bare month right after a comparison connective -----------------
+    # The right-hand side starts after the connective, so a gated bare month
+    # there would see no preceding word; the connective itself is the gate
+    # context. Ungated, each row silently kept the carried June comparison.
+    Case(
+        "a_bare_may_right_after_vs_replaces_b",
+        "vs may",
+        ConversationSlots(
+            period_a=date(2026, 7, 1),
+            period_a_end=date(2026, 8, 1),
+            period_b=date(2026, 6, 1),
+            period_b_end=date(2026, 7, 1),
+        ),
+        REF,
+        WIDE,
+        PeriodParse(_month(2026, 7), _month(2026, 5), "carry", "text", None),
+    ),
+    Case(
+        "a_bare_may_right_after_compare_to_replaces_b",
+        "compare to may instead",
+        ConversationSlots(
+            period_a=date(2026, 7, 1),
+            period_a_end=date(2026, 8, 1),
+            period_b=date(2026, 6, 1),
+            period_b_end=date(2026, 7, 1),
+        ),
+        REF,
+        WIDE,
+        PeriodParse(_month(2026, 7), _month(2026, 5), "carry", "text", None),
+    ),
+    Case(
+        "a_bare_may_right_after_compared_with_replaces_b",
+        "compared with may",
+        ConversationSlots(
+            period_a=date(2026, 7, 1),
+            period_a_end=date(2026, 8, 1),
+            period_b=date(2026, 6, 1),
+            period_b_end=date(2026, 7, 1),
+        ),
+        REF,
+        WIDE,
+        PeriodParse(_month(2026, 7), _month(2026, 5), "carry", "text", None),
+    ),
+    Case(
+        # The connective opens the gate only for a month that immediately
+        # follows it: the modal "may" later on the right side stays a verb.
+        "a_verb_may_later_on_the_right_side_stays_gated",
+        "april 2026 vs acme corp, may i see",
+        NO_SLOTS,
+        REF,
+        WIDE,
+        PeriodParse(_month(2026, 4), None, "text", "none", None),
     ),
     Case(
         # A single named period: A is replaced; the parser reports no B and

@@ -236,14 +236,17 @@ slot:
   explicit-but-unresolvable phrase (year-to-date at a January 1 reference)
   therefore leaves the slot untouched rather than clearing it -- an issue
   is not a silent reset.
-* ``period_b``/``period_b_end`` (decision D62): ``b_source == "text"``
-  replaces both; ``a_source == "text"`` with no comparison -- a SINGLE
-  named period -- CLEARS both to ``None``, because "GP for August" after
-  "July vs June" is a question about August alone; anything else is UNSET,
-  so a carried comparison survives "why did GP drop?" and an unresolvable
-  "compared to acme corp". ``period_parser`` carries ``period_b`` under
-  the same rule, so ``ParsedTurn.period_b`` and ``ParsedTurn.slots.
-  period_b`` agree on every turn.
+* ``period_b``/``period_b_end`` (decision D62) follow ``b_source`` alone:
+  ``"text"`` REPLACES both with the window's start and exclusive end;
+  ``"carry"`` leaves both UNSET, so a carried comparison survives "why did
+  GP drop?" and an unresolvable "compared to acme corp"; ``"none"`` CLEARS
+  both to ``None``. ``period_parser`` reports ``"none"`` whenever this turn
+  names a left-hand period but no resolvable comparison -- "GP for August"
+  after "July vs June" is a question about August alone, and so is an
+  unresolvable "gp ytd" on January 1. The slot is written from the very
+  value ``ParsedTurn.period_b`` reports (a carry keeps the slot the parser
+  carried from), so ``ParsedTurn.period_b`` and ``ParsedTurn.slots.
+  period_b`` agree on every turn by construction.
 * ``mode``/``region``/``topic``/``pass_through`` are never touched here
   (``SlotUpdates`` has no fields for them) -- ``apply_carry`` always carries
   them forward unchanged; ``pass_through`` population is wired by whichever
@@ -784,19 +787,18 @@ def parse_turn(
 
     # Slot write-back for periods (decision D62; see "Slot write-back" in
     # the module docstring). A: a left-hand phrase replaces, anything else
-    # carries. B: a right-hand phrase replaces; a left-hand phrase ALONE
-    # (a single named period) clears; otherwise carries.
+    # carries. B follows b_source alone: text replaces, carry keeps, none
+    # clears -- so the stored comparison is the parsed one by construction.
     a_named = period_parse.a_source == "text"
-    b_named = period_parse.b_source == "text"
-    if b_named:
+    if period_parse.b_source == "text":
         period_b_update = period_parse.period_b.start
         period_b_end_update = period_parse.period_b.end
-    elif a_named:
-        period_b_update = None
-        period_b_end_update = None
-    else:
+    elif period_parse.b_source == "carry":
         period_b_update = UNSET
         period_b_end_update = UNSET
+    else:
+        period_b_update = None
+        period_b_end_update = None
 
     updates = SlotUpdates(
         customer=customer_plan.slot_update,

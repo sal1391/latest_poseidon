@@ -992,6 +992,36 @@ def test_a_comparison_side_only_replaces_period_b_and_keeps_period_a():
     assert second.slots.period_b_end == date(2026, 3, 1)
 
 
+def test_a_bare_month_right_after_compare_to_replaces_period_b():
+    """The spec's literal text: "compare to may instead". The connective is
+    the gate context for a bare "may", so it names May, not the verb."""
+    client = FakeDataClient()
+    first = parse_turn("gp april 2026 vs march 2026", NO_SLOTS, REF, client)
+    second = parse_turn("compare to may instead", first.slots, REF, client)
+
+    assert second.period_a == _month(2026, 4)
+    assert second.period_b == _month(2026, 5)
+    assert second.slots.period_b == date(2026, 5, 1)
+    assert second.slots.period_b_end == date(2026, 6, 1)
+
+
+def test_an_unresolvable_left_phrase_clears_the_carried_comparison():
+    """B's slot follows b_source alone: "gp ytd" on January 1 names a period
+    that cannot resolve, so the parser reports no comparison (b_source
+    "none") and the slot is cleared to match -- parsed and stored B agree."""
+    prior = ConversationSlots(
+        period_a=date(2025, 12, 1),
+        period_a_end=date(2026, 1, 1),
+        period_b=date(2025, 11, 1),
+        period_b_end=date(2025, 12, 1),
+    )
+    result = parse_turn("gp ytd", prior, date(2026, 1, 1), FakeDataClient())
+
+    assert result.period_b is None
+    assert result.slots.period_b is None
+    assert result.slots.period_b_end is None
+
+
 def test_an_unresolvable_comparison_side_keeps_the_carried_comparison_slot():
     """"compared to acme corp" names a connective but no period: the carried
     comparison is NOT a silent reset (the same principle customer/port carry

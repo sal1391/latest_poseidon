@@ -42,7 +42,9 @@ phrase on the same side is ignored.
   keeps its days. The shift rebuilds the window from its first-of-period
   anchor rather than moving raw bounds; the bounds that are not
   first-of-period dates (a year-to-date end, a carried day range's bounds)
-  are day-clamped, so a February 29 shifts to February 28.
+  are day-clamped, so a February 29 shifts to February 28. A day range's
+  shifted end is floored at its shifted start + 1 day, so a range whose
+  bounds both clamp to the same day still comes back non-empty.
   ``prior year vs ytd`` needs no shift -- both sides name a period.
 * **Carry-over** -- when the text names no period on the left,
   ``period_a`` is last turn's stored WINDOW
@@ -79,6 +81,14 @@ returns none instead of silently scoping the answer to May. The cost is
 deliberate -- ``show me may`` no longer parses, and a non-parse the user can
 recover from beats a silently wrong answer. ``AMBIGUOUS_BARE_MONTHS`` is the
 extension point; ``may 2026`` and every other month are untouched.
+
+The comparison connective is the one other gate context: a bare ``may``
+that opens the right-hand side (only whitespace between it and the
+connective, as in ``vs may`` or ``compare to may instead``) is a month.
+The connective is cut off before that side is scanned, so without this
+rule the month would see no preceding word and read as the verb, and a
+carried comparison would survive silently. A ``may`` anywhere else on
+either side still needs its preposition.
 
 Known residual: a customer whose name is a month (``May Shipping``) still
 collides when a preposition precedes it. Masking customer spans before the
@@ -284,7 +294,9 @@ def _shift_back_one_year(resolved: _Resolved) -> _Resolved:
 
     Rebuilt from the shape's own anchor rather than by moving both bounds, so
     a month stays a whole month and a quarter a whole quarter regardless of
-    how many days each has.
+    how many days each has. A day range is the exception: it has no anchor,
+    so both of its bounds move back a year (day-clamped, end floored at
+    start + 1 day).
     """
     start = resolved.window.start
     if resolved.kind == _KIND_MONTH:
@@ -318,32 +330,49 @@ def _preceding_word(side: str, start: int) -> str:
     ``for may`` and ``for, may`` read alike.
 
     ``side`` is one side of a comparison, so a right-hand match sees no
-    preceding word rather than the connective that split the text. The two
-    readings cannot disagree: no connective ends in a gate preposition.
+    preceding word rather than the connective that split the text; the
+    gate treats that position as the connective's (see
+    ``_bare_month_is_gated_out``).
     """
     match = _PRECEDING_WORD_RE.search(side[:start])
     return match.group(1) if match is not None else ""
 
 
-def _bare_month_is_gated_out(side: str, match: re.Match[str]) -> bool:
-    """Whether an ambiguous bare month (``may``) lacks the preposition that
+def _bare_month_is_gated_out(
+    side: str, match: re.Match[str], after_connective: bool = False
+) -> bool:
+    """Whether an ambiguous bare month (``may``) lacks the context that
     makes it a date. Every other month, and every month-year spelling,
-    matches unconditionally."""
+    matches unconditionally.
+
+    Two contexts open the gate: a preposition from
+    ``_BARE_MONTH_PREPOSITIONS`` immediately before the word, or -- when
+    ``side`` is the right-hand side of a comparison (``after_connective``)
+    -- nothing but whitespace before it, i.e. the word directly follows the
+    connective (``vs may``, ``compare to may instead``). A ``may`` later on
+    the right-hand side, or anywhere on the left, still needs its
+    preposition.
+    """
     if match.group("bm_m") not in AMBIGUOUS_BARE_MONTHS:
+        return False
+    if after_connective and not side[: match.start()].strip():
         return False
     return _preceding_word(side, match.start()) not in _BARE_MONTH_PREPOSITIONS
 
 
-def _parse_side(side: str, reference: date) -> _SideParse:
+def _parse_side(side: str, reference: date, after_connective: bool = False) -> _SideParse:
     """Resolve the first period phrase in ``side`` against ``reference``.
 
     A gated-out bare month does not end the scan: the text reads on exactly
     as if the word were not a month at all, so a real phrase further along
     the same side is still found, and a side left with nothing takes the
-    ordinary no-phrase path (carry, else none).
+    ordinary no-phrase path (carry, else none). ``after_connective`` marks
+    the right-hand side of a comparison, whose start is a gate context.
     """
     for match in _PHRASE_RE.finditer(side):
-        if match.group("baremonth") is not None and _bare_month_is_gated_out(side, match):
+        if match.group("baremonth") is not None and _bare_month_is_gated_out(
+            side, match, after_connective
+        ):
             continue
         return _resolve(match, reference)
     return _NO_PHRASE
@@ -460,7 +489,7 @@ def parse_periods(
         right = _NO_PHRASE
     else:
         left = _parse_side(cleaned[: split.start()], reference_date)
-        right = _parse_side(cleaned[split.end() :], reference_date)
+        right = _parse_side(cleaned[split.end() :], reference_date, after_connective=True)
 
     # period_a: the left-hand phrase, or last turn's WINDOW when the text
     # named none (D62: the stored end makes a carried year stay a year). An
