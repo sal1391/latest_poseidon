@@ -58,6 +58,7 @@ from poseidon.core.llm.prompts import DEFAULT_PROMPTS_DIR, PromptRegistry
 from poseidon.core.llm.roles import RoleClient
 from poseidon.core.llm.stub import StubProvider
 from poseidon.core.llm.types import LLMResponse, ToolCall
+from poseidon.core.parsing.pipeline import parse_turn
 from poseidon.core.runlog import ReplayTurn, TurnHandle
 from poseidon.core.skills.context import ArtifactRef, ConversationSlots
 from poseidon.core.skills.registry import SkillRegistry
@@ -1222,6 +1223,162 @@ def test_ambiguous_turn_produces_chips_and_text_parts_clarify_status_no_dispatch
     # carry-updated").
     assert state.get("conv-amb").period_a == date(2026, 4, 1)
     assert state.get("conv-amb").customer is None
+
+
+# ===========================================================================
+# execute_turn -- port clarification (P16-R23 Task 2): a port near-miss gets
+# "Port of <candidate>" chips; an unknown port gets a text-only question
+# ===========================================================================
+
+
+def _run_turn_for(monkeypatch, text, *, conversation_id="conv-port"):
+    settings = _settings(monkeypatch, LLM_MODE="stub", LLM_PROFILE="bedrock")
+    data = FakeDataClient()
+    state = ConversationStateStore()
+    writer = RecordingWriter()
+    frames, send = _capturing_send()
+    sink = SseEnvelopeSink(turn_id="t", message_id="m", send=send, registry=REGISTRY)
+    outcome = execute_turn(
+        user=DISABLED_DEFAULT_USER,
+        conversation_id=conversation_id,
+        text=text,
+        client_turn_key=None,
+        settings=settings,
+        registry=REGISTRY,
+        data=data,
+        state=state,
+        writer=writer,
+        role_client=_dev_role_client(settings),
+        prompt_registry=PromptRegistry(DEFAULT_PROMPTS_DIR),
+        sink=sink,
+        reference_date=REFERENCE_DATE,
+    )
+    decoded = [_parse_frame(f) for f in frames]
+    return outcome, decoded, writer, state, data
+
+
+def test_port_near_miss_turn_produces_port_chips_and_port_question_no_dispatch(monkeypatch):
+    outcome, decoded, writer, state, _data = _run_turn_for(
+        monkeypatch, "gross profit in singpore in April 2026"
+    )
+
+    assert outcome.status == "clarify"
+    names = [name for _seq, name, _data in decoded]
+    assert names == ["accepted", "part", "part", "done"]
+
+    chips_data = decoded[1][2]
+    assert chips_data["kind"] == "chips"
+    # The candidate is the pool's own spelling (the fake pool, like the real
+    # seed, stores ports upper-case); the send_text is the "Port of" cue, never
+    # the customer chips' "for" cue.
+    assert chips_data["payload"] == {
+        "options": [
+            {
+                "id": "SINGAPORE",
+                "label": "SINGAPORE",
+                "send_text": orchestrator.PORT_CHIP_SEND_TEXT.format(candidate="SINGAPORE"),
+            }
+        ]
+    }
+    assert chips_data["payload"]["options"][0]["send_text"] == "Port of SINGAPORE"
+
+    text_data = decoded[2][2]
+    assert text_data["kind"] == "text"
+    assert text_data["payload"] == {"markdown": orchestrator.PORT_AMBIGUOUS_TEXT}
+    assert orchestrator.PORT_AMBIGUOUS_TEXT == "Which port did you mean?"
+
+    # No LLM call, no dispatch.
+    assert "tool" not in names
+    assert writer.append_llm_calls == []
+    assert writer.append_tool_calls == []
+
+    assert len(writer.finalize_calls) == 1
+    assert writer.finalize_calls[0]["status"] == "clarify"
+    assert writer.finalize_calls[0]["answer_summary"] == orchestrator.PORT_AMBIGUOUS_TEXT
+
+    # Slots carry-updated: the period resolved even though the port did not.
+    carried = state.get("conv-port")
+    assert carried.period_a == date(2026, 4, 1)
+    assert carried.port is None
+    assert carried.customer is None
+
+
+def test_unknown_port_turn_asks_a_text_only_question_no_chips_no_dispatch(monkeypatch):
+    outcome, decoded, writer, state, _data = _run_turn_for(
+        monkeypatch, "gross profit in Narnia in April 2026"
+    )
+
+    assert outcome.status == "clarify"
+    names = [name for _seq, name, _data in decoded]
+    # Exactly one part, and it is text -- never an empty chips part.
+    assert names == ["accepted", "part", "done"]
+    part = decoded[1][2]
+    assert part["kind"] == "text"
+    expected = orchestrator.PORT_UNKNOWN_TEXT.format(phrase="Narnia")
+    assert part["payload"] == {"markdown": expected}
+    assert expected == 'I don\'t recognise "Narnia" as a port. Which port do you mean?'
+    assert all(d.get("kind") != "chips" for _s, _n, d in decoded)
+
+    assert writer.append_llm_calls == []
+    assert writer.append_tool_calls == []
+    assert len(writer.finalize_calls) == 1
+    assert writer.finalize_calls[0]["status"] == "clarify"
+    assert writer.finalize_calls[0]["answer_summary"] == expected
+    assert state.get("conv-port").period_a == date(2026, 4, 1)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "gp for Meridiann in singpore in April 2026",  # customer ambiguous + port ambiguous
+        "gp for Meridiann in Narnia in April 2026",  # customer ambiguous + port unknown
+    ],
+)
+def test_customer_ambiguity_still_wins_over_a_port_issue(monkeypatch, text):
+    outcome, decoded, writer, _state, _data = _run_turn_for(monkeypatch, text)
+
+    assert outcome.status == "clarify"
+    names = [name for _seq, name, _data in decoded]
+    assert names == ["accepted", "part", "part", "done"]
+    chips_data = decoded[1][2]
+    assert chips_data["kind"] == "chips"
+    assert [o["send_text"] for o in chips_data["payload"]["options"]] == [
+        "for Meridian Tankers",
+        "for Meridian Lines",
+        "for Meridian Shipping",
+    ]
+    assert decoded[2][2]["payload"] == {
+        "markdown": "did you mean one of: Meridian Tankers, Meridian Lines, Meridian Shipping?"
+    }
+    assert writer.append_llm_calls == []
+
+
+def test_customer_kind_unknown_still_does_not_short_circuit(monkeypatch):
+    # Pins today's behaviour: an unknown CUSTOMER is not surfaced as a
+    # clarification -- the turn runs normally through the router.
+    outcome, decoded, writer, _state, _data = _run_turn_for(
+        monkeypatch, "gp for Zzzqx Corp in April 2026"
+    )
+    assert outcome.status != "clarify"
+    assert writer.append_llm_calls != []
+    assert all(row["status"] != "clarify" for row in writer.finalize_calls)
+
+
+def test_port_chip_send_text_round_trips_through_parse_turn(monkeypatch):
+    outcome, decoded, _writer, state, _data = _run_turn_for(
+        monkeypatch, "gross profit in singpore in April 2026"
+    )
+    assert outcome.status == "clarify"
+    send_text = decoded[1][2]["payload"]["options"][0]["send_text"]
+    carried = state.get("conv-port")
+
+    reparsed = parse_turn(send_text, carried, REFERENCE_DATE, FakeDataClient())
+
+    assert reparsed.slots.port == "SINGAPORE"
+    assert reparsed.slots.customer == carried.customer  # no customer read from "Port"
+    assert reparsed.slots.customer is None
+    assert reparsed.slots.period_a == date(2026, 4, 1)  # carried period retained
+    assert reparsed.issues == ()
 
 
 # ===========================================================================
