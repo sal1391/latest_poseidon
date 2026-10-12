@@ -62,12 +62,14 @@ without the trim dash) since it reads text, not render output.
 
 import hashlib
 import re
+from datetime import date
 from pathlib import Path
 
 import jinja2
 
 from poseidon.core.data.specs import PeriodWindow
 from poseidon.core.ontology.models import Entity
+from poseidon.core.parsing.period_labels import label_window, slot_window
 from poseidon.core.parsing.types import CandidateSkill, ParsedTurn, ResolvedEntity
 from poseidon.core.skills.context import ConversationSlots
 from poseidon.core.skills.registry import SkillRegistry
@@ -323,11 +325,12 @@ def render_state_block(slots: ConversationSlots, parsed: ParsedTurn | None) -> s
     slots (see ``pipeline.py``'s own step 8), not a raw resolution like
     customer/port/period.
 
-    ``slots.period_a``/``period_b`` are single first-of-period DATES (see
-    ``ConversationSlots``'s own docstring), not a window pair, so they
-    render as two independent ISO dates -- unlike ``parsed.period_a``/
-    ``period_b``, which ARE half-open :class:`PeriodWindow` pairs and render
-    as a range.
+    ``slots.period_a``/``period_b`` plus their ``_end`` fields (decision
+    D62) are stored half-open windows; they render as a human label and
+    the ISO bounds (``Carried period A: 2025 (2025-01-01..2026-01-01)``)
+    through ``period_labels``, the same module the parser carries them
+    with. ``parsed.period_a``/``period_b`` render as a bare ISO range, as
+    before.
     """
     slot_lines = _render_slots(slots)
     parsed_lines = _render_parsed(parsed) if parsed is not None else []
@@ -355,9 +358,9 @@ def _render_slots(slots: ConversationSlots) -> list[str]:
     if slots.port is not None:
         lines.append(f"Carried port: {slots.port}")
     if slots.period_a is not None:
-        lines.append(f"Carried period A: {slots.period_a.isoformat()}")
+        lines.append(_render_slot_window("Carried period A", slots.period_a, slots.period_a_end))
     if slots.period_b is not None:
-        lines.append(f"Carried period B: {slots.period_b.isoformat()}")
+        lines.append(_render_slot_window("Carried period B", slots.period_b, slots.period_b_end))
     if slots.region is not None:
         lines.append(f"Region: {slots.region}")
     if slots.topic is not None:
@@ -392,6 +395,15 @@ def _render_entity(label: str, entity: ResolvedEntity) -> str:
 
 def _render_window(label: str, window: PeriodWindow) -> str:
     return f"{label}: {window.start.isoformat()}..{window.end.isoformat()}"
+
+
+def _render_slot_window(label: str, start: date, end: date | None) -> str:
+    """``<label>: <human label> (<start>..<end>)`` for a slot's stored window
+    (decision D62). ``slot_window`` supplies the month fallback for a slot
+    with no end, so this line and the parser's carry path can never show
+    the router two different windows."""
+    window = slot_window(start, end)
+    return f"{label}: {label_window(window)} ({window.start.isoformat()}..{window.end.isoformat()})"
 
 
 def _render_hints(hints: tuple[CandidateSkill, ...]) -> str:
