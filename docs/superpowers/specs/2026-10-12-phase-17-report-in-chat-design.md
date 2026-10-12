@@ -103,10 +103,11 @@ period_b_end: date | None = None     # exclusive end of the B window
 `PeriodWindow(start=period_x, end=period_x_end)`. Granularity is not stored; it is derivable from
 the window and only needed for labels.
 
-`history.slots_to_json` writes the two keys as ISO dates or `null`. `slots_from_json` reads them
-and, when a key is **absent** (rows written before this PR), reconstructs the month window from the
-start date — exactly the pre-PR behaviour, so no data migration and no behaviour change for old
-conversations until their next turn rewrites the row.
+`history.slots_to_json` writes the two keys as ISO dates or `null`. `slots_from_json` is a faithful
+inverse: when a key is **absent** (rows written before this PR) the end comes back `None`, and the
+month fallback lives in `period_labels.slot_window` at parse time, which reads a start with no end
+as the month containing it — exactly the pre-PR behaviour, so no data migration and no behaviour
+change for old conversations until their next turn rewrites the row.
 
 ### 4.2 Parser
 
