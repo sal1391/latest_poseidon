@@ -170,10 +170,32 @@ export function createRlsClient(
   return { withUser };
 }
 
-const connectionString =
-  process.env.DRIZZLE_DATABASE_URL ??
-  "postgresql://poseidon:poseidon@localhost:5432/poseidon";
+/**
+ * The runtime DSN, read on every call. There is deliberately NO fallback: a
+ * guessed `localhost:5432` can belong to an unrelated Postgres on a developer
+ * machine, and `drizzle.config.ts` already refuses to guess (ruling P16-R9).
+ * The runtime refuses the same way (P16-R14). Blank counts as unset.
+ */
+export function databaseUrl(): string {
+  const url = process.env.DRIZZLE_DATABASE_URL;
+  if (url === undefined || url.trim() === "") {
+    throw new Error(
+      "DRIZZLE_DATABASE_URL is unset: refusing to guess which database to connect to",
+    );
+  }
+  return url;
+}
+
+/** Built on the first `withUser` call, never at import: modules that import
+ * `withUser` must stay importable with the variable unset (the offline suite). */
+let defaultClient: RlsClient | undefined;
 
 /** The default instance every caller uses. Same signature as before the
  * factory existed, so no call site changes. */
-export const { withUser } = createRlsClient(connectionString);
+export async function withUser<T>(
+  sub: string,
+  fn: (tx: Database) => Promise<T> | T,
+): Promise<T> {
+  defaultClient ??= createRlsClient(databaseUrl());
+  return defaultClient.withUser(sub, fn);
+}

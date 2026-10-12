@@ -17,8 +17,12 @@ than reimplementing anything.
 4. The existing Vite app keeps running separately on **:5173**; this app does
    not replace it yet.
 
-Set `DRIZZLE_DATABASE_URL` for this app to reach Postgres. Its default is
-`postgresql://poseidon:poseidon@localhost:5432/poseidon` — note this differs
+**`DRIZZLE_DATABASE_URL` is required at runtime and has no default.** The app
+refuses to start (`bootCheck` throws) and every database call refuses to run
+when it is unset or blank (ruling P16-R14): a guessed `localhost:5432` can be
+an unrelated project's Postgres on a developer machine, so the runtime refuses
+to guess, exactly as `drizzle.config.ts` does. Set it explicitly to whichever
+host port your compose `db` is published on (see below). Note this differs
 from Python's `DATABASE_URL`, which compose sets as
 `postgresql+psycopg://...`; `+psycopg` is SQLAlchemy syntax and Drizzle
 rejects it.
@@ -84,7 +88,7 @@ against the compose `db` service.
 | `IDENTITY_MODE` | `disabled` | `disabled` \| `spcs_ingress` \| `auth0` (auth0 not wired this phase) |
 | `DEPLOY_MODE` | `local` | Must be `spcs` for the `spcs_ingress` identity header to be trusted |
 | `SPCS_SALES_USERS` | `""` (empty) | Comma-separated allowlist for the `Poseidon:Sales` role; empty grants nobody, `*` grants everyone |
-| `DRIZZLE_DATABASE_URL` | `postgresql://poseidon:poseidon@localhost:5432/poseidon` | Plain `postgresql://`, not Python's `+psycopg` DSN |
+| `DRIZZLE_DATABASE_URL` | none (required) | Plain `postgresql://`, not Python's `+psycopg` DSN. No fallback: unset or blank makes boot and every query throw rather than guess `localhost:5432` (P16-R14) |
 | `DATABASE_APP_ROLE` | `poseidon_app` | **Empty disables the role switch — and therefore RLS — when the DSN authenticates as a superuser.** |
 | `BACKEND_ORIGIN` | `http://localhost:8000` | Target of the `/api/*` dev rewrite |
 | `ANALYTICS_ORIGIN` | falls back to `BACKEND_ORIGIN`, then `http://localhost:8000` | Where skill dispatch is sent |
