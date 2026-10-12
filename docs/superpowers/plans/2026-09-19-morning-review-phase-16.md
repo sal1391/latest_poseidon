@@ -1,5 +1,15 @@
 # Morning review — 2026-09-19 (Phase 16 execution run)
 
+## Status as of 2026-10-12
+
+Phase 16 merged as PR #5 (merge commit 0e0db19). Decision items below:
+
+- P16-R20 (composer after an error): kept as built.
+- P16-R14: the runtime now throws when `DRIZZLE_DATABASE_URL` is unset (commit 3fa39ad).
+- Item 3 (chip-click trace gap): explained. Normal chip turns log full spans; only the opener flow chips ("Existing customer", "New customer prospect") return before the parse/route spans, so they log none. Carried forward.
+- Item 4 (PDF round trip): verified live in the browser on 2026-10-12 after adding `127.0.0.1 minio` to the Windows hosts file.
+- P16-R13: no action.
+
 Branch: **`phase-16-chat-parity`**, 30 commits on top of `main` (`a07b5cc`), HEAD `ed4efd2`. **NOT pushed, no PR.**
 Ledger with every dispatch, verdict and ruling: `.superpowers/sdd/2026-09-19-phase-16-chat-parity/progress.md`.
 
@@ -38,7 +48,7 @@ wrong) · R20 busy semantics · R21 final fix wave scope.
 ## Your click gate (spec §12)
 1. Docker Desktop up. `docker compose -f infra/docker-compose.yml -f .superpowers/sdd/2026-09-07-phase-15-migration-foundation/compose.db-5434.yml down -v` then `up -d`. Watch `migrate` finish, `backend` seed, no Alembic in the logs. (MinIO clashes on 9000 with the other project; add the Phase 15 `compose.minio-9100.yml` override as a third `-f` if you want artifacts.)
 2. `cd web`; PowerShell: `$env:DRIZZLE_DATABASE_URL="postgresql://poseidon:poseidon@localhost:5434/poseidon"; $env:POSEIDON_INTERNAL_TOKEN="dev-internal-token"; $env:ANALYTICS_ORIGIN="http://localhost:8000"; npm run dev`
-3. http://localhost:3000 → **New conversation** → send `top customers by gross profit in Singapore`. Tool line, table, proof, sentence stream in.
+3. http://localhost:3000 → **New conversation** → send `top customers by gross profit in Singapore in April 2026` (the offline stub router needs a resolved period; without one it answers with the capability line). Tool line, table, proof, sentence stream in.
 4. Send an ambiguous customer name; click a chip.
 5. New conversation → click **Existing customer** → give a customer; phase sections and tool lines appear.
 6. Reload: same parts from history. http://localhost:5173 still works.
