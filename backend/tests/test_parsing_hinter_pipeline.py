@@ -1131,6 +1131,15 @@ _SILENT_CASES = [
     # A customer, not a port: "Meridian Marine" scores ~0.70 against the
     # pool's "Meridian Shipping", so the customer-like guard holds.
     SilentCase("gross profit at Meridian Marine in April 2026", "gross profit in April 2026"),
+    # Metric/unit/measure words: each fuzzy-collides with a seeded port name
+    # ("tons" ~ Santos 0.80, "gross" ~ Lagos, "prices" ~ Piraeus), so the
+    # lowercase capture treats them as stop words (P16-R23 fix round).
+    SilentCase("volume in tons for April 2026", "volume for April 2026"),
+    SilentCase("gross profit in usd in April 2026", "gross profit in April 2026"),
+    SilentCase("show prices in April 2026", "show in April 2026"),
+    SilentCase("show the numbers at prices in April 2026", "show the numbers in April 2026"),
+    SilentCase("revenue at gross level in April 2026", "revenue level in April 2026"),
+    SilentCase("volume in mt in April 2026", "volume in April 2026"),
 ]
 
 
@@ -1173,6 +1182,49 @@ def test_customer_issues_keep_the_customer_kind():
     parsed = parse_turn("gp for Acme Corp in april 2026", NO_SLOTS, REF, FakeDataClient())
     (issue,) = parsed.issues
     assert issue.kind == "customer"
+
+
+def _seed_port_client() -> FakeDataClient:
+    """The 30 seeded LOC_NM values (ontology/synthetic/profiles.yml) -- the
+    pool the metric/unit collisions were found against."""
+    return FakeDataClient(ports=_SEED_PORTS)
+
+
+_SEED_PORTS = (
+    "Singapore", "Rotterdam", "Fujairah", "Houston", "Santos", "Hamburg", "Piraeus",
+    "Busan", "Hong Kong", "Gibraltar", "Malta", "Istanbul", "Durban", "Lagos", "Colombo",
+    "Jebel Ali", "Antwerp", "New Orleans", "Los Angeles", "Panama City", "Balboa",
+    "Algeciras", "Zhoushan", "Kaohsiung", "Port Louis", "Suez", "Las Palmas", "Vancouver",
+    "Callao", "Tanjung Pelepas",
+)  # fmt: skip
+
+
+@pytest.mark.parametrize("case", _SILENT_CASES, ids=[c.message for c in _SILENT_CASES])
+def test_ordinary_english_stays_silent_against_the_seeded_port_pool(case: SilentCase):
+    parsed = parse_turn(case.message, NO_SLOTS, REF, _seed_port_client())
+    baseline = parse_turn(case.without_place, NO_SLOTS, REF, _seed_port_client())
+
+    assert _port_issues(parsed) == []
+    assert parsed.port is None
+    assert parsed.period_a == baseline.period_a
+
+
+@pytest.mark.parametrize("case", _ASKS_CASES, ids=[c.message for c in _ASKS_CASES])
+def test_metric_stop_words_never_swallow_a_misspelled_port(case: PortCueCase):
+    """Guard: the metric/unit stop words must not stop the capture before a
+    real near-miss -- "singpore"/"signpore" still ask, against both pools."""
+    for client in (_wide_client(), _seed_port_client()):
+        parsed = parse_turn(case.message, NO_SLOTS, REF, client)
+        (issue,) = parsed.issues
+        assert issue.code == "customer_ambiguous"
+        assert issue.kind == "port"
+        assert issue.candidates[0] == case.expected
+
+
+def test_metric_word_after_a_cue_never_fetches_the_port_pool():
+    client = _seed_port_client()
+    parse_turn("volume in tons for April 2026", NO_SLOTS, REF, client)
+    assert ("list_dimension_values", "LOC_NM") not in client.calls
 
 
 def test_no_candidate_phrase_never_fetches_the_port_pool():

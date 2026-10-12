@@ -115,7 +115,10 @@ is a candidate when a phrase follows it:
   stopping at the first stop token -- any punctuation mark; the words in,
   on, at, for, of, and, by, during, from, to, vs, versus, with, than, the,
   a, an, this, last, next, previous, past, ytd, mtd, qtd; a ``q[1-4]``,
-  ``h[1-2]`` or ``fy\\d*`` token; a four-digit year; or a month word. A cue
+  ``h[1-2]`` or ``fy\\d*`` token; a four-digit year; a month word; or a
+  metric/unit/measure word (``_METRIC_STOP_WORDS``: tons, usd, gross,
+  prices, volume and the like, which fuzzy-collide with seeded port names
+  such as Santos, Lagos and Piraeus). A cue
   whose FIRST following word is a stop token has no phrase at all ("in the
   last quarter", "in april 2026", "at the moment"), and when no cue has a
   phrase the port pool is never fetched.
@@ -161,9 +164,10 @@ issue) decides the turn; a silent miss is skipped, so "gross profit at
 risk in singapore" still finds Singapore. Known gaps, accepted for now: a
 capitalised non-port place after a weak cue ("in Europe", "in APAC") asks
 "which port?", because it is neither period-like nor customer-like; and a
-lowercase English word that happens to sit within fuzzy reach of a real
-port name is asked about rather than ignored ("in tons" scores 0.80
-against "Santos" in the seeded pool).
+lowercase English word outside the stop lists that happens to sit within
+fuzzy reach of a real port name is asked about rather than ignored (the
+known metric/unit collisions -- "in tons" scores 0.80 against "Santos" --
+are stop words for exactly that reason).
 
 Why the port span is blanked first
 ------------------------------------
@@ -350,6 +354,39 @@ _CAPTURE_STOP_WORDS = frozenset(
         "qtd",
     }
 )
+# Metric/unit/measure words that fuzzy-collide with port names ("tons" ~
+# Santos, "gross" ~ Lagos, "prices" ~ Piraeus); found by scoring sales words
+# against the seeded LOC_NM pool. They end a lowercase capture like any stop
+# word, so "volume in tons" has no port phrase at all.
+_METRIC_STOP_WORDS = frozenset(
+    {
+        "tons",
+        "ton",
+        "tonnes",
+        "tonne",
+        "mt",
+        "metric",
+        "usd",
+        "dollars",
+        "dollar",
+        "euros",
+        "gross",
+        "net",
+        "price",
+        "prices",
+        "terms",
+        "percent",
+        "pct",
+        "barrels",
+        "bbl",
+        "units",
+        "volume",
+        "volumes",
+        "revenue",
+        "profit",
+        "margin",
+    }
+)
 # Quarter, half, fiscal-year and four-digit-year tokens: period words that
 # end a capture and make a capitalised phrase "period-like".
 _PERIOD_TOKEN_RE = re.compile(r"q[1-4]|h[12]|fy\d*|\d{4}", re.IGNORECASE)
@@ -486,12 +523,14 @@ def _quoted_match(text: str) -> _Detected | None:
 
 def _is_capture_stop(token: str) -> bool:
     """Whether ``token`` ends a lowercase capture: any punctuation mark, a
-    stop word, a month word, or a quarter/half/fiscal/year token."""
+    stop word (including a metric/unit word), a month word, or a
+    quarter/half/fiscal/year token."""
     if not token[0].isalnum() and token[0] != "_":
         return True
     folded = token.casefold()
     return (
         folded in _CAPTURE_STOP_WORDS
+        or folded in _METRIC_STOP_WORDS
         or folded in _MONTH_WORDS
         or _PERIOD_TOKEN_RE.fullmatch(folded) is not None
     )
