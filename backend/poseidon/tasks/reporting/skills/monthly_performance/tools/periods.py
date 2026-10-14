@@ -5,7 +5,6 @@ knows what a comparison basis means. Whether the month is present in the data
 is the skill's check, not this module's.
 """
 
-import calendar
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Literal
@@ -13,6 +12,7 @@ from typing import Literal
 from poseidon.core.data.specs import PeriodWindow
 from poseidon.core.parsing.period_labels import (
     add_months,
+    label_day_range,
     label_month_to_date,
     label_window,
     month_window,
@@ -33,18 +33,6 @@ class ResolvedPeriods:
     label_current: str
     label_prior: str
     window_kind: WindowKind
-
-
-def _label_mtd_prior(prior: PeriodWindow) -> str:
-    """``label_window(prior)``, except a prior clamped to its whole month is
-    still named as a day range ("February 1 to 28, 2026"): label_window would
-    call it "February 2026", which reads as the full month next to a
-    month-to-date current."""
-    label = label_window(prior)
-    if prior.start.day == 1 and add_months(prior.start, 1) == prior.end:
-        last = prior.end - timedelta(days=1)
-        return f"{calendar.month_name[last.month]} 1 to {last.day}, {last.year}"
-    return label
 
 
 def resolve_periods(
@@ -73,5 +61,5 @@ def resolve_periods(
     current = PeriodWindow(month, month + timedelta(days=n))
     prior = PeriodWindow(prior_first, min(prior_first + timedelta(days=n), month))
     return ResolvedPeriods(
-        current, prior, label_month_to_date(current), _label_mtd_prior(prior), "mtd"
+        current, prior, label_month_to_date(current), label_day_range(prior), "mtd"
     )

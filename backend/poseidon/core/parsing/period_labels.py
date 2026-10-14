@@ -112,6 +112,13 @@ def label_window(window: PeriodWindow) -> str:
         return f"{start.year}"
     if kind == KIND_YTD:
         return f"{start.year} year to date"
+    return label_day_range(window)
+
+
+def label_day_range(window: PeriodWindow) -> str:
+    """``window`` always named as a day range ("February 1 to 28, 2026"),
+    even when it happens to span a whole month, quarter or year."""
+    start = window.start
     last = window.end - timedelta(days=1)
     if start.year == last.year and start.month == last.month:
         return f"{_MONTH_NAMES[start.month - 1]} {start.day} to {last.day}, {start.year}"
@@ -140,6 +147,7 @@ __all__ = [
     "WindowKind",
     "add_months",
     "days_in_month",
+    "label_day_range",
     "label_month_to_date",
     "label_window",
     "month_window",
