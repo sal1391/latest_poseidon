@@ -950,6 +950,16 @@ def _metric_spec(entity: str, scope_value: str | None) -> MetricQuerySpec:
         entity=entity, metrics=("GP",), period=APRIL, scope_value=scope_value)
 
 
+def _frame_spec(entity: str, scope_value: str | None) -> FrameQuerySpec:
+    return FrameQuerySpec(
+        entity=entity,
+        metrics=("GP",),
+        period=APRIL,
+        group_by=("CUST_NM",),
+        scope_value=scope_value,
+    )
+
+
 def _breakdown_spec(entity: str, scope_value: str | None) -> BreakdownQuerySpec:
     return BreakdownQuerySpec(
         entity=entity,
@@ -1104,6 +1114,14 @@ def test_declared_row_scope_without_a_scope_value_is_refused_by_every_builder(fi
         qb.build_period_range_query("SCOPED_FIXTURE_V", "postgres")
     assert str(exc_info.value) == _DECLARED_NO_VALUE
 
+    with pytest.raises(qb.SpecValidationError) as exc_info:
+        qb.build_frame_query(_frame_spec("SCOPED_FIXTURE_V", None), "postgres")
+    assert str(exc_info.value) == _DECLARED_NO_VALUE
+
+    with pytest.raises(qb.SpecValidationError) as exc_info:
+        qb.build_months_query("SCOPED_FIXTURE_V", {}, "postgres")
+    assert str(exc_info.value) == _DECLARED_NO_VALUE
+
 
 def test_scope_value_for_an_undeclared_entity_is_refused_by_every_builder(fixture_ontology):
     """The symmetric half. A caller that believes scoping applies where the
@@ -1125,6 +1143,26 @@ def test_scope_value_for_an_undeclared_entity_is_refused_by_every_builder(fixtur
     with pytest.raises(qb.SpecValidationError) as exc_info:
         qb.build_period_range_query("UNSCOPED_FIXTURE_V", "postgres", scope_value=SCOPE_VALUE)
     assert str(exc_info.value) == _UNDECLARED_BUT_SUPPLIED
+
+    with pytest.raises(qb.SpecValidationError) as exc_info:
+        qb.build_frame_query(_frame_spec("UNSCOPED_FIXTURE_V", SCOPE_VALUE), "postgres")
+    assert str(exc_info.value) == _UNDECLARED_BUT_SUPPLIED
+
+    with pytest.raises(qb.SpecValidationError) as exc_info:
+        qb.build_months_query("UNSCOPED_FIXTURE_V", {}, "postgres", scope_value=SCOPE_VALUE)
+    assert str(exc_info.value) == _UNDECLARED_BUT_SUPPLIED
+
+
+def test_scoped_months_query_postgres(fixture_ontology):
+    """Filter first, scope LAST; the scope value is the LAST bound param."""
+    sql, params = qb.build_months_query(
+        "SCOPED_FIXTURE_V", {"CUST_NM": ("Acme",)}, "postgres", scope_value=SCOPE_VALUE)
+    assert sql == (
+        "SELECT DISTINCT CAST(DATE_TRUNC('month', LIFT_ETA_DATE) AS DATE) AS \"MONTH\"\n"
+        "FROM synthetic.scoped_fixture_v\n"
+        "WHERE COALESCE(CUST_NM, 'Unknown') IN (%s) AND PRIMARY_BRKR = %s\n"
+        "ORDER BY 1")
+    assert params == ["Acme", SCOPE_VALUE]
 
 
 def test_a_certified_entity_refuses_a_scope_value_too():
