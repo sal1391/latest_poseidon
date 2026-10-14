@@ -7,6 +7,7 @@ The LLM never authors SQL: callers build one of the frozen specs in
 ``docs/architecture/04-data-ontology.md`` §3.
 """
 
+from .client import FrameResult, FrameRow
 from .query_builder import (
     SpecValidationError,
     build_breakdown_query,
@@ -21,6 +22,8 @@ from .specs import BreakdownQuerySpec, FrameQuerySpec, MetricQuerySpec, PeriodWi
 __all__ = [
     "BreakdownQuerySpec",
     "FrameQuerySpec",
+    "FrameResult",
+    "FrameRow",
     "MetricQuerySpec",
     "PeriodWindow",
     "SpecValidationError",
