@@ -617,7 +617,14 @@ class DevDeterministicRouter:
     """
 
     def invoke(
-        self, *, system: str, messages: list[dict], tools: list[dict], model: str, params: dict
+        self,
+        *,
+        system: str,
+        messages: list[dict],
+        tools: list[dict],
+        model: str,
+        params: dict,
+        tool_choice: str | None = None,
     ) -> LLMResponse:
         """Dispatch per the module docstring's behavior table.
 

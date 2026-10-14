@@ -83,7 +83,14 @@ class LLMProvider(Protocol):
     """
 
     def invoke(
-        self, *, system: str, messages: list[dict], tools: list[dict], model: str, params: dict
+        self,
+        *,
+        system: str,
+        messages: list[dict],
+        tools: list[dict],
+        model: str,
+        params: dict,
+        tool_choice: str | None = None,
     ) -> LLMResponse: ...
 
 
@@ -195,6 +202,7 @@ class RoleClient:
         system: str,
         messages: list[dict],
         tools: list[dict] = [],  # noqa: B006 -- never mutated; pinned interface (task-1 brief)
+        tool_choice: str | None = None,
     ) -> LLMResponse:
         """Resolve ``role`` and dispatch through the mode-selected provider.
 
@@ -245,6 +253,9 @@ class RoleClient:
         # back exactly what provider.invoke produces (or lets its exception
         # propagate unchanged), since a `with` block's own exit runs before
         # a `return` inside it actually completes either way.
+        # tool_choice reaches the provider ONLY when set, so providers (and
+        # test doubles) that predate it keep their signatures.
+        extra = {} if tool_choice is None else {"tool_choice": tool_choice}
         with span(f"llm:{role}"):
             return provider.invoke(
                 system=system,
@@ -252,4 +263,5 @@ class RoleClient:
                 tools=tools,
                 model=config.model,
                 params=config.params,
+                **extra,
             )

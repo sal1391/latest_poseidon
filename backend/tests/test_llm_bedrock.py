@@ -1094,3 +1094,24 @@ def test_llm_bedrock_module_files_are_ascii_on_disk():
     for path in paths:
         offending = sorted({byte for byte in path.read_bytes() if byte > 0x7F})
         assert not offending, f"{path.name} holds non-ASCII bytes: {offending}"
+
+
+def test_forced_tool_choice_is_translated_to_the_bedrock_name():
+    request = bedrock._build_request(
+        system="s",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[
+            {"name": "reporting.narrate", "description": "d", "input_schema": {"type": "object"}}
+        ],
+        model="m",
+        params={},
+        tool_choice="reporting.narrate",
+    )
+    assert request["toolConfig"]["toolChoice"] == {"tool": {"name": "reporting__narrate"}}
+
+
+def test_forced_tool_choice_without_tools_is_an_error():
+    with pytest.raises(ValueError, match="tool_choice requires at least one tool"):
+        bedrock._build_request(
+            system="s", messages=[], tools=[], model="m", params={}, tool_choice="x"
+        )

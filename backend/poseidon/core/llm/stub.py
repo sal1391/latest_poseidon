@@ -29,7 +29,14 @@ class StubProvider:
         self.calls: list[dict] = []
 
     def invoke(
-        self, *, system: str, messages: list[dict], tools: list[dict], model: str, params: dict
+        self,
+        *,
+        system: str,
+        messages: list[dict],
+        tools: list[dict],
+        model: str,
+        params: dict,
+        tool_choice: str | None = None,
     ) -> LLMResponse:
         """Record the request, then pop the next scripted response.
 
@@ -45,6 +52,7 @@ class StubProvider:
                 "tools": tools,
                 "model": model,
                 "params": params,
+                "tool_choice": tool_choice,
             }
         )
         if not self._script:
