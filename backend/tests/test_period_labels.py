@@ -16,6 +16,8 @@ import pytest
 from poseidon.core.data.specs import PeriodWindow
 from poseidon.core.parsing import period_labels
 from poseidon.core.parsing.period_labels import (
+    days_in_month,
+    label_month_to_date,
     label_window,
     month_window,
     slot_window,
@@ -104,3 +106,12 @@ def test_module_is_ascii_on_disk():
     for path in (Path(period_labels.__file__), Path(__file__)):
         offending = sorted({byte for byte in path.read_bytes() if byte > 0x7F})
         assert not offending, f"{path.name} holds non-ASCII bytes: {offending}"
+
+
+def test_label_month_to_date_appends_the_words_once():
+    window = PeriodWindow(date(2026, 10, 1), date(2026, 10, 12))
+    assert label_month_to_date(window) == "October 1 to 11, 2026 (month to date)"
+
+
+def test_days_in_month_knows_leap_years():
+    assert days_in_month(2028, 2) == 29 and days_in_month(2027, 2) == 28

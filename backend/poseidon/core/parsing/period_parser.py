@@ -103,7 +103,16 @@ from datetime import date, timedelta
 from poseidon.core.data.client import PeriodRange
 from poseidon.core.data.specs import PeriodWindow
 from poseidon.core.parsing.normalize import normalize
-from poseidon.core.parsing.period_labels import KIND_RANGE, slot_window, window_kind
+from poseidon.core.parsing.period_labels import (
+    KIND_MONTH,
+    KIND_QUARTER,
+    KIND_RANGE,
+    KIND_YEAR,
+    KIND_YTD,
+    month_window,
+    slot_window,
+    window_kind,
+)
 from poseidon.core.parsing.types import ParseIssue
 from poseidon.core.skills.context import ConversationSlots
 
@@ -192,12 +201,6 @@ _COMPARISON_RE = re.compile(
     r"\bvs\b\.?|\bversus\b|\bcompared?\s+(?:to|with)\b"
 )
 
-_KIND_MONTH = "month"
-_KIND_QUARTER = "quarter"
-_KIND_YEAR = "year"
-_KIND_YTD = "ytd"
-_KIND_RANGE = KIND_RANGE
-
 
 @dataclass(frozen=True)
 class PeriodParse:
@@ -242,13 +245,6 @@ _NO_PHRASE = _SideParse(resolved=None, matched=False, prior_year_relative=False,
 # ---------------------------------------------------------------------------
 # Window construction
 # ---------------------------------------------------------------------------
-
-
-def _month_window(year: int, month: int) -> PeriodWindow:
-    """``[first of the month, first of the next month)``."""
-    if month == 12:
-        return PeriodWindow(date(year, 12, 1), date(year + 1, 1, 1))
-    return PeriodWindow(date(year, month, 1), date(year, month + 1, 1))
 
 
 def _quarter_window(year: int, quarter: int) -> PeriodWindow:
@@ -299,14 +295,14 @@ def _shift_back_one_year(resolved: _Resolved) -> _Resolved:
     start + 1 day).
     """
     start = resolved.window.start
-    if resolved.kind == _KIND_MONTH:
-        return _Resolved(_month_window(start.year - 1, start.month), _KIND_MONTH)
-    if resolved.kind == _KIND_QUARTER:
+    if resolved.kind == KIND_MONTH:
+        return _Resolved(month_window(start.year - 1, start.month), KIND_MONTH)
+    if resolved.kind == KIND_QUARTER:
         quarter = (start.month - 1) // 3 + 1
-        return _Resolved(_quarter_window(start.year - 1, quarter), _KIND_QUARTER)
-    if resolved.kind == _KIND_YEAR:
-        return _Resolved(_year_window(start.year - 1), _KIND_YEAR)
-    if resolved.kind == _KIND_RANGE:
+        return _Resolved(_quarter_window(start.year - 1, quarter), KIND_QUARTER)
+    if resolved.kind == KIND_YEAR:
+        return _Resolved(_year_window(start.year - 1), KIND_YEAR)
+    if resolved.kind == KIND_RANGE:
         # The end is floored at start + 1 day because both bounds can clamp
         # to the same day when the range ends on Feb 29 and the prior year
         # is not a leap year; an empty window would raise mid-turn.
@@ -314,9 +310,9 @@ def _shift_back_one_year(resolved: _Resolved) -> _Resolved:
         shifted_end = max(
             _same_day_prior_year(resolved.window.end), shifted_start + timedelta(days=1)
         )
-        return _Resolved(PeriodWindow(shifted_start, shifted_end), _KIND_RANGE)
+        return _Resolved(PeriodWindow(shifted_start, shifted_end), KIND_RANGE)
     shifted_end = _same_day_prior_year(resolved.window.end)
-    return _Resolved(PeriodWindow(date(start.year - 1, 1, 1), shifted_end), _KIND_YTD)
+    return _Resolved(PeriodWindow(date(start.year - 1, 1, 1), shifted_end), KIND_YTD)
 
 
 # ---------------------------------------------------------------------------
@@ -381,27 +377,27 @@ def _parse_side(side: str, reference: date, after_connective: bool = False) -> _
 def _resolve(match: re.Match[str], reference: date) -> _SideParse:
     """Turn one accepted phrase match into a window plus its shape."""
     if match.group("iso") is not None:
-        window = _month_window(int(match.group("iso_y")), int(match.group("iso_m")))
-        return _phrase(window, _KIND_MONTH)
+        window = month_window(int(match.group("iso_y")), int(match.group("iso_m")))
+        return _phrase(window, KIND_MONTH)
 
     if match.group("monthyear") is not None:
-        window = _month_window(int(match.group("my_y")), _MONTHS[match.group("my_m")])
-        return _phrase(window, _KIND_MONTH)
+        window = month_window(int(match.group("my_y")), _MONTHS[match.group("my_m")])
+        return _phrase(window, KIND_MONTH)
 
     if match.group("quarteryear") is not None:
         window = _quarter_window(int(match.group("qy_y")), int(match.group("qy_q")))
-        return _phrase(window, _KIND_QUARTER)
+        return _phrase(window, KIND_QUARTER)
 
     if match.group("ytd") is not None:
         window = _ytd_window(reference)
         if window is None:
             return _SideParse(None, matched=True, prior_year_relative=False,
                               ytd_unavailable=True)
-        return _phrase(window, _KIND_YTD)
+        return _phrase(window, KIND_YTD)
 
     if match.group("prioryear") is not None:
         return _SideParse(
-            _Resolved(_year_window(reference.year - 1), _KIND_YEAR),
+            _Resolved(_year_window(reference.year - 1), KIND_YEAR),
             matched=True,
             prior_year_relative=True,
             ytd_unavailable=False,
@@ -409,14 +405,14 @@ def _resolve(match: re.Match[str], reference: date) -> _SideParse:
 
     if match.group("baremonth") is not None:
         month = _MONTHS[match.group("bm_m")]
-        return _phrase(_month_window(_most_recent_year(month, reference), month), _KIND_MONTH)
+        return _phrase(month_window(_most_recent_year(month, reference), month), KIND_MONTH)
 
     if match.group("barequarter") is not None:
         quarter = int(match.group("bq_q"))
         year = _most_recent_year(3 * quarter - 2, reference)
-        return _phrase(_quarter_window(year, quarter), _KIND_QUARTER)
+        return _phrase(_quarter_window(year, quarter), KIND_QUARTER)
 
-    return _phrase(_year_window(int(match.group("by_y"))), _KIND_YEAR)
+    return _phrase(_year_window(int(match.group("by_y"))), KIND_YEAR)
 
 
 def _phrase(window: PeriodWindow, kind: str) -> _SideParse:

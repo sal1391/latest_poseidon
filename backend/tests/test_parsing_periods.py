@@ -56,6 +56,7 @@ import pytest
 from poseidon.core.data.client import PeriodRange
 from poseidon.core.data.specs import PeriodWindow
 from poseidon.core.parsing import period_parser
+from poseidon.core.parsing.period_labels import month_window
 from poseidon.core.parsing.period_parser import PeriodParse, parse_periods
 from poseidon.core.parsing.types import ParseIssue
 from poseidon.core.skills.context import ConversationSlots
@@ -726,6 +727,21 @@ CASES = [
         ),
     ),
     Case(
+        "vs_last_year_on_a_range_starting_29_feb_clamps_the_start",
+        "vs last year",
+        ConversationSlots(period_a=date(2028, 2, 29), period_a_end=date(2028, 3, 5)),
+        REF,
+        # WIDE ends 2026-12-31, so the carried 2028 range would trip availability.
+        PeriodRange(date(2018, 1, 1), date(2028, 12, 31)),
+        PeriodParse(
+            PeriodWindow(date(2028, 2, 29), date(2028, 3, 5)),
+            PeriodWindow(date(2027, 2, 28), date(2027, 3, 5)),
+            "carry",
+            "text",
+            None,
+        ),
+    ),
+    Case(
         # An unresolvable right side is not a silent reset of the comparison.
         "an_unresolvable_comparison_side_keeps_the_carried_comparison",
         "compared to acme corp",
@@ -1107,3 +1123,11 @@ def test_module_documents_window_carry_and_no_longer_claims_a_limitation():
     doc = period_parser.__doc__ or ""
     assert "KNOWN v1 LIMITATION" not in doc
     assert "period_b" in doc and "carried" in doc.casefold()
+
+
+def test_period_parser_reuses_period_labels_instead_of_private_copies():
+    import poseidon.core.parsing.period_parser as parser
+
+    assert not hasattr(parser, "_month_window")
+    assert not hasattr(parser, "_KIND_MONTH")
+    assert parser.month_window is month_window  # the one from period_labels
