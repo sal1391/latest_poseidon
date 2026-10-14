@@ -22,7 +22,7 @@
 // and backend/tests/test_rls_policies.py (-m pg) against a Drizzle-migrated
 // database.
 
-import { pgTable, index, foreignKey, unique, pgPolicy, pgRole, check, uuid, text, integer, jsonb, timestamp, boolean, primaryKey } from "drizzle-orm/pg-core"
+import { pgTable, index, foreignKey, unique, pgPolicy, pgRole, check, uuid, text, integer, jsonb, timestamp, boolean, primaryKey, date, customType } from "drizzle-orm/pg-core"
 import { sql } from "drizzle-orm"
 
 // Created by web/drizzle/0000_roles.sql with idempotent DO blocks (migrations
@@ -125,8 +125,41 @@ export const conversations = pgTable("conversations", {
 }, (table) => [
 	index("ix_conversations_user_recency").on(table.userSub, table.updatedAt.desc().nullsFirst(), table.id.desc().nullsFirst()),
 	owner("conversations"),
-	check("ck_conversations_mode", sql`mode = ANY (ARRAY['existing'::text, 'prospect'::text, 'default'::text])`),
+	check("ck_conversations_mode", sql`mode = ANY (ARRAY['existing'::text, 'prospect'::text, 'default'::text, 'report'::text])`),
 ]).enableRLS();
+
+const bytea = customType<{ data: Buffer }>({ dataType() { return "bytea"; } });
+
+export const reportRun = pgTable("report_run", {
+	id: uuid().primaryKey().notNull(),
+	definitionId: uuid("definition_id"),
+	perspective: text().notNull(),
+	officeColumn: text("office_column"),
+	officeValue: text("office_value"),
+	periodCurrentStart: date("period_current_start").notNull(),
+	periodCurrentEnd: date("period_current_end").notNull(),
+	periodPriorStart: date("period_prior_start").notNull(),
+	periodPriorEnd: date("period_prior_end").notNull(),
+	windowKind: text("window_kind").notNull(),
+	basis: text().default('prior_month').notNull(),
+	status: text().notNull(),
+	payloadVersion: integer("payload_version").notNull(),
+	payload: jsonb().notNull(),
+	html: bytea(),
+	pdf: bytea(),
+	narrativeGrounded: boolean("narrative_grounded").notNull(),
+	source: text().notNull(),
+	createdBy: text("created_by").notNull(),
+	conversationId: uuid("conversation_id"),
+	supersededBy: uuid("superseded_by"),
+	generatedAt: timestamp("generated_at", { withTimezone: true, mode: 'string' }).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	check("ck_report_run_perspective", sql`perspective = ANY (ARRAY['customer'::text, 'supplier'::text, 'book'::text])`),
+	check("ck_report_run_office_column", sql`office_column IS NULL OR office_column = ANY (ARRAY['CUSTOMER_TEAM_NAME'::text, 'PRIMARY_SUPPLY_TEAM_OFFICE'::text])`),
+	check("ck_report_run_window_kind", sql`window_kind = ANY (ARRAY['complete'::text, 'mtd'::text])`),
+	check("ck_report_run_status", sql`status = ANY (ARRAY['ok'::text, 'error'::text])`),
+]);
 
 export const turnRun = pgTable("turn_run", {
 	id: uuid().primaryKey().notNull(),

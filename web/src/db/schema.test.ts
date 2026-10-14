@@ -159,4 +159,18 @@ describe("schema.ts is the migration source (Phase 16 Task 6)", () => {
     expect(Object.keys(found)).toHaveLength(6);
     expect(found).toEqual(INDEXES);
   });
+
+  it("report_run is a shared org document: no RLS, no policies, four checks", () => {
+    const table = findTable("report_run");
+    expect(table).toBeDefined();
+    const cfg = getTableConfig(table as never);
+    expect(cfg.enableRLS).toBe(false);
+    expect(cfg.policies).toHaveLength(0);
+    expect(cfg.checks.map((c) => c.name).sort()).toEqual([
+      "ck_report_run_office_column",
+      "ck_report_run_perspective",
+      "ck_report_run_status",
+      "ck_report_run_window_kind",
+    ]);
+  });
 });

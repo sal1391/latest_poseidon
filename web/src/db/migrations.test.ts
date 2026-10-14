@@ -7,10 +7,19 @@ const webRoot = join(__dirname, "..", "..");
 const drizzleDir = join(webRoot, "drizzle");
 
 describe("web/drizzle is in step with schema.ts (Phase 16 Task 7 tripwire)", () => {
-  it("contains the three expected migrations and a journal", () => {
+  it("contains the four expected migrations and a journal", () => {
     const files = readdirSync(drizzleDir).filter((f) => f.endsWith(".sql")).sort();
-    expect(files).toEqual(["0000_roles.sql", "0001_baseline.sql", "0002_grants_force_rls.sql"]);
+    expect(files).toEqual(["0000_roles.sql", "0001_baseline.sql", "0002_grants_force_rls.sql", "0003_report_run.sql"]);
     expect(existsSync(join(drizzleDir, "meta", "_journal.json"))).toBe(true);
+  });
+
+  it("0003 creates report_run as a shared org document and widens the mode check", () => {
+    const sql = readFileSync(join(drizzleDir, "0003_report_run.sql"), "utf8");
+    expect(sql).toContain('CREATE TABLE "report_run"');
+    expect(sql).toContain("GRANT SELECT, INSERT ON report_run TO poseidon_app;");
+    expect(sql).not.toMatch(/report_run[\s\S]*ENABLE ROW LEVEL SECURITY/);
+    expect(sql).not.toContain("CREATE POLICY");
+    expect(sql).toMatch(/ck_conversations_mode[\s\S]*'report'::text/);
   });
 
   it("the baseline carries all fourteen policies with predicates and no alembic_version", () => {
