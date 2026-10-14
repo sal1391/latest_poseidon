@@ -49,6 +49,17 @@ def test_new_and_lost_sections_name_entities_or_say_none():
     text = render_template_narrative(payload)
     assert "**New in August 2026:** none" in text
     assert "*Top increases by GP:*\nnone" in text
+    # Overflow past ten entries prints no count: with 22 rows a count would read
+    # "and 12 more", a non-exempt figure the grounding index does not hold.
+    payload = mockup_payload()
+    orion = payload["new_lost"]["new"][0]
+    payload["new_lost"]["new"] = [
+        dict(orion, key=f"Orion Offshore {chr(ord('A') + i)}") for i in range(22)
+    ]
+    text = render_template_narrative(payload)
+    new_line = next(line for line in text.splitlines() if line.startswith("**New in"))
+    assert grounding.check(text, grounding.build_index(payload)).ok
+    assert new_line.endswith("; and others")
 
 
 def test_flat_and_zero_base_wording():

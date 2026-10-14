@@ -4,6 +4,7 @@ is the must-reject fixture. Every token count below was derived by hand
 from the fixture text (see the comment on each)."""
 
 from poseidon.tasks.reporting.skills.monthly_performance.tests.payload_fixture import (
+    _mrow,
     minimal_payload,
     mockup_payload,
 )
@@ -121,14 +122,24 @@ def test_first_word_alias_needs_four_letters_and_uniqueness():
 
 def test_other_and_total_rows_never_alias_their_first_word():
     payload = mockup_payload()
-    other = dict(payload["tables"]["entities_by_gp"]["rows"][-1], key="Other (2 customers)")
+    # GP 20,000 -> 23,700: a +3,700 change that no other row, context or KPI carries.
+    other = _mrow("Other (2 customers)", 20_000, 700, 23_700, 760)
     payload["tables"]["entities_by_gp"]["other"] = other
     index = grounding.build_index(payload)
     assert "other" not in index.aliases
     assert index.aliases["other (2 customers)"] == "Other (2 customers)"
+    # The word "other" alone must not pull the Other row's figures into scope.
+    assert grounding.check("The other offices gained +3,700.", index).ok is False
+    assert grounding.check("Other (2 customers) gained +3,700.", index).ok is True
     # +44,100 is Meridian's other_offices_net: in scope only when Meridian is named.
     assert not grounding.check("The other offices net +44,100.", index).ok
     assert grounding.check("Meridian Bunkering's other offices net +44,100.", index).ok
+
+
+def test_an_indented_sub_bullet_stays_in_its_parent_paragraph():
+    index = grounding.build_index(mockup_payload())
+    text = "Meridian Bunkering fell 56,500.\n   - Its margin improved to 30.92/ton."
+    assert grounding.check(text, index).ok
 
 
 def test_possessives_and_markdown_emphasis_still_name_the_entity():

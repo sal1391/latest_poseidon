@@ -116,6 +116,12 @@ def _drivers_section(payload: Mapping[str, Any]) -> str:
 
 
 def _entries(rows: Sequence[Mapping[str, Any]], side: str) -> str:
+    """Up to ten entries, then "; and others".
+
+    The overflow carries no count on purpose: "and 12 more" would be a figure the
+    grounding index does not hold (counts over ten are not exempt), so the template
+    would fail its own check. The full list is in the report's new/lost tables.
+    """
     if not rows:
         return "none"
     shown = [
@@ -126,7 +132,7 @@ def _entries(rows: Sequence[Mapping[str, Any]], side: str) -> str:
     ]
     text = "; ".join(shown)
     if len(rows) > _LIST_CAP:
-        text += f"; and {len(rows) - _LIST_CAP} more"
+        text += "; and others"
     return text
 
 
