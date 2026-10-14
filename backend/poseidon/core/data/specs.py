@@ -65,3 +65,17 @@ class BreakdownQuerySpec:
     top_n: int = 5
     filters: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     scope_value: str | None = None  # see MetricQuerySpec.scope_value
+
+
+@dataclass(frozen=True)
+class FrameQuerySpec:
+    """A frame is a grouped multi-metric slice: one row per combination of the
+    ``group_by`` columns, no ordering and no row cap. The caller rolls it up
+    in Python and recomputes any ratio from the additive counts it carries."""
+
+    entity: str
+    metrics: tuple[str, ...]  # certified metric names; WIN_RATE refused by the builder
+    period: PeriodWindow
+    group_by: tuple[str, ...]  # one or more certified dimension columns, in order
+    filters: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    scope_value: str | None = None  # D16, same contract as MetricQuerySpec

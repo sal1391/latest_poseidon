@@ -11,18 +11,23 @@ from .query_builder import (
     SpecValidationError,
     build_breakdown_query,
     build_dimension_values_query,
+    build_frame_query,
     build_metric_query,
+    build_months_query,
     build_period_range_query,
 )
-from .specs import BreakdownQuerySpec, MetricQuerySpec, PeriodWindow
+from .specs import BreakdownQuerySpec, FrameQuerySpec, MetricQuerySpec, PeriodWindow
 
 __all__ = [
     "BreakdownQuerySpec",
+    "FrameQuerySpec",
     "MetricQuerySpec",
     "PeriodWindow",
     "SpecValidationError",
     "build_breakdown_query",
     "build_dimension_values_query",
+    "build_frame_query",
     "build_metric_query",
+    "build_months_query",
     "build_period_range_query",
 ]

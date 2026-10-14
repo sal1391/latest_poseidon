@@ -27,7 +27,12 @@ import datetime as dt
 import pytest
 
 from poseidon.core.data import query_builder as qb
-from poseidon.core.data.specs import BreakdownQuerySpec, MetricQuerySpec, PeriodWindow
+from poseidon.core.data.specs import (
+    BreakdownQuerySpec,
+    FrameQuerySpec,
+    MetricQuerySpec,
+    PeriodWindow,
+)
 from poseidon.core.identity import UserContext
 from poseidon.core.ontology.models import Column, Entity, Metric, Ontology, RowScope
 
@@ -464,6 +469,183 @@ def test_dimension_values_query_rejects_non_dimension_column():
         qb.build_dimension_values_query(
             "MARINE_SALES_PLANNING_V", "GROSS_PROFIT", None, "postgres")
     assert str(exc_info.value) == "'GROSS_PROFIT' is not a dimension of MARINE_SALES_PLANNING_V"
+
+
+# ---------------------------------------------------------------------------
+# build_frame_query -- postgres / snowflake (Phase 17 PR A1, reports design 7.4)
+# ---------------------------------------------------------------------------
+
+
+def test_frame_by_customer_and_port_in_an_office_postgres():
+    spec = FrameQuerySpec(
+        entity="MARINE_SALES_PLANNING_V",
+        metrics=("GP", "VOLUME"),
+        period=APRIL,
+        group_by=("CUST_NM", "LOC_NM"),
+        filters={"CUSTOMER_TEAM_NAME": ("Rotterdam",)},
+    )
+    sql, params = qb.build_frame_query(spec, "postgres")
+    assert sql == (
+        "SELECT COALESCE(CUST_NM, 'Unknown') AS CUST_NM, "
+        "COALESCE(LOC_NM, 'Unknown') AS LOC_NM, "
+        'SUM(GROSS_PROFIT) AS "GP", SUM(FIXED_TONS) AS "VOLUME"\n'
+        "FROM synthetic.marine_sales_planning_v\n"
+        "WHERE LIFT_ETA_DATE >= %s AND LIFT_ETA_DATE < %s "
+        "AND COALESCE(CUSTOMER_TEAM_NAME, 'Unknown') IN (%s)\n"
+        "GROUP BY 1, 2"
+    )
+    assert params == [dt.date(2026, 4, 1), dt.date(2026, 5, 1), "Rotterdam"]
+
+
+def test_frame_by_customer_and_port_in_an_office_snowflake():
+    spec = FrameQuerySpec(
+        entity="MARINE_SALES_PLANNING_V",
+        metrics=("GP", "VOLUME"),
+        period=APRIL,
+        group_by=("CUST_NM", "LOC_NM"),
+        filters={"CUSTOMER_TEAM_NAME": ("Rotterdam",)},
+    )
+    sql, params = qb.build_frame_query(spec, "snowflake")
+    assert sql == (
+        "SELECT COALESCE(CUST_NM, 'Unknown') AS CUST_NM, "
+        "COALESCE(LOC_NM, 'Unknown') AS LOC_NM, "
+        'SUM(GROSS_PROFIT) AS "GP", SUM(FIXED_TONS) AS "VOLUME"\n'
+        "FROM SANDBOX.MCA.MARINE_SALES_PLANNING_V\n"
+        "WHERE LIFT_ETA_DATE >= %s AND LIFT_ETA_DATE < %s "
+        "AND COALESCE(CUSTOMER_TEAM_NAME, 'Unknown') IN (%s)\n"
+        "GROUP BY 1, 2"
+    )
+    assert params == [dt.date(2026, 4, 1), dt.date(2026, 5, 1), "Rotterdam"]
+
+
+def test_frame_with_the_report_six_way_group_by_and_no_filter_postgres():
+    spec = FrameQuerySpec(
+        entity="MARINE_SALES_PLANNING_V",
+        metrics=("GP", "VOLUME", "NUM_WON", "NUM_INQUIRIES", "NUM_LOST"),
+        period=APRIL,
+        group_by=(
+            "CUST_NM",
+            "SUPPLIER_NM",
+            "LOC_NM",
+            "CUSTOMER_TEAM_NAME",
+            "PRIMARY_SUPPLY_TEAM_OFFICE",
+            "DEAL_CLASSIFICATION_TRADE_CUT",
+        ),
+    )
+    sql, params = qb.build_frame_query(spec, "postgres")
+    assert sql.startswith("SELECT COALESCE(CUST_NM, 'Unknown') AS CUST_NM, ")
+    assert sql.endswith("\nGROUP BY 1, 2, 3, 4, 5, 6")
+    assert "ORDER BY" not in sql and "LIMIT" not in sql and "HAVING" not in sql
+    assert 'SUM("#_INQUIRIES") - SUM("#_FIXTURES") AS "NUM_LOST"' in sql
+    assert params == [dt.date(2026, 4, 1), dt.date(2026, 5, 1)]
+
+
+def test_frame_refuses_win_rate():
+    spec = FrameQuerySpec(
+        entity="MARINE_SALES_PLANNING_V",
+        metrics=("GP", "WIN_RATE"),
+        period=APRIL,
+        group_by=("CUST_NM",),
+    )
+    with pytest.raises(qb.SpecValidationError, match="WIN_RATE is a ratio"):
+        qb.build_frame_query(spec, "postgres")
+
+
+def test_frame_refuses_an_empty_group_by():
+    spec = FrameQuerySpec(
+        entity="MARINE_SALES_PLANNING_V", metrics=("GP",), period=APRIL, group_by=()
+    )
+    with pytest.raises(qb.SpecValidationError, match="at least one group_by column"):
+        qb.build_frame_query(spec, "postgres")
+
+
+def test_frame_refuses_a_repeated_group_by_column():
+    spec = FrameQuerySpec(
+        entity="MARINE_SALES_PLANNING_V",
+        metrics=("GP",),
+        period=APRIL,
+        group_by=("CUST_NM", "CUST_NM"),
+    )
+    with pytest.raises(qb.SpecValidationError, match="group_by repeats 'CUST_NM'"):
+        qb.build_frame_query(spec, "postgres")
+
+
+def test_frame_refuses_a_non_dimension_column():
+    spec = FrameQuerySpec(
+        entity="MARINE_SALES_PLANNING_V",
+        metrics=("GP",),
+        period=APRIL,
+        group_by=("GROSS_PROFIT",),
+    )
+    with pytest.raises(qb.SpecValidationError, match="is not a dimension of"):
+        qb.build_frame_query(spec, "postgres")
+
+
+def test_frame_refuses_volume_mode():
+    spec = FrameQuerySpec(
+        entity="W_MARINE_GL_SOURCE_AI",
+        metrics=("MONETARY_TOTAL",),
+        period=APRIL,
+        group_by=("CLASS3",),
+        filters={"CLASS4": ("Volume",)},
+    )
+    with pytest.raises(qb.SpecValidationError, match="frames are not allowed in volume mode"):
+        qb.build_frame_query(spec, "snowflake")
+
+
+def test_frame_carries_row_scope_last_like_the_other_builders(fixture_ontology):
+    """Same injected-ontology shape the row-scope tests below use: the
+    scope predicate is the LAST condition and its value the LAST param."""
+    spec = FrameQuerySpec(
+        entity="SCOPED_FIXTURE_V",
+        metrics=("GP",),
+        period=APRIL,
+        group_by=("CUST_NM",),
+        scope_value=SCOPE_VALUE,
+    )
+    sql, params = qb.build_frame_query(spec, "postgres")
+    assert sql == (
+        "SELECT COALESCE(CUST_NM, 'Unknown') AS CUST_NM, SUM(GROSS_PROFIT) AS \"GP\"\n"
+        "FROM synthetic.scoped_fixture_v\n"
+        "WHERE LIFT_ETA_DATE >= %s AND LIFT_ETA_DATE < %s AND PRIMARY_BRKR = %s\n"
+        "GROUP BY 1"
+    )
+    assert params == [dt.date(2026, 4, 1), dt.date(2026, 5, 1), SCOPE_VALUE]
+
+
+# ---------------------------------------------------------------------------
+# build_months_query
+# ---------------------------------------------------------------------------
+
+
+def test_months_query_with_an_office_filter_postgres():
+    sql, params = qb.build_months_query(
+        "MARINE_SALES_PLANNING_V", {"CUSTOMER_TEAM_NAME": ("Rotterdam",)}, "postgres"
+    )
+    assert sql == (
+        'SELECT DISTINCT CAST(DATE_TRUNC(\'month\', LIFT_ETA_DATE) AS DATE) AS "MONTH"\n'
+        "FROM synthetic.marine_sales_planning_v\n"
+        "WHERE COALESCE(CUSTOMER_TEAM_NAME, 'Unknown') IN (%s)\n"
+        "ORDER BY 1"
+    )
+    assert params == ["Rotterdam"]
+
+
+def test_months_query_without_filters_omits_the_where_line_snowflake():
+    sql, params = qb.build_months_query("MARINE_SALES_PLANNING_V", {}, "snowflake")
+    assert sql == (
+        'SELECT DISTINCT CAST(DATE_TRUNC(\'month\', LIFT_ETA_DATE) AS DATE) AS "MONTH"\n'
+        "FROM SANDBOX.MCA.MARINE_SALES_PLANNING_V\n"
+        "ORDER BY 1"
+    )
+    assert params == []
+
+
+def test_months_query_on_gl_snowflake_wraps_the_varchar_date():
+    sql, _ = qb.build_months_query("W_MARINE_GL_SOURCE_AI", {}, "snowflake")
+    assert sql.startswith(
+        'SELECT DISTINCT CAST(DATE_TRUNC(\'month\', TO_DATE(PERIOD_DATE)) AS DATE) AS "MONTH"\n'
+    )
 
 
 # ---------------------------------------------------------------------------
