@@ -129,8 +129,8 @@ def minimal_payload(**overrides: Any) -> dict[str, Any]:
             "label": "Rotterdam (Customer Broker Office)",
         },
         "periods": {
-            "current": {"start": "2026-09-01", "end": "2026-09-30", "label": "September 2026"},
-            "prior": {"start": "2026-08-01", "end": "2026-08-31", "label": "August 2026"},
+            "current": {"start": "2026-09-01", "end": "2026-10-01", "label": "September 2026"},
+            "prior": {"start": "2026-08-01", "end": "2026-09-01", "label": "August 2026"},
             "window_kind": "complete",
         },
         "kpis": kpis,
@@ -366,8 +366,8 @@ def mockup_payload(**overrides: Any) -> dict[str, Any]:
             "label": "Gibraltar Office (Customer Broker Office)",
         },
         "periods": {
-            "current": {"start": "2026-08-01", "end": "2026-08-31", "label": "August 2026"},
-            "prior": {"start": "2026-07-01", "end": "2026-07-31", "label": "July 2026"},
+            "current": {"start": "2026-08-01", "end": "2026-09-01", "label": "August 2026"},
+            "prior": {"start": "2026-07-01", "end": "2026-08-01", "label": "July 2026"},
             "window_kind": "complete",
         },
         "kpis": kpis,

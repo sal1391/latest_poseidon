@@ -69,6 +69,18 @@ def phase_section_part(title: str, markdown: str) -> dict:
     return {"kind": "phase_section", "payload": {"title": title, "markdown": markdown}}
 
 
+def report_part(payload: dict) -> dict:
+    """The monthly performance report, as one part (Phase 17 PR A1).
+
+    The ``report`` kind is additive to the ten frozen part kinds: nothing
+    existing changes shape. ``payload`` is the payload v1 contract the
+    reporting skill assembles (Task 6's contract, pinned in code by
+    ``tasks/reporting/.../tests/payload_fixture.py``); it is copied at the top
+    level so a caller cannot swap a section out after the part is emitted.
+    """
+    return {"kind": "report", "payload": dict(payload)}
+
+
 def problem(status: int, title: str, detail: str, type_: str = "about:blank") -> dict:
     """An RFC-7807 problem detail.
 

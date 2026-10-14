@@ -183,31 +183,44 @@ def tasks_package(tmp_path, monkeypatch) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def test_discovery_finds_all_four_registered_skills():
+def test_discovery_finds_all_five_registered_skills_and_four_router_visible():
     """Phase 8 Task 4: ``customer_insight/task.yml`` flips to
     ``enabled: true`` and both ``existing_customer_brief`` and
     ``new_prospect_brief`` now have a ``schema.py`` -- the real tree's
     discovered set grows from two to four, in sorted-by-id order
     (``registry.py``'s own discovery-is-deterministic contract):
     ``customer_insight`` sorts before ``data_qa``, which sorts before
-    ``research``; within ``customer_insight``, ``existing_customer_brief``
-    sorts before ``new_prospect_brief``. Named ids, never a bare
-    ``len(...) == 4`` -- same discipline Phase 7 Task 4's own version of
-    this test used for the two-skill set (see git history for that
-    version's exact wording)."""
+    ``reporting`` and ``research``; within ``customer_insight``,
+    ``existing_customer_brief`` sorts before ``new_prospect_brief``. Named
+    ids, never a bare ``len(...) == 5`` -- same discipline Phase 7 Task 4's
+    own version of this test used for the two-skill set (see git history
+    for that version's exact wording).
+
+    Phase 17 PR A1 adds the first ``internal`` skill,
+    ``reporting.monthly_performance``: ``skill_ids``, ``get`` and
+    ``dispatch`` see it, ``router_skill_ids`` and ``tool_schemas`` do not."""
     reg = SkillRegistry.discover()
     assert reg.skill_ids == [
         "customer_insight.existing_customer_brief",
         "customer_insight.new_prospect_brief",
         "data_qa.metric_query",
+        "reporting.monthly_performance",
         "research.web_research",
     ]
+    assert reg.router_skill_ids == [
+        "customer_insight.existing_customer_brief",
+        "customer_insight.new_prospect_brief",
+        "data_qa.metric_query",
+        "research.web_research",
+    ]
+    assert reg.get("reporting.monthly_performance").internal is True
 
 
 def test_schema_dispatch_parity():
     reg = SkillRegistry.discover()
     schema_names = {s["name"] for s in reg.tool_schemas}
-    assert schema_names == set(reg.skill_ids)
+    assert schema_names == set(reg.router_skill_ids)
+    assert set(reg.skill_ids) - schema_names == {"reporting.monthly_performance"}
     for s in reg.tool_schemas:
         assert s["description"] and len(s["description"]) <= 300
         assert s["input_schema"]["type"] == "object"
@@ -515,6 +528,35 @@ def test_disabled_task_is_never_imported(tasks_package: Callable[..., str]):
 
     assert reg.skill_ids == []
     assert reg.tool_schemas == []
+
+
+def test_internal_flag_hides_a_skill_from_the_router_but_not_from_dispatch(tasks_package):
+    internal_schema = _GOOD_SCHEMA.replace(
+        '"examples": ["say hello"],', '"examples": ["say hello"], "internal": True,'
+    )
+    files = {
+        **_files("demo_task", "hidden", schema_py=internal_schema),
+        **_files("demo_task", "shown"),
+    }
+    pkg = tasks_package("internal_tasks", files)
+    reg = SkillRegistry.discover(pkg)
+
+    assert reg.skill_ids == ["demo_task.hidden", "demo_task.shown"]
+    assert reg.router_skill_ids == ["demo_task.shown"]
+    assert [s["name"] for s in reg.tool_schemas] == ["demo_task.shown"]
+    assert reg.get("demo_task.hidden").internal is True
+    res = reg.dispatch("demo_task.hidden", {"q": "hi"}, _ctx())
+    assert res.ok is True and res.parts == [{"kind": "text", "payload": {"markdown": "hi"}}]
+
+
+def test_internal_must_be_a_bool(tasks_package):
+    bad_schema = _GOOD_SCHEMA.replace(
+        '"examples": ["say hello"],', '"examples": ["say hello"], "internal": "yes",'
+    )
+    pkg = tasks_package("badinternal_tasks", _files("demo_task", "bad", schema_py=bad_schema))
+    with pytest.raises(SkillDefinitionError) as err:
+        SkillRegistry.discover(pkg)
+    assert "demo_task.bad" in str(err.value) and "internal" in str(err.value)
 
 
 def test_directories_without_a_manifest_are_not_tasks(tasks_package: Callable[..., str]):

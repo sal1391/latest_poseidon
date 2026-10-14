@@ -647,7 +647,7 @@ def test_every_provider_call_carries_the_full_tool_schemas(settings):
 
     for call in provider.calls:
         assert call["tools"] == REGISTRY.tool_schemas
-        assert [schema["name"] for schema in call["tools"]] == REGISTRY.skill_ids
+        assert [schema["name"] for schema in call["tools"]] == REGISTRY.router_skill_ids
 
 
 # ---------------------------------------------------------------------------

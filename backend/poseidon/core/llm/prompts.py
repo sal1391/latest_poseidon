@@ -221,8 +221,9 @@ def negative_constraints_block(entity: Entity) -> str:
 
 
 def skill_lines_block(registry: SkillRegistry) -> str:
-    """One line per registered skill: its id and its router-facing
-    ``SKILL_META['description']``, in ``registry.skill_ids`` order.
+    """One line per router-visible skill: its id and its router-facing
+    ``SKILL_META['description']``, in ``registry.router_skill_ids`` order
+    (an internal skill is dispatched by a flow and never reaches the router).
 
     That order is already deterministic -- ``SkillRegistry.discover()``
     walks task and skill directories in sorted order by its own contract
@@ -230,7 +231,8 @@ def skill_lines_block(registry: SkillRegistry) -> str:
     its own.
     """
     return "\n".join(
-        f"{skill_id}: {registry.get(skill_id).description}" for skill_id in registry.skill_ids
+        f"{skill_id}: {registry.get(skill_id).description}"
+        for skill_id in registry.router_skill_ids
     )
 
 

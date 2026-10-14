@@ -7,7 +7,8 @@ placeholder, because a placeholder invites code that pretends the capability
 exists. ``tools`` arrived in Phase 7 Task 1; ``llm`` and ``emit_part`` arrive
 in Phase 8 Task 1; ``user`` arrives in Phase 9 Task 1 (all four named below);
 ``profile`` and ``run`` remain pending their own owning phases. Today a
-skill gets exactly eight things:
+skill gets exactly ten things (``report_store`` and ``prompt_tree`` arrive
+in Phase 17 PR A1):
 
 ``data``      the adapter seam of doc 04 — a :class:`DataClient`, never a
               connection, a cursor or SQL.
@@ -79,6 +80,17 @@ skill gets exactly eight things:
               ``tools``/``llm`` are. No skill reads ``ctx.user`` yet; a
               future one casts through the typed interface at its own call
               site, same as ``tools``.
+``report_store`` the ``report_run`` store (Phase 17 PR A1) -- a
+              :class:`~poseidon.reports.store.ReportStore`, typed ``object``
+              for the same one-way-dependency reason as ``tools``/``llm``.
+              ``None`` is a real state: every call site that cannot produce a
+              report leaves it unset, and ``reporting.monthly_performance``
+              answers a structured 500 when it is missing.
+``prompt_tree`` the D46 prompt tree (Phase 17 PR A1) -- a
+              :class:`~poseidon.core.llm.prompt_tree.PromptTree`, typed
+              ``object`` for the same reason. ``None`` is a real state: a
+              call site that wires no tree leaves it unset, and the reporting
+              skill falls back to the default ``PromptTree()``.
 
 ``artifacts`` is annotated as a string under a ``TYPE_CHECKING`` guard on
 purpose, and permanently so: :mod:`poseidon.core.artifacts` (Task 4) imports
@@ -166,3 +178,5 @@ class SkillContext:
     llm: object | None = None
     emit_part: object | None = None
     user: object | None = None
+    report_store: object | None = None
+    prompt_tree: object | None = None
