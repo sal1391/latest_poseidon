@@ -40,6 +40,13 @@ _METRICS = ("GP", "VOLUME", "MARGIN")
 _DISPLAY_FIELDS = ("prior", "current", "change", "pct")
 _SUFFIXES = ("%", " pts")
 
+# First words that never become an alias. A ranked table's "Other (2 customers)"
+# row and the footer's "Total" are canonical names, but their first words are
+# common prose ("other offices net", "the total"); aliasing them would pull those
+# rows' figures into scope for any sentence that merely uses the word. The full
+# casefolded name still aliases.
+_NO_FIRST_WORD_ALIAS = frozenset({"other", "total"})
+
 _HEADING = re.compile(r"^#{1,6}\s+")
 _LIST_ITEM = re.compile(r"^(?:[-*+]|\d+[.)])\s+")
 _CONTINUATION_MARKER = re.compile(r"^\s+(?:[-*+]|\d+[.)])\s+")
@@ -107,7 +114,8 @@ def _keyed_rows(payload: Mapping[str, Any]) -> Iterable[Mapping[str, Any]]:
 
 
 def _first_word_aliases(names: Iterable[str]) -> dict[str, str]:
-    """casefolded first word -> name, when the word is 4+ letters and unshared."""
+    """casefolded first word -> name, when the word is 4+ letters, unshared and not
+    in ``_NO_FIRST_WORD_ALIAS``."""
     by_word: dict[str, list[str]] = {}
     for name in names:
         words = name.casefold().split()
@@ -116,7 +124,10 @@ def _first_word_aliases(names: Iterable[str]) -> dict[str, str]:
     return {
         word: owners[0]
         for word, owners in by_word.items()
-        if len(owners) == 1 and len(word) >= 4 and word.isalpha()
+        if len(owners) == 1
+        and len(word) >= 4
+        and word.isalpha()
+        and word not in _NO_FIRST_WORD_ALIAS
     }
 
 
@@ -200,10 +211,9 @@ def _variants(display: str) -> frozenset[str]:
     """The token spellings a display string admits.
 
     ``d`` itself and ``d`` without its leading sign; when ``d`` ends in ``%`` or
-    `` pts``, the same two forms without that suffix. A ``$`` is dropped first,
-    because the tokeniser never includes it in a token.
+    `` pts``, the same two forms without that suffix.
     """
-    d = display.strip().replace("$", "")
+    d = display.strip()
     if d in _NON_NUMERIC or not d:
         return frozenset()
     forms = {d}
@@ -247,8 +257,11 @@ def split_paragraphs(text: str) -> list[list[str]]:
     A paragraph ends at a blank line; a markdown heading line is its own paragraph;
     an unindented list item line (``- ``, ``* ``, ``1. ``) starts a new paragraph.
     An indented line (a nested bullet under a list item) continues the paragraph it
-    sits under, so a mover's sub-bullets stay in that mover's scope. List markers
-    and heading hashes are stripped so a list number is never read as a token.
+    sits under, so a mover's sub-bullets stay in that mover's scope. Only an
+    unindented list line starts a new paragraph, because the template's Key drivers
+    sub-bullets ("   - Volume: ...") carry the parent item's entity without naming it.
+    List markers and heading hashes are stripped so a list number is never read as
+    a token.
     """
     blocks: list[list[str]] = []
     current: list[str] = []

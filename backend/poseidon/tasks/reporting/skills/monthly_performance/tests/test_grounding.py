@@ -119,6 +119,18 @@ def test_first_word_alias_needs_four_letters_and_uniqueness():
     assert mockup.aliases["meridian"] == "Meridian Bunkering"
 
 
+def test_other_and_total_rows_never_alias_their_first_word():
+    payload = mockup_payload()
+    other = dict(payload["tables"]["entities_by_gp"]["rows"][-1], key="Other (2 customers)")
+    payload["tables"]["entities_by_gp"]["other"] = other
+    index = grounding.build_index(payload)
+    assert "other" not in index.aliases
+    assert index.aliases["other (2 customers)"] == "Other (2 customers)"
+    # +44,100 is Meridian's other_offices_net: in scope only when Meridian is named.
+    assert not grounding.check("The other offices net +44,100.", index).ok
+    assert grounding.check("Meridian Bunkering's other offices net +44,100.", index).ok
+
+
 def test_possessives_and_markdown_emphasis_still_name_the_entity():
     index = grounding.build_index(mockup_payload())
     assert grounding.find_entities("**Northstar's** gain was +21,600.", index) == [

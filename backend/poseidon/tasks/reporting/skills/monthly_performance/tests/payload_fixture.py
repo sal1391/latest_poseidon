@@ -19,7 +19,7 @@ METRICS = ("GP", "VOLUME", "MARGIN")
 
 def _money(v: float, signed: bool = False) -> str:
     sign = "-" if v < 0 else ("+" if signed and v > 0 else "")
-    return f"{sign}${abs(v):,.0f}"
+    return f"{sign}{abs(v):,.0f}"
 
 
 def _tons(v: float, signed: bool = False) -> str:
@@ -29,7 +29,7 @@ def _tons(v: float, signed: bool = False) -> str:
 
 def _per_ton(v: float, signed: bool = False) -> str:
     sign = "-" if v < 0 else ("+" if signed and v > 0 else "")
-    return f"{sign}${abs(v):,.2f}"
+    return f"{sign}{abs(v):,.2f}"
 
 
 def _pct(v: float | None) -> str:
@@ -160,21 +160,21 @@ def minimal_payload(**overrides: Any) -> dict[str, Any]:
                     "other_offices_net": 10000,
                     "book_change": 40000,
                     "display": {
-                        "office_change": "+$30,000",
-                        "other_offices_net": "+$10,000",
-                        "book_change": "+$40,000",
+                        "office_change": "+30,000",
+                        "other_offices_net": "+10,000",
+                        "book_change": "+40,000",
                     },
                 },
-                "offsets": [{"key": "Northstar Lines", "change": -10000, "display": "-$10,000"}],
+                "offsets": [{"key": "Northstar Lines", "change": -10000, "display": "-10,000"}],
                 "ports_rest_of_book": [
-                    {"key": "Singapore", "change": 10000, "display": "+$10,000"}
+                    {"key": "Singapore", "change": 10000, "display": "+10,000"}
                 ],
             }
         },
         "narrative": {
             "template_md": (
-                "**Gross profit rose to $120,000 in September 2026.**\n\n"
-                "Meridian Bunkering added +$30,000 while Northstar Lines gave back $10,000."
+                "**Gross profit rose to 120,000 in September 2026.**\n\n"
+                "Meridian Bunkering added +30,000 while Northstar Lines gave back 10,000."
             ),
             "llm_md": None,
             "grounded": False,
@@ -185,7 +185,7 @@ def minimal_payload(**overrides: Any) -> dict[str, Any]:
             "What drove the Northstar Lines decline?",
             "Which ports gained the most?",
         ],
-        "proof": ["GP current = sum of GP for September 2026 = $120,000"],
+        "proof": ["GP current = sum of GP for September 2026 = 120,000"],
         "queries": [{"label": "kpis", "sql_hash": "abc123", "rows": 7, "ms": 12}],
         "generated_at": "2026-10-14T09:30:00+00:00",
         "source": "synthetic",
