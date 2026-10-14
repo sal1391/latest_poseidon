@@ -1,5 +1,6 @@
 """Suggested questions: keep the model's chips whose entity mentions resolve against
-the payload, then backfill deterministically to exactly three.
+the payload and whose figures pass the grounding check, then backfill
+deterministically to exactly three.
 
 A question is never rewritten. A capitalised word the payload cannot account for
 (an entity name or alias, a metric word, a month, a scope or period word) is an
@@ -11,7 +12,10 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from poseidon.tasks.reporting.skills.monthly_performance.tools.grounding import GroundingIndex
+from poseidon.tasks.reporting.skills.monthly_performance.tools.grounding import (
+    GroundingIndex,
+    check,
+)
 
 _MONTHS = "january february march april may june july august september october november december"
 KNOWN_WORDS: frozenset[str] = frozenset(
@@ -145,7 +149,7 @@ def select_questions(
     for candidate in candidates:
         if isinstance(candidate, str) and candidate.strip():
             question = candidate.strip()
-            if mention_resolves(question, index, payload):
+            if mention_resolves(question, index, payload) and check(question, index).ok:
                 take(question)
     for question in backfill_questions(payload):
         take(question)

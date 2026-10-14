@@ -632,6 +632,20 @@ def test_provider_error_uses_the_template_and_flags_it(registry):
     assert payload["narrative"]["grounded"] is False
 
 
+def test_llm_exception_uses_the_template_and_flags_a_provider_error(registry):
+    class _Boom:
+        def invoke(self, *args, **kwargs):
+            raise RuntimeError("boom")
+
+    store = _FakeStore()
+    result = _run(registry, _ctx(store=store, llm=_Boom(), llm_mode="live"))
+    assert result.ok, result.error
+    payload = result.parts[0]["payload"]
+    assert payload["narrative"]["flags"] == ["model narrative failed: provider error"]
+    assert payload["narrative"]["grounded"] is False
+    assert len(store.inserted) == 1
+
+
 def test_model_questions_naming_unknown_entities_are_dropped_and_backfilled(registry):
     questions = [
         "Why did Poseidon Shipping leave?",
@@ -649,7 +663,7 @@ def test_context_notes_are_appended_and_grounded(registry):
     reply = _tool_reply(GOOD_NARRATIVE, GOOD_QUESTIONS)
     args = dict(
         reply.tool_calls[0].arguments,
-        context_notes=["Spain Office took +50,000 of Meridian Bunkering's volume."],
+        context_notes=["Spain Office's GP with Meridian Bunkering rose +50,000."],
     )
     reply = LLMResponse(
         text="",
@@ -662,7 +676,7 @@ def test_context_notes_are_appended_and_grounded(registry):
     payload = _payload(_run(registry, ctx))
     assert payload["narrative"]["grounded"] is True
     assert payload["narrative"]["llm_md"].endswith(
-        "## Notes\n- Spain Office took +50,000 of Meridian Bunkering's volume."
+        "## Notes\n- Spain Office's GP with Meridian Bunkering rose +50,000."
     )
 
 

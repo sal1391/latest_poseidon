@@ -22,6 +22,8 @@ def test_resolve_narrate_returns_version_and_system_text():
     assert "marginals" in spec.system
     assert "Respond only by calling the narrate tool." in spec.system
     assert spec.system == spec.system.strip()
+    assert "{entity_label}" not in spec.system
+    assert "Account context" in spec.system
 
 
 def test_unknown_id_raises():

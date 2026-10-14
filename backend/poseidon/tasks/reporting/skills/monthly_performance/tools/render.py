@@ -25,27 +25,29 @@ TEMPLATES_DIR = Path(poseidon.__file__).resolve().parent / "config" / "templates
 # Link and image syntax is switched off: escaping does not touch [ ] ( ) !, so markdown would
 # otherwise turn narrative text into <img> / <a href="javascript:..."> elements. All of these
 # names exist in markdown 3.10.2 (checked); the try/except tolerates other versions.
-_MD = markdown.Markdown(output_format="html5")
-for _name in (
-    "link",
-    "image_link",
-    "reference",
-    "image_reference",
-    "short_reference",
-    "short_image_ref",
-    "autolink",
-    "automail",
-):
-    try:
-        _MD.inlinePatterns.deregister(_name)
-    except ValueError:
-        pass
+def _markdown() -> markdown.Markdown:
+    """A fresh converter per call: a Markdown instance is not thread-safe."""
+    md = markdown.Markdown(output_format="html5")
+    for name in (
+        "link",
+        "image_link",
+        "reference",
+        "image_reference",
+        "short_reference",
+        "short_image_ref",
+        "autolink",
+        "automail",
+    ):
+        try:
+            md.inlinePatterns.deregister(name)
+        except ValueError:
+            pass
+    return md
 
 
 def narrative_html(markdown_text: str) -> Markup:
     """Escape, then markdown: the text can be bold or a list but never raw markup."""
-    _MD.reset()
-    return Markup(_MD.convert(_html.escape(markdown_text)))
+    return Markup(_markdown().convert(_html.escape(markdown_text)))
 
 
 _ENV = Environment(

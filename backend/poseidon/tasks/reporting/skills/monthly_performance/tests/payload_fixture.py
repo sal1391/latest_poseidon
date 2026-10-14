@@ -102,6 +102,9 @@ def minimal_payload(**overrides: Any) -> dict[str, Any]:
         "NUM_LOST": _delta("VOLUME", 5, 6),
         "WIN_RATE": _delta("VOLUME", 50, 48),
     }
+    kpis["WIN_RATE"]["display"].update(
+        prior=mom.fmt_value(0.50, "rate"), current=mom.fmt_value(0.48, "rate")
+    )
 
     def table(rows: list[dict[str, Any]]) -> dict[str, Any]:
         return {"rows": rows, "other": None, "footer": _kpi_footer(kpis)}
@@ -124,7 +127,7 @@ def minimal_payload(**overrides: Any) -> dict[str, Any]:
         "perspective": "customer",
         "entity": {"column": "CUST_NM", "label": "Customer"},
         "scope": {
-            "office_column": "CUST_BROKER_OFFICE",
+            "office_column": "CUSTOMER_TEAM_NAME",
             "office_value": "Rotterdam",
             "label": "Rotterdam (Customer Broker Office)",
         },
@@ -166,9 +169,7 @@ def minimal_payload(**overrides: Any) -> dict[str, Any]:
                     },
                 },
                 "offsets": [{"key": "Northstar Lines", "change": -10000, "display": "-10,000"}],
-                "ports_rest_of_book": [
-                    {"key": "Singapore", "change": 10000, "display": "+10,000"}
-                ],
+                "ports_rest_of_book": [{"key": "Singapore", "change": 10000, "display": "+10,000"}],
             }
         },
         "narrative": {
@@ -361,7 +362,7 @@ def mockup_payload(**overrides: Any) -> dict[str, Any]:
         "perspective": "customer",
         "entity": {"column": "CUST_NM", "label": "Customer"},
         "scope": {
-            "office_column": "CUST_BROKER_OFFICE",
+            "office_column": "CUSTOMER_TEAM_NAME",
             "office_value": "Gibraltar Office",
             "label": "Gibraltar Office (Customer Broker Office)",
         },

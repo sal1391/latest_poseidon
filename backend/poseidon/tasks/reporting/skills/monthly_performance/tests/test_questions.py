@@ -83,3 +83,15 @@ def test_metric_words_offices_and_the_first_word_are_not_entity_mentions():
 
 def test_minimal_payload_always_yields_three():
     assert len(_select([], minimal_payload())) == 3
+
+
+def test_a_model_question_with_an_unverified_figure_is_dropped():
+    picked = _select(
+        [
+            "Why did GP fall 40% for Meridian Bunkering?",
+            "Why did GP drop for Meridian Bunkering?",
+        ]
+    )
+    assert "Why did GP fall 40% for Meridian Bunkering?" not in picked
+    assert picked[0] == "Why did GP drop for Meridian Bunkering?"
+    assert len(picked) == 3

@@ -36,7 +36,7 @@ doc as current. Decisions taken in feature specs used to not propagate; that is 
 ## Commands — verified 2026-10-14 (Phase 17 PR A1) (frontend line excepted), copy-pasteable
 
 ```bash
-# Offline Python suite -> 2175 passed, 14 skipped, 126 deselected (~252s)
+# Offline Python suite -> 2178 passed, 14 skipped, 126 deselected (~251s)
 cd backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest \
   -p no:cacheprovider \
   -m 'not pg and not minio and not pdf and not router_live and not research_live'
@@ -79,7 +79,7 @@ Web (Next.js) suite verified 2026-10-14: `npm test` → 151 passed, 13 skipped o
 re-run since. The frontend (Vite) figure above was not re-run 2026-10-14.
 
 **pg suite verified 2026-10-14 (Phase 17 PR A1):** 352 passed, 1 skipped, run serially against the
-compose `db` service. Offline Python suite (2175 passed, 14 skipped, 126 deselected), `ruff check`
+compose `db` service. Offline Python suite (2178 passed, 14 skipped, 126 deselected), `ruff check`
 and `tests/contracts` (7 passed, `contracts/` unchanged) were also run 2026-10-14. One offline run
 failed `test_auth0_bogus_kid_after_the_fetch_finished_401s_at_once_without_waiting` on a 1.0s
 wall-clock bound (took 1.12s); it passed alone and in the full re-run, so the figure above is the

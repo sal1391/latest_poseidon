@@ -137,10 +137,12 @@ class BedrockProvider:
         tool_choice: str | None = None,
     ) -> LLMResponse:
         """One Converse call: build the request, call, normalize the
-        response. Never raises -- a ``ClientError`` (bad request, throttled,
+        response. A ``ClientError`` (bad request, throttled,
         model unavailable, ...) becomes ``LLMResponse(stop_reason="error",
-        ...)`` so a caller (the Task 4 agent loop) always gets a structured
-        turn result to act on, not an exception to catch."""
+        ...)`` so a caller (the Task 4 agent loop) gets a structured turn
+        result to act on. It can still raise ``ValueError`` when the request
+        is malformed (``tool_choice`` given with no tools), which is a caller
+        bug, not a provider failure."""
         request = _build_request(
             system=system,
             messages=messages,

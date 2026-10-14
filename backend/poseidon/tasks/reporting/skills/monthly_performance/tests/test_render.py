@@ -134,3 +134,10 @@ def test_strict_undefined_rejects_a_payload_missing_a_section():
 def test_real_pdf_bytes():
     pdf = render.render_pdf(render.render_html(minimal_payload()))
     assert pdf.startswith(b"%PDF")
+
+
+def test_narrative_html_is_reentrant_across_calls():
+    first = render.narrative_html("[d][ref]\n\n[ref]: http://evil.example")
+    second = render.narrative_html("[d][ref]")
+    assert "href" not in first
+    assert "href" not in second

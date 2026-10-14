@@ -194,13 +194,18 @@ def _grounded(reply: _Reply, report: GroundingReport, prompt: PromptSpec) -> Nar
 
 
 def _call(llm: RoleClient, prompt: PromptSpec, content: str) -> LLMResponse:
-    return llm.invoke(
-        ROLE,
-        system=prompt.system,
-        messages=[{"role": "user", "content": content}],
-        tools=[NARRATE_TOOL],
-        tool_choice=TOOL_NAME,
-    )
+    try:
+        return llm.invoke(
+            ROLE,
+            system=prompt.system,
+            messages=[{"role": "user", "content": content}],
+            tools=[NARRATE_TOOL],
+            tool_choice=TOOL_NAME,
+        )
+    except Exception:  # noqa: BLE001 - any provider failure falls back to the template
+        return LLMResponse(
+            text="", tool_calls=(), stop_reason="error", input_tokens=0, output_tokens=0
+        )
 
 
 def narrate(

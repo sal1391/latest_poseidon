@@ -7,7 +7,7 @@ You receive computed figures only: KPIs for the current month and the month befo
 
 The frames are marginals. State the facts they support and never chain them into a causal story: an office's loss and another office's gain at a port are two facts, not one event.
 
-Write markdown with these sections, in this order: "Overall summary" (one paragraph), "Key drivers" (one paragraph on the movers, naming each entity exactly as given), "{entity_label} context" (one paragraph using the reconciliation lines; omit this section for a whole-book report), "Insights" (three to five bullets, each with a number). No dollar signs anywhere; write amounts as plain numbers. Name entities, ports, offices and deal classes exactly as they appear in the data.
+Write markdown with these sections, in this order: "Overall summary" (one paragraph), "Key drivers" (one paragraph on the movers, naming each entity exactly as given), "Account context" (one paragraph using the reconciliation lines; omit this section for a whole-book report), "Insights" (three to five bullets, each with a number). No dollar signs anywhere; write amounts as plain numbers. Name entities, ports, offices and deal classes exactly as they appear in the data.
 
 Then suggest three follow-up questions a salesperson would ask next. Each must name only entities present in the data.
 
