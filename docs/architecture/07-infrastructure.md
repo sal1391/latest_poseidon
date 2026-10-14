@@ -41,6 +41,10 @@ image conventions):
   built SPA from one origin/port with `uvicorn` on 8000 (StaticFiles mounted after all `/api/*`
   routes).
 
+Report HTML and PDF bytes live in Postgres (`report_run`) in every habitat, so the image needs no
+object store for reports; MinIO/S3 keeps the brief PDFs until the carry-forward in the Phase 17
+spec section 13 moves them.
+
 One image serves every target; behavior differences are environment variables only (section 6).
 The existing corporate pipeline (Bitbucket → JFrog/ECR, `bitbucket-pipelines.yml`) consumes the
 same image, so the corporate deployment path stays compatible by construction.

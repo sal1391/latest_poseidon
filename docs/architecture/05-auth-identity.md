@@ -95,6 +95,11 @@ Chat data is isolated **in the database**, not by remembering to add `WHERE` cla
 **Decision D28:** identity context is transaction-scoped, read with `missing_ok`, and enforced with
 `FORCE` — a pooled connection must never hand the next user the previous user's context.
 
+**Shared org documents (D65, D69).** `report_run` carries no `user_sub` policy; any
+`Poseidon:Sales` user reads any run. Writes go through `rls_transaction` as the generating user
+under `poseidon_app` with `SELECT, INSERT` only. The `created_by` column is attribution, not an
+access boundary.
+
 Required tests (doc 06 §5, L1 category):
 
 1. **Two-user isolation** — two `UserContext`s write conversations; each lists only its own.
