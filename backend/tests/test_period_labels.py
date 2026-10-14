@@ -127,3 +127,8 @@ def test_label_day_range_never_collapses_a_whole_month():
         label_day_range(PeriodWindow(date(2026, 10, 1), date(2026, 10, 12)))
         == "October 1 to 11, 2026"
     )
+
+
+def test_label_month_to_date_in_january_is_not_year_to_date():
+    window = PeriodWindow(date(2027, 1, 1), date(2027, 1, 12))
+    assert label_month_to_date(window) == "January 1 to 11, 2027 (month to date)"

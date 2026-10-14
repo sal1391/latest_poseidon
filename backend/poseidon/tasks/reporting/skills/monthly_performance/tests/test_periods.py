@@ -59,3 +59,10 @@ def test_mtd_for_a_month_that_is_not_running_is_refused():
 def test_month_must_be_a_first_day():
     with pytest.raises(PeriodError, match="first day of a month"):
         resolve_periods("prior_month", date(2026, 9, 15), "complete", OCT_12)
+
+
+def test_mtd_in_january_labels_a_day_range_and_prior_december():
+    r = resolve_periods("prior_month", date(2027, 1, 1), "mtd", date(2027, 1, 12))
+    assert r.label_current == "January 1 to 11, 2027 (month to date)"
+    assert r.prior == PeriodWindow(date(2026, 12, 1), date(2026, 12, 12))
+    assert r.label_prior == "December 1 to 11, 2026"

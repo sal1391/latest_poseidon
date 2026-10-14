@@ -134,8 +134,12 @@ def label_day_range(window: PeriodWindow) -> str:
 
 
 def label_month_to_date(window: PeriodWindow) -> str:
-    """``label_window`` plus the words " (month to date)", appended here only."""
-    return f"{label_window(window)} (month to date)"
+    """``label_day_range`` plus the words " (month to date)", appended here only.
+
+    The window is always rendered as a day range: a month-to-date window is
+    never a whole month and must never be read as year to date (a January
+    window starting Jan 1 would otherwise classify as ``ytd``)."""
+    return f"{label_day_range(window)} (month to date)"
 
 
 __all__ = [
