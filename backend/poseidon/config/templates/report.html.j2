@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en" data-payload-version="{{ payload_version }}">
+<head>
+<meta charset="utf-8">
+<title>Monthly performance report - {{ scope.label }}</title>
+<style>
+body { font-family: Arial, Helvetica, sans-serif; font-size: 12px; color: #1a1a1a; margin: 0; padding: 16px; }
+h1 { font-size: 20px; margin: 0 0 4px 0; }
+h2 { font-size: 15px; margin: 24px 0 6px 0; border-bottom: 1px solid #c8c8c8; padding-bottom: 3px; }
+table { border-collapse: collapse; width: 100%; margin-bottom: 8px; }
+th, td { border: 1px solid #d4d4d4; padding: 3px 6px; text-align: right; vertical-align: top; }
+th { background: #f0f0f0; }
+td.name, th.name { text-align: left; }
+tfoot td { font-weight: bold; background: #f7f7f7; }
+td.ctx { text-align: left; background: #fafafa; font-size: 11px; }
+.meta { color: #555555; margin: 2px 0; }
+.badge { background: #fff3cd; border: 1px solid #e0c36a; padding: 1px 6px; font-weight: bold; }
+.notice { background: #fdecea; border: 1px solid #e0a8a2; padding: 4px 8px; }
+.pos { color: #1a7f37; }
+.neg { color: #b42318; }
+</style>
+</head>
+<body>
+
+{% macro cells(m) -%}
+{%- for metric in ["GP", "VOLUME", "MARGIN"] -%}
+<td>{{ m.display[metric].prior }}</td><td>{{ m.display[metric].current }}</td><td>{{ m.display[metric].change }}</td><td>{{ m.display[metric].pct }}</td>
+{%- endfor -%}
+{%- endmacro %}
+
+{% macro head(first) -%}
+<tr><th class="name" rowspan="2">{{ first }}</th><th colspan="4">Gross profit</th><th colspan="4">Volume (tons)</th><th colspan="4">Margin (per ton)</th></tr>
+<tr>{% for i in range(3) %}<th>Prior</th><th>Current</th><th>Change</th><th>%</th>{% endfor %}</tr>
+{%- endmacro %}
+
+{% macro ranked(title, table) -%}
+<h2>{{ title }}</h2>
+<table data-run="{{ run_id }}">
+<thead>{{ head(entity.label if "Customer" in title or "Supplier" in title else "Name") }}</thead>
+<tbody>
+{% for r in table.rows -%}
+<tr><td class="name">{{ r.key }}</td>{{ cells(r) }}</tr>
+{% endfor -%}
+{% if table.other %}<tr><td class="name">{{ table.other.key }}</td>{{ cells(table.other) }}</tr>{% endif %}
+</tbody>
+<tfoot>
+<tr><td class="name">{{ table.footer.key }}</td>{{ cells(table.footer) }}</tr>
+</tfoot>
+</table>
+{%- endmacro %}
+
+{% macro mover_table(rows) -%}
+<table>
+<thead>{{ head(entity.label) }}</thead>
+<tbody>
+{% for r in rows -%}
+<tr><td class="name">{{ r.key }} ({{ r.driver }})</td>{{ cells(r) }}</tr>
+{% if entity_context and r.key in entity_context -%}
+{% set c = entity_context[r.key] -%}
+<tr><td class="ctx" colspan="13">
+Book: gross profit {{ c.book.GP.display.change }} ({{ c.book.GP.display.pct }}), volume {{ c.book.VOLUME.display.change }}, margin {{ c.book.MARGIN.display.change }}.<br>
+Share of book: {{ c.share_of_book.display.prior }} to {{ c.share_of_book.display.current }}.<br>
+Reconciliation: office {{ c.reconciliation.display.office_change }}; other offices net {{ c.reconciliation.display.other_offices_net }}; book {{ c.reconciliation.display.book_change }}.<br>
+{% if c.offsets %}Offsets: {% for o in c.offsets %}{{ o.key }} {{ o.display }}{% if not loop.last %}, {% endif %}{% endfor %}.<br>{% endif %}
+{% if c.ports_rest_of_book %}Ports, rest of book: {% for p in c.ports_rest_of_book %}{{ p.key }} {{ p.display }}{% if not loop.last %}, {% endif %}{% endfor %}.{% endif %}
+</td></tr>
+{% endif -%}
+{% endfor -%}
+</tbody>
+</table>
+{%- endmacro %}
+
+{% macro simple_table(rows) -%}
+<table>
+<thead>{{ head(entity.label) }}</thead>
+<tbody>
+{% for r in rows -%}
+<tr><td class="name">{{ r.key }}</td>{{ cells(r) }}</tr>
+{% endfor -%}
+</tbody>
+</table>
+{%- endmacro %}
+
+<h1>Monthly performance report</h1>
+<p class="meta" data-perspective="{{ perspective }}" data-office-column="{{ scope.office_column }}" data-office-value="{{ scope.office_value }}" data-entity-column="{{ entity.column }}">{{ scope.label }}</p>
+<p class="meta"><span title="{{ periods.current.start }} to {{ periods.current.end }}">{{ periods.current.label }}</span> vs <span title="{{ periods.prior.start }} to {{ periods.prior.end }}">{{ periods.prior.label }}</span>{% if periods.window_kind == "mtd" %} <span class="badge">Month to date</span>{% endif %}</p>
+<p class="meta">Generated {{ generated_at }} | Source: {{ source }} | By: {{ generated_by }} | Run {{ run_id }}</p>
+
+<h2>Key figures</h2>
+<table class="kpis">
+<thead><tr><th class="name">Metric</th><th>Prior</th><th>Current</th><th>Change</th><th>%</th></tr></thead>
+<tbody>
+{% for metric, label in [("VOLUME", "Volume (tons)"), ("GP", "Gross profit"), ("MARGIN", "Margin (per ton)"), ("NUM_WON", "# Won"), ("NUM_INQUIRIES", "# Inquiries"), ("NUM_LOST", "# Lost"), ("WIN_RATE", "Win rate")] -%}
+<tr><td class="name">{{ label }}</td><td>{{ kpis[metric].display.prior }}</td><td>{{ kpis[metric].display.current }}</td><td>{{ kpis[metric].display.change }}</td><td>{{ kpis[metric].display.pct }}</td></tr>
+{% endfor -%}
+</tbody>
+</table>
+
+{{ ranked(entity.label ~ "s by GP", tables.entities_by_gp) }}
+{{ ranked(entity.label ~ "s by volume", tables.entities_by_volume) }}
+{{ ranked("Ports by GP", tables.ports_by_gp) }}
+{{ ranked("Ports by volume", tables.ports_by_volume) }}
+{{ ranked("Deal class", tables.deal_class) }}
+
+<h2>Top increases</h2>
+{{ mover_table(movers.increases) }}
+
+<h2>Top decreases</h2>
+{{ mover_table(movers.decreases) }}
+
+<h2>New in {{ periods.current.label }}</h2>
+{{ simple_table(new_lost.new) }}
+
+<h2>Lost from {{ periods.prior.label }}</h2>
+{{ simple_table(new_lost.lost) }}
+
+<h2>Summary of operations</h2>
+{% if narrative.grounded and narrative.llm_md %}{{ narrative.llm_md | narrative_html }}{% else %}{{ narrative.template_md | narrative_html }}{% endif %}
+{% for flag in narrative.flags -%}
+<p class="notice">{{ flag }}</p>
+{% endfor %}
+
+<h2>Suggested questions</h2>
+<ul>
+{% for q in suggested_questions -%}
+<li>{{ q }}</li>
+{% endfor -%}
+</ul>
+
+<h2>Proof</h2>
+<details>
+<summary>How these figures were computed</summary>
+<ul>
+{% for p in proof -%}
+<li>{{ p }}</li>
+{% endfor -%}
+</ul>
+<table>
+<thead><tr><th class="name">Query</th><th>Hash</th><th>Rows</th><th>ms</th></tr></thead>
+<tbody>
+{% for q in queries -%}
+<tr><td class="name">{{ q.label }}</td><td>{{ q.sql_hash }}</td><td>{{ q.rows }}</td><td>{{ q.ms }}</td></tr>
+{% endfor -%}
+</tbody>
+</table>
+</details>
+
+</body>
+</html>
