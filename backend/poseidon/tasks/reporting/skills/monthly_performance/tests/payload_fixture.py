@@ -107,8 +107,8 @@ def minimal_payload(**overrides: Any) -> dict[str, Any]:
     spot = _row("Spot", "both", (80000, 90000), (800, 850))
     term = _row("Term", "both", (20000, 30000), (200, 250))
 
-    inc = dict(meridian, driver="volume")
-    dec = dict(northstar, driver="margin")
+    inc = dict(meridian, driver="volume-driven")
+    dec = dict(northstar, driver="volume-driven")
     new = _row("Oceanic Fuels", "new", (0, 5000), (0, 50))
     lost = _row("Harbor Tankers", "lost", (4000, 0), (40, 0))
 

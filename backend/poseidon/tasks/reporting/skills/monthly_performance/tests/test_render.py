@@ -40,9 +40,12 @@ def test_html_carries_every_section_in_order():
 def test_every_table_footer_shows_the_kpi_display_strings():
     payload = minimal_payload()
     html = render.render_html(payload)
-    gp = payload["kpis"]["GP"]["display"]
-    assert html.count("<tfoot>") == 5
-    assert gp["current"] in html and gp["prior"] in html
+    footers = re.findall(r"<tfoot>.*?</tfoot>", html, re.S)
+    assert len(footers) == 5
+    for footer in footers:
+        for metric in ("GP", "VOLUME", "MARGIN"):
+            for field in ("prior", "current", "change", "pct"):
+                assert payload["kpis"][metric]["display"][field] in footer, (metric, field)
 
 
 def test_month_to_date_is_named_in_the_header():
@@ -82,6 +85,19 @@ def test_hostile_entity_name_renders_as_text_and_fetches_nothing(monkeypatch):
     assert render.render_pdf(html) == b"%PDF-fake"
     with pytest.raises(RuntimeError, match="refuses to fetch"):
         captured["url_fetcher"]("http://evil.example/x.png")
+
+
+def test_markdown_link_and_image_syntax_never_become_elements():
+    payload = minimal_payload()
+    payload["narrative"]["template_md"] = (
+        "**![a](http://evil.example/x.png)** [c](javascript:alert(1)) and [d][ref]\n\n"
+        "[ref]: http://evil.example"
+    )
+    html = render.render_html(payload)
+    assert "<img" not in html
+    assert "<a " not in html
+    assert "href" not in html
+    assert "evil.example" in html
 
 
 def test_outlook_safety_lint():
