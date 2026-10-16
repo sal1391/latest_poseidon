@@ -5,28 +5,70 @@ different arguments, so they are one skill: the router picks a capability,
 not a product shape.
 """
 
+from collections.abc import Callable
 from dataclasses import replace
-from typing import cast
+from typing import TypeVar, cast
 
 from poseidon.core.data.query_builder import SpecValidationError, resolve_row_scope_value
 from poseidon.core.data.specs import BreakdownQuerySpec, MetricQuerySpec
 from poseidon.core.identity import UserContext
-from poseidon.core.skills.context import SkillContext
+from poseidon.core.skills.context import ConversationSlots, SkillContext
 from poseidon.core.skills.result import SkillResult, problem
 
 from .schema import Args
 from .tools.build_spec import build_spec
+from .tools.compare_breakdown import WINDOW_TOP_N, compare_breakdown_parts
 from .tools.format_parts import format_parts
+
+Spec = MetricQuerySpec | BreakdownQuerySpec
+_S = TypeVar("_S", MetricQuerySpec, BreakdownQuerySpec)
+
+
+def _carried_office(state: ConversationSlots) -> tuple[str, str] | None:
+    """The conversation's carried office as ``(column, value)``, or None."""
+    if state.office_column and state.office_value:
+        return state.office_column, state.office_value
+    return None
+
+
+def _stamp_office(spec: _S, state: ConversationSlots) -> _S:
+    """Put the carried office on ``spec`` as a one-value filter.
+
+    The carried value REPLACES any filter the model wrote on the same column
+    (plan ruling 6): inside a carried office the router cannot widen or
+    redirect the office by naming another one - it says ``scope="book"``.
+    """
+    column, value = _carried_office(state)
+    return replace(spec, filters={**spec.filters, column: (value,)})
+
+
+def _office_proof(args: Args, state: ConversationSlots) -> list[str]:
+    """The proof's LAST line: which office scope the answer ran under."""
+    office = _carried_office(state)
+    if office is None:
+        return []
+    if args.scope == "book":
+        return ["Office scope: book (carried office not applied)"]
+    return [f"Office scope: {office[0]} = {office[1]} (carried; scope=office)"]
 
 
 def run(ctx: SkillContext, args: Args) -> SkillResult:
     """Build the certified spec(s), run them through ``ctx.data``, and shape
     the result.
 
-    A comparison (``args.compare_period`` set, and no ``group_by`` - a
-    breakdown never compares) re-drives :func:`build_spec` on a copy of
-    ``args`` whose ``period`` has been swapped for ``compare_period``, so
-    both windows go through the exact same mapping rules.
+    A comparison (``args.compare_period`` set) re-drives :func:`build_spec`
+    on a copy of ``args`` whose ``period`` has been swapped for
+    ``compare_period``, so both windows go through the exact same mapping
+    rules. With ``group_by`` as well, both breakdown windows run at
+    ``WINDOW_TOP_N`` rows and merge into one comparison table per metric
+    (``tools/compare_breakdown.py``).
+
+    OFFICE SCOPE (Phase 17 A2). Under ``args.scope == "office"`` (the
+    default) with an office carried in ``ctx.state``, every spec this run
+    builds - both windows of any comparison - carries that office as a
+    filter (:func:`_stamp_office`), and the proof's LAST line says so.
+    ``scope == "book"`` leaves the carried office off and the proof says
+    that instead. No carried office: no stamp, no line.
 
     Every :class:`SpecValidationError` - raised by the query builder inside
     ``ctx.data``, from either query, regardless of shape - is this skill's
@@ -52,39 +94,77 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
     without an identified caller raises ``SpecValidationError`` and lands in
     the 422 below rather than answering with rows the caller cannot see.
     """
+    stamp = args.scope == "office" and _carried_office(ctx.state) is not None
     try:
         scope_value = resolve_row_scope_value(args.entity, cast(UserContext | None, ctx.user))
-        spec = replace(build_spec(args), scope_value=scope_value)
-        if isinstance(spec, BreakdownQuerySpec):
-            result = ctx.data.run_breakdown_query(spec)
-            parts, proof = format_parts(spec, result, ctx.settings)
+
+        def scoped(spec_args: Args) -> Spec:
+            """``build_spec`` plus what only ``run`` knows: the D16 row scope
+            and, under ``scope="office"``, the carried office."""
+            spec = replace(build_spec(spec_args), scope_value=scope_value)
+            return _stamp_office(spec, ctx.state) if stamp else spec
+
+        if args.group_by is not None and args.compare_period is not None:
+            parts, proof = _compare_breakdown(ctx, args, scoped)
         else:
-            result = ctx.data.run_metric_query(spec)
-            compare_period = None
-            compare_result = None
-            if args.compare_period is not None:
-                compare_args = args.model_copy(update={"period": args.compare_period})
-                compare_spec = replace(build_spec(compare_args), scope_value=scope_value)
-                if not isinstance(compare_spec, MetricQuerySpec):
-                    # compare_args.group_by is copied unchanged from args,
-                    # which is unset here too (spec is not a
-                    # BreakdownQuerySpec) - a python -O-proof guard against
-                    # that invariant ever silently breaking, not a case that
-                    # can happen today.
-                    raise TypeError(
-                        f"build_spec(compare_args) returned {type(compare_spec).__name__}, "
-                        "not a MetricQuerySpec"
-                    )
-                compare_result = ctx.data.run_metric_query(compare_spec)
-                compare_period = compare_spec.period
-            parts, proof = format_parts(
-                spec,
-                result,
-                ctx.settings,
-                compare_period=compare_period,
-                compare_result=compare_result,
-            )
+            parts, proof = _single(ctx, args, scoped)
     except SpecValidationError as exc:
         return SkillResult(ok=False, error=problem(422, "invalid query", str(exc)))
 
-    return SkillResult(ok=True, parts=parts, proof=proof)
+    return SkillResult(ok=True, parts=parts, proof=[*proof, *_office_proof(args, ctx.state)])
+
+
+def _compare_breakdown(
+    ctx: SkillContext, args: Args, scoped: Callable[[Args], Spec]
+) -> tuple[list[dict], list[str]]:
+    """Breakdown with comparison: both windows at ``WINDOW_TOP_N`` rows (plan
+    ruling 7), each scoped and stamped, merged by ``compare_breakdown_parts``
+    and capped at the router's own ``top_n``."""
+    wide = args.model_copy(update={"top_n": WINDOW_TOP_N})
+    spec_current = scoped(wide)
+    spec_prior = scoped(wide.model_copy(update={"period": args.compare_period}))
+    if not isinstance(spec_current, BreakdownQuerySpec) or not isinstance(
+        spec_prior, BreakdownQuerySpec
+    ):
+        # group_by is set on both copies; a python -O-proof guard against
+        # build_spec ever breaking that mapping, not a case that can happen.
+        raise TypeError("build_spec with group_by did not return a BreakdownQuerySpec")
+    result_current = ctx.data.run_breakdown_query(spec_current)
+    result_prior = ctx.data.run_breakdown_query(spec_prior)
+    return compare_breakdown_parts(
+        spec_current, result_current, spec_prior, result_prior, ctx.settings, args.top_n
+    )
+
+
+def _single(
+    ctx: SkillContext, args: Args, scoped: Callable[[Args], Spec]
+) -> tuple[list[dict], list[str]]:
+    """A breakdown, a total, or a total compared across two windows."""
+    spec = scoped(args)
+    if isinstance(spec, BreakdownQuerySpec):
+        return format_parts(spec, ctx.data.run_breakdown_query(spec), ctx.settings)
+
+    result = ctx.data.run_metric_query(spec)
+    compare_period = None
+    compare_result = None
+    if args.compare_period is not None:
+        compare_args = args.model_copy(update={"period": args.compare_period})
+        compare_spec = scoped(compare_args)
+        if not isinstance(compare_spec, MetricQuerySpec):
+            # compare_args.group_by is copied unchanged from args, which is
+            # unset here too (spec is not a BreakdownQuerySpec) - a python
+            # -O-proof guard against that invariant ever silently breaking,
+            # not a case that can happen today.
+            raise TypeError(
+                f"build_spec(compare_args) returned {type(compare_spec).__name__}, "
+                "not a MetricQuerySpec"
+            )
+        compare_result = ctx.data.run_metric_query(compare_spec)
+        compare_period = compare_spec.period
+    return format_parts(
+        spec,
+        result,
+        ctx.settings,
+        compare_period=compare_period,
+        compare_result=compare_result,
+    )

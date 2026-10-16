@@ -125,3 +125,106 @@
       default_data_qa_breakdown's mechanism with a different literal. Phase 6
       owns threading conversation state through run_turn, and this case is its
       live regression.
+
+# --- Phase 17 PR A2: report follow-ups (not doc 03 section 6 cases) --------
+# A follow-up after an in-chat report carries the report's perspective and
+# office in the conversation slots. These three pin the router decisions the
+# report makes possible: a "why" over a carried customer becomes a breakdown
+# with a comparison window, "where else" leaves the carried office for the
+# whole book, and a supplier-report drill-down keeps the supplier filter.
+
+- id: report_followup_why_gp_dropped
+  setup:
+    mode: default
+    state:
+      perspective: customer
+      office_column: CUSTOMER_TEAM_NAME
+      office_value: Rotterdam
+      report_ref: run-1
+  user: "why did GP drop for Northstar Lines"
+  expect:
+    skill: data_qa.metric_query
+    args_subset: { customer: "Northstar*", group_by: LOC_NM, compare_period: "*" }
+  execution:
+    stub_script:
+      - stop_reason: tool_use
+        input_tokens: 1240
+        output_tokens: 110
+        tool_use:
+          id: tool-1
+          skill: data_qa.metric_query
+          arguments:
+            entity: MARINE_SALES_PLANNING_V
+            metrics: [GP, VOLUME]
+            period: { start: "2026-09-01", end: "2026-10-01" }
+            compare_period: { start: "2026-08-01", end: "2026-09-01" }
+            filters:
+              - { column: CUST_NM, values: [Northstar Lines] }
+            group_by: LOC_NM
+      - stop_reason: end_turn
+        input_tokens: 1520
+        output_tokens: 80
+        text: "Here is Northstar Lines' GP by port, September against August."
+
+- id: report_followup_where_else
+  setup:
+    mode: default
+    state:
+      perspective: customer
+      office_column: CUSTOMER_TEAM_NAME
+      office_value: Rotterdam
+      report_ref: run-1
+  user: "where else does Northstar Lines lift fuel"
+  expect:
+    skill: data_qa.metric_query
+    args_subset: { customer: "Northstar*", scope: book }
+  execution:
+    stub_script:
+      - stop_reason: tool_use
+        input_tokens: 1230
+        output_tokens: 98
+        tool_use:
+          id: tool-1
+          skill: data_qa.metric_query
+          arguments:
+            entity: MARINE_SALES_PLANNING_V
+            metrics: [VOLUME, GP]
+            period: { start: "2026-09-01", end: "2026-10-01" }
+            filters:
+              - { column: CUST_NM, values: [Northstar Lines] }
+            group_by: LOC_NM
+            scope: book
+      - stop_reason: end_turn
+        input_tokens: 1500
+        output_tokens: 70
+        text: "Here is where Northstar Lines lifts fuel across the whole book."
+
+- id: supplier_report_break_down_by_customer
+  setup:
+    mode: default
+    state:
+      perspective: supplier
+      pass_through: [[SUPPLIER_NM, Vitol]]
+  user: "break that down by customer"
+  expect:
+    skill: data_qa.metric_query
+    args_subset: { group_by: CUST_NM, supplier: "Vitol" }
+  execution:
+    stub_script:
+      - stop_reason: tool_use
+        input_tokens: 1210
+        output_tokens: 92
+        tool_use:
+          id: tool-1
+          skill: data_qa.metric_query
+          arguments:
+            entity: MARINE_SALES_PLANNING_V
+            metrics: [GP, VOLUME]
+            period: { start: "2026-09-01", end: "2026-10-01" }
+            filters:
+              - { column: SUPPLIER_NM, values: [Vitol] }
+            group_by: CUST_NM
+      - stop_reason: end_turn
+        input_tokens: 1480
+        output_tokens: 66
+        text: "Here is the Vitol business broken down by customer."
