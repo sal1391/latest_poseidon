@@ -12,6 +12,7 @@ from typing import TypeVar, cast
 from poseidon.core.data.query_builder import SpecValidationError, resolve_row_scope_value
 from poseidon.core.data.specs import BreakdownQuerySpec, MetricQuerySpec
 from poseidon.core.identity import UserContext
+from poseidon.core.ontology.loader import get_ontology
 from poseidon.core.skills.context import ConversationSlots, SkillContext
 from poseidon.core.skills.result import SkillResult, problem
 
@@ -42,6 +43,17 @@ def _stamp_office(spec: _S, state: ConversationSlots) -> _S:
     return replace(spec, filters={**spec.filters, column: (value,)})
 
 
+def _office_applies(entity: str, state: ConversationSlots) -> bool:
+    """True when an office is carried AND its column is a certified
+    dimension of ``entity`` - the same check the query builder runs on every
+    filter column. The stamp follows the entity the way D16 row scope does:
+    an entity without the column (the GL view) is simply not office-scoped,
+    rather than a 422 the router could only escape with ``scope="book"``.
+    """
+    office = _carried_office(state)
+    return office is not None and office[0] in get_ontology().entity(entity).dimensions()
+
+
 def _office_proof(args: Args, state: ConversationSlots) -> list[str]:
     """The proof's LAST line: which office scope the answer ran under."""
     office = _carried_office(state)
@@ -49,6 +61,11 @@ def _office_proof(args: Args, state: ConversationSlots) -> list[str]:
         return []
     if args.scope == "book":
         return ["Office scope: book (carried office not applied)"]
+    if not _office_applies(args.entity, state):
+        return [
+            f"Office scope: {office[0]} is not a dimension of {args.entity}; "
+            "carried office not applied"
+        ]
     return [f"Office scope: {office[0]} = {office[1]} (carried; scope=office)"]
 
 
@@ -66,7 +83,9 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
     OFFICE SCOPE (Phase 17 A2). Under ``args.scope == "office"`` (the
     default) with an office carried in ``ctx.state``, every spec this run
     builds - both windows of any comparison - carries that office as a
-    filter (:func:`_stamp_office`), and the proof's LAST line says so.
+    filter (:func:`_stamp_office`), and the proof's LAST line says so. An
+    entity without the office column as a certified dimension is not
+    stamped, and the proof's last line says that instead.
     ``scope == "book"`` leaves the carried office off and the proof says
     that instead. No carried office: no stamp, no line.
 
@@ -94,7 +113,7 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
     without an identified caller raises ``SpecValidationError`` and lands in
     the 422 below rather than answering with rows the caller cannot see.
     """
-    stamp = args.scope == "office" and _carried_office(ctx.state) is not None
+    stamp = args.scope == "office" and _office_applies(args.entity, ctx.state)
     try:
         scope_value = resolve_row_scope_value(args.entity, cast(UserContext | None, ctx.user))
 

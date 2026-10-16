@@ -744,3 +744,21 @@ def test_group_by_with_compare_period_runs_both_windows_and_returns_comparison_t
     assert res.proof == [*expected_proof, _STAMPED_LINE]
     # _repopulate_pass_through reads the first table's first column as keys.
     assert [row[0] for row in res.parts[0]["payload"]["rows"]] == ["B", "A", "C"]
+
+
+def test_carried_office_is_not_stamped_on_an_entity_without_the_column():
+    """The office stamp follows the entity, as D16 row scope does: the GL
+    entity has no CUSTOMER_TEAM_NAME dimension, so the carried office stays
+    off the spec (the builder would 422 on it) and the proof says why."""
+    client = _RecordingDataClient()
+
+    args = _args(entity="W_MARINE_GL_SOURCE_AI", metrics=["MONETARY_TOTAL"])
+
+    res = run(_ctx(client, state=_ROTTERDAM), args)
+
+    assert res.ok is True
+    assert "CUSTOMER_TEAM_NAME" not in client.metric_specs[0].filters
+    assert res.proof[-1] == (
+        "Office scope: CUSTOMER_TEAM_NAME is not a dimension of W_MARINE_GL_SOURCE_AI; "
+        "carried office not applied"
+    )
