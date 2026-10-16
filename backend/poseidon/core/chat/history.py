@@ -848,6 +848,10 @@ def slots_to_json(slots: ConversationSlots) -> dict:
         "pass_through": [[key, value] for key, value in slots.pass_through],
         "period_a_end": slots.period_a_end.isoformat() if slots.period_a_end is not None else None,
         "period_b_end": slots.period_b_end.isoformat() if slots.period_b_end is not None else None,
+        "perspective": slots.perspective,
+        "office_column": slots.office_column,
+        "office_value": slots.office_value,
+        "report_ref": slots.report_ref,
     }
 
 
@@ -872,6 +876,10 @@ def slots_from_json(raw: dict) -> ConversationSlots:
         pass_through=tuple((pair[0], pair[1]) for pair in pass_through_raw),
         period_a_end=_iso_date(raw.get("period_a_end")),
         period_b_end=_iso_date(raw.get("period_b_end")),
+        perspective=raw.get("perspective"),
+        office_column=raw.get("office_column"),
+        office_value=raw.get("office_value"),
+        report_ref=raw.get("report_ref"),
     )
 
 

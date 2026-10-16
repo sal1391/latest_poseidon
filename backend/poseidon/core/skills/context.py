@@ -153,6 +153,10 @@ class ConversationSlots:
     pass_through: tuple[tuple[str, str], ...] = ()
     period_a_end: date | None = None
     period_b_end: date | None = None
+    perspective: str | None = None  # customer | supplier | book
+    office_column: str | None = None  # CUSTOMER_TEAM_NAME | PRIMARY_SUPPLY_TEAM_OFFICE
+    office_value: str | None = None
+    report_ref: str | None = None  # report_run.id of the last report in this conversation
 
 
 @dataclass(frozen=True)

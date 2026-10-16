@@ -119,8 +119,38 @@ def test_slots_to_json_and_back_round_trips_a_populated_instance():
         "pass_through": [["customer", "ACME MARINE"], ["port", "SGSIN"]],
         "period_a_end": "2026-05-01",
         "period_b_end": "2026-04-01",
+        "perspective": None,
+        "office_column": None,
+        "office_value": None,
+        "report_ref": None,
     }
     assert slots_from_json(raw) == slots
+
+
+def test_slots_round_trip_carries_the_report_fields():
+    slots = ConversationSlots(
+        perspective="supplier",
+        office_column="PRIMARY_SUPPLY_TEAM_OFFICE",
+        office_value="MED SUPPLY OFFICE",
+        report_ref="run-1",
+    )
+
+    raw = slots_to_json(slots)
+
+    assert raw["perspective"] == "supplier"
+    assert raw["office_column"] == "PRIMARY_SUPPLY_TEAM_OFFICE"
+    assert raw["office_value"] == "MED SUPPLY OFFICE"
+    assert raw["report_ref"] == "run-1"
+    assert slots_from_json(raw) == slots
+
+
+def test_slots_from_json_without_report_keys_reads_none():
+    slots = slots_from_json({"customer": "ACME MARINE", "mode": "default"})
+
+    assert slots.perspective is None
+    assert slots.office_column is None
+    assert slots.office_value is None
+    assert slots.report_ref is None
 
 
 def test_slots_to_json_and_back_round_trips_the_empty_default_instance():
@@ -139,6 +169,10 @@ def test_slots_to_json_and_back_round_trips_the_empty_default_instance():
         "pass_through": [],
         "period_a_end": None,
         "period_b_end": None,
+        "perspective": None,
+        "office_column": None,
+        "office_value": None,
+        "report_ref": None,
     }
     assert slots_from_json(raw) == slots
 

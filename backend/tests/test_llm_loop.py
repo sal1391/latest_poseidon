@@ -42,6 +42,7 @@ from poseidon.core.llm.loop import (
     RecordingSink,
     ToolRecord,
     TurnResult,
+    _part_content,
     run_turn,
     tool_result_digest,
 )
@@ -56,6 +57,9 @@ from poseidon.core.skills.registry import RegisteredSkill, SkillRegistry
 from poseidon.core.skills.result import SkillResult, problem, table_part, text_part
 from poseidon.mcp.perplexity.fixture_tool import FixtureResearchTool
 from poseidon.mcp.registry import ToolServerRegistry
+from poseidon.tasks.reporting.skills.monthly_performance.tests.payload_fixture import (
+    minimal_payload,
+)
 
 REQUIRED_ENV = {
     "DATABASE_URL": "postgresql+psycopg://x:x@localhost:5432/poseidon",
@@ -400,6 +404,39 @@ def test_router_guardrail_entity_matches_the_parser_default_entity():
 # ===========================================================================
 # tool_result_digest -- the context-hygiene contract, unit level
 # ===========================================================================
+
+
+def test_a_stub_router_naming_an_internal_skill_is_refused_without_dispatch(settings, monkeypatch):
+    calls: list[str] = []
+    real_dispatch = REGISTRY.dispatch
+
+    def spy(skill_id, raw_args, ctx):
+        calls.append(skill_id)
+        return real_dispatch(skill_id, raw_args, ctx)
+
+    monkeypatch.setattr(REGISTRY, "dispatch", spy)
+    script = [
+        _tool_use(_call({"anything": 1}, skill="reporting.monthly_performance")),
+        _end_turn("Sorry."),
+    ]
+
+    result, sink, _ = _run(settings, script)
+
+    assert result.tool_records[0].status == "error"
+    done = [payload for kind, payload in sink.events if kind == "tool_done"][0]
+    assert done["problem"]["title"] == "internal skill"
+    assert done["problem"]["status"] == 403
+    assert calls == []
+
+
+def test_report_part_content_is_a_one_line_summary():
+    lines = _part_content(1, {"kind": "report", "payload": minimal_payload()})
+
+    assert len(lines) == 1
+    assert "run-test-0001" in lines[0]
+    assert "Rotterdam (Customer Broker Office)" in lines[0]
+    assert "September 2026 vs August 2026" in lines[0]
+    assert "kpis" not in lines[0]
 
 
 def test_digest_success_pins_kind_row_count_and_proof():
