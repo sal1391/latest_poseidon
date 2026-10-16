@@ -15,7 +15,9 @@ from poseidon.core.skills.context import ConversationSlots, SkillContext
 from poseidon.core.skills.registry import SkillRegistry
 from poseidon.tasks.reporting.skills.monthly_performance import skill as skill_module
 from poseidon.tasks.reporting.skills.monthly_performance.tests.fake_client import (
+    MAY,
     FakeDataClient,
+    _row,
     multi_office_rows,
 )
 from poseidon.tasks.reporting.skills.monthly_performance.tools import render
@@ -690,3 +692,19 @@ def test_anonymous_caller_is_recorded_as_dev_anonymous(registry):
     store = _FakeStore()
     payload = _payload(_run(registry, _ctx(store=store, user=None)))
     assert store.inserted[0][0] == "dev|anonymous" and payload["generated_by"] == "dev|anonymous"
+
+
+def test_ports_rest_of_book_never_lists_a_flat_port(registry):
+    """Meridian also lifts at Tangier under Spain Office with identical GP in
+    both months: a zero change, so it must not appear among the rest-of-book
+    ports, while Algeciras (+50,000) still does."""
+    june_day = date(2026, 6, 10)
+    tangier = ("Meridian Bunkering", "BP", "Tangier", "Spain Office", "INVENTORY")
+    extra = [
+        _row(MAY, *tangier, 5_000, 100, 1, 1),
+        _row(june_day, *tangier, 5_000, 100, 1, 1),
+    ]
+    rows = multi_office_rows() + extra
+    payload = _payload(_run(registry, _ctx(data=FakeDataClient(rows=rows))))
+    ports = payload["entity_context"]["Meridian Bunkering"]["ports_rest_of_book"]
+    assert [p["key"] for p in ports] == ["Algeciras"]

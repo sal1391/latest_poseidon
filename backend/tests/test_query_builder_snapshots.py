@@ -648,6 +648,40 @@ def test_months_query_on_gl_snowflake_wraps_the_varchar_date():
     )
 
 
+def _gl_exclusion() -> str:
+    from poseidon.core.ontology.loader import get_ontology
+
+    return get_ontology().entity("W_MARINE_GL_SOURCE_AI").dual_purpose_exclusion
+
+
+def test_months_query_applies_the_dual_purpose_exclusion_on_gl_postgres():
+    sql, params = qb.build_months_query("W_MARINE_GL_SOURCE_AI", {}, "postgres")
+    assert sql == (
+        'SELECT DISTINCT CAST(DATE_TRUNC(\'month\', PERIOD_DATE) AS DATE) AS "MONTH"\n'
+        "FROM synthetic.w_marine_gl_source_ai\n"
+        f"WHERE {_gl_exclusion()}\n"
+        "ORDER BY 1"
+    )
+    assert params == []
+
+
+def test_months_query_applies_the_dual_purpose_exclusion_on_gl_snowflake():
+    sql, params = qb.build_months_query("W_MARINE_GL_SOURCE_AI", {}, "snowflake")
+    assert sql == (
+        'SELECT DISTINCT CAST(DATE_TRUNC(\'month\', TO_DATE(PERIOD_DATE)) AS DATE) AS "MONTH"\n'
+        "FROM SANDBOX.MCA.W_MARINE_GL_SOURCE_AI\n"
+        f"WHERE {_gl_exclusion()}\n"
+        "ORDER BY 1"
+    )
+    assert params == []
+
+
+def test_months_query_has_no_exclusion_on_sales():
+    for dialect in ("postgres", "snowflake"):
+        sql, _ = qb.build_months_query("MARINE_SALES_PLANNING_V", {}, dialect)
+        assert "CLASS4" not in sql
+
+
 # ---------------------------------------------------------------------------
 # build_period_range_query
 # ---------------------------------------------------------------------------

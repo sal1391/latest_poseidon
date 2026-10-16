@@ -268,3 +268,31 @@ def test_module_is_ascii_on_disk():
     import poseidon.core.analytics.mom as module
 
     Path(module.__file__).read_bytes().decode("ascii")
+
+
+def test_singular_noun():
+    assert mom.singular("customers") == "customer"
+    assert mom.singular("suppliers") == "supplier"
+    assert mom.singular("ports") == "port"
+    assert mom.singular("deal classes") == "deal class"
+
+
+def test_other_row_with_one_entity_reads_singular():
+    # three merged rows ranked with n=2 leave exactly one in the Other row
+    merged = mom.merge_breakdowns(PRIOR, CURRENT)
+    assert len(merged) == 4
+    assert mom.ranked(merged, "GP", 3, "customers").other.key == "Other (1 customer)"
+    assert mom.ranked(merged, "GP", 2, "customers").other.key == "Other (2 customers)"
+
+
+def test_zero_displays_never_show_a_signed_zero():
+    assert mom.fmt_value(-0.3, "money") == "0"
+    assert mom.fmt_value(-0.001, "margin") == "0.00"
+    assert mom.fmt_change(0.3, "money") == "flat"
+    assert mom.fmt_change(-0.3, "money") == "flat"
+    assert mom.fmt_change(-0.004, "margin") == "flat"
+    assert mom.fmt_change(0.0004, "rate") == "flat"
+    assert mom.fmt_pct(0.04, 0.3) == "flat"
+    assert mom.fmt_pct(-0.04, -0.3) == "flat"
+    # rounding still rounds; only a zero display is polished
+    assert mom.fmt_change(0.6, "money") == "+1"

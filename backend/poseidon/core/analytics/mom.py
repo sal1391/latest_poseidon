@@ -22,6 +22,7 @@ No I/O, no pandas, no imports from ``poseidon.tasks``.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -226,13 +227,22 @@ def _aggregate(key: str, rows: Sequence[MergedRow]) -> MergedRow:
     return MergedRow(key, "both", _metrics(a, b))
 
 
+def singular(noun: str) -> str:
+    if noun.endswith("classes"):
+        return noun[:-2]
+    if noun.endswith("s"):
+        return noun[:-1]
+    return noun
+
+
 def ranked(merged: Sequence[MergedRow], by: str, n: int = 10, noun: str = "customers") -> Ranked:
     if by not in ROW_METRICS:
         raise ValueError(f"by must be one of {ROW_METRICS}, got {by!r}")
     ordered = sorted(merged, key=lambda r: (-r.metrics[by].current, r.key))
     shown = ordered[:n]
     rest = ordered[n:]
-    other = _aggregate(f"Other ({len(rest)} {noun})", rest) if rest else None
+    label = noun if len(rest) != 1 else singular(noun)
+    other = _aggregate(f"Other ({len(rest)} {label})", rest) if rest else None
     return Ranked(rows=shown, other=other, footer=_aggregate("Total", ordered))
 
 
@@ -244,22 +254,33 @@ def reconciles(a: float, b: float) -> bool:
     return abs(a - b) < 0.005
 
 
+_ZERO_DISPLAY = re.compile(r"[+-]?0(?:[.,]0+)?(?:%| pts)?")
+
+
+def _is_zero_display(s: str) -> bool:
+    return _ZERO_DISPLAY.fullmatch(s) is not None
+
+
 def fmt_value(x: float, kind: Kind) -> str:
     if kind == "margin":
-        return f"{x:.2f}"
-    if kind == "rate":
-        return f"{x * 100:.1f}%"
-    return f"{x:,.0f}"
+        s = f"{x:.2f}"
+    elif kind == "rate":
+        s = f"{x * 100:.1f}%"
+    else:
+        s = f"{x:,.0f}"
+    return s.lstrip("-") if _is_zero_display(s) else s
 
 
 def fmt_change(x: float, kind: Kind) -> str:
     if x == 0:
         return "flat"
     if kind == "margin":
-        return f"{x:+.2f}"
-    if kind == "rate":
-        return f"{x * 100:+.1f} pts"
-    return f"{x:+,.0f}"
+        s = f"{x:+.2f}"
+    elif kind == "rate":
+        s = f"{x * 100:+.1f} pts"
+    else:
+        s = f"{x:+,.0f}"
+    return "flat" if _is_zero_display(s) else s
 
 
 def fmt_pct(pct: float | None, change: float) -> str:
@@ -267,7 +288,8 @@ def fmt_pct(pct: float | None, change: float) -> str:
         return "flat"
     if pct is None:
         return "new"
-    return f"{pct:+.1f}%"
+    s = f"{pct:+.1f}%"
+    return "flat" if _is_zero_display(s) else s
 
 
 def display(d: Delta, kind: Kind) -> dict[str, str]:

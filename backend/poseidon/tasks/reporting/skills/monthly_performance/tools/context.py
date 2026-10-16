@@ -45,7 +45,8 @@ def _changes(prior: FrameResult, current: FrameResult, column: str) -> dict[str,
 
 
 def _items(changes: dict[str, float]) -> list[dict[str, Any]]:
-    ordered = sorted(changes.items(), key=lambda kv: (-abs(kv[1]), kv[0]))[:_TOP]
+    moved = [(k, c) for k, c in changes.items() if c != 0]
+    ordered = sorted(moved, key=lambda kv: (-abs(kv[1]), kv[0]))[:_TOP]
     return [{"key": k, "change": c, "display": mom.fmt_change(c, _MONEY)} for k, c in ordered]
 
 
