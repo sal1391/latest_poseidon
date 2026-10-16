@@ -740,8 +740,9 @@ def delete_conversation(cid: str, request: Request) -> None:
 @router.get("/skills", dependencies=[Depends(require_sales)])
 def list_skills(request: Request) -> list[dict[str, str]]:
     """``[{id, label, description}]`` for every router-visible skill, in
-    ``SkillRegistry.skill_ids`` order (already deterministic -- see that
-    property's own docstring). ``label`` is ``events.skill_label`` -- the
+    ``SkillRegistry.router_skill_ids`` order (already deterministic -- see
+    that property's own docstring); an internal skill is never listed.
+    ``label`` is ``events.skill_label`` -- the
     ONE shared home for this derivation -- byte-identical to the existing
     static ``SkillsPicker`` entry for the same skill, and to the SSE
     tool-step label :class:`~poseidon.core.chat.events.SseEnvelopeSink`
@@ -754,7 +755,7 @@ def list_skills(request: Request) -> list[dict[str, str]]:
             "label": skill_label(skill_id),
             "description": registry.get(skill_id).description,
         }
-        for skill_id in registry.skill_ids
+        for skill_id in registry.router_skill_ids
     ]
 
 

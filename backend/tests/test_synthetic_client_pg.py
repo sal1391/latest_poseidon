@@ -37,7 +37,12 @@ import os
 import psycopg
 import pytest
 
-from poseidon.core.data.specs import BreakdownQuerySpec, MetricQuerySpec, PeriodWindow
+from poseidon.core.data.specs import (
+    BreakdownQuerySpec,
+    FrameQuerySpec,
+    MetricQuerySpec,
+    PeriodWindow,
+)
 from poseidon.core.data.synthetic_client import SyntheticDataClient, normalize_dsn
 from poseidon.scripts.generate_synthetic import generate
 
@@ -449,3 +454,71 @@ def test_gl_volume_mode_breakdown_sums_tonnage_by_class3():
     assert [row.key for row in result.rows] == [name for name, _ in expected]
     for row, (name, total) in zip(result.rows, expected, strict=True):
         assert row.values["MONETARY_TOTAL"] == pytest.approx(total), name
+
+
+def test_list_months_returns_the_eighteen_generated_months_in_order():
+    months = CLIENT.list_months(SALES, {}, scope_value=None)
+    assert months[0] == dt.date(2025, 1, 1)
+    assert months[-1] == dt.date(2026, 6, 1)
+    assert len(months) == 18
+    assert months == sorted(months)
+
+
+def test_list_months_under_an_office_filter_is_a_subset():
+    office = sorted({r["CUSTOMER_TEAM_NAME"] for r in DATASET.sales_rows})[0]
+    months = CLIENT.list_months(SALES, {"CUSTOMER_TEAM_NAME": (office,)}, scope_value=None)
+    expected = sorted(
+        {
+            r["LIFT_ETA_DATE"].replace(day=1)
+            for r in DATASET.sales_rows
+            if r["CUSTOMER_TEAM_NAME"] == office
+        }
+    )
+    assert months == expected
+
+
+def test_frame_by_customer_and_port_matches_the_python_groupby():
+    spec = FrameQuerySpec(
+        entity=SALES,
+        metrics=("GP", "VOLUME", "NUM_WON", "NUM_INQUIRIES", "NUM_LOST"),
+        period=APRIL_2026,
+        group_by=("CUST_NM", "LOC_NM"),
+        scope_value=None,
+    )
+    result = CLIENT.run_frame_query(spec)
+    expected: dict[tuple[str, str], dict[str, float]] = {}
+    for r in sales_in(APRIL_2026):
+        key = (r["CUST_NM"], r["LOC_NM"])
+        acc = expected.setdefault(
+            key, {"GP": 0.0, "VOLUME": 0.0, "NUM_WON": 0.0, "NUM_INQUIRIES": 0.0}
+        )
+        acc["GP"] += r["GROSS_PROFIT"]
+        acc["VOLUME"] += r["FIXED_TONS"]
+        acc["NUM_WON"] += r["#_FIXTURES"]
+        acc["NUM_INQUIRIES"] += r["#_INQUIRIES"]
+    assert {row.keys for row in result.rows} == set(expected)
+    for row in result.rows:
+        exp = expected[row.keys]
+        assert row.values["GP"] == pytest.approx(exp["GP"])
+        assert row.values["VOLUME"] == pytest.approx(exp["VOLUME"])
+        assert row.values["NUM_LOST"] == pytest.approx(exp["NUM_INQUIRIES"] - exp["NUM_WON"])
+
+
+def test_frame_rollup_equals_the_independent_total_to_the_cent():
+    frame = CLIENT.run_frame_query(
+        FrameQuerySpec(SALES, ("GP", "VOLUME"), APRIL_2026, ("CUST_NM", "LOC_NM"), scope_value=None)
+    )
+    total = CLIENT.run_metric_query(
+        MetricQuerySpec(SALES, ("GP", "VOLUME"), APRIL_2026, scope_value=None)
+    )
+    assert abs(sum(r.values["GP"] for r in frame.rows) - total.values["GP"]) < 0.005
+    assert abs(sum(r.values["VOLUME"] for r in frame.rows) - total.values["VOLUME"]) < 0.005
+
+
+def test_snapshot_client_answers_like_the_plain_client():
+    spec = MetricQuerySpec(SALES, ("GP",), APRIL_2026, scope_value=None)
+    with CLIENT.snapshot() as snap:
+        inside = snap.run_metric_query(spec)
+        months = snap.list_months(SALES, {}, scope_value=None)
+    assert inside == CLIENT.run_metric_query(spec)
+    assert months == CLIENT.list_months(SALES, {}, scope_value=None)

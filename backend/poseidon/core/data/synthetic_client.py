@@ -43,7 +43,8 @@ methods carry it on the spec itself -- so the fail-closed rules live in
 ``DataClient`` inherits them by construction rather than by remembering to.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from datetime import date
 
 import psycopg
@@ -51,8 +52,16 @@ import psycopg
 from poseidon.core.obs import span
 
 from . import query_builder as qb
-from .client import BreakdownResult, BreakdownRow, MetricResult, PeriodRange
-from .specs import BreakdownQuerySpec, MetricQuerySpec
+from .client import (
+    BreakdownResult,
+    BreakdownRow,
+    DataClient,
+    FrameResult,
+    FrameRow,
+    MetricResult,
+    PeriodRange,
+)
+from .specs import BreakdownQuerySpec, FrameQuerySpec, MetricQuerySpec
 
 DIALECT = "postgres"
 
@@ -100,6 +109,112 @@ def _as_date(value: object) -> date | None:
     return date.fromisoformat(str(value))
 
 
+# fetch(sql, params, limit) -> rows. Both clients supply one; everything below
+# builds SQL and shapes rows through it, so the plain and snapshot clients
+# cannot drift apart.
+Fetch = Callable[[str, Sequence, "int | None"], list[tuple]]
+
+
+def _metric_result(spec: MetricQuerySpec, rows: list[tuple]) -> MetricResult:
+    # No row at all == the HAVING guard rejected the group; same meaning
+    # as an all-NULL aggregate row, so report every metric as unknown.
+    cells: Sequence = rows[0] if rows else (None,) * len(spec.metrics)
+    return MetricResult(
+        entity=spec.entity,
+        period=spec.period,
+        values={name: _as_float(cell) for name, cell in zip(spec.metrics, cells, strict=True)},
+    )
+
+
+def _breakdown_result(spec: BreakdownQuerySpec, rows: list[tuple]) -> BreakdownResult:
+    return BreakdownResult(
+        entity=spec.entity,
+        group_by=spec.group_by,
+        rows=[
+            BreakdownRow(
+                key=row[0],
+                values={
+                    name: _as_float(cell) for name, cell in zip(spec.metrics, row[1:], strict=True)
+                },
+            )
+            for row in rows
+        ],
+    )
+
+
+def _frame_result(spec: FrameQuerySpec, rows: list[tuple]) -> FrameResult:
+    n = len(spec.group_by)
+    return FrameResult(
+        entity=spec.entity,
+        group_by=tuple(spec.group_by),
+        rows=[
+            FrameRow(
+                keys=tuple(row[:n]),
+                values={
+                    name: _as_float(cell) for name, cell in zip(spec.metrics, row[n:], strict=True)
+                },
+            )
+            for row in rows
+        ],
+    )
+
+
+def _months(rows: list[tuple]) -> list[date]:
+    return [row[0] for row in rows]
+
+
+def _period_range(rows: list[tuple]) -> PeriodRange:
+    # MIN/MAX over an empty table still returns exactly one row, of NULLs.
+    start, end = rows[0] if rows else (None, None)
+    return PeriodRange(start=_as_date(start), end=_as_date(end))
+
+
+def _list_dimension_values(
+    fetch: Fetch, entity: str, column: str, search: str | None, scope_value: str | None
+) -> list[str]:
+    sql, params = qb.build_dimension_values_query(
+        entity, column, search, DIALECT, scope_value=scope_value
+    )
+    return [row[0] for row in fetch(sql, params, DIMENSION_VALUE_LIMIT)]
+
+
+def _available_periods(fetch: Fetch, entity: str, scope_value: str | None) -> PeriodRange:
+    sql, params = qb.build_period_range_query(entity, DIALECT, scope_value=scope_value)
+    return _period_range(fetch(sql, params, None))
+
+
+def _list_months(
+    fetch: Fetch,
+    entity: str,
+    filters: Mapping[str, tuple[str, ...]],
+    scope_value: str | None,
+) -> list[date]:
+    sql, params = qb.build_months_query(entity, filters, DIALECT, scope_value=scope_value)
+    return _months(fetch(sql, params, None))
+
+
+def _run_metric_query(fetch: Fetch, spec: MetricQuerySpec) -> MetricResult:
+    sql, params = qb.build_metric_query(spec, DIALECT)
+    return _metric_result(spec, fetch(sql, params, None))
+
+
+def _run_breakdown_query(fetch: Fetch, spec: BreakdownQuerySpec) -> BreakdownResult:
+    sql, params = qb.build_breakdown_query(spec, DIALECT)
+    return _breakdown_result(spec, fetch(sql, params, None))
+
+
+def _run_frame_query(fetch: Fetch, spec: FrameQuerySpec) -> FrameResult:
+    sql, params = qb.build_frame_query(spec, DIALECT)
+    return _frame_result(spec, fetch(sql, params, None))
+
+
+def _run(cur: psycopg.Cursor, sql: str, params: Sequence, limit: int | None) -> list[tuple]:
+    # ``params or None``: psycopg treats an empty sequence as "parameterized"
+    # and would try to read any literal ``%`` in the SQL as a placeholder.
+    cur.execute(sql, params or None)
+    return cur.fetchall() if limit is None else cur.fetchmany(limit)
+
+
 class SyntheticDataClient:
     """``DataClient`` (structurally — see ``client.DataClient``) for Postgres."""
 
@@ -133,8 +248,7 @@ class SyntheticDataClient:
         with span("db:query"):
             with self._connect() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(sql, params or None)
-                    return cur.fetchall() if limit is None else cur.fetchmany(limit)
+                    return _run(cur, sql, params, limit)
 
     # -- DataClient -------------------------------------------------------
 
@@ -145,45 +259,86 @@ class SyntheticDataClient:
         search: str | None = None,
         scope_value: str | None = None,
     ) -> list[str]:
-        sql, params = qb.build_dimension_values_query(
-            entity, column, search, DIALECT, scope_value=scope_value
-        )
-        rows = self._fetch(sql, params, limit=DIMENSION_VALUE_LIMIT)
-        return [row[0] for row in rows]
+        return _list_dimension_values(self._fetch, entity, column, search, scope_value)
 
     def available_periods(self, entity: str, scope_value: str | None = None) -> PeriodRange:
-        sql, params = qb.build_period_range_query(entity, DIALECT, scope_value=scope_value)
-        rows = self._fetch(sql, params)
-        # MIN/MAX over an empty table still returns exactly one row, of NULLs.
-        start, end = rows[0] if rows else (None, None)
-        return PeriodRange(start=_as_date(start), end=_as_date(end))
+        return _available_periods(self._fetch, entity, scope_value)
 
     def run_metric_query(self, spec: MetricQuerySpec) -> MetricResult:
-        sql, params = qb.build_metric_query(spec, DIALECT)
-        rows = self._fetch(sql, params)
-        # No row at all == the HAVING guard rejected the group; same meaning
-        # as an all-NULL aggregate row, so report every metric as unknown.
-        cells: Sequence = rows[0] if rows else (None,) * len(spec.metrics)
-        return MetricResult(
-            entity=spec.entity,
-            period=spec.period,
-            values={name: _as_float(cell) for name, cell in zip(spec.metrics, cells, strict=True)},
-        )
+        return _run_metric_query(self._fetch, spec)
 
     def run_breakdown_query(self, spec: BreakdownQuerySpec) -> BreakdownResult:
-        sql, params = qb.build_breakdown_query(spec, DIALECT)
-        rows = self._fetch(sql, params)
-        return BreakdownResult(
-            entity=spec.entity,
-            group_by=spec.group_by,
-            rows=[
-                BreakdownRow(
-                    key=row[0],
-                    values={
-                        name: _as_float(cell)
-                        for name, cell in zip(spec.metrics, row[1:], strict=True)
-                    },
-                )
-                for row in rows
-            ],
-        )
+        return _run_breakdown_query(self._fetch, spec)
+
+    def list_months(
+        self,
+        entity: str,
+        filters: Mapping[str, tuple[str, ...]],
+        scope_value: str | None = None,
+    ) -> list[date]:
+        return _list_months(self._fetch, entity, filters, scope_value)
+
+    def run_frame_query(self, spec: FrameQuerySpec) -> FrameResult:
+        return _run_frame_query(self._fetch, spec)
+
+    @contextmanager
+    def snapshot(self) -> Iterator[DataClient]:
+        """One read-only REPEATABLE READ connection for a run of queries (D54).
+
+        Isolation and read-only are set BEFORE the first statement (psycopg
+        applies them to the next transaction). Exit rolls back (nothing to
+        commit) and closes.
+        """
+        conn = self._connect()
+        conn.isolation_level = psycopg.IsolationLevel.REPEATABLE_READ
+        conn.read_only = True
+        try:
+            yield _SnapshotClient(conn)
+        finally:
+            conn.rollback()
+            conn.close()
+
+
+class _SnapshotClient:
+    """The seven ``DataClient`` calls over one already-open connection."""
+
+    def __init__(self, conn: psycopg.Connection) -> None:
+        self._conn = conn
+
+    def _fetch(self, sql: str, params: Sequence, limit: int | None = None) -> list[tuple]:
+        with span("db:query"):
+            with self._conn.cursor() as cur:
+                return _run(cur, sql, params, limit)
+
+    def list_dimension_values(
+        self,
+        entity: str,
+        column: str,
+        search: str | None = None,
+        scope_value: str | None = None,
+    ) -> list[str]:
+        return _list_dimension_values(self._fetch, entity, column, search, scope_value)
+
+    def available_periods(self, entity: str, scope_value: str | None = None) -> PeriodRange:
+        return _available_periods(self._fetch, entity, scope_value)
+
+    def run_metric_query(self, spec: MetricQuerySpec) -> MetricResult:
+        return _run_metric_query(self._fetch, spec)
+
+    def run_breakdown_query(self, spec: BreakdownQuerySpec) -> BreakdownResult:
+        return _run_breakdown_query(self._fetch, spec)
+
+    def list_months(
+        self,
+        entity: str,
+        filters: Mapping[str, tuple[str, ...]],
+        scope_value: str | None = None,
+    ) -> list[date]:
+        return _list_months(self._fetch, entity, filters, scope_value)
+
+    def run_frame_query(self, spec: FrameQuerySpec) -> FrameResult:
+        return _run_frame_query(self._fetch, spec)
+
+    @contextmanager
+    def snapshot(self) -> Iterator[DataClient]:
+        yield self

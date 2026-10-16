@@ -18,6 +18,7 @@ start alone; they are read exactly as they were before this phase.
 Pure functions, no clock, no I/O, pure ASCII on disk.
 """
 
+import calendar
 from datetime import date, timedelta
 from typing import Literal
 
@@ -58,6 +59,16 @@ def _add_months(first_of_month: date, months: int) -> date:
     """``first_of_month`` moved forward ``months`` whole months (stays on the 1st)."""
     index = first_of_month.year * 12 + (first_of_month.month - 1) + months
     return date(index // 12, index % 12 + 1, 1)
+
+
+def add_months(first_of_month: date, months: int) -> date:
+    """Public name for :func:`_add_months` (the report needs the prior month)."""
+    return _add_months(first_of_month, months)
+
+
+def days_in_month(year: int, month: int) -> int:
+    """The number of days in the given calendar month."""
+    return calendar.monthrange(year, month)[1]
 
 
 def window_kind(window: PeriodWindow) -> WindowKind:
@@ -101,6 +112,13 @@ def label_window(window: PeriodWindow) -> str:
         return f"{start.year}"
     if kind == KIND_YTD:
         return f"{start.year} year to date"
+    return label_day_range(window)
+
+
+def label_day_range(window: PeriodWindow) -> str:
+    """``window`` always named as a day range ("February 1 to 28, 2026"),
+    even when it happens to span a whole month, quarter or year."""
+    start = window.start
     last = window.end - timedelta(days=1)
     if start.year == last.year and start.month == last.month:
         return f"{_MONTH_NAMES[start.month - 1]} {start.day} to {last.day}, {start.year}"
@@ -115,6 +133,15 @@ def label_window(window: PeriodWindow) -> str:
     )
 
 
+def label_month_to_date(window: PeriodWindow) -> str:
+    """``label_day_range`` plus the words " (month to date)", appended here only.
+
+    The window is always rendered as a day range: a month-to-date window is
+    never a whole month and must never be read as year to date (a January
+    window starting Jan 1 would otherwise classify as ``ytd``)."""
+    return f"{label_day_range(window)} (month to date)"
+
+
 __all__ = [
     "KIND_MONTH",
     "KIND_QUARTER",
@@ -122,6 +149,10 @@ __all__ = [
     "KIND_YEAR",
     "KIND_YTD",
     "WindowKind",
+    "add_months",
+    "days_in_month",
+    "label_day_range",
+    "label_month_to_date",
     "label_window",
     "month_window",
     "slot_window",

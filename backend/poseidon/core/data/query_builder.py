@@ -70,7 +70,7 @@ from poseidon.core.identity import UserContext
 from poseidon.core.ontology.loader import get_ontology
 from poseidon.core.ontology.models import Entity
 
-from .specs import BreakdownQuerySpec, MetricQuerySpec, PeriodWindow
+from .specs import BreakdownQuerySpec, FrameQuerySpec, MetricQuerySpec, PeriodWindow
 
 _SYNTHETIC_SCHEMA = "synthetic"
 
@@ -331,6 +331,21 @@ def _volume_mode_required_group_by(entity: Entity) -> str:
     return levels[pivot_index + 1]
 
 
+def _filter_conditions(
+    entity: Entity, filters: Mapping[str, tuple[str, ...]], params: list
+) -> list[str]:
+    """One ``COALESCE(col, placeholder) IN (...)`` condition per filter column,
+    in the order given (OR within a column's IN-list), extending ``params``."""
+    conditions = []
+    for col, values in filters.items():
+        placeholders = ", ".join(["%s"] * len(values))
+        conditions.append(
+            f"COALESCE({col}, '{entity.null_placeholder}') IN ({placeholders})"
+        )
+        params.extend(values)
+    return conditions
+
+
 def _where_clause(
     entity: Entity,
     dialect: str,
@@ -359,12 +374,7 @@ def _where_clause(
     conditions = [f"{date_expr} >= %s AND {date_expr} < %s"]
     params.extend([period.start, period.end])
 
-    for col, values in filters.items():
-        placeholders = ", ".join(["%s"] * len(values))
-        conditions.append(
-            f"COALESCE({col}, '{entity.null_placeholder}') IN ({placeholders})"
-        )
-        params.extend(values)
+    conditions.extend(_filter_conditions(entity, filters, params))
 
     if (
         entity.dual_purpose_exclusion
@@ -505,4 +515,81 @@ def build_period_range_query(
     scope = _scope_condition(entity_obj, scope_value, params)
     if scope is not None:
         clauses.append(f"WHERE {scope}")
+    return "\n".join(clauses), params
+
+
+def build_frame_query(spec: FrameQuerySpec, dialect: str) -> tuple[str, list]:
+    """A grouped multi-metric slice with no ORDER BY, LIMIT or HAVING.
+
+    WIN_RATE is refused (a ratio cannot be summed; the caller recomputes it
+    from NUM_WON and NUM_INQUIRIES) and so is volume mode.
+    """
+    entity = _entity(spec.entity)
+    _require_scope_value(entity, spec.scope_value)
+    _require_certified_metrics(entity, spec.metrics)
+    if "WIN_RATE" in spec.metrics:
+        raise SpecValidationError(
+            "WIN_RATE is a ratio; a frame carries NUM_WON and NUM_INQUIRIES "
+            "and the caller recomputes it"
+        )
+    if not spec.group_by:
+        raise SpecValidationError("frame query needs at least one group_by column")
+    seen: set[str] = set()
+    for col in spec.group_by:
+        if col in seen:
+            raise SpecValidationError(f"group_by repeats {col!r}")
+        seen.add(col)
+    for col in spec.group_by:
+        _require_dimension(entity, col)
+    _validate_filters(entity, spec.filters)
+    if _is_volume_mode(entity, spec.filters):
+        raise SpecValidationError(
+            "frames are not allowed in volume mode (CLASS4 = 'Volume'); "
+            "use a breakdown grouped by CLASS3"
+        )
+
+    params: list = []
+    select_list = ", ".join(
+        [f"COALESCE({col}, '{entity.null_placeholder}') AS {col}" for col in spec.group_by]
+        + [_metric_expr(entity, m) for m in spec.metrics]
+    )
+    where = _where_clause(
+        entity, dialect, spec.metrics, spec.period, spec.filters, params, spec.scope_value
+    )
+    positions = ", ".join(str(i) for i in range(1, len(spec.group_by) + 1))
+    clauses = [
+        f"SELECT {select_list}",
+        f"FROM {_table_name(entity, dialect)}",
+        f"WHERE {where}",
+        f"GROUP BY {positions}",
+    ]
+    return "\n".join(clauses), params
+
+
+def build_months_query(
+    entity: str,
+    filters: Mapping[str, tuple[str, ...]],
+    dialect: str,
+    scope_value: str | None = None,
+) -> tuple[str, list]:
+    """The first day of every month that has rows under ``filters`` (and the
+    D16 row scope), oldest first. No period window: it lists what exists."""
+    entity_obj = _entity(entity)
+    _require_scope_value(entity_obj, scope_value)
+    _validate_filters(entity_obj, filters)
+    date_expr = _date_expr(entity_obj, dialect)
+
+    params: list = []
+    conditions = _filter_conditions(entity_obj, filters, params)
+    scope = _scope_condition(entity_obj, scope_value, params)
+    if scope is not None:
+        conditions.append(scope)
+
+    clauses = [
+        f"SELECT DISTINCT CAST(DATE_TRUNC('month', {date_expr}) AS DATE) AS \"MONTH\"",
+        f"FROM {_table_name(entity_obj, dialect)}",
+    ]
+    if conditions:
+        clauses.append(f"WHERE {' AND '.join(conditions)}")
+    clauses.append("ORDER BY 1")
     return "\n".join(clauses), params

@@ -33,15 +33,15 @@ doc as current. Decisions taken in feature specs used to not propagate; that is 
 - **Cortex via the SQL `COMPLETE` function with emulated tools.** D40 chose the Cortex REST
   Messages endpoint with native tool calling.
 
-## Commands — verified 2026-10-12 (Phase 17 PR 0) (frontend line excepted), copy-pasteable
+## Commands — verified 2026-10-14 (Phase 17 PR A1) (frontend line excepted), copy-pasteable
 
 ```bash
-# Offline Python suite -> 2040 passed, 13 skipped, 120 deselected (~236s)
+# Offline Python suite -> 2178 passed, 14 skipped, 126 deselected (~251s)
 cd backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest \
   -p no:cacheprovider \
   -m 'not pg and not minio and not pdf and not router_live and not research_live'
 
-# Postgres-backed suite (needs the compose `db` service up) -> 338 passed, 1 skipped
+# Postgres-backed suite (needs the compose `db` service up) -> 352 passed, 1 skipped
 # (Drizzle-only database; Alembic no longer owns this schema, D58)
 cd backend && .venv/Scripts/python.exe -B -m pytest -p no:cacheprovider -m pg
 
@@ -53,11 +53,11 @@ cd backend && .venv/Scripts/python.exe -m ruff check .
 cd backend && POSEIDON_UPDATE_CONTRACTS=1 .venv/Scripts/python.exe -B -m pytest \
   -p no:cacheprovider tests/contracts -q
 
-# Frontend -> 171 passed, 18 files; lint clean (not re-run 2026-10-12)
+# Frontend -> 171 passed, 18 files; lint clean (not re-run 2026-10-14)
 cd frontend && npm test -- --run
 cd frontend && npm run lint
 
-# Web (Next.js) -> 149 passed, 13 skipped, offline (db-backed files skip without
+# Web (Next.js) -> 151 passed, 13 skipped, offline (db-backed files skip without
 # DRIZZLE_DATABASE_URL); 162 passed with it set against the compose `db` service (reported by an
 # implementer on 2026-10-12, not re-run by the orchestrator)
 cd web && npm test
@@ -73,13 +73,17 @@ cd web && npx drizzle-kit migrate      # reads DRIZZLE_DATABASE_URL
 # Fresh local database after the Phase 16 cutover: docker compose -f infra/docker-compose.yml down -v
 ```
 
-Web (Next.js) suite verified 2026-10-12: `npm test` → 149 passed, 13 skipped offline
-(18 files: 17 passed, 1 skipped); `npx tsc --noEmit` → clean. The 162-passed
-`DRIZZLE_DATABASE_URL`-set figure was reported by an implementer on 2026-10-12 and not re-run by
-the orchestrator. The frontend (Vite) figure above was not re-run 2026-10-12.
+Web (Next.js) suite verified 2026-10-14: `npm test` → 151 passed, 13 skipped offline
+(19 files: 18 passed, 1 skipped); `npx tsc --noEmit` → clean. The 162-passed
+`DRIZZLE_DATABASE_URL`-set figure was reported by an implementer on 2026-10-12 and has not been
+re-run since. The frontend (Vite) figure above was not re-run 2026-10-14.
 
-**pg suite verified 2026-10-12 (Phase 17 PR 0) (after the P16-R24 chip-text test fix):** 338 passed, 1 skipped.
-Offline Python suite and `ruff check` were also re-run 2026-10-12 (Phase 17 PR 0).
+**pg suite verified 2026-10-14 (Phase 17 PR A1):** 352 passed, 1 skipped, run serially against the
+compose `db` service. Offline Python suite (2178 passed, 14 skipped, 126 deselected), `ruff check`
+and `tests/contracts` (7 passed, `contracts/` unchanged) were also run 2026-10-14. One offline run
+failed `test_auth0_bogus_kid_after_the_fetch_finished_401s_at_once_without_waiting` on a 1.0s
+wall-clock bound (took 1.12s); it passed alone and in the full re-run, so the figure above is the
+re-run.
 
 **CI: there is none.** No `.github/workflows`. Nothing gates a merge except Carlos, so the suites
 above *are* the gate.
@@ -110,6 +114,9 @@ above *are* the gate.
 - **The offline run excludes `-m pg`, so a green offline suite does not cover chat output text.**
   Any change to chips, clarify text or part payloads must also run the pg suite. On 2026-10-12 a
   chip-text change left `test_live_chat_sse.py` failing on main until the pg suite was run.
+- **WeasyPrint on the host.** `render_pdf` raises `OSError` without Pango/Cairo; the reporting skill
+  records `PDF not rendered: OSError` and stores HTML only. Run the `pdf`-marked tests and the
+  real PDF check in the container.
 
 ## Frozen surfaces — call them, never change them
 
@@ -143,6 +150,9 @@ above *are* the gate.
 - Adding a table is **not** just certification — it takes five Python edits, the decisive one being
   the closed `entity: Literal[...]` in `metric_query/schema.py`. See
   `docs/superpowers/specs/2026-09-07-table-onboarding-review.md`.
+- **Internal skills.** `SKILL_META['internal'] = True` registers a skill the router never sees
+  (`router_skill_ids`, `tool_schemas`, `/api/skills` all omit it) while `dispatch` still runs it.
+  `reporting.monthly_performance` is the first.
 
 ## Blast radius
 

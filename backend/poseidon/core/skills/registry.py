@@ -34,6 +34,16 @@ One doc-02 discovery check is deliberately absent: validating that a skill's
 referenced prompts exist is deferred to Phase 5, the phase that introduces
 ``prompts/`` directories and the first prompt reference to check — today
 there is nothing for it to validate.
+
+**Internal skills** (Phase 17 PR A1). ``SKILL_META["internal"] = True``
+marks a skill that is dispatched by code -- a deterministic flow such as the
+monthly report -- and must never be offered to the model. It is absent from
+``tool_schemas``, the router prompt, ``/api/skills`` and the unknown-skill
+error text (all four read :attr:`SkillRegistry.router_skill_ids`), while
+``skill_ids``, ``get`` and ``dispatch`` still see it. The Bedrock-safe name
+check still covers it, because a flow dispatch goes through the same loop
+plumbing as a router one. The agent loop's own guard against dispatching an
+internal skill named by a stub router is PR A2's.
 """
 
 import importlib
@@ -82,6 +92,7 @@ class RegisteredSkill:
     fn: Callable[[SkillContext, BaseModel], SkillResult]
     description: str
     examples: list[str] = field(default_factory=list)
+    internal: bool = False  # SKILL_META["internal"]; hidden from the router when True
 
     @property
     def tool_schema(self) -> dict:
@@ -135,8 +146,15 @@ class SkillRegistry:
         return list(self._skills)
 
     @property
+    def router_skill_ids(self) -> list[str]:
+        """The ids the router may choose: every skill not marked internal, in
+        ``skill_ids`` order."""
+        return [skill_id for skill_id, skill in self._skills.items() if not skill.internal]
+
+    @property
     def tool_schemas(self) -> list[dict]:
-        return [skill.tool_schema for skill in self._skills.values()]
+        """Router-visible skills only; an internal skill is never offered to the model."""
+        return [skill.tool_schema for skill in self._skills.values() if not skill.internal]
 
     def get(self, skill_id: str) -> RegisteredSkill:
         try:
@@ -213,7 +231,7 @@ class SkillRegistry:
         return result
 
     def _registered_names(self) -> str:
-        return ", ".join(self._skills) or "(none)"
+        return ", ".join(self.router_skill_ids) or "(none)"
 
 
 # ---------------------------------------------------------------------------
@@ -433,6 +451,13 @@ def _register(tasks_pkg: str, task_name: str, skill_name: str, skill_id: str) ->
             f"(got {examples!r})"
         )
 
+    internal = meta.get("internal", False)
+    if not isinstance(internal, bool):
+        raise SkillDefinitionError(
+            f"skill '{skill_id}': SKILL_META['internal'] must be true or false "
+            f"(got {internal!r})"
+        )
+
     fn = getattr(skill, "run", None)
     if not callable(fn):
         raise SkillDefinitionError(
@@ -447,6 +472,7 @@ def _register(tasks_pkg: str, task_name: str, skill_name: str, skill_id: str) ->
         fn=fn,
         description=description,
         examples=list(examples),
+        internal=internal,
     )
 
 

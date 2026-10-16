@@ -307,6 +307,7 @@ def test_invoke_stub_mode_uses_stub_provider_and_records_request(monkeypatch):
             "tools": [],
             "model": "claude-sonnet-4-5",  # the CONFIGURED cortex router model
             "params": {"max_tokens": 4096, "temperature": 0.2},
+            "tool_choice": None,
         }
     ]
     # resolve() still reports the configured provider: mode substituted only
@@ -352,6 +353,7 @@ def test_invoke_live_mode_bedrock_dispatches_to_registered_provider(monkeypatch)
             "tools": [],
             "model": "us.amazon.nova-micro-v1:0",
             "params": {"max_tokens": 256, "temperature": 0.0},
+            "tool_choice": None,
         }
     ]
 
@@ -448,6 +450,7 @@ def test_stub_provider_records_every_call_kwargs():
             "tools": [{"name": "t"}],
             "model": "m1",
             "params": {"temperature": 0.1},
+            "tool_choice": None,
         }
     ]
 
@@ -495,3 +498,38 @@ def test_llm_module_files_are_ascii_on_disk():
     for path in paths:
         offending = sorted({byte for byte in path.read_bytes() if byte > 0x7F})
         assert not offending, f"{path.name} holds non-ASCII bytes: {offending}"
+
+
+def test_tool_choice_is_forwarded_only_when_set(monkeypatch):
+    seen = []
+
+    class _Provider:
+        def invoke(self, *, system, messages, tools, model, params, tool_choice=None):
+            seen.append(tool_choice)
+            return _SCRIPTED
+
+    class _LegacyProvider:  # the six existing doubles have no tool_choice parameter
+        def invoke(self, *, system, messages, tools, model, params):
+            seen.append("legacy")
+            return _SCRIPTED
+
+    settings = _settings(monkeypatch, LLM_PROFILE="bedrock", LLM_MODE="stub")
+    client = RoleClient(settings, providers={"stub": _Provider()})
+    client.invoke(
+        "router",
+        system="s",
+        messages=[],
+        tools=[{"name": "t", "description": "d", "input_schema": {}}],
+        tool_choice="t",
+    )
+    client.invoke("router", system="s", messages=[], tools=[])
+    legacy = RoleClient(settings, providers={"stub": _LegacyProvider()})
+    legacy.invoke("router", system="s", messages=[], tools=[])
+    assert seen == ["t", None, "legacy"]
+
+
+def test_stub_records_tool_choice():
+    provider = StubProvider([_SCRIPTED])
+    provider.invoke(system="s", messages=[], tools=[], model="m", params={}, tool_choice="t")
+    assert provider.calls[0]["tool_choice"] == "t"
+    assert {"system", "messages", "tools", "tool_choice"} <= set(provider.calls[0])

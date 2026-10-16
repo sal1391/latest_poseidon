@@ -174,13 +174,15 @@ def test_router_prompt_names_every_skill_the_registry_discovers():
     """Dynamic against SkillRegistry.discover(), never a hardcoded skill
     list -- a future skill landing (or today's disabled customer_insight
     task turning on) changes what this test checks without anyone touching
-    this file."""
+    this file. An internal skill (Phase 17's reporting.monthly_performance)
+    is dispatched by a flow and must never reach the router prompt."""
     skills = SkillRegistry.discover()
     rendered = _render_real_router_prompt()
 
-    assert skills.skill_ids  # sanity: discovery must find at least one today
-    for skill_id in skills.skill_ids:
+    assert skills.router_skill_ids  # sanity: discovery must find at least one today
+    for skill_id in skills.router_skill_ids:
         assert skill_id in rendered
+    assert "reporting.monthly_performance" not in rendered
 
 
 def test_router_prompt_contains_every_certified_metric_name():
@@ -361,8 +363,8 @@ def test_skill_lines_block_one_line_per_registered_skill():
     block = skill_lines_block(registry)
 
     lines = block.splitlines()
-    assert len(lines) == len(registry.skill_ids)
-    for skill_id in registry.skill_ids:
+    assert len(lines) == len(registry.router_skill_ids)
+    for skill_id in registry.router_skill_ids:
         expected = f"{skill_id}: {registry.get(skill_id).description}"
         assert expected in lines
 

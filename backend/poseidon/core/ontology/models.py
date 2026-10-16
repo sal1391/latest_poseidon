@@ -121,6 +121,10 @@ class RowScope(BaseModel):
        to match the ``DataClient`` protocol is mechanical, and doing it
        BEFORE step 2 keeps the suite green throughout.
 
+    5. The three Phase 17 methods (``list_months``, ``run_frame_query``,
+       ``snapshot``) are optional on test fakes; only the reporting skill's
+       fakes implement them.
+
     (Line numbers are the state at the D16 commit -- treat them as
     signposts to the right function, not as addresses to trust blindly.)
     """

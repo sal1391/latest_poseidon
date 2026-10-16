@@ -17,6 +17,7 @@ backend/core/llm/
                    #   method), normalized to the same ToolCall/LLMResponse shapes
   roles.py         # RoleClient: resolve(role) -> {provider, model, params}; invoke(role, ...)
   prompts.py       # PromptRegistry: load/render versioned prompt files
+  prompt_tree.py   # PromptTree: resolve("reporting/narrate") -> versioned XML system prompt (D46, first step)
 ```
 
 - Decision D11: on Bedrock, use the `Converse` API rather than per-model `InvokeModel` payloads
@@ -35,6 +36,8 @@ backend/core/llm/
   with a **provider-parity contract test**: the same recorded tool-calling scenarios asserted to
   normalize to identical `ToolCall`/`LLMResponse` shapes on both providers. Reason: prove the seam
   with one live provider before paying for two.
+- `tool_choice` on `RoleClient.invoke` / `LLMProvider.invoke` forces a named tool (Bedrock
+  `toolConfig.toolChoice`); the report narrative is the first forced call.
 
 ## 2. Model tier map (config-driven)
 
@@ -131,7 +134,12 @@ prompts are versioned files rendered by `PromptRegistry`:
 ```
 config/prompts/router/system.md            # router charter + routing rules
 backend/tasks/<task>/skills/<skill>/prompts/*.md   # skill/subskill prompts (doc 02)
+backend/prompts/<area>/<name>.xml          # D46 canonical tree, resolved by PromptTree
 ```
+
+The D46 tree lives under `backend/` because that is the runtime root in every habitat.
+Skill-owned `prompts/*.md` migrate into it later (Phase 17 spec section 13); until then
+both locations are valid.
 
 - Templates use Jinja placeholders for structured inputs (data blocks, field dictionary,
   ParsedTurn); rendering is pure and unit-testable.

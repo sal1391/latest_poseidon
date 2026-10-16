@@ -53,6 +53,13 @@ backend/tasks/
       web_research/              # Perplexity with the marine-industry lens (today's researcher
         ...same shape...         #   agent), router-visible in every flow; tools call through
                                  #   the MCP/tool-adapter layer (§7)
+  reporting/                     # TASK: the monthly report engine (Phase 17)
+    skills/
+      monthly_performance/       # internal: dispatched by the report flow, never by the router
+        skill.py  schema.py
+        tools/                   # periods.py frames.py context.py narrative_template.py
+                                 #   grounding.py questions.py narrate.py payload.py render.py
+        tests/
 ```
 
 Naming rules: snake_case directories; skill id is `"<task>.<skill>"` (e.g.
@@ -63,6 +70,10 @@ invoked in code by their parent skill in a fixed, deterministic order. Tools and
 call the LLM; subskills may, via `ctx.llm` roles (doc 03). This keeps the three-agent sequence a
 tested code path, not a model behavior.
 
+A skill whose `SKILL_META["internal"]` is true is registered but withheld from `tool_schemas`, the
+router prompt and `/api/skills` (`SkillRegistry.router_skill_ids` is the list the router sees);
+`dispatch` and `get` still see it, so a flow can call it by id (Phase 17 PR A1).
+
 ## 2. Registration and discovery
 
 `SkillRegistry.discover()` runs at startup:
@@ -70,7 +81,7 @@ tested code path, not a model behavior.
 1. Walk `backend/tasks/*/task.yml`; skip `enabled: false`.
 2. For each `skills/<name>/`, import `schema.py` and `skill.py`.
 3. Validate fail-fast: unique skill ids; `Args` is a Pydantic model; `SKILL_META.description`
-   present and under a length cap; referenced prompts exist.
+   present and under a length cap; `internal` is a bool; referenced prompts exist.
 4. Produce two artifacts:
    - `TOOL_SCHEMAS: list[dict]` — JSON Schemas generated from each `Args` model plus
      description/examples, handed to the router (TM1's canonical-schema pattern; shared fragments
@@ -88,7 +99,8 @@ SkillContext:  user (UserContext, doc 05) · profile (user system instruction + 
                llm (role-based model client, doc 03) · tools (external tool adapters via
                backend/poseidon/mcp, §7) · artifacts (object-store client; absent on SPCS per
                D39 — report bytes go to Postgres, see doc 07 §4) · run (run-log recorder,
-               doc 06) · settings
+               doc 06) · settings · report_store (ReportStore over report_run, doc 05 §4) ·
+               prompt_tree (PromptTree over backend/prompts/, doc 03 §4)
 SkillResult:   ok · parts: list[MessagePart]   (typed parts of doc 01 §4)
                proof: list[str]                (deterministic provenance block)
                artifacts: list[ArtifactRef] · usage: TokenUsage · error: ProblemDetail | None

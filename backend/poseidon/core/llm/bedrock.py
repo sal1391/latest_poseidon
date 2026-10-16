@@ -127,15 +127,29 @@ class BedrockProvider:
         return self._client
 
     def invoke(
-        self, *, system: str, messages: list[dict], tools: list[dict], model: str, params: dict
+        self,
+        *,
+        system: str,
+        messages: list[dict],
+        tools: list[dict],
+        model: str,
+        params: dict,
+        tool_choice: str | None = None,
     ) -> LLMResponse:
         """One Converse call: build the request, call, normalize the
-        response. Never raises -- a ``ClientError`` (bad request, throttled,
+        response. A ``ClientError`` (bad request, throttled,
         model unavailable, ...) becomes ``LLMResponse(stop_reason="error",
-        ...)`` so a caller (the Task 4 agent loop) always gets a structured
-        turn result to act on, not an exception to catch."""
+        ...)`` so a caller (the Task 4 agent loop) gets a structured turn
+        result to act on. It can still raise ``ValueError`` when the request
+        is malformed (``tool_choice`` given with no tools), which is a caller
+        bug, not a provider failure."""
         request = _build_request(
-            system=system, messages=messages, tools=tools, model=model, params=params
+            system=system,
+            messages=messages,
+            tools=tools,
+            model=model,
+            params=params,
+            tool_choice=tool_choice,
         )
         client = self._client_or_build()
         try:
@@ -207,7 +221,13 @@ def _error_response(exc: ClientError) -> LLMResponse:
 
 
 def _build_request(
-    *, system: str, messages: list[dict], tools: list[dict], model: str, params: dict
+    *,
+    system: str,
+    messages: list[dict],
+    tools: list[dict],
+    model: str,
+    params: dict,
+    tool_choice: str | None = None,
 ) -> dict:
     request: dict = {"modelId": model, "messages": _build_messages(messages)}
     if system:
@@ -217,6 +237,12 @@ def _build_request(
         request["inferenceConfig"] = inference_config
     if tools:
         request["toolConfig"] = _build_tool_config(tools)
+        if tool_choice is not None:
+            request["toolConfig"]["toolChoice"] = {
+                "tool": {"name": _to_bedrock_tool_name(tool_choice)}
+            }
+    elif tool_choice is not None:
+        raise ValueError("tool_choice requires at least one tool")
     return request
 
 

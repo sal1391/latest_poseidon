@@ -13,11 +13,13 @@ phase) each satisfy ``DataClient`` structurally (it is a ``Protocol``; no
 explicit inheritance required).
 """
 
+from collections.abc import Mapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import date
 from typing import Protocol
 
-from .specs import BreakdownQuerySpec, MetricQuerySpec, PeriodWindow
+from .specs import BreakdownQuerySpec, FrameQuerySpec, MetricQuerySpec, PeriodWindow
 
 
 @dataclass(frozen=True)
@@ -52,8 +54,21 @@ class PeriodRange:
     end: date | None  # None/None when the entity has no rows
 
 
+@dataclass(frozen=True)
+class FrameRow:
+    keys: tuple[str, ...]  # one post-COALESCE value per group_by column, in spec order
+    values: dict[str, float | None]  # metric name -> value
+
+
+@dataclass(frozen=True)
+class FrameResult:
+    entity: str
+    group_by: tuple[str, ...]
+    rows: list[FrameRow]
+
+
 class DataClient(Protocol):
-    """The four calls a skill makes against certified data.
+    """The seven calls a skill makes against certified data.
 
     ``scope_value`` on the two lookups below is D16's row scope (see
     ``query_builder.resolve_row_scope_value``, the only sanctioned way to
@@ -77,3 +92,11 @@ class DataClient(Protocol):
     def run_metric_query(self, spec: MetricQuerySpec) -> MetricResult: ...
 
     def run_breakdown_query(self, spec: BreakdownQuerySpec) -> BreakdownResult: ...
+
+    def list_months(
+        self, entity: str, filters: Mapping[str, tuple[str, ...]], scope_value: str | None = None
+    ) -> list[date]: ...
+
+    def run_frame_query(self, spec: FrameQuerySpec) -> FrameResult: ...
+
+    def snapshot(self) -> AbstractContextManager["DataClient"]: ...
