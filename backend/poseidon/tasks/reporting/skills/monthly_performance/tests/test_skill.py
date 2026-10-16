@@ -2,6 +2,7 @@
 multi-office rows. Every number asserted below is derived by hand from
 fake_client.multi_office_rows() -- the derivations are in the comments."""
 
+import dataclasses
 from datetime import date
 
 import pytest
@@ -34,9 +35,11 @@ JUNE = date(2026, 6, 1)
 class _FakeStore:
     def __init__(self):
         self.inserted = []
+        self.runs = []
 
     def insert_run(self, user_sub, run):
         self.inserted.append((user_sub, run))
+        self.runs.append(run)
 
 
 class _ExplodingLLM:
@@ -565,7 +568,8 @@ def test_row_scope_is_resolved_once_and_stamped_on_every_spec(registry, monkeypa
 def test_live_mode_uses_the_model_narrative_when_it_grounds(registry):
     ctx, provider = _live_ctx([_tool_reply(GOOD_NARRATIVE, GOOD_QUESTIONS)])
     payload = _payload(_run(registry, ctx))
-    assert payload["narrative"]["llm_md"] == GOOD_NARRATIVE
+    llm_md = payload["narrative"]["llm_md"]
+    assert llm_md.startswith(GOOD_NARRATIVE + "\n\n## Insights\n- ")
     assert payload["narrative"]["grounded"] is True and payload["narrative"]["flags"] == []
     assert payload["suggested_questions"] == GOOD_QUESTIONS
     assert len(provider.calls) == 1
@@ -603,7 +607,7 @@ def test_grounding_failure_then_success_keeps_the_retry(registry):
     payload = _payload(_run(registry, ctx))
     assert len(provider.calls) == 2
     assert (
-        payload["narrative"]["llm_md"] == GOOD_NARRATIVE
+        payload["narrative"]["llm_md"].startswith(GOOD_NARRATIVE + "\n\n## Insights\n- ")
         and payload["narrative"]["grounded"] is True
     )
 
@@ -708,3 +712,52 @@ def test_ports_rest_of_book_never_lists_a_flat_port(registry):
     payload = _payload(_run(registry, _ctx(data=FakeDataClient(rows=rows))))
     ports = payload["entity_context"]["Meridian Bunkering"]["ports_rest_of_book"]
     assert [p["key"] for p in ports] == ["Algeciras"]
+
+
+# ---------------------------------------------------------------------------
+# insights, stored-HTML flag, sanitised name, conversation_id
+# ---------------------------------------------------------------------------
+
+
+def test_model_insights_render_as_an_insights_section_in_llm_md(registry):
+    narrative = "Overall summary. " + GOOD_NARRATIVE
+    ctx, _ = _live_ctx([_tool_reply(narrative, GOOD_QUESTIONS)])
+    payload = _payload(_run(registry, ctx))
+    llm_md = payload["narrative"]["llm_md"]
+    assert payload["narrative"]["grounded"] is True
+    assert "\n\n## Insights\n- " in llm_md
+    assert llm_md.index("## Insights") > llm_md.index("Overall summary") and (
+        "## Notes" not in llm_md or llm_md.index("## Insights") < llm_md.index("## Notes")
+    )
+
+
+def test_stored_html_carries_the_pdf_not_rendered_flag(registry, monkeypatch):
+    monkeypatch.setattr(
+        render, "render_pdf", lambda html: (_ for _ in ()).throw(OSError("no pango"))
+    )
+    store = _FakeStore()
+    _payload(_run(registry, _ctx(store=store)))
+    html = store.runs[-1].html.decode()
+    assert "PDF not rendered: OSError" in html
+
+
+def test_artifact_name_is_sanitised(registry):
+    office = 'Rotterdam/"x" Office'
+    rows = [
+        dict(r, CUSTOMER_TEAM_NAME=office) if r["CUSTOMER_TEAM_NAME"] == "Gibraltar Office" else r
+        for r in multi_office_rows()
+    ]
+    result = _run(registry, _ctx(data=FakeDataClient(rows=rows)), office_value=office)
+    payload = _payload(result)
+    assert result.artifacts[0].name == "Rotterdam__x_ Office June 2026.pdf"
+    assert payload["scope"]["office_value"] == office
+
+
+def test_conversation_id_reaches_the_run_row(registry):
+    store = _FakeStore()
+    ctx = dataclasses.replace(_ctx(store=store), conversation_id="conv-42")
+    _payload(_run(registry, ctx))
+    assert store.runs[-1].conversation_id == "conv-42"
+    store2 = _FakeStore()
+    _payload(_run(registry, _ctx(store=store2)))
+    assert store2.runs[-1].conversation_id is None

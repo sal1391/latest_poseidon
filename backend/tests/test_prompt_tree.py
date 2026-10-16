@@ -18,12 +18,14 @@ def test_default_tree_is_backend_prompts():
 
 def test_resolve_narrate_returns_version_and_system_text():
     spec = PromptTree().resolve("reporting/narrate")
-    assert spec == PromptSpec(id="reporting/narrate", version="1", system=spec.system)
+    assert spec == PromptSpec(id="reporting/narrate", version="2", system=spec.system)
     assert "marginals" in spec.system
     assert "Respond only by calling the narrate tool." in spec.system
     assert spec.system == spec.system.strip()
     assert "{entity_label}" not in spec.system
     assert "Account context" in spec.system
+    assert "Insights" not in spec.system.split("Account context")[1].split("Return three")[0]
+    assert "insights field" in spec.system
 
 
 def test_unknown_id_raises():

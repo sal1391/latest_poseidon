@@ -180,3 +180,5 @@ class SkillContext:
     user: object | None = None
     report_store: object | None = None
     prompt_tree: object | None = None
+    # the chat conversation a dispatch belongs to; the report flow sets it
+    conversation_id: str | None = None
