@@ -950,7 +950,7 @@ async def test_post_conversations_returns_the_same_opener_shape_as_mock(pg_datab
     assert kinds == ["text", "chips"]
     options = opener["parts"][1]["payload"]["options"]
     ids = [o["id"] for o in options]
-    assert ids == ["existing_customer", "new_prospect"]
+    assert ids == ["existing_customer", "new_prospect", "monthly_report"]
 
 
 @pytest.mark.pg
@@ -982,6 +982,7 @@ async def test_opener_flow_chips_carry_the_d19_pinned_entry_phrases_as_send_text
             "label": "New customer prospect",
             "send_text": "start a new-prospect brief",
         },
+        {"id": "monthly_report", "label": "Monthly report", "send_text": "start a monthly report"},
     ]
 
 

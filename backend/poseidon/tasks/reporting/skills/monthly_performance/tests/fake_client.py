@@ -293,3 +293,29 @@ class FakeDataClient:
     def snapshot(self):
         self.calls.append("snapshot")
         yield self
+
+
+class FakeReportStore:
+    """An in-memory ``ReportStore``: ``insert_run`` keeps every ``NewRun``
+    (``inserted`` as ``(user_sub, run)`` pairs, ``runs`` as the runs alone);
+    ``get_run`` and ``get_bytes`` read them back by id."""
+
+    def __init__(self):
+        self.inserted = []
+        self.runs = []
+
+    def insert_run(self, user_sub, run):
+        self.inserted.append((user_sub, run))
+        self.runs.append(run)
+
+    def _find(self, run_id):
+        return next((run for run in self.runs if run.id == run_id), None)
+
+    def get_run(self, user_sub, run_id):
+        return self._find(run_id)
+
+    def get_bytes(self, user_sub, run_id, kind):
+        if kind not in ("html", "pdf"):
+            raise ValueError(f"kind must be 'html' or 'pdf', got {kind!r}")
+        run = self._find(run_id)
+        return None if run is None else getattr(run, kind)

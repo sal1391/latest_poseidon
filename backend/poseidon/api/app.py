@@ -15,6 +15,7 @@ from poseidon.core.data.factory import DataBackendUnavailable, build_data_client
 from poseidon.core.db import assert_boot_privileges, build_engine
 from poseidon.core.identity import AuthError, resolve_provider
 from poseidon.core.llm.bedrock import BedrockProvider
+from poseidon.core.llm.prompt_tree import PromptTree
 from poseidon.core.llm.prompts import DEFAULT_PROMPTS_DIR, PromptRegistry
 from poseidon.core.llm.roles import RoleClient
 from poseidon.core.obs import configure_json_logging, get_logger, new_trace_id, trace_id_var
@@ -24,6 +25,7 @@ from poseidon.core.personalization.profile import ProfileStore
 from poseidon.core.runlog import RunLogWriter
 from poseidon.core.skills.registry import SkillRegistry
 from poseidon.mcp.registry import ToolServerRegistry
+from poseidon.reports.store import ReportStore
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -574,6 +576,11 @@ def _wire_live_chat(app: FastAPI) -> None:
     app.state.profile_store = ProfileStore(engine, app_role=settings.database_app_role)
     app.state.memory_store = MemoryStore(engine, app_role=settings.database_app_role)
     app.state.outbox_store = OutboxStore(engine, app_role=settings.database_app_role)
+    # Phase 17 PR A2: the report_run store (same shared engine, same app_role
+    # rationale as the stores above) and the D46 prompt tree, both threaded
+    # into every chat turn's SkillContext by live_chat.py.
+    app.state.report_store = ReportStore(engine, app_role=settings.database_app_role)
+    app.state.prompt_tree = PromptTree()
     app.state.role_client = RoleClient(
         settings, providers={"stub": DevDeterministicRouter(), "bedrock": BedrockProvider()}
     )

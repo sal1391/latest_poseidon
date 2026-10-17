@@ -583,6 +583,7 @@ def test_create_conversation_matches_transcriptstores_wire_shape(history_store):
             "label": "New customer prospect",
             "send_text": "start a new-prospect brief",
         },
+        {"id": "monthly_report", "label": "Monthly report", "send_text": "start a monthly report"},
     ]
 
 

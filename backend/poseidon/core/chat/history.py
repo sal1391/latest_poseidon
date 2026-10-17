@@ -145,7 +145,11 @@ from datetime import date, datetime
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from poseidon.core.chat.orchestrator import ENTRY_PHRASE_EXISTING, ENTRY_PHRASE_PROSPECT
+from poseidon.core.chat.orchestrator import (
+    ENTRY_PHRASE_EXISTING,
+    ENTRY_PHRASE_PROSPECT,
+    ENTRY_PHRASE_REPORT,
+)
 from poseidon.core.db import rls_transaction
 from poseidon.core.skills.context import ConversationSlots
 from poseidon.core.util.uuid7 import uuid7
@@ -335,8 +339,9 @@ _NEXT_TURN_INDEX_SQL = text(
 def _build_opener_parts() -> list[dict]:
     """A fresh opener parts list every call -- never a shared module-level
     literal -- mirroring ``TranscriptStore.create_conversation``'s own
-    "build a new dict every time" discipline (live_chat.py:292-336). Same
-    two flow chips, same D19 pinned ``send_text`` phrases, IMPORTED from
+    "build a new dict every time" discipline (live_chat.py:292-336). Three
+    flow chips (the monthly report joined in Phase 17 PR A2), their pinned
+    entry ``send_text`` phrases IMPORTED from
     ``orchestrator.py`` rather than retyped (the same discipline that
     module's own docstring names for ``TranscriptStore`` itself)."""
     return [
@@ -354,6 +359,11 @@ def _build_opener_parts() -> list[dict]:
                         "id": "new_prospect",
                         "label": "New customer prospect",
                         "send_text": ENTRY_PHRASE_PROSPECT,
+                    },
+                    {
+                        "id": "monthly_report",
+                        "label": "Monthly report",
+                        "send_text": ENTRY_PHRASE_REPORT,
                     },
                 ]
             },

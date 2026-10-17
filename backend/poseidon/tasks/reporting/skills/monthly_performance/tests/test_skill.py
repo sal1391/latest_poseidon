@@ -18,6 +18,7 @@ from poseidon.tasks.reporting.skills.monthly_performance import skill as skill_m
 from poseidon.tasks.reporting.skills.monthly_performance.tests.fake_client import (
     MAY,
     FakeDataClient,
+    FakeReportStore,
     _row,
     multi_office_rows,
 )
@@ -30,16 +31,6 @@ USER = UserContext(
     sub="dev|alice", email="alice@example.com", name="Alice", roles=("Poseidon:Sales",)
 )
 JUNE = date(2026, 6, 1)
-
-
-class _FakeStore:
-    def __init__(self):
-        self.inserted = []
-        self.runs = []
-
-    def insert_run(self, user_sub, run):
-        self.inserted.append((user_sub, run))
-        self.runs.append(run)
 
 
 class _ExplodingLLM:
@@ -69,7 +60,7 @@ def _ctx(data=None, store=None, llm=None, llm_mode="stub", user=USER):
         state=ConversationSlots(),
         llm=llm,
         user=user,
-        report_store=_FakeStore() if store is None else store,
+        report_store=FakeReportStore() if store is None else store,
     )
 
 
@@ -276,7 +267,7 @@ def test_payload_carries_a_hostile_name_verbatim(registry):
         dict(r, CUST_NM=hostile) if r["CUST_NM"] == "Atlas Tankers" else r
         for r in multi_office_rows()
     ]
-    store = _FakeStore()
+    store = FakeReportStore()
     payload = _payload(_run(registry, _ctx(data=FakeDataClient(rows=rows), store=store)))
     assert any(r["key"] == hostile for r in payload["tables"]["entities_by_gp"]["rows"])
     assert hostile in payload["entity_context"]
@@ -285,7 +276,7 @@ def test_payload_carries_a_hostile_name_verbatim(registry):
 
 
 def test_run_row_and_artifact(registry):
-    store = _FakeStore()
+    store = FakeReportStore()
     result = _run(registry, _ctx(store=store))
     payload = _payload(result)
     assert len(store.inserted) == 1
@@ -313,7 +304,7 @@ def test_pdf_failure_is_a_flag_not_a_failed_run(registry, monkeypatch):
         raise OSError("cannot load library 'gobject-2.0-0'")
 
     monkeypatch.setattr(render, "render_pdf", _boom)
-    store = _FakeStore()
+    store = FakeReportStore()
     result = _run(registry, _ctx(store=store))
     payload = _payload(result)
     assert "PDF not rendered: OSError" in payload["narrative"]["flags"]
@@ -353,7 +344,7 @@ def test_supplier_perspective_ranks_suppliers_in_the_supply_office(registry):
 def test_book_perspective_has_no_office_and_no_context(registry):
     """Whole book June: 130+40+140+150+66+12+5 = 543,000;
     May: 100+50+200+100+60+20+0+30 = 560,000."""
-    store = _FakeStore()
+    store = FakeReportStore()
     result = _run(registry, _ctx(store=store), perspective="book", office_value=None)
     payload = _payload(result)
     assert payload["scope"] == {"office_column": None, "office_value": None, "label": "Whole book"}
@@ -391,7 +382,7 @@ def test_customer_perspective_requires_an_office_value(registry):
 def test_office_with_rows_in_the_prior_month_only_is_an_ok_run_with_lost_entities(registry):
     """Malta Office: Solent Ferries in May only. Current is all zero, Solent
     is lost, the footers are zero, no narrative call, questions backfilled."""
-    store = _FakeStore()
+    store = FakeReportStore()
     ctx = _ctx(store=store, llm=_ExplodingLLM(), llm_mode="live")
     payload = _payload(_run(registry, ctx, office_value="Malta Office"))
     assert payload["kpis"]["GP"]["display"] == {
@@ -423,7 +414,7 @@ def test_office_with_rows_in_the_prior_month_only_is_an_ok_run_with_lost_entitie
 
 def test_no_rows_in_either_month_is_an_ok_run_with_no_data_sections(registry):
     """Valencia Office exists (April rows) but has nothing in May or June."""
-    store = _FakeStore()
+    store = FakeReportStore()
     ctx = _ctx(store=store, llm=_ExplodingLLM(), llm_mode="live")
     payload = _payload(_run(registry, ctx, office_value="Valencia Office"))
     assert payload["narrative"]["flags"] == ["no data in either month"]
@@ -452,7 +443,7 @@ def test_no_rows_in_either_month_is_an_ok_run_with_no_data_sections(registry):
 
 
 def test_month_absent_from_the_data_is_a_422_and_writes_nothing(registry):
-    store = _FakeStore()
+    store = FakeReportStore()
     result = _run(registry, _ctx(store=store), month="2026-03-01")
     assert result.ok is False and result.error["status"] == 422
     assert result.error["title"] == "no data for that month"
@@ -521,7 +512,7 @@ def test_missing_report_store_is_a_structured_500(registry):
 
 
 def test_reconciliation_failure_is_an_error_and_writes_no_row(registry):
-    store = _FakeStore()
+    store = FakeReportStore()
     result = _run(registry, _ctx(data=FakeDataClient(tamper_total=1.0), store=store))
     assert result.ok is False and result.error["status"] == 500
     assert result.error["title"] == "reconciliation failed"
@@ -534,7 +525,7 @@ def test_reconciliation_tolerates_half_a_cent(registry):
 
 
 def test_data_backend_error_is_a_500_and_writes_no_row(registry):
-    store = _FakeStore()
+    store = FakeReportStore()
     data = FakeDataClient(fail_frames_with=RuntimeError("connection reset"))
     result = _run(registry, _ctx(data=data, store=store))
     assert result.ok is False and result.error["status"] == 500
@@ -584,7 +575,7 @@ def test_live_mode_uses_the_model_narrative_when_it_grounds(registry):
 def test_grounding_failure_twice_uses_the_template_and_flags_the_count(registry):
     """Review Focus 4: the retry names the offending sentence; the second
     failure withholds the model prose and shows the count."""
-    store = _FakeStore()
+    store = FakeReportStore()
     ctx, provider = _live_ctx(
         [_tool_reply(BAD_NARRATIVE, GOOD_QUESTIONS), _tool_reply(BAD_NARRATIVE, GOOD_QUESTIONS)],
         store=store,
@@ -643,7 +634,7 @@ def test_llm_exception_uses_the_template_and_flags_a_provider_error(registry):
         def invoke(self, *args, **kwargs):
             raise RuntimeError("boom")
 
-    store = _FakeStore()
+    store = FakeReportStore()
     result = _run(registry, _ctx(store=store, llm=_Boom(), llm_mode="live"))
     assert result.ok, result.error
     payload = result.parts[0]["payload"]
@@ -693,7 +684,7 @@ def test_no_llm_client_in_live_mode_is_a_flag(registry):
 
 
 def test_anonymous_caller_is_recorded_as_dev_anonymous(registry):
-    store = _FakeStore()
+    store = FakeReportStore()
     payload = _payload(_run(registry, _ctx(store=store, user=None)))
     assert store.inserted[0][0] == "dev|anonymous" and payload["generated_by"] == "dev|anonymous"
 
@@ -735,7 +726,7 @@ def test_stored_html_carries_the_pdf_not_rendered_flag(registry, monkeypatch):
     monkeypatch.setattr(
         render, "render_pdf", lambda html: (_ for _ in ()).throw(OSError("no pango"))
     )
-    store = _FakeStore()
+    store = FakeReportStore()
     _payload(_run(registry, _ctx(store=store)))
     html = store.runs[-1].html.decode()
     assert "PDF not rendered: OSError" in html
@@ -754,10 +745,10 @@ def test_artifact_name_is_sanitised(registry):
 
 
 def test_conversation_id_reaches_the_run_row(registry):
-    store = _FakeStore()
+    store = FakeReportStore()
     ctx = dataclasses.replace(_ctx(store=store), conversation_id="conv-42")
     _payload(_run(registry, ctx))
     assert store.runs[-1].conversation_id == "conv-42"
-    store2 = _FakeStore()
+    store2 = FakeReportStore()
     _payload(_run(registry, _ctx(store=store2)))
     assert store2.runs[-1].conversation_id is None

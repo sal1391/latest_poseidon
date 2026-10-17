@@ -47,7 +47,7 @@ async def test_create_conversation_returns_opener_with_chips(app):
         kinds = [p["kind"] for p in opener["parts"]]
         assert kinds == ["text", "chips"]
         ids = [o["id"] for o in opener["parts"][1]["payload"]["options"]]
-        assert ids == ["existing_customer", "new_prospect"]
+        assert ids == ["existing_customer", "new_prospect", "monthly_report"]
 
 
 @pytest.mark.anyio

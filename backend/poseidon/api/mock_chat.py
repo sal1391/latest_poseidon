@@ -57,6 +57,7 @@ def create_conversation() -> dict:
         {"kind": "chips", "payload": {"options": [
             {"id": "existing_customer", "label": "Existing customer"},
             {"id": "new_prospect", "label": "New customer prospect"},
+            {"id": "monthly_report", "label": "Monthly report"},
         ]}},
     ])
     _conversations[cid] = conversation
