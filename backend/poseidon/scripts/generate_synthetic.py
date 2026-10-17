@@ -19,6 +19,14 @@ on every call, in every process, forever, which is what lets
 ``dataset_checksum`` stand in for a committed golden file
 (``test_same_seed_same_checksum``).
 
+The one exception is the multi-office overlay
+(``_apply_multi_office_overlay``, profile key ``multi_office``): a post-pass
+on its own ``Random(seed + seed_offset)`` stream, deliberately separate so
+that switching it on leaves the main stream, and therefore every column it
+does not rewrite (all but ``CUSTOMER_TEAM_NAME`` and
+``PRIMARY_SUPPLY_TEAM_OFFICE``), the GL rows and each customer's totals,
+exactly as they were. It is equally a pure function of (profile, seed).
+
 Checksum canonicalization
 --------------------------
 ``dataset_checksum`` hashes ``{"sales_rows": ..., "gl_rows": ...}`` as JSON
@@ -138,7 +146,16 @@ def generate(seed: int | None = None, profiles_path: Path | None = None) -> Data
     window_start, window_end = _rolling_window(anchor)
     months = _months_in_window(window_start, window_end)
 
-    sales_rows = _generate_sales_rows(profile["MARINE_SALES_PLANNING_V"], months, rng)
+    sales_cfg = profile["MARINE_SALES_PLANNING_V"]
+    sales_rows = _generate_sales_rows(sales_cfg, months, rng)
+    if "multi_office" in sales_cfg:
+        _apply_multi_office_overlay(
+            sales_rows,
+            sales_cfg["multi_office"],
+            list(sales_cfg["customers"]["named"]),
+            list(sales_cfg["broker_pools"]["team_offices"]),
+            resolved_seed,
+        )
     gl_rows = _generate_gl_rows(profile["W_MARINE_GL_SOURCE_AI"], months, rng)
     return Dataset(sales_rows=sales_rows, gl_rows=gl_rows)
 
@@ -371,6 +388,47 @@ def _generate_sales_rows(
             "CUST_DASHBOARD_SHIPTYPE_GRP": profile.cust_ship_type_group,
         })
     return rows
+
+
+_OVERLAY_COLUMNS = ("CUSTOMER_TEAM_NAME", "PRIMARY_SUPPLY_TEAM_OFFICE")
+
+
+def _apply_multi_office_overlay(
+    rows: list[dict], cfg: dict, named: list[str], team_offices: list[str], seed: int
+) -> None:
+    """Let a share of customers trade under several offices, in place.
+
+    A post-pass with its own stream ``Random(seed + seed_offset)``, so the
+    main stream (and therefore every other column, the GL rows and each
+    customer's totals) is exactly what it would be without the overlay.
+    Named customers are always chosen; the rest are sampled from the sorted
+    remainder. For each chosen customer and each of the two office columns,
+    ``extra_offices`` other offices are drawn, and each of the customer's
+    rows moves to one of them with probability ``row_share``. Only
+    ``CUSTOMER_TEAM_NAME`` and ``PRIMARY_SUPPLY_TEAM_OFFICE`` are rewritten.
+    """
+    rng = Random(seed + int(cfg["seed_offset"]))
+    lo, hi = cfg["extra_offices"]
+    row_share = float(cfg["row_share"])
+    customers = sorted({r["CUST_NM"] for r in rows})
+    rest = sorted(set(customers) - set(named))
+    extra = max(0, round(len(customers) * float(cfg["customer_share"])) - len(named))
+    chosen = list(named) + rng.sample(rest, extra)
+
+    by_customer: dict[str, list[dict]] = {}
+    for row in rows:
+        by_customer.setdefault(row["CUST_NM"], []).append(row)
+
+    for customer in chosen:
+        mine = by_customer.get(customer, [])
+        if not mine:
+            continue
+        for column in _OVERLAY_COLUMNS:
+            home = mine[0][column]
+            extras = rng.sample([o for o in team_offices if o != home], rng.randint(lo, hi))
+            for row in mine:
+                if rng.random() < row_share:
+                    row[column] = rng.choice(extras)
 
 
 def _seasonal_date(rng: Random, months: list[tuple[int, int]]) -> date:
