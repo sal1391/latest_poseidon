@@ -479,7 +479,25 @@ def _dispatch_one(
         {"tool_seq": tool_seq, "skill_id": call.name, "arguments": dict(call.arguments)},
     )
     started = monotonic()
-    result = registry.dispatch(call.name, dict(call.arguments), context)
+    # An internal skill is dispatched by a deterministic flow, never by the router:
+    # the schemas hide it, and this refuses a stub or hallucinated call that names it.
+    # An unknown name stays on the registry's own 404 path.
+    try:
+        internal = registry.get(call.name).internal
+    except KeyError:
+        internal = False
+    result = (
+        SkillResult(
+            ok=False,
+            error=problem(
+                403,
+                "internal skill",
+                f"'{call.name}' is dispatched by a deterministic flow, never by the router",
+            ),
+        )
+        if internal
+        else registry.dispatch(call.name, dict(call.arguments), context)
+    )
     duration_ms = int((monotonic() - started) * 1000)
 
     digest = tool_result_digest(call.name, result)
@@ -599,6 +617,16 @@ def _part_content(index: int, part: dict) -> list[str]:
         return [
             f"{tag} phase_section: {payload.get('title')}",
             str(payload.get("markdown") or ""),
+        ]
+    if kind == "report":
+        scope = payload.get("scope") or {}
+        periods = payload.get("periods") or {}
+        current = periods.get("current") or {}
+        prior = periods.get("prior") or {}
+        return [
+            f"{tag} report: run {payload.get('run_id')}; {scope.get('label')}; "
+            f"{current.get('label')} vs {prior.get('label')}; "
+            "read sections through reporting.report_lookup"
         ]
     return [f"{tag} {kind}: {json.dumps(payload, default=str, sort_keys=True)}"]
 

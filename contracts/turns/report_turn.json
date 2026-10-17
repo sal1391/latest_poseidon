@@ -1,0 +1,4132 @@
+{
+ "frames": [
+  {
+   "data": {
+    "event_seq": 1,
+    "message_id": "msg-1",
+    "turn_id": "turn-1",
+    "turn_index": 4
+   },
+   "event": "accepted"
+  },
+  {
+   "data": {
+    "event_seq": 2,
+    "label": "Monthly performance",
+    "message_id": "msg-1",
+    "server": null,
+    "status": "start",
+    "tool": "reporting.monthly_performance",
+    "tool_seq": 1,
+    "turn_id": "turn-1"
+   },
+   "event": "tool"
+  },
+  {
+   "data": {
+    "event_seq": 3,
+    "label": "Monthly performance",
+    "message_id": "msg-1",
+    "server": null,
+    "status": "done",
+    "tool": "reporting.monthly_performance",
+    "tool_seq": 1,
+    "turn_id": "turn-1"
+   },
+   "event": "tool"
+  },
+  {
+   "data": {
+    "event_seq": 4,
+    "kind": "report",
+    "message_id": "msg-1",
+    "payload": {
+     "entity": {
+      "column": "CUST_NM",
+      "label": "Customer"
+     },
+     "entity_context": {
+      "Atlas Tankers": {
+       "book": {
+        "GP": {
+         "change": 6000.0,
+         "current": 66000.0,
+         "display": {
+          "change": "+6,000",
+          "current": "66,000",
+          "pct": "+10.0%",
+          "prior": "60,000"
+         },
+         "pct_change": 10.0,
+         "prior": 60000.0
+        },
+        "MARGIN": {
+         "change": 3.0,
+         "current": 33.0,
+         "display": {
+          "change": "+3.00",
+          "current": "33.00",
+          "pct": "+10.0%",
+          "prior": "30.00"
+         },
+         "pct_change": 10.0,
+         "prior": 30.0
+        },
+        "VOLUME": {
+         "change": 0.0,
+         "current": 2000.0,
+         "display": {
+          "change": "flat",
+          "current": "2,000",
+          "pct": "flat",
+          "prior": "2,000"
+         },
+         "pct_change": 0.0,
+         "prior": 2000.0
+        }
+       },
+       "offsets": [],
+       "ports_rest_of_book": [],
+       "reconciliation": {
+        "book_change": 6000.0,
+        "display": {
+         "book_change": "+6,000",
+         "office_change": "+6,000",
+         "other_offices_net": "flat"
+        },
+        "office_change": 6000.0,
+        "other_offices_net": 0.0
+       },
+       "share_of_book": {
+        "current": 100.0,
+        "display": {
+         "current": "100.0%",
+         "prior": "100.0%"
+        },
+        "prior": 100.0
+       }
+      },
+      "Kestrel Lines": {
+       "book": {
+        "GP": {
+         "change": -20000.0,
+         "current": 0.0,
+         "display": {
+          "change": "-20,000",
+          "current": "0",
+          "pct": "-100.0%",
+          "prior": "20,000"
+         },
+         "pct_change": -100.0,
+         "prior": 20000.0
+        },
+        "MARGIN": {
+         "change": -33.333333333333336,
+         "current": 0.0,
+         "display": {
+          "change": "-33.33",
+          "current": "0.00",
+          "pct": "-100.0%",
+          "prior": "33.33"
+         },
+         "pct_change": -100.0,
+         "prior": 33.333333333333336
+        },
+        "VOLUME": {
+         "change": -600.0,
+         "current": 0.0,
+         "display": {
+          "change": "-600",
+          "current": "0",
+          "pct": "-100.0%",
+          "prior": "600"
+         },
+         "pct_change": -100.0,
+         "prior": 600.0
+        }
+       },
+       "offsets": [],
+       "ports_rest_of_book": [],
+       "reconciliation": {
+        "book_change": -20000.0,
+        "display": {
+         "book_change": "-20,000",
+         "office_change": "-20,000",
+         "other_offices_net": "flat"
+        },
+        "office_change": -20000.0,
+        "other_offices_net": 0.0
+       },
+       "share_of_book": {
+        "current": null,
+        "display": {
+         "current": "n/a",
+         "prior": "100.0%"
+        },
+        "prior": 100.0
+       }
+      },
+      "Meridian Bunkering": {
+       "book": {
+        "GP": {
+         "change": -10000.0,
+         "current": 290000.0,
+         "display": {
+          "change": "-10,000",
+          "current": "290,000",
+          "pct": "-3.3%",
+          "prior": "300,000"
+         },
+         "pct_change": -3.3333333333333335,
+         "prior": 300000.0
+        },
+        "MARGIN": {
+         "change": 0.42857142857142705,
+         "current": 29.0,
+         "display": {
+          "change": "+0.43",
+          "current": "29.00",
+          "pct": "+1.5%",
+          "prior": "28.57"
+         },
+         "pct_change": 1.4999999999999947,
+         "prior": 28.571428571428573
+        },
+        "VOLUME": {
+         "change": -500.0,
+         "current": 10000.0,
+         "display": {
+          "change": "-500",
+          "current": "10,000",
+          "pct": "-4.8%",
+          "prior": "10,500"
+         },
+         "pct_change": -4.761904761904762,
+         "prior": 10500.0
+        }
+       },
+       "offsets": [
+        {
+         "change": 50000.0,
+         "display": "+50,000",
+         "key": "Spain Office"
+        }
+       ],
+       "ports_rest_of_book": [
+        {
+         "change": 50000.0,
+         "display": "+50,000",
+         "key": "Algeciras"
+        }
+       ],
+       "reconciliation": {
+        "book_change": -10000.0,
+        "display": {
+         "book_change": "-10,000",
+         "office_change": "-60,000",
+         "other_offices_net": "+50,000"
+        },
+        "office_change": -60000.0,
+        "other_offices_net": 50000.0
+       },
+       "share_of_book": {
+        "current": 48.275862068965516,
+        "display": {
+         "current": "48.3%",
+         "prior": "66.7%"
+        },
+        "prior": 66.66666666666666
+       }
+      },
+      "Northstar Lines": {
+       "book": {
+        "GP": {
+         "change": 20000.0,
+         "current": 170000.0,
+         "display": {
+          "change": "+20,000",
+          "current": "170,000",
+          "pct": "+13.3%",
+          "prior": "150,000"
+         },
+         "pct_change": 13.333333333333334,
+         "prior": 150000.0
+        },
+        "MARGIN": {
+         "change": 0.7575757575757578,
+         "current": 25.757575757575758,
+         "display": {
+          "change": "+0.76",
+          "current": "25.76",
+          "pct": "+3.0%",
+          "prior": "25.00"
+         },
+         "pct_change": 3.030303030303031,
+         "prior": 25.0
+        },
+        "VOLUME": {
+         "change": 600.0,
+         "current": 6600.0,
+         "display": {
+          "change": "+600",
+          "current": "6,600",
+          "pct": "+10.0%",
+          "prior": "6,000"
+         },
+         "pct_change": 10.0,
+         "prior": 6000.0
+        }
+       },
+       "offsets": [
+        {
+         "change": -10000.0,
+         "display": "-10,000",
+         "key": "Spain Office"
+        }
+       ],
+       "ports_rest_of_book": [
+        {
+         "change": -10000.0,
+         "display": "-10,000",
+         "key": "Algeciras"
+        }
+       ],
+       "reconciliation": {
+        "book_change": 20000.0,
+        "display": {
+         "book_change": "+20,000",
+         "office_change": "+30,000",
+         "other_offices_net": "-10,000"
+        },
+        "office_change": 30000.0,
+        "other_offices_net": -10000.0
+       },
+       "share_of_book": {
+        "current": 76.47058823529412,
+        "display": {
+         "current": "76.5%",
+         "prior": "66.7%"
+        },
+        "prior": 66.66666666666666
+       }
+      },
+      "Orion Offshore": {
+       "book": {
+        "GP": {
+         "change": 12000.0,
+         "current": 12000.0,
+         "display": {
+          "change": "+12,000",
+          "current": "12,000",
+          "pct": "new",
+          "prior": "0"
+         },
+         "pct_change": null,
+         "prior": 0.0
+        },
+        "MARGIN": {
+         "change": 24.0,
+         "current": 24.0,
+         "display": {
+          "change": "+24.00",
+          "current": "24.00",
+          "pct": "new",
+          "prior": "0.00"
+         },
+         "pct_change": null,
+         "prior": 0.0
+        },
+        "VOLUME": {
+         "change": 500.0,
+         "current": 500.0,
+         "display": {
+          "change": "+500",
+          "current": "500",
+          "pct": "new",
+          "prior": "0"
+         },
+         "pct_change": null,
+         "prior": 0.0
+        }
+       },
+       "offsets": [],
+       "ports_rest_of_book": [],
+       "reconciliation": {
+        "book_change": 12000.0,
+        "display": {
+         "book_change": "+12,000",
+         "office_change": "+12,000",
+         "other_offices_net": "flat"
+        },
+        "office_change": 12000.0,
+        "other_offices_net": 0.0
+       },
+       "share_of_book": {
+        "current": 100.0,
+        "display": {
+         "current": "100.0%",
+         "prior": "n/a"
+        },
+        "prior": null
+       }
+      },
+      "Vega Bulk": {
+       "book": {
+        "GP": {
+         "change": 5000.0,
+         "current": 5000.0,
+         "display": {
+          "change": "+5,000",
+          "current": "5,000",
+          "pct": "new",
+          "prior": "0"
+         },
+         "pct_change": null,
+         "prior": 0.0
+        },
+        "MARGIN": {
+         "change": 50.0,
+         "current": 50.0,
+         "display": {
+          "change": "+50.00",
+          "current": "50.00",
+          "pct": "new",
+          "prior": "0.00"
+         },
+         "pct_change": null,
+         "prior": 0.0
+        },
+        "VOLUME": {
+         "change": 0.0,
+         "current": 100.0,
+         "display": {
+          "change": "flat",
+          "current": "100",
+          "pct": "flat",
+          "prior": "100"
+         },
+         "pct_change": 0.0,
+         "prior": 100.0
+        }
+       },
+       "offsets": [],
+       "ports_rest_of_book": [],
+       "reconciliation": {
+        "book_change": 5000.0,
+        "display": {
+         "book_change": "+5,000",
+         "office_change": "+5,000",
+         "other_offices_net": "flat"
+        },
+        "office_change": 5000.0,
+        "other_offices_net": 0.0
+       },
+       "share_of_book": {
+        "current": 100.0,
+        "display": {
+         "current": "100.0%",
+         "prior": "n/a"
+        },
+        "prior": null
+       }
+      }
+     },
+     "generated_at": "2026-07-15T09:00:00+00:00",
+     "generated_by": "Dev User",
+     "kpis": {
+      "GP": {
+       "change": -27000.0,
+       "current": 353000.0,
+       "display": {
+        "change": "-27,000",
+        "current": "353,000",
+        "pct": "-7.1%",
+        "prior": "380,000"
+       },
+       "pct_change": -7.105263157894736,
+       "prior": 380000.0
+      },
+      "MARGIN": {
+       "change": 0.27864673850075405,
+       "current": 28.015873015873016,
+       "display": {
+        "change": "+0.28",
+        "current": "28.02",
+        "pct": "+1.0%",
+        "prior": "27.74"
+       },
+       "pct_change": 1.0045948203842976,
+       "prior": 27.73722627737226
+      },
+      "NUM_INQUIRIES": {
+       "change": -2.0,
+       "current": 64.0,
+       "display": {
+        "change": "-2",
+        "current": "64",
+        "pct": "-3.0%",
+        "prior": "66"
+       },
+       "pct_change": -3.0303030303030303,
+       "prior": 66.0
+      },
+      "NUM_LOST": {
+       "change": 2.0,
+       "current": 29.0,
+       "display": {
+        "change": "+2",
+        "current": "29",
+        "pct": "+7.4%",
+        "prior": "27"
+       },
+       "pct_change": 7.4074074074074066,
+       "prior": 27.0
+      },
+      "NUM_WON": {
+       "change": -4.0,
+       "current": 35.0,
+       "display": {
+        "change": "-4",
+        "current": "35",
+        "pct": "-10.3%",
+        "prior": "39"
+       },
+       "pct_change": -10.256410256410255,
+       "prior": 39.0
+      },
+      "VOLUME": {
+       "change": -1100.0,
+       "current": 12600.0,
+       "display": {
+        "change": "-1,100",
+        "current": "12,600",
+        "pct": "-8.0%",
+        "prior": "13,700"
+       },
+       "pct_change": -8.02919708029197,
+       "prior": 13700.0
+      },
+      "WIN_RATE": {
+       "change": -0.04403409090909094,
+       "current": 0.546875,
+       "display": {
+        "change": "-4.4 pts",
+        "current": "54.7%",
+        "pct": "-7.5%",
+        "prior": "59.1%"
+       },
+       "pct_change": -7.451923076923081,
+       "prior": 0.5909090909090909
+      }
+     },
+     "movers": {
+      "decreases": [
+       {
+        "change": {
+         "GP": -60000.0,
+         "MARGIN": -0.571428571428573,
+         "VOLUME": -2000.0
+        },
+        "current": {
+         "GP": 140000.0,
+         "MARGIN": 28.0,
+         "VOLUME": 5000.0
+        },
+        "display": {
+         "GP": {
+          "change": "-60,000",
+          "current": "140,000",
+          "pct": "-30.0%",
+          "prior": "200,000"
+         },
+         "MARGIN": {
+          "change": "-0.57",
+          "current": "28.00",
+          "pct": "-2.0%",
+          "prior": "28.57"
+         },
+         "VOLUME": {
+          "change": "-2,000",
+          "current": "5,000",
+          "pct": "-28.6%",
+          "prior": "7,000"
+         }
+        },
+        "driver": "volume-driven",
+        "key": "Meridian Bunkering",
+        "pct": {
+         "GP": -30.0,
+         "MARGIN": -2.0000000000000053,
+         "VOLUME": -28.57142857142857
+        },
+        "prior": {
+         "GP": 200000.0,
+         "MARGIN": 28.571428571428573,
+         "VOLUME": 7000.0
+        },
+        "status": "both"
+       },
+       {
+        "change": {
+         "GP": -20000.0,
+         "MARGIN": -33.333333333333336,
+         "VOLUME": -600.0
+        },
+        "current": {
+         "GP": 0.0,
+         "MARGIN": 0.0,
+         "VOLUME": 0.0
+        },
+        "display": {
+         "GP": {
+          "change": "-20,000",
+          "current": "0",
+          "pct": "-100.0%",
+          "prior": "20,000"
+         },
+         "MARGIN": {
+          "change": "-33.33",
+          "current": "0.00",
+          "pct": "-100.0%",
+          "prior": "33.33"
+         },
+         "VOLUME": {
+          "change": "-600",
+          "current": "0",
+          "pct": "-100.0%",
+          "prior": "600"
+         }
+        },
+        "driver": "lost",
+        "key": "Kestrel Lines",
+        "pct": {
+         "GP": -100.0,
+         "MARGIN": -100.0,
+         "VOLUME": -100.0
+        },
+        "prior": {
+         "GP": 20000.0,
+         "MARGIN": 33.333333333333336,
+         "VOLUME": 600.0
+        },
+        "status": "lost"
+       }
+      ],
+      "increases": [
+       {
+        "change": {
+         "GP": 30000.0,
+         "MARGIN": 1.0,
+         "VOLUME": 1000.0
+        },
+        "current": {
+         "GP": 130000.0,
+         "MARGIN": 26.0,
+         "VOLUME": 5000.0
+        },
+        "display": {
+         "GP": {
+          "change": "+30,000",
+          "current": "130,000",
+          "pct": "+30.0%",
+          "prior": "100,000"
+         },
+         "MARGIN": {
+          "change": "+1.00",
+          "current": "26.00",
+          "pct": "+4.0%",
+          "prior": "25.00"
+         },
+         "VOLUME": {
+          "change": "+1,000",
+          "current": "5,000",
+          "pct": "+25.0%",
+          "prior": "4,000"
+         }
+        },
+        "driver": "volume-driven",
+        "key": "Northstar Lines",
+        "pct": {
+         "GP": 30.0,
+         "MARGIN": 4.0,
+         "VOLUME": 25.0
+        },
+        "prior": {
+         "GP": 100000.0,
+         "MARGIN": 25.0,
+         "VOLUME": 4000.0
+        },
+        "status": "both"
+       },
+       {
+        "change": {
+         "GP": 12000.0,
+         "MARGIN": 24.0,
+         "VOLUME": 500.0
+        },
+        "current": {
+         "GP": 12000.0,
+         "MARGIN": 24.0,
+         "VOLUME": 500.0
+        },
+        "display": {
+         "GP": {
+          "change": "+12,000",
+          "current": "12,000",
+          "pct": "new",
+          "prior": "0"
+         },
+         "MARGIN": {
+          "change": "+24.00",
+          "current": "24.00",
+          "pct": "new",
+          "prior": "0.00"
+         },
+         "VOLUME": {
+          "change": "+500",
+          "current": "500",
+          "pct": "new",
+          "prior": "0"
+         }
+        },
+        "driver": "new",
+        "key": "Orion Offshore",
+        "pct": {
+         "GP": null,
+         "MARGIN": null,
+         "VOLUME": null
+        },
+        "prior": {
+         "GP": 0.0,
+         "MARGIN": 0.0,
+         "VOLUME": 0.0
+        },
+        "status": "new"
+       },
+       {
+        "change": {
+         "GP": 6000.0,
+         "MARGIN": 3.0,
+         "VOLUME": 0.0
+        },
+        "current": {
+         "GP": 66000.0,
+         "MARGIN": 33.0,
+         "VOLUME": 2000.0
+        },
+        "display": {
+         "GP": {
+          "change": "+6,000",
+          "current": "66,000",
+          "pct": "+10.0%",
+          "prior": "60,000"
+         },
+         "MARGIN": {
+          "change": "+3.00",
+          "current": "33.00",
+          "pct": "+10.0%",
+          "prior": "30.00"
+         },
+         "VOLUME": {
+          "change": "flat",
+          "current": "2,000",
+          "pct": "flat",
+          "prior": "2,000"
+         }
+        },
+        "driver": "margin-driven",
+        "key": "Atlas Tankers",
+        "pct": {
+         "GP": 10.0,
+         "MARGIN": 10.0,
+         "VOLUME": 0.0
+        },
+        "prior": {
+         "GP": 60000.0,
+         "MARGIN": 30.0,
+         "VOLUME": 2000.0
+        },
+        "status": "both"
+       },
+       {
+        "change": {
+         "GP": 5000.0,
+         "MARGIN": 50.0,
+         "VOLUME": 0.0
+        },
+        "current": {
+         "GP": 5000.0,
+         "MARGIN": 50.0,
+         "VOLUME": 100.0
+        },
+        "display": {
+         "GP": {
+          "change": "+5,000",
+          "current": "5,000",
+          "pct": "new",
+          "prior": "0"
+         },
+         "MARGIN": {
+          "change": "+50.00",
+          "current": "50.00",
+          "pct": "new",
+          "prior": "0.00"
+         },
+         "VOLUME": {
+          "change": "flat",
+          "current": "100",
+          "pct": "flat",
+          "prior": "100"
+         }
+        },
+        "driver": "margin-driven",
+        "key": "Vega Bulk",
+        "pct": {
+         "GP": null,
+         "MARGIN": null,
+         "VOLUME": 0.0
+        },
+        "prior": {
+         "GP": 0.0,
+         "MARGIN": 0.0,
+         "VOLUME": 100.0
+        },
+        "status": "both"
+       }
+      ]
+     },
+     "narrative": {
+      "flags": [
+       "model narrative skipped: stub mode"
+      ],
+      "grounded": true,
+      "llm_md": null,
+      "template_md": "**May 2026 to June 2026, Gibraltar Office (Customer Broker Office).** Overall volume decreased by 8.0% (-1,100 tons), while gross profit decreased by 7.1% (-27,000). Margin moved from 27.74/ton to 28.02/ton (+0.28/ton). The office won 35 transactions in June 2026 vs 39 in May 2026 (4 fewer), with inquiries down 3.0% (64 vs 66). The win rate declined from 59.1% to 54.7%.\n\n## Key drivers\n\n*Top increases by GP:*\n1. **Northstar Lines**: GP +30,000 (+30.0%), volume-driven\n   - Volume: 4,000 -> 5,000 tons (+1,000, +25.0%)\n   - Margin: 25.00 -> 26.00/ton (+1.00)\n2. **Orion Offshore**: GP +12,000 (new), new\n   - Volume: 0 -> 500 tons (+500, new)\n   - Margin: 0.00 -> 24.00/ton (+24.00)\n3. **Atlas Tankers**: GP +6,000 (+10.0%), margin-driven\n   - Volume: 2,000 -> 2,000 tons (flat, flat)\n   - Margin: 30.00 -> 33.00/ton (+3.00)\n4. **Vega Bulk**: GP +5,000 (new), margin-driven\n   - Volume: 100 -> 100 tons (flat, flat)\n   - Margin: 0.00 -> 50.00/ton (+50.00)\n*Top decreases by GP:*\n1. **Meridian Bunkering**: GP -60,000 (-30.0%), volume-driven\n   - Volume: 7,000 -> 5,000 tons (-2,000, -28.6%)\n   - Margin: 28.57 -> 28.00/ton (-0.57)\n2. **Kestrel Lines**: GP -20,000 (-100.0%), lost\n   - Volume: 600 -> 0 tons (-600, -100.0%)\n   - Margin: 33.33 -> 0.00/ton (-33.33)\n\n## New and lost customers\n\n**New in June 2026:** Orion Offshore (GP 12,000, 500 tons, margin 24.00)\n**Lost from May 2026:** Kestrel Lines (GP 20,000, 600 tons, margin 33.33)\n"
+     },
+     "new_lost": {
+      "lost": [
+       {
+        "change": {
+         "GP": -20000.0,
+         "MARGIN": -33.333333333333336,
+         "VOLUME": -600.0
+        },
+        "current": {
+         "GP": 0.0,
+         "MARGIN": 0.0,
+         "VOLUME": 0.0
+        },
+        "display": {
+         "GP": {
+          "change": "-20,000",
+          "current": "0",
+          "pct": "-100.0%",
+          "prior": "20,000"
+         },
+         "MARGIN": {
+          "change": "-33.33",
+          "current": "0.00",
+          "pct": "-100.0%",
+          "prior": "33.33"
+         },
+         "VOLUME": {
+          "change": "-600",
+          "current": "0",
+          "pct": "-100.0%",
+          "prior": "600"
+         }
+        },
+        "key": "Kestrel Lines",
+        "pct": {
+         "GP": -100.0,
+         "MARGIN": -100.0,
+         "VOLUME": -100.0
+        },
+        "prior": {
+         "GP": 20000.0,
+         "MARGIN": 33.333333333333336,
+         "VOLUME": 600.0
+        },
+        "status": "lost"
+       }
+      ],
+      "new": [
+       {
+        "change": {
+         "GP": 12000.0,
+         "MARGIN": 24.0,
+         "VOLUME": 500.0
+        },
+        "current": {
+         "GP": 12000.0,
+         "MARGIN": 24.0,
+         "VOLUME": 500.0
+        },
+        "display": {
+         "GP": {
+          "change": "+12,000",
+          "current": "12,000",
+          "pct": "new",
+          "prior": "0"
+         },
+         "MARGIN": {
+          "change": "+24.00",
+          "current": "24.00",
+          "pct": "new",
+          "prior": "0.00"
+         },
+         "VOLUME": {
+          "change": "+500",
+          "current": "500",
+          "pct": "new",
+          "prior": "0"
+         }
+        },
+        "key": "Orion Offshore",
+        "pct": {
+         "GP": null,
+         "MARGIN": null,
+         "VOLUME": null
+        },
+        "prior": {
+         "GP": 0.0,
+         "MARGIN": 0.0,
+         "VOLUME": 0.0
+        },
+        "status": "new"
+       }
+      ]
+     },
+     "payload_version": 1,
+     "periods": {
+      "current": {
+       "end": "2026-07-01",
+       "label": "June 2026",
+       "start": "2026-06-01"
+      },
+      "prior": {
+       "end": "2026-06-01",
+       "label": "May 2026",
+       "start": "2026-05-01"
+      },
+      "window_kind": "complete"
+     },
+     "perspective": "customer",
+     "proof": [
+      "Entity: MARINE_SALES_PLANNING_V - source: synthetic - CUSTOMER_TEAM_NAME = Gibraltar Office",
+      "Windows: 2026-05-01..2026-06-01 (prior) - 2026-06-01..2026-07-01 (current) - basis: prior month - window: complete",
+      "Frames: six-way group-by, prior 5 rows, current 5 rows; totals reconciled to the cent",
+      "Context: 6 movers x 2 windows, whole book",
+      "narrative: template; model narrative skipped: stub mode",
+      "Run: report_run 0199a000-0000-7000-8000-000000000001"
+     ],
+     "queries": [
+      {
+       "label": "frame prior",
+       "ms": 1,
+       "rows": 5,
+       "sql_hash": "f57c364a1a71"
+      },
+      {
+       "label": "frame current",
+       "ms": 1,
+       "rows": 5,
+       "sql_hash": "f57c364a1a71"
+      },
+      {
+       "label": "total prior",
+       "ms": 1,
+       "rows": 1,
+       "sql_hash": "56fd92b3d018"
+      },
+      {
+       "label": "total current",
+       "ms": 1,
+       "rows": 1,
+       "sql_hash": "56fd92b3d018"
+      },
+      {
+       "label": "context prior",
+       "ms": 1,
+       "rows": 7,
+       "sql_hash": "bfb62efd9e9a"
+      },
+      {
+       "label": "context current",
+       "ms": 1,
+       "rows": 7,
+       "sql_hash": "bfb62efd9e9a"
+      }
+     ],
+     "run_id": "0199a000-0000-7000-8000-000000000001",
+     "scope": {
+      "label": "Gibraltar Office (Customer Broker Office)",
+      "office_column": "CUSTOMER_TEAM_NAME",
+      "office_value": "Gibraltar Office"
+     },
+     "source": "synthetic",
+     "suggested_questions": [
+      "Why did GP change for Meridian Bunkering?",
+      "Where else does Meridian Bunkering lift fuel?",
+      "What were the top ports in the report?"
+     ],
+     "tables": {
+      "deal_class": {
+       "footer": {
+        "change": {
+         "GP": -27000.0,
+         "MARGIN": 0.27864673850075405,
+         "VOLUME": -1100.0
+        },
+        "current": {
+         "GP": 353000.0,
+         "MARGIN": 28.015873015873016,
+         "VOLUME": 12600.0
+        },
+        "display": {
+         "GP": {
+          "change": "-27,000",
+          "current": "353,000",
+          "pct": "-7.1%",
+          "prior": "380,000"
+         },
+         "MARGIN": {
+          "change": "+0.28",
+          "current": "28.02",
+          "pct": "+1.0%",
+          "prior": "27.74"
+         },
+         "VOLUME": {
+          "change": "-1,100",
+          "current": "12,600",
+          "pct": "-8.0%",
+          "prior": "13,700"
+         }
+        },
+        "key": "Total",
+        "pct": {
+         "GP": -7.105263157894736,
+         "MARGIN": 1.0045948203842976,
+         "VOLUME": -8.02919708029197
+        },
+        "prior": {
+         "GP": 380000.0,
+         "MARGIN": 27.73722627737226,
+         "VOLUME": 13700.0
+        },
+        "status": "both"
+       },
+       "other": null,
+       "rows": [
+        {
+         "change": {
+          "GP": 28000.0,
+          "MARGIN": 0.4606060606060609,
+          "VOLUME": 900.0
+         },
+         "current": {
+          "GP": 208000.0,
+          "MARGIN": 27.733333333333334,
+          "VOLUME": 7500.0
+         },
+         "display": {
+          "GP": {
+           "change": "+28,000",
+           "current": "208,000",
+           "pct": "+15.6%",
+           "prior": "180,000"
+          },
+          "MARGIN": {
+           "change": "+0.46",
+           "current": "27.73",
+           "pct": "+1.7%",
+           "prior": "27.27"
+          },
+          "VOLUME": {
+           "change": "+900",
+           "current": "7,500",
+           "pct": "+13.6%",
+           "prior": "6,600"
+          }
+         },
+         "key": "TRADED",
+         "pct": {
+          "GP": 15.555555555555555,
+          "MARGIN": 1.6888888888888902,
+          "VOLUME": 13.636363636363635
+         },
+         "prior": {
+          "GP": 180000.0,
+          "MARGIN": 27.272727272727273,
+          "VOLUME": 6600.0
+         },
+         "status": "both"
+        },
+        {
+         "change": {
+          "GP": -55000.0,
+          "MARGIN": 0.2623584645125625,
+          "VOLUME": -2000.0
+         },
+         "current": {
+          "GP": 145000.0,
+          "MARGIN": 28.431372549019606,
+          "VOLUME": 5100.0
+         },
+         "display": {
+          "GP": {
+           "change": "-55,000",
+           "current": "145,000",
+           "pct": "-27.5%",
+           "prior": "200,000"
+          },
+          "MARGIN": {
+           "change": "+0.26",
+           "current": "28.43",
+           "pct": "+0.9%",
+           "prior": "28.17"
+          },
+          "VOLUME": {
+           "change": "-2,000",
+           "current": "5,100",
+           "pct": "-28.2%",
+           "prior": "7,100"
+          }
+         },
+         "key": "INVENTORY",
+         "pct": {
+          "GP": -27.500000000000004,
+          "MARGIN": 0.9313725490195969,
+          "VOLUME": -28.169014084507044
+         },
+         "prior": {
+          "GP": 200000.0,
+          "MARGIN": 28.169014084507044,
+          "VOLUME": 7100.0
+         },
+         "status": "both"
+        }
+       ]
+      },
+      "entities_by_gp": {
+       "footer": {
+        "change": {
+         "GP": -27000.0,
+         "MARGIN": 0.27864673850075405,
+         "VOLUME": -1100.0
+        },
+        "current": {
+         "GP": 353000.0,
+         "MARGIN": 28.015873015873016,
+         "VOLUME": 12600.0
+        },
+        "display": {
+         "GP": {
+          "change": "-27,000",
+          "current": "353,000",
+          "pct": "-7.1%",
+          "prior": "380,000"
+         },
+         "MARGIN": {
+          "change": "+0.28",
+          "current": "28.02",
+          "pct": "+1.0%",
+          "prior": "27.74"
+         },
+         "VOLUME": {
+          "change": "-1,100",
+          "current": "12,600",
+          "pct": "-8.0%",
+          "prior": "13,700"
+         }
+        },
+        "key": "Total",
+        "pct": {
+         "GP": -7.105263157894736,
+         "MARGIN": 1.0045948203842976,
+         "VOLUME": -8.02919708029197
+        },
+        "prior": {
+         "GP": 380000.0,
+         "MARGIN": 27.73722627737226,
+         "VOLUME": 13700.0
+        },
+        "status": "both"
+       },
+       "other": null,
+       "rows": [
+        {
+         "change": {
+          "GP": -60000.0,
+          "MARGIN": -0.571428571428573,
+          "VOLUME": -2000.0
+         },
+         "current": {
+          "GP": 140000.0,
+          "MARGIN": 28.0,
+          "VOLUME": 5000.0
+         },
+         "display": {
+          "GP": {
+           "change": "-60,000",
+           "current": "140,000",
+           "pct": "-30.0%",
+           "prior": "200,000"
+          },
+          "MARGIN": {
+           "change": "-0.57",
+           "current": "28.00",
+           "pct": "-2.0%",
+           "prior": "28.57"
+          },
+          "VOLUME": {
+           "change": "-2,000",
+           "current": "5,000",
+           "pct": "-28.6%",
+           "prior": "7,000"
+          }
+         },
+         "key": "Meridian Bunkering",
+         "pct": {
+          "GP": -30.0,
+          "MARGIN": -2.0000000000000053,
+          "VOLUME": -28.57142857142857
+         },
+         "prior": {
+          "GP": 200000.0,
+          "MARGIN": 28.571428571428573,
+          "VOLUME": 7000.0
+         },
+         "status": "both"
+        },
+        {
+         "change": {
+          "GP": 30000.0,
+          "MARGIN": 1.0,
+          "VOLUME": 1000.0
+         },
+         "current": {
+          "GP": 130000.0,
+          "MARGIN": 26.0,
+          "VOLUME": 5000.0
+         },
+         "display": {
+          "GP": {
+           "change": "+30,000",
+           "current": "130,000",
+           "pct": "+30.0%",
+           "prior": "100,000"
+          },
+          "MARGIN": {
+           "change": "+1.00",
+           "current": "26.00",
+           "pct": "+4.0%",
+           "prior": "25.00"
+          },
+          "VOLUME": {
+           "change": "+1,000",
+           "current": "5,000",
+           "pct": "+25.0%",
+           "prior": "4,000"
+          }
+         },
+         "key": "Northstar Lines",
+         "pct": {
+          "GP": 30.0,
+          "MARGIN": 4.0,
+          "VOLUME": 25.0
+         },
+         "prior": {
+          "GP": 100000.0,
+          "MARGIN": 25.0,
+          "VOLUME": 4000.0
+         },
+         "status": "both"
+        },
+        {
+         "change": {
+          "GP": 6000.0,
+          "MARGIN": 3.0,
+          "VOLUME": 0.0
+         },
+         "current": {
+          "GP": 66000.0,
+          "MARGIN": 33.0,
+          "VOLUME": 2000.0
+         },
+         "display": {
+          "GP": {
+           "change": "+6,000",
+           "current": "66,000",
+           "pct": "+10.0%",
+           "prior": "60,000"
+          },
+          "MARGIN": {
+           "change": "+3.00",
+           "current": "33.00",
+           "pct": "+10.0%",
+           "prior": "30.00"
+          },
+          "VOLUME": {
+           "change": "flat",
+           "current": "2,000",
+           "pct": "flat",
+           "prior": "2,000"
+          }
+         },
+         "key": "Atlas Tankers",
+         "pct": {
+          "GP": 10.0,
+          "MARGIN": 10.0,
+          "VOLUME": 0.0
+         },
+         "prior": {
+          "GP": 60000.0,
+          "MARGIN": 30.0,
+          "VOLUME": 2000.0
+         },
+         "status": "both"
+        },
+        {
+         "change": {
+          "GP": 12000.0,
+          "MARGIN": 24.0,
+          "VOLUME": 500.0
+         },
+         "current": {
+          "GP": 12000.0,
+          "MARGIN": 24.0,
+          "VOLUME": 500.0
+         },
+         "display": {
+          "GP": {
+           "change": "+12,000",
+           "current": "12,000",
+           "pct": "new",
+           "prior": "0"
+          },
+          "MARGIN": {
+           "change": "+24.00",
+           "current": "24.00",
+           "pct": "new",
+           "prior": "0.00"
+          },
+          "VOLUME": {
+           "change": "+500",
+           "current": "500",
+           "pct": "new",
+           "prior": "0"
+          }
+         },
+         "key": "Orion Offshore",
+         "pct": {
+          "GP": null,
+          "MARGIN": null,
+          "VOLUME": null
+         },
+         "prior": {
+          "GP": 0.0,
+          "MARGIN": 0.0,
+          "VOLUME": 0.0
+         },
+         "status": "new"
+        },
+        {
+         "change": {
+          "GP": 5000.0,
+          "MARGIN": 50.0,
+          "VOLUME": 0.0
+         },
+         "current": {
+          "GP": 5000.0,
+          "MARGIN": 50.0,
+          "VOLUME": 100.0
+         },
+         "display": {
+          "GP": {
+           "change": "+5,000",
+           "current": "5,000",
+           "pct": "new",
+           "prior": "0"
+          },
+          "MARGIN": {
+           "change": "+50.00",
+           "current": "50.00",
+           "pct": "new",
+           "prior": "0.00"
+          },
+          "VOLUME": {
+           "change": "flat",
+           "current": "100",
+           "pct": "flat",
+           "prior": "100"
+          }
+         },
+         "key": "Vega Bulk",
+         "pct": {
+          "GP": null,
+          "MARGIN": null,
+          "VOLUME": 0.0
+         },
+         "prior": {
+          "GP": 0.0,
+          "MARGIN": 0.0,
+          "VOLUME": 100.0
+         },
+         "status": "both"
+        },
+        {
+         "change": {
+          "GP": -20000.0,
+          "MARGIN": -33.333333333333336,
+          "VOLUME": -600.0
+         },
+         "current": {
+          "GP": 0.0,
+          "MARGIN": 0.0,
+          "VOLUME": 0.0
+         },
+         "display": {
+          "GP": {
+           "change": "-20,000",
+           "current": "0",
+           "pct": "-100.0%",
+           "prior": "20,000"
+          },
+          "MARGIN": {
+           "change": "-33.33",
+           "current": "0.00",
+           "pct": "-100.0%",
+           "prior": "33.33"
+          },
+          "VOLUME": {
+           "change": "-600",
+           "current": "0",
+           "pct": "-100.0%",
+           "prior": "600"
+          }
+         },
+         "key": "Kestrel Lines",
+         "pct": {
+          "GP": -100.0,
+          "MARGIN": -100.0,
+          "VOLUME": -100.0
+         },
+         "prior": {
+          "GP": 20000.0,
+          "MARGIN": 33.333333333333336,
+          "VOLUME": 600.0
+         },
+         "status": "lost"
+        }
+       ]
+      },
+      "entities_by_volume": {
+       "footer": {
+        "change": {
+         "GP": -27000.0,
+         "MARGIN": 0.27864673850075405,
+         "VOLUME": -1100.0
+        },
+        "current": {
+         "GP": 353000.0,
+         "MARGIN": 28.015873015873016,
+         "VOLUME": 12600.0
+        },
+        "display": {
+         "GP": {
+          "change": "-27,000",
+          "current": "353,000",
+          "pct": "-7.1%",
+          "prior": "380,000"
+         },
+         "MARGIN": {
+          "change": "+0.28",
+          "current": "28.02",
+          "pct": "+1.0%",
+          "prior": "27.74"
+         },
+         "VOLUME": {
+          "change": "-1,100",
+          "current": "12,600",
+          "pct": "-8.0%",
+          "prior": "13,700"
+         }
+        },
+        "key": "Total",
+        "pct": {
+         "GP": -7.105263157894736,
+         "MARGIN": 1.0045948203842976,
+         "VOLUME": -8.02919708029197
+        },
+        "prior": {
+         "GP": 380000.0,
+         "MARGIN": 27.73722627737226,
+         "VOLUME": 13700.0
+        },
+        "status": "both"
+       },
+       "other": null,
+       "rows": [
+        {
+         "change": {
+          "GP": -60000.0,
+          "MARGIN": -0.571428571428573,
+          "VOLUME": -2000.0
+         },
+         "current": {
+          "GP": 140000.0,
+          "MARGIN": 28.0,
+          "VOLUME": 5000.0
+         },
+         "display": {
+          "GP": {
+           "change": "-60,000",
+           "current": "140,000",
+           "pct": "-30.0%",
+           "prior": "200,000"
+          },
+          "MARGIN": {
+           "change": "-0.57",
+           "current": "28.00",
+           "pct": "-2.0%",
+           "prior": "28.57"
+          },
+          "VOLUME": {
+           "change": "-2,000",
+           "current": "5,000",
+           "pct": "-28.6%",
+           "prior": "7,000"
+          }
+         },
+         "key": "Meridian Bunkering",
+         "pct": {
+          "GP": -30.0,
+          "MARGIN": -2.0000000000000053,
+          "VOLUME": -28.57142857142857
+         },
+         "prior": {
+          "GP": 200000.0,
+          "MARGIN": 28.571428571428573,
+          "VOLUME": 7000.0
+         },
+         "status": "both"
+        },
+        {
+         "change": {
+          "GP": 30000.0,
+          "MARGIN": 1.0,
+          "VOLUME": 1000.0
+         },
+         "current": {
+          "GP": 130000.0,
+          "MARGIN": 26.0,
+          "VOLUME": 5000.0
+         },
+         "display": {
+          "GP": {
+           "change": "+30,000",
+           "current": "130,000",
+           "pct": "+30.0%",
+           "prior": "100,000"
+          },
+          "MARGIN": {
+           "change": "+1.00",
+           "current": "26.00",
+           "pct": "+4.0%",
+           "prior": "25.00"
+          },
+          "VOLUME": {
+           "change": "+1,000",
+           "current": "5,000",
+           "pct": "+25.0%",
+           "prior": "4,000"
+          }
+         },
+         "key": "Northstar Lines",
+         "pct": {
+          "GP": 30.0,
+          "MARGIN": 4.0,
+          "VOLUME": 25.0
+         },
+         "prior": {
+          "GP": 100000.0,
+          "MARGIN": 25.0,
+          "VOLUME": 4000.0
+         },
+         "status": "both"
+        },
+        {
+         "change": {
+          "GP": 6000.0,
+          "MARGIN": 3.0,
+          "VOLUME": 0.0
+         },
+         "current": {
+          "GP": 66000.0,
+          "MARGIN": 33.0,
+          "VOLUME": 2000.0
+         },
+         "display": {
+          "GP": {
+           "change": "+6,000",
+           "current": "66,000",
+           "pct": "+10.0%",
+           "prior": "60,000"
+          },
+          "MARGIN": {
+           "change": "+3.00",
+           "current": "33.00",
+           "pct": "+10.0%",
+           "prior": "30.00"
+          },
+          "VOLUME": {
+           "change": "flat",
+           "current": "2,000",
+           "pct": "flat",
+           "prior": "2,000"
+          }
+         },
+         "key": "Atlas Tankers",
+         "pct": {
+          "GP": 10.0,
+          "MARGIN": 10.0,
+          "VOLUME": 0.0
+         },
+         "prior": {
+          "GP": 60000.0,
+          "MARGIN": 30.0,
+          "VOLUME": 2000.0
+         },
+         "status": "both"
+        },
+        {
+         "change": {
+          "GP": 12000.0,
+          "MARGIN": 24.0,
+          "VOLUME": 500.0
+         },
+         "current": {
+          "GP": 12000.0,
+          "MARGIN": 24.0,
+          "VOLUME": 500.0
+         },
+         "display": {
+          "GP": {
+           "change": "+12,000",
+           "current": "12,000",
+           "pct": "new",
+           "prior": "0"
+          },
+          "MARGIN": {
+           "change": "+24.00",
+           "current": "24.00",
+           "pct": "new",
+           "prior": "0.00"
+          },
+          "VOLUME": {
+           "change": "+500",
+           "current": "500",
+           "pct": "new",
+           "prior": "0"
+          }
+         },
+         "key": "Orion Offshore",
+         "pct": {
+          "GP": null,
+          "MARGIN": null,
+          "VOLUME": null
+         },
+         "prior": {
+          "GP": 0.0,
+          "MARGIN": 0.0,
+          "VOLUME": 0.0
+         },
+         "status": "new"
+        },
+        {
+         "change": {
+          "GP": 5000.0,
+          "MARGIN": 50.0,
+          "VOLUME": 0.0
+         },
+         "current": {
+          "GP": 5000.0,
+          "MARGIN": 50.0,
+          "VOLUME": 100.0
+         },
+         "display": {
+          "GP": {
+           "change": "+5,000",
+           "current": "5,000",
+           "pct": "new",
+           "prior": "0"
+          },
+          "MARGIN": {
+           "change": "+50.00",
+           "current": "50.00",
+           "pct": "new",
+           "prior": "0.00"
+          },
+          "VOLUME": {
+           "change": "flat",
+           "current": "100",
+           "pct": "flat",
+           "prior": "100"
+          }
+         },
+         "key": "Vega Bulk",
+         "pct": {
+          "GP": null,
+          "MARGIN": null,
+          "VOLUME": 0.0
+         },
+         "prior": {
+          "GP": 0.0,
+          "MARGIN": 0.0,
+          "VOLUME": 100.0
+         },
+         "status": "both"
+        },
+        {
+         "change": {
+          "GP": -20000.0,
+          "MARGIN": -33.333333333333336,
+          "VOLUME": -600.0
+         },
+         "current": {
+          "GP": 0.0,
+          "MARGIN": 0.0,
+          "VOLUME": 0.0
+         },
+         "display": {
+          "GP": {
+           "change": "-20,000",
+           "current": "0",
+           "pct": "-100.0%",
+           "prior": "20,000"
+          },
+          "MARGIN": {
+           "change": "-33.33",
+           "current": "0.00",
+           "pct": "-100.0%",
+           "prior": "33.33"
+          },
+          "VOLUME": {
+           "change": "-600",
+           "current": "0",
+           "pct": "-100.0%",
+           "prior": "600"
+          }
+         },
+         "key": "Kestrel Lines",
+         "pct": {
+          "GP": -100.0,
+          "MARGIN": -100.0,
+          "VOLUME": -100.0
+         },
+         "prior": {
+          "GP": 20000.0,
+          "MARGIN": 33.333333333333336,
+          "VOLUME": 600.0
+         },
+         "status": "lost"
+        }
+       ]
+      },
+      "ports_by_gp": {
+       "footer": {
+        "change": {
+         "GP": -27000.0,
+         "MARGIN": 0.27864673850075405,
+         "VOLUME": -1100.0
+        },
+        "current": {
+         "GP": 353000.0,
+         "MARGIN": 28.015873015873016,
+         "VOLUME": 12600.0
+        },
+        "display": {
+         "GP": {
+          "change": "-27,000",
+          "current": "353,000",
+          "pct": "-7.1%",
+          "prior": "380,000"
+         },
+         "MARGIN": {
+          "change": "+0.28",
+          "current": "28.02",
+          "pct": "+1.0%",
+          "prior": "27.74"
+         },
+         "VOLUME": {
+          "change": "-1,100",
+          "current": "12,600",
+          "pct": "-8.0%",
+          "prior": "13,700"
+         }
+        },
+        "key": "Total",
+        "pct": {
+         "GP": -7.105263157894736,
+         "MARGIN": 1.0045948203842976,
+         "VOLUME": -8.02919708029197
+        },
+        "prior": {
+         "GP": 380000.0,
+         "MARGIN": 27.73722627737226,
+         "VOLUME": 13700.0
+        },
+        "status": "both"
+       },
+       "other": null,
+       "rows": [
+        {
+         "change": {
+          "GP": -38000.0,
+          "MARGIN": -0.7290640394088648,
+          "VOLUME": -1100.0
+         },
+         "current": {
+          "GP": 282000.0,
+          "MARGIN": 26.857142857142858,
+          "VOLUME": 10500.0
+         },
+         "display": {
+          "GP": {
+           "change": "-38,000",
+           "current": "282,000",
+           "pct": "-11.9%",
+           "prior": "320,000"
+          },
+          "MARGIN": {
+           "change": "-0.73",
+           "current": "26.86",
+           "pct": "-2.6%",
+           "prior": "27.59"
+          },
+          "VOLUME": {
+           "change": "-1,100",
+           "current": "10,500",
+           "pct": "-9.5%",
+           "prior": "11,600"
+          }
+         },
+         "key": "Gibraltar",
+         "pct": {
+          "GP": -11.875,
+          "MARGIN": -2.642857142857135,
+          "VOLUME": -9.482758620689655
+         },
+         "prior": {
+          "GP": 320000.0,
+          "MARGIN": 27.586206896551722,
+          "VOLUME": 11600.0
+         },
+         "status": "both"
+        },
+        {
+         "change": {
+          "GP": 11000.0,
+          "MARGIN": 5.238095238095237,
+          "VOLUME": 0.0
+         },
+         "current": {
+          "GP": 71000.0,
+          "MARGIN": 33.80952380952381,
+          "VOLUME": 2100.0
+         },
+         "display": {
+          "GP": {
+           "change": "+11,000",
+           "current": "71,000",
+           "pct": "+18.3%",
+           "prior": "60,000"
+          },
+          "MARGIN": {
+           "change": "+5.24",
+           "current": "33.81",
+           "pct": "+18.3%",
+           "prior": "28.57"
+          },
+          "VOLUME": {
+           "change": "flat",
+           "current": "2,100",
+           "pct": "flat",
+           "prior": "2,100"
+          }
+         },
+         "key": "Ceuta",
+         "pct": {
+          "GP": 18.333333333333332,
+          "MARGIN": 18.33333333333333,
+          "VOLUME": 0.0
+         },
+         "prior": {
+          "GP": 60000.0,
+          "MARGIN": 28.571428571428573,
+          "VOLUME": 2100.0
+         },
+         "status": "both"
+        }
+       ]
+      },
+      "ports_by_volume": {
+       "footer": {
+        "change": {
+         "GP": -27000.0,
+         "MARGIN": 0.27864673850075405,
+         "VOLUME": -1100.0
+        },
+        "current": {
+         "GP": 353000.0,
+         "MARGIN": 28.015873015873016,
+         "VOLUME": 12600.0
+        },
+        "display": {
+         "GP": {
+          "change": "-27,000",
+          "current": "353,000",
+          "pct": "-7.1%",
+          "prior": "380,000"
+         },
+         "MARGIN": {
+          "change": "+0.28",
+          "current": "28.02",
+          "pct": "+1.0%",
+          "prior": "27.74"
+         },
+         "VOLUME": {
+          "change": "-1,100",
+          "current": "12,600",
+          "pct": "-8.0%",
+          "prior": "13,700"
+         }
+        },
+        "key": "Total",
+        "pct": {
+         "GP": -7.105263157894736,
+         "MARGIN": 1.0045948203842976,
+         "VOLUME": -8.02919708029197
+        },
+        "prior": {
+         "GP": 380000.0,
+         "MARGIN": 27.73722627737226,
+         "VOLUME": 13700.0
+        },
+        "status": "both"
+       },
+       "other": null,
+       "rows": [
+        {
+         "change": {
+          "GP": -38000.0,
+          "MARGIN": -0.7290640394088648,
+          "VOLUME": -1100.0
+         },
+         "current": {
+          "GP": 282000.0,
+          "MARGIN": 26.857142857142858,
+          "VOLUME": 10500.0
+         },
+         "display": {
+          "GP": {
+           "change": "-38,000",
+           "current": "282,000",
+           "pct": "-11.9%",
+           "prior": "320,000"
+          },
+          "MARGIN": {
+           "change": "-0.73",
+           "current": "26.86",
+           "pct": "-2.6%",
+           "prior": "27.59"
+          },
+          "VOLUME": {
+           "change": "-1,100",
+           "current": "10,500",
+           "pct": "-9.5%",
+           "prior": "11,600"
+          }
+         },
+         "key": "Gibraltar",
+         "pct": {
+          "GP": -11.875,
+          "MARGIN": -2.642857142857135,
+          "VOLUME": -9.482758620689655
+         },
+         "prior": {
+          "GP": 320000.0,
+          "MARGIN": 27.586206896551722,
+          "VOLUME": 11600.0
+         },
+         "status": "both"
+        },
+        {
+         "change": {
+          "GP": 11000.0,
+          "MARGIN": 5.238095238095237,
+          "VOLUME": 0.0
+         },
+         "current": {
+          "GP": 71000.0,
+          "MARGIN": 33.80952380952381,
+          "VOLUME": 2100.0
+         },
+         "display": {
+          "GP": {
+           "change": "+11,000",
+           "current": "71,000",
+           "pct": "+18.3%",
+           "prior": "60,000"
+          },
+          "MARGIN": {
+           "change": "+5.24",
+           "current": "33.81",
+           "pct": "+18.3%",
+           "prior": "28.57"
+          },
+          "VOLUME": {
+           "change": "flat",
+           "current": "2,100",
+           "pct": "flat",
+           "prior": "2,100"
+          }
+         },
+         "key": "Ceuta",
+         "pct": {
+          "GP": 18.333333333333332,
+          "MARGIN": 18.33333333333333,
+          "VOLUME": 0.0
+         },
+         "prior": {
+          "GP": 60000.0,
+          "MARGIN": 28.571428571428573,
+          "VOLUME": 2100.0
+         },
+         "status": "both"
+        }
+       ]
+      }
+     }
+    },
+    "turn_id": "turn-1"
+   },
+   "event": "part"
+  },
+  {
+   "data": {
+    "event_seq": 5,
+    "kind": "proof",
+    "message_id": "msg-1",
+    "payload": {
+     "lines": [
+      "Entity: MARINE_SALES_PLANNING_V - source: synthetic - CUSTOMER_TEAM_NAME = Gibraltar Office",
+      "Windows: 2026-05-01..2026-06-01 (prior) - 2026-06-01..2026-07-01 (current) - basis: prior month - window: complete",
+      "Frames: six-way group-by, prior 5 rows, current 5 rows; totals reconciled to the cent",
+      "Context: 6 movers x 2 windows, whole book",
+      "narrative: template; model narrative skipped: stub mode",
+      "Run: report_run 0199a000-0000-7000-8000-000000000001"
+     ]
+    },
+    "turn_id": "turn-1"
+   },
+   "event": "part"
+  },
+  {
+   "data": {
+    "event_seq": 6,
+    "kind": "artifact",
+    "message_id": "msg-1",
+    "payload": {
+     "mime": "application/pdf",
+     "name": "Gibraltar Office June 2026.pdf",
+     "url": "/api/reports/0199a000-0000-7000-8000-000000000001/pdf"
+    },
+    "turn_id": "turn-1"
+   },
+   "event": "part"
+  },
+  {
+   "data": {
+    "event_seq": 7,
+    "kind": "chips",
+    "message_id": "msg-1",
+    "payload": {
+     "options": [
+      {
+       "id": "q1",
+       "label": "Why did GP change for Meridian Bunkering?",
+       "send_text": "Why did GP change for Meridian Bunkering?"
+      },
+      {
+       "id": "q2",
+       "label": "Where else does Meridian Bunkering lift fuel?",
+       "send_text": "Where else does Meridian Bunkering lift fuel?"
+      },
+      {
+       "id": "q3",
+       "label": "What were the top ports in the report?",
+       "send_text": "What were the top ports in the report?"
+      }
+     ]
+    },
+    "turn_id": "turn-1"
+   },
+   "event": "part"
+  },
+  {
+   "data": {
+    "event_seq": 8,
+    "message_id": "msg-1",
+    "turn_id": "turn-1",
+    "usage": {
+     "input_tokens": 0,
+     "output_tokens": 0
+    }
+   },
+   "event": "done"
+  }
+ ],
+ "parts": [
+  {
+   "kind": "tool_event",
+   "payload": {
+    "label": "Monthly performance",
+    "server": null,
+    "status": "done",
+    "tool": "reporting.monthly_performance",
+    "tool_seq": 1
+   }
+  },
+  {
+   "kind": "report",
+   "payload": {
+    "entity": {
+     "column": "CUST_NM",
+     "label": "Customer"
+    },
+    "entity_context": {
+     "Atlas Tankers": {
+      "book": {
+       "GP": {
+        "change": 6000.0,
+        "current": 66000.0,
+        "display": {
+         "change": "+6,000",
+         "current": "66,000",
+         "pct": "+10.0%",
+         "prior": "60,000"
+        },
+        "pct_change": 10.0,
+        "prior": 60000.0
+       },
+       "MARGIN": {
+        "change": 3.0,
+        "current": 33.0,
+        "display": {
+         "change": "+3.00",
+         "current": "33.00",
+         "pct": "+10.0%",
+         "prior": "30.00"
+        },
+        "pct_change": 10.0,
+        "prior": 30.0
+       },
+       "VOLUME": {
+        "change": 0.0,
+        "current": 2000.0,
+        "display": {
+         "change": "flat",
+         "current": "2,000",
+         "pct": "flat",
+         "prior": "2,000"
+        },
+        "pct_change": 0.0,
+        "prior": 2000.0
+       }
+      },
+      "offsets": [],
+      "ports_rest_of_book": [],
+      "reconciliation": {
+       "book_change": 6000.0,
+       "display": {
+        "book_change": "+6,000",
+        "office_change": "+6,000",
+        "other_offices_net": "flat"
+       },
+       "office_change": 6000.0,
+       "other_offices_net": 0.0
+      },
+      "share_of_book": {
+       "current": 100.0,
+       "display": {
+        "current": "100.0%",
+        "prior": "100.0%"
+       },
+       "prior": 100.0
+      }
+     },
+     "Kestrel Lines": {
+      "book": {
+       "GP": {
+        "change": -20000.0,
+        "current": 0.0,
+        "display": {
+         "change": "-20,000",
+         "current": "0",
+         "pct": "-100.0%",
+         "prior": "20,000"
+        },
+        "pct_change": -100.0,
+        "prior": 20000.0
+       },
+       "MARGIN": {
+        "change": -33.333333333333336,
+        "current": 0.0,
+        "display": {
+         "change": "-33.33",
+         "current": "0.00",
+         "pct": "-100.0%",
+         "prior": "33.33"
+        },
+        "pct_change": -100.0,
+        "prior": 33.333333333333336
+       },
+       "VOLUME": {
+        "change": -600.0,
+        "current": 0.0,
+        "display": {
+         "change": "-600",
+         "current": "0",
+         "pct": "-100.0%",
+         "prior": "600"
+        },
+        "pct_change": -100.0,
+        "prior": 600.0
+       }
+      },
+      "offsets": [],
+      "ports_rest_of_book": [],
+      "reconciliation": {
+       "book_change": -20000.0,
+       "display": {
+        "book_change": "-20,000",
+        "office_change": "-20,000",
+        "other_offices_net": "flat"
+       },
+       "office_change": -20000.0,
+       "other_offices_net": 0.0
+      },
+      "share_of_book": {
+       "current": null,
+       "display": {
+        "current": "n/a",
+        "prior": "100.0%"
+       },
+       "prior": 100.0
+      }
+     },
+     "Meridian Bunkering": {
+      "book": {
+       "GP": {
+        "change": -10000.0,
+        "current": 290000.0,
+        "display": {
+         "change": "-10,000",
+         "current": "290,000",
+         "pct": "-3.3%",
+         "prior": "300,000"
+        },
+        "pct_change": -3.3333333333333335,
+        "prior": 300000.0
+       },
+       "MARGIN": {
+        "change": 0.42857142857142705,
+        "current": 29.0,
+        "display": {
+         "change": "+0.43",
+         "current": "29.00",
+         "pct": "+1.5%",
+         "prior": "28.57"
+        },
+        "pct_change": 1.4999999999999947,
+        "prior": 28.571428571428573
+       },
+       "VOLUME": {
+        "change": -500.0,
+        "current": 10000.0,
+        "display": {
+         "change": "-500",
+         "current": "10,000",
+         "pct": "-4.8%",
+         "prior": "10,500"
+        },
+        "pct_change": -4.761904761904762,
+        "prior": 10500.0
+       }
+      },
+      "offsets": [
+       {
+        "change": 50000.0,
+        "display": "+50,000",
+        "key": "Spain Office"
+       }
+      ],
+      "ports_rest_of_book": [
+       {
+        "change": 50000.0,
+        "display": "+50,000",
+        "key": "Algeciras"
+       }
+      ],
+      "reconciliation": {
+       "book_change": -10000.0,
+       "display": {
+        "book_change": "-10,000",
+        "office_change": "-60,000",
+        "other_offices_net": "+50,000"
+       },
+       "office_change": -60000.0,
+       "other_offices_net": 50000.0
+      },
+      "share_of_book": {
+       "current": 48.275862068965516,
+       "display": {
+        "current": "48.3%",
+        "prior": "66.7%"
+       },
+       "prior": 66.66666666666666
+      }
+     },
+     "Northstar Lines": {
+      "book": {
+       "GP": {
+        "change": 20000.0,
+        "current": 170000.0,
+        "display": {
+         "change": "+20,000",
+         "current": "170,000",
+         "pct": "+13.3%",
+         "prior": "150,000"
+        },
+        "pct_change": 13.333333333333334,
+        "prior": 150000.0
+       },
+       "MARGIN": {
+        "change": 0.7575757575757578,
+        "current": 25.757575757575758,
+        "display": {
+         "change": "+0.76",
+         "current": "25.76",
+         "pct": "+3.0%",
+         "prior": "25.00"
+        },
+        "pct_change": 3.030303030303031,
+        "prior": 25.0
+       },
+       "VOLUME": {
+        "change": 600.0,
+        "current": 6600.0,
+        "display": {
+         "change": "+600",
+         "current": "6,600",
+         "pct": "+10.0%",
+         "prior": "6,000"
+        },
+        "pct_change": 10.0,
+        "prior": 6000.0
+       }
+      },
+      "offsets": [
+       {
+        "change": -10000.0,
+        "display": "-10,000",
+        "key": "Spain Office"
+       }
+      ],
+      "ports_rest_of_book": [
+       {
+        "change": -10000.0,
+        "display": "-10,000",
+        "key": "Algeciras"
+       }
+      ],
+      "reconciliation": {
+       "book_change": 20000.0,
+       "display": {
+        "book_change": "+20,000",
+        "office_change": "+30,000",
+        "other_offices_net": "-10,000"
+       },
+       "office_change": 30000.0,
+       "other_offices_net": -10000.0
+      },
+      "share_of_book": {
+       "current": 76.47058823529412,
+       "display": {
+        "current": "76.5%",
+        "prior": "66.7%"
+       },
+       "prior": 66.66666666666666
+      }
+     },
+     "Orion Offshore": {
+      "book": {
+       "GP": {
+        "change": 12000.0,
+        "current": 12000.0,
+        "display": {
+         "change": "+12,000",
+         "current": "12,000",
+         "pct": "new",
+         "prior": "0"
+        },
+        "pct_change": null,
+        "prior": 0.0
+       },
+       "MARGIN": {
+        "change": 24.0,
+        "current": 24.0,
+        "display": {
+         "change": "+24.00",
+         "current": "24.00",
+         "pct": "new",
+         "prior": "0.00"
+        },
+        "pct_change": null,
+        "prior": 0.0
+       },
+       "VOLUME": {
+        "change": 500.0,
+        "current": 500.0,
+        "display": {
+         "change": "+500",
+         "current": "500",
+         "pct": "new",
+         "prior": "0"
+        },
+        "pct_change": null,
+        "prior": 0.0
+       }
+      },
+      "offsets": [],
+      "ports_rest_of_book": [],
+      "reconciliation": {
+       "book_change": 12000.0,
+       "display": {
+        "book_change": "+12,000",
+        "office_change": "+12,000",
+        "other_offices_net": "flat"
+       },
+       "office_change": 12000.0,
+       "other_offices_net": 0.0
+      },
+      "share_of_book": {
+       "current": 100.0,
+       "display": {
+        "current": "100.0%",
+        "prior": "n/a"
+       },
+       "prior": null
+      }
+     },
+     "Vega Bulk": {
+      "book": {
+       "GP": {
+        "change": 5000.0,
+        "current": 5000.0,
+        "display": {
+         "change": "+5,000",
+         "current": "5,000",
+         "pct": "new",
+         "prior": "0"
+        },
+        "pct_change": null,
+        "prior": 0.0
+       },
+       "MARGIN": {
+        "change": 50.0,
+        "current": 50.0,
+        "display": {
+         "change": "+50.00",
+         "current": "50.00",
+         "pct": "new",
+         "prior": "0.00"
+        },
+        "pct_change": null,
+        "prior": 0.0
+       },
+       "VOLUME": {
+        "change": 0.0,
+        "current": 100.0,
+        "display": {
+         "change": "flat",
+         "current": "100",
+         "pct": "flat",
+         "prior": "100"
+        },
+        "pct_change": 0.0,
+        "prior": 100.0
+       }
+      },
+      "offsets": [],
+      "ports_rest_of_book": [],
+      "reconciliation": {
+       "book_change": 5000.0,
+       "display": {
+        "book_change": "+5,000",
+        "office_change": "+5,000",
+        "other_offices_net": "flat"
+       },
+       "office_change": 5000.0,
+       "other_offices_net": 0.0
+      },
+      "share_of_book": {
+       "current": 100.0,
+       "display": {
+        "current": "100.0%",
+        "prior": "n/a"
+       },
+       "prior": null
+      }
+     }
+    },
+    "generated_at": "2026-07-15T09:00:00+00:00",
+    "generated_by": "Dev User",
+    "kpis": {
+     "GP": {
+      "change": -27000.0,
+      "current": 353000.0,
+      "display": {
+       "change": "-27,000",
+       "current": "353,000",
+       "pct": "-7.1%",
+       "prior": "380,000"
+      },
+      "pct_change": -7.105263157894736,
+      "prior": 380000.0
+     },
+     "MARGIN": {
+      "change": 0.27864673850075405,
+      "current": 28.015873015873016,
+      "display": {
+       "change": "+0.28",
+       "current": "28.02",
+       "pct": "+1.0%",
+       "prior": "27.74"
+      },
+      "pct_change": 1.0045948203842976,
+      "prior": 27.73722627737226
+     },
+     "NUM_INQUIRIES": {
+      "change": -2.0,
+      "current": 64.0,
+      "display": {
+       "change": "-2",
+       "current": "64",
+       "pct": "-3.0%",
+       "prior": "66"
+      },
+      "pct_change": -3.0303030303030303,
+      "prior": 66.0
+     },
+     "NUM_LOST": {
+      "change": 2.0,
+      "current": 29.0,
+      "display": {
+       "change": "+2",
+       "current": "29",
+       "pct": "+7.4%",
+       "prior": "27"
+      },
+      "pct_change": 7.4074074074074066,
+      "prior": 27.0
+     },
+     "NUM_WON": {
+      "change": -4.0,
+      "current": 35.0,
+      "display": {
+       "change": "-4",
+       "current": "35",
+       "pct": "-10.3%",
+       "prior": "39"
+      },
+      "pct_change": -10.256410256410255,
+      "prior": 39.0
+     },
+     "VOLUME": {
+      "change": -1100.0,
+      "current": 12600.0,
+      "display": {
+       "change": "-1,100",
+       "current": "12,600",
+       "pct": "-8.0%",
+       "prior": "13,700"
+      },
+      "pct_change": -8.02919708029197,
+      "prior": 13700.0
+     },
+     "WIN_RATE": {
+      "change": -0.04403409090909094,
+      "current": 0.546875,
+      "display": {
+       "change": "-4.4 pts",
+       "current": "54.7%",
+       "pct": "-7.5%",
+       "prior": "59.1%"
+      },
+      "pct_change": -7.451923076923081,
+      "prior": 0.5909090909090909
+     }
+    },
+    "movers": {
+     "decreases": [
+      {
+       "change": {
+        "GP": -60000.0,
+        "MARGIN": -0.571428571428573,
+        "VOLUME": -2000.0
+       },
+       "current": {
+        "GP": 140000.0,
+        "MARGIN": 28.0,
+        "VOLUME": 5000.0
+       },
+       "display": {
+        "GP": {
+         "change": "-60,000",
+         "current": "140,000",
+         "pct": "-30.0%",
+         "prior": "200,000"
+        },
+        "MARGIN": {
+         "change": "-0.57",
+         "current": "28.00",
+         "pct": "-2.0%",
+         "prior": "28.57"
+        },
+        "VOLUME": {
+         "change": "-2,000",
+         "current": "5,000",
+         "pct": "-28.6%",
+         "prior": "7,000"
+        }
+       },
+       "driver": "volume-driven",
+       "key": "Meridian Bunkering",
+       "pct": {
+        "GP": -30.0,
+        "MARGIN": -2.0000000000000053,
+        "VOLUME": -28.57142857142857
+       },
+       "prior": {
+        "GP": 200000.0,
+        "MARGIN": 28.571428571428573,
+        "VOLUME": 7000.0
+       },
+       "status": "both"
+      },
+      {
+       "change": {
+        "GP": -20000.0,
+        "MARGIN": -33.333333333333336,
+        "VOLUME": -600.0
+       },
+       "current": {
+        "GP": 0.0,
+        "MARGIN": 0.0,
+        "VOLUME": 0.0
+       },
+       "display": {
+        "GP": {
+         "change": "-20,000",
+         "current": "0",
+         "pct": "-100.0%",
+         "prior": "20,000"
+        },
+        "MARGIN": {
+         "change": "-33.33",
+         "current": "0.00",
+         "pct": "-100.0%",
+         "prior": "33.33"
+        },
+        "VOLUME": {
+         "change": "-600",
+         "current": "0",
+         "pct": "-100.0%",
+         "prior": "600"
+        }
+       },
+       "driver": "lost",
+       "key": "Kestrel Lines",
+       "pct": {
+        "GP": -100.0,
+        "MARGIN": -100.0,
+        "VOLUME": -100.0
+       },
+       "prior": {
+        "GP": 20000.0,
+        "MARGIN": 33.333333333333336,
+        "VOLUME": 600.0
+       },
+       "status": "lost"
+      }
+     ],
+     "increases": [
+      {
+       "change": {
+        "GP": 30000.0,
+        "MARGIN": 1.0,
+        "VOLUME": 1000.0
+       },
+       "current": {
+        "GP": 130000.0,
+        "MARGIN": 26.0,
+        "VOLUME": 5000.0
+       },
+       "display": {
+        "GP": {
+         "change": "+30,000",
+         "current": "130,000",
+         "pct": "+30.0%",
+         "prior": "100,000"
+        },
+        "MARGIN": {
+         "change": "+1.00",
+         "current": "26.00",
+         "pct": "+4.0%",
+         "prior": "25.00"
+        },
+        "VOLUME": {
+         "change": "+1,000",
+         "current": "5,000",
+         "pct": "+25.0%",
+         "prior": "4,000"
+        }
+       },
+       "driver": "volume-driven",
+       "key": "Northstar Lines",
+       "pct": {
+        "GP": 30.0,
+        "MARGIN": 4.0,
+        "VOLUME": 25.0
+       },
+       "prior": {
+        "GP": 100000.0,
+        "MARGIN": 25.0,
+        "VOLUME": 4000.0
+       },
+       "status": "both"
+      },
+      {
+       "change": {
+        "GP": 12000.0,
+        "MARGIN": 24.0,
+        "VOLUME": 500.0
+       },
+       "current": {
+        "GP": 12000.0,
+        "MARGIN": 24.0,
+        "VOLUME": 500.0
+       },
+       "display": {
+        "GP": {
+         "change": "+12,000",
+         "current": "12,000",
+         "pct": "new",
+         "prior": "0"
+        },
+        "MARGIN": {
+         "change": "+24.00",
+         "current": "24.00",
+         "pct": "new",
+         "prior": "0.00"
+        },
+        "VOLUME": {
+         "change": "+500",
+         "current": "500",
+         "pct": "new",
+         "prior": "0"
+        }
+       },
+       "driver": "new",
+       "key": "Orion Offshore",
+       "pct": {
+        "GP": null,
+        "MARGIN": null,
+        "VOLUME": null
+       },
+       "prior": {
+        "GP": 0.0,
+        "MARGIN": 0.0,
+        "VOLUME": 0.0
+       },
+       "status": "new"
+      },
+      {
+       "change": {
+        "GP": 6000.0,
+        "MARGIN": 3.0,
+        "VOLUME": 0.0
+       },
+       "current": {
+        "GP": 66000.0,
+        "MARGIN": 33.0,
+        "VOLUME": 2000.0
+       },
+       "display": {
+        "GP": {
+         "change": "+6,000",
+         "current": "66,000",
+         "pct": "+10.0%",
+         "prior": "60,000"
+        },
+        "MARGIN": {
+         "change": "+3.00",
+         "current": "33.00",
+         "pct": "+10.0%",
+         "prior": "30.00"
+        },
+        "VOLUME": {
+         "change": "flat",
+         "current": "2,000",
+         "pct": "flat",
+         "prior": "2,000"
+        }
+       },
+       "driver": "margin-driven",
+       "key": "Atlas Tankers",
+       "pct": {
+        "GP": 10.0,
+        "MARGIN": 10.0,
+        "VOLUME": 0.0
+       },
+       "prior": {
+        "GP": 60000.0,
+        "MARGIN": 30.0,
+        "VOLUME": 2000.0
+       },
+       "status": "both"
+      },
+      {
+       "change": {
+        "GP": 5000.0,
+        "MARGIN": 50.0,
+        "VOLUME": 0.0
+       },
+       "current": {
+        "GP": 5000.0,
+        "MARGIN": 50.0,
+        "VOLUME": 100.0
+       },
+       "display": {
+        "GP": {
+         "change": "+5,000",
+         "current": "5,000",
+         "pct": "new",
+         "prior": "0"
+        },
+        "MARGIN": {
+         "change": "+50.00",
+         "current": "50.00",
+         "pct": "new",
+         "prior": "0.00"
+        },
+        "VOLUME": {
+         "change": "flat",
+         "current": "100",
+         "pct": "flat",
+         "prior": "100"
+        }
+       },
+       "driver": "margin-driven",
+       "key": "Vega Bulk",
+       "pct": {
+        "GP": null,
+        "MARGIN": null,
+        "VOLUME": 0.0
+       },
+       "prior": {
+        "GP": 0.0,
+        "MARGIN": 0.0,
+        "VOLUME": 100.0
+       },
+       "status": "both"
+      }
+     ]
+    },
+    "narrative": {
+     "flags": [
+      "model narrative skipped: stub mode"
+     ],
+     "grounded": true,
+     "llm_md": null,
+     "template_md": "**May 2026 to June 2026, Gibraltar Office (Customer Broker Office).** Overall volume decreased by 8.0% (-1,100 tons), while gross profit decreased by 7.1% (-27,000). Margin moved from 27.74/ton to 28.02/ton (+0.28/ton). The office won 35 transactions in June 2026 vs 39 in May 2026 (4 fewer), with inquiries down 3.0% (64 vs 66). The win rate declined from 59.1% to 54.7%.\n\n## Key drivers\n\n*Top increases by GP:*\n1. **Northstar Lines**: GP +30,000 (+30.0%), volume-driven\n   - Volume: 4,000 -> 5,000 tons (+1,000, +25.0%)\n   - Margin: 25.00 -> 26.00/ton (+1.00)\n2. **Orion Offshore**: GP +12,000 (new), new\n   - Volume: 0 -> 500 tons (+500, new)\n   - Margin: 0.00 -> 24.00/ton (+24.00)\n3. **Atlas Tankers**: GP +6,000 (+10.0%), margin-driven\n   - Volume: 2,000 -> 2,000 tons (flat, flat)\n   - Margin: 30.00 -> 33.00/ton (+3.00)\n4. **Vega Bulk**: GP +5,000 (new), margin-driven\n   - Volume: 100 -> 100 tons (flat, flat)\n   - Margin: 0.00 -> 50.00/ton (+50.00)\n*Top decreases by GP:*\n1. **Meridian Bunkering**: GP -60,000 (-30.0%), volume-driven\n   - Volume: 7,000 -> 5,000 tons (-2,000, -28.6%)\n   - Margin: 28.57 -> 28.00/ton (-0.57)\n2. **Kestrel Lines**: GP -20,000 (-100.0%), lost\n   - Volume: 600 -> 0 tons (-600, -100.0%)\n   - Margin: 33.33 -> 0.00/ton (-33.33)\n\n## New and lost customers\n\n**New in June 2026:** Orion Offshore (GP 12,000, 500 tons, margin 24.00)\n**Lost from May 2026:** Kestrel Lines (GP 20,000, 600 tons, margin 33.33)\n"
+    },
+    "new_lost": {
+     "lost": [
+      {
+       "change": {
+        "GP": -20000.0,
+        "MARGIN": -33.333333333333336,
+        "VOLUME": -600.0
+       },
+       "current": {
+        "GP": 0.0,
+        "MARGIN": 0.0,
+        "VOLUME": 0.0
+       },
+       "display": {
+        "GP": {
+         "change": "-20,000",
+         "current": "0",
+         "pct": "-100.0%",
+         "prior": "20,000"
+        },
+        "MARGIN": {
+         "change": "-33.33",
+         "current": "0.00",
+         "pct": "-100.0%",
+         "prior": "33.33"
+        },
+        "VOLUME": {
+         "change": "-600",
+         "current": "0",
+         "pct": "-100.0%",
+         "prior": "600"
+        }
+       },
+       "key": "Kestrel Lines",
+       "pct": {
+        "GP": -100.0,
+        "MARGIN": -100.0,
+        "VOLUME": -100.0
+       },
+       "prior": {
+        "GP": 20000.0,
+        "MARGIN": 33.333333333333336,
+        "VOLUME": 600.0
+       },
+       "status": "lost"
+      }
+     ],
+     "new": [
+      {
+       "change": {
+        "GP": 12000.0,
+        "MARGIN": 24.0,
+        "VOLUME": 500.0
+       },
+       "current": {
+        "GP": 12000.0,
+        "MARGIN": 24.0,
+        "VOLUME": 500.0
+       },
+       "display": {
+        "GP": {
+         "change": "+12,000",
+         "current": "12,000",
+         "pct": "new",
+         "prior": "0"
+        },
+        "MARGIN": {
+         "change": "+24.00",
+         "current": "24.00",
+         "pct": "new",
+         "prior": "0.00"
+        },
+        "VOLUME": {
+         "change": "+500",
+         "current": "500",
+         "pct": "new",
+         "prior": "0"
+        }
+       },
+       "key": "Orion Offshore",
+       "pct": {
+        "GP": null,
+        "MARGIN": null,
+        "VOLUME": null
+       },
+       "prior": {
+        "GP": 0.0,
+        "MARGIN": 0.0,
+        "VOLUME": 0.0
+       },
+       "status": "new"
+      }
+     ]
+    },
+    "payload_version": 1,
+    "periods": {
+     "current": {
+      "end": "2026-07-01",
+      "label": "June 2026",
+      "start": "2026-06-01"
+     },
+     "prior": {
+      "end": "2026-06-01",
+      "label": "May 2026",
+      "start": "2026-05-01"
+     },
+     "window_kind": "complete"
+    },
+    "perspective": "customer",
+    "proof": [
+     "Entity: MARINE_SALES_PLANNING_V - source: synthetic - CUSTOMER_TEAM_NAME = Gibraltar Office",
+     "Windows: 2026-05-01..2026-06-01 (prior) - 2026-06-01..2026-07-01 (current) - basis: prior month - window: complete",
+     "Frames: six-way group-by, prior 5 rows, current 5 rows; totals reconciled to the cent",
+     "Context: 6 movers x 2 windows, whole book",
+     "narrative: template; model narrative skipped: stub mode",
+     "Run: report_run 0199a000-0000-7000-8000-000000000001"
+    ],
+    "queries": [
+     {
+      "label": "frame prior",
+      "ms": 1,
+      "rows": 5,
+      "sql_hash": "f57c364a1a71"
+     },
+     {
+      "label": "frame current",
+      "ms": 1,
+      "rows": 5,
+      "sql_hash": "f57c364a1a71"
+     },
+     {
+      "label": "total prior",
+      "ms": 1,
+      "rows": 1,
+      "sql_hash": "56fd92b3d018"
+     },
+     {
+      "label": "total current",
+      "ms": 1,
+      "rows": 1,
+      "sql_hash": "56fd92b3d018"
+     },
+     {
+      "label": "context prior",
+      "ms": 1,
+      "rows": 7,
+      "sql_hash": "bfb62efd9e9a"
+     },
+     {
+      "label": "context current",
+      "ms": 1,
+      "rows": 7,
+      "sql_hash": "bfb62efd9e9a"
+     }
+    ],
+    "run_id": "0199a000-0000-7000-8000-000000000001",
+    "scope": {
+     "label": "Gibraltar Office (Customer Broker Office)",
+     "office_column": "CUSTOMER_TEAM_NAME",
+     "office_value": "Gibraltar Office"
+    },
+    "source": "synthetic",
+    "suggested_questions": [
+     "Why did GP change for Meridian Bunkering?",
+     "Where else does Meridian Bunkering lift fuel?",
+     "What were the top ports in the report?"
+    ],
+    "tables": {
+     "deal_class": {
+      "footer": {
+       "change": {
+        "GP": -27000.0,
+        "MARGIN": 0.27864673850075405,
+        "VOLUME": -1100.0
+       },
+       "current": {
+        "GP": 353000.0,
+        "MARGIN": 28.015873015873016,
+        "VOLUME": 12600.0
+       },
+       "display": {
+        "GP": {
+         "change": "-27,000",
+         "current": "353,000",
+         "pct": "-7.1%",
+         "prior": "380,000"
+        },
+        "MARGIN": {
+         "change": "+0.28",
+         "current": "28.02",
+         "pct": "+1.0%",
+         "prior": "27.74"
+        },
+        "VOLUME": {
+         "change": "-1,100",
+         "current": "12,600",
+         "pct": "-8.0%",
+         "prior": "13,700"
+        }
+       },
+       "key": "Total",
+       "pct": {
+        "GP": -7.105263157894736,
+        "MARGIN": 1.0045948203842976,
+        "VOLUME": -8.02919708029197
+       },
+       "prior": {
+        "GP": 380000.0,
+        "MARGIN": 27.73722627737226,
+        "VOLUME": 13700.0
+       },
+       "status": "both"
+      },
+      "other": null,
+      "rows": [
+       {
+        "change": {
+         "GP": 28000.0,
+         "MARGIN": 0.4606060606060609,
+         "VOLUME": 900.0
+        },
+        "current": {
+         "GP": 208000.0,
+         "MARGIN": 27.733333333333334,
+         "VOLUME": 7500.0
+        },
+        "display": {
+         "GP": {
+          "change": "+28,000",
+          "current": "208,000",
+          "pct": "+15.6%",
+          "prior": "180,000"
+         },
+         "MARGIN": {
+          "change": "+0.46",
+          "current": "27.73",
+          "pct": "+1.7%",
+          "prior": "27.27"
+         },
+         "VOLUME": {
+          "change": "+900",
+          "current": "7,500",
+          "pct": "+13.6%",
+          "prior": "6,600"
+         }
+        },
+        "key": "TRADED",
+        "pct": {
+         "GP": 15.555555555555555,
+         "MARGIN": 1.6888888888888902,
+         "VOLUME": 13.636363636363635
+        },
+        "prior": {
+         "GP": 180000.0,
+         "MARGIN": 27.272727272727273,
+         "VOLUME": 6600.0
+        },
+        "status": "both"
+       },
+       {
+        "change": {
+         "GP": -55000.0,
+         "MARGIN": 0.2623584645125625,
+         "VOLUME": -2000.0
+        },
+        "current": {
+         "GP": 145000.0,
+         "MARGIN": 28.431372549019606,
+         "VOLUME": 5100.0
+        },
+        "display": {
+         "GP": {
+          "change": "-55,000",
+          "current": "145,000",
+          "pct": "-27.5%",
+          "prior": "200,000"
+         },
+         "MARGIN": {
+          "change": "+0.26",
+          "current": "28.43",
+          "pct": "+0.9%",
+          "prior": "28.17"
+         },
+         "VOLUME": {
+          "change": "-2,000",
+          "current": "5,100",
+          "pct": "-28.2%",
+          "prior": "7,100"
+         }
+        },
+        "key": "INVENTORY",
+        "pct": {
+         "GP": -27.500000000000004,
+         "MARGIN": 0.9313725490195969,
+         "VOLUME": -28.169014084507044
+        },
+        "prior": {
+         "GP": 200000.0,
+         "MARGIN": 28.169014084507044,
+         "VOLUME": 7100.0
+        },
+        "status": "both"
+       }
+      ]
+     },
+     "entities_by_gp": {
+      "footer": {
+       "change": {
+        "GP": -27000.0,
+        "MARGIN": 0.27864673850075405,
+        "VOLUME": -1100.0
+       },
+       "current": {
+        "GP": 353000.0,
+        "MARGIN": 28.015873015873016,
+        "VOLUME": 12600.0
+       },
+       "display": {
+        "GP": {
+         "change": "-27,000",
+         "current": "353,000",
+         "pct": "-7.1%",
+         "prior": "380,000"
+        },
+        "MARGIN": {
+         "change": "+0.28",
+         "current": "28.02",
+         "pct": "+1.0%",
+         "prior": "27.74"
+        },
+        "VOLUME": {
+         "change": "-1,100",
+         "current": "12,600",
+         "pct": "-8.0%",
+         "prior": "13,700"
+        }
+       },
+       "key": "Total",
+       "pct": {
+        "GP": -7.105263157894736,
+        "MARGIN": 1.0045948203842976,
+        "VOLUME": -8.02919708029197
+       },
+       "prior": {
+        "GP": 380000.0,
+        "MARGIN": 27.73722627737226,
+        "VOLUME": 13700.0
+       },
+       "status": "both"
+      },
+      "other": null,
+      "rows": [
+       {
+        "change": {
+         "GP": -60000.0,
+         "MARGIN": -0.571428571428573,
+         "VOLUME": -2000.0
+        },
+        "current": {
+         "GP": 140000.0,
+         "MARGIN": 28.0,
+         "VOLUME": 5000.0
+        },
+        "display": {
+         "GP": {
+          "change": "-60,000",
+          "current": "140,000",
+          "pct": "-30.0%",
+          "prior": "200,000"
+         },
+         "MARGIN": {
+          "change": "-0.57",
+          "current": "28.00",
+          "pct": "-2.0%",
+          "prior": "28.57"
+         },
+         "VOLUME": {
+          "change": "-2,000",
+          "current": "5,000",
+          "pct": "-28.6%",
+          "prior": "7,000"
+         }
+        },
+        "key": "Meridian Bunkering",
+        "pct": {
+         "GP": -30.0,
+         "MARGIN": -2.0000000000000053,
+         "VOLUME": -28.57142857142857
+        },
+        "prior": {
+         "GP": 200000.0,
+         "MARGIN": 28.571428571428573,
+         "VOLUME": 7000.0
+        },
+        "status": "both"
+       },
+       {
+        "change": {
+         "GP": 30000.0,
+         "MARGIN": 1.0,
+         "VOLUME": 1000.0
+        },
+        "current": {
+         "GP": 130000.0,
+         "MARGIN": 26.0,
+         "VOLUME": 5000.0
+        },
+        "display": {
+         "GP": {
+          "change": "+30,000",
+          "current": "130,000",
+          "pct": "+30.0%",
+          "prior": "100,000"
+         },
+         "MARGIN": {
+          "change": "+1.00",
+          "current": "26.00",
+          "pct": "+4.0%",
+          "prior": "25.00"
+         },
+         "VOLUME": {
+          "change": "+1,000",
+          "current": "5,000",
+          "pct": "+25.0%",
+          "prior": "4,000"
+         }
+        },
+        "key": "Northstar Lines",
+        "pct": {
+         "GP": 30.0,
+         "MARGIN": 4.0,
+         "VOLUME": 25.0
+        },
+        "prior": {
+         "GP": 100000.0,
+         "MARGIN": 25.0,
+         "VOLUME": 4000.0
+        },
+        "status": "both"
+       },
+       {
+        "change": {
+         "GP": 6000.0,
+         "MARGIN": 3.0,
+         "VOLUME": 0.0
+        },
+        "current": {
+         "GP": 66000.0,
+         "MARGIN": 33.0,
+         "VOLUME": 2000.0
+        },
+        "display": {
+         "GP": {
+          "change": "+6,000",
+          "current": "66,000",
+          "pct": "+10.0%",
+          "prior": "60,000"
+         },
+         "MARGIN": {
+          "change": "+3.00",
+          "current": "33.00",
+          "pct": "+10.0%",
+          "prior": "30.00"
+         },
+         "VOLUME": {
+          "change": "flat",
+          "current": "2,000",
+          "pct": "flat",
+          "prior": "2,000"
+         }
+        },
+        "key": "Atlas Tankers",
+        "pct": {
+         "GP": 10.0,
+         "MARGIN": 10.0,
+         "VOLUME": 0.0
+        },
+        "prior": {
+         "GP": 60000.0,
+         "MARGIN": 30.0,
+         "VOLUME": 2000.0
+        },
+        "status": "both"
+       },
+       {
+        "change": {
+         "GP": 12000.0,
+         "MARGIN": 24.0,
+         "VOLUME": 500.0
+        },
+        "current": {
+         "GP": 12000.0,
+         "MARGIN": 24.0,
+         "VOLUME": 500.0
+        },
+        "display": {
+         "GP": {
+          "change": "+12,000",
+          "current": "12,000",
+          "pct": "new",
+          "prior": "0"
+         },
+         "MARGIN": {
+          "change": "+24.00",
+          "current": "24.00",
+          "pct": "new",
+          "prior": "0.00"
+         },
+         "VOLUME": {
+          "change": "+500",
+          "current": "500",
+          "pct": "new",
+          "prior": "0"
+         }
+        },
+        "key": "Orion Offshore",
+        "pct": {
+         "GP": null,
+         "MARGIN": null,
+         "VOLUME": null
+        },
+        "prior": {
+         "GP": 0.0,
+         "MARGIN": 0.0,
+         "VOLUME": 0.0
+        },
+        "status": "new"
+       },
+       {
+        "change": {
+         "GP": 5000.0,
+         "MARGIN": 50.0,
+         "VOLUME": 0.0
+        },
+        "current": {
+         "GP": 5000.0,
+         "MARGIN": 50.0,
+         "VOLUME": 100.0
+        },
+        "display": {
+         "GP": {
+          "change": "+5,000",
+          "current": "5,000",
+          "pct": "new",
+          "prior": "0"
+         },
+         "MARGIN": {
+          "change": "+50.00",
+          "current": "50.00",
+          "pct": "new",
+          "prior": "0.00"
+         },
+         "VOLUME": {
+          "change": "flat",
+          "current": "100",
+          "pct": "flat",
+          "prior": "100"
+         }
+        },
+        "key": "Vega Bulk",
+        "pct": {
+         "GP": null,
+         "MARGIN": null,
+         "VOLUME": 0.0
+        },
+        "prior": {
+         "GP": 0.0,
+         "MARGIN": 0.0,
+         "VOLUME": 100.0
+        },
+        "status": "both"
+       },
+       {
+        "change": {
+         "GP": -20000.0,
+         "MARGIN": -33.333333333333336,
+         "VOLUME": -600.0
+        },
+        "current": {
+         "GP": 0.0,
+         "MARGIN": 0.0,
+         "VOLUME": 0.0
+        },
+        "display": {
+         "GP": {
+          "change": "-20,000",
+          "current": "0",
+          "pct": "-100.0%",
+          "prior": "20,000"
+         },
+         "MARGIN": {
+          "change": "-33.33",
+          "current": "0.00",
+          "pct": "-100.0%",
+          "prior": "33.33"
+         },
+         "VOLUME": {
+          "change": "-600",
+          "current": "0",
+          "pct": "-100.0%",
+          "prior": "600"
+         }
+        },
+        "key": "Kestrel Lines",
+        "pct": {
+         "GP": -100.0,
+         "MARGIN": -100.0,
+         "VOLUME": -100.0
+        },
+        "prior": {
+         "GP": 20000.0,
+         "MARGIN": 33.333333333333336,
+         "VOLUME": 600.0
+        },
+        "status": "lost"
+       }
+      ]
+     },
+     "entities_by_volume": {
+      "footer": {
+       "change": {
+        "GP": -27000.0,
+        "MARGIN": 0.27864673850075405,
+        "VOLUME": -1100.0
+       },
+       "current": {
+        "GP": 353000.0,
+        "MARGIN": 28.015873015873016,
+        "VOLUME": 12600.0
+       },
+       "display": {
+        "GP": {
+         "change": "-27,000",
+         "current": "353,000",
+         "pct": "-7.1%",
+         "prior": "380,000"
+        },
+        "MARGIN": {
+         "change": "+0.28",
+         "current": "28.02",
+         "pct": "+1.0%",
+         "prior": "27.74"
+        },
+        "VOLUME": {
+         "change": "-1,100",
+         "current": "12,600",
+         "pct": "-8.0%",
+         "prior": "13,700"
+        }
+       },
+       "key": "Total",
+       "pct": {
+        "GP": -7.105263157894736,
+        "MARGIN": 1.0045948203842976,
+        "VOLUME": -8.02919708029197
+       },
+       "prior": {
+        "GP": 380000.0,
+        "MARGIN": 27.73722627737226,
+        "VOLUME": 13700.0
+       },
+       "status": "both"
+      },
+      "other": null,
+      "rows": [
+       {
+        "change": {
+         "GP": -60000.0,
+         "MARGIN": -0.571428571428573,
+         "VOLUME": -2000.0
+        },
+        "current": {
+         "GP": 140000.0,
+         "MARGIN": 28.0,
+         "VOLUME": 5000.0
+        },
+        "display": {
+         "GP": {
+          "change": "-60,000",
+          "current": "140,000",
+          "pct": "-30.0%",
+          "prior": "200,000"
+         },
+         "MARGIN": {
+          "change": "-0.57",
+          "current": "28.00",
+          "pct": "-2.0%",
+          "prior": "28.57"
+         },
+         "VOLUME": {
+          "change": "-2,000",
+          "current": "5,000",
+          "pct": "-28.6%",
+          "prior": "7,000"
+         }
+        },
+        "key": "Meridian Bunkering",
+        "pct": {
+         "GP": -30.0,
+         "MARGIN": -2.0000000000000053,
+         "VOLUME": -28.57142857142857
+        },
+        "prior": {
+         "GP": 200000.0,
+         "MARGIN": 28.571428571428573,
+         "VOLUME": 7000.0
+        },
+        "status": "both"
+       },
+       {
+        "change": {
+         "GP": 30000.0,
+         "MARGIN": 1.0,
+         "VOLUME": 1000.0
+        },
+        "current": {
+         "GP": 130000.0,
+         "MARGIN": 26.0,
+         "VOLUME": 5000.0
+        },
+        "display": {
+         "GP": {
+          "change": "+30,000",
+          "current": "130,000",
+          "pct": "+30.0%",
+          "prior": "100,000"
+         },
+         "MARGIN": {
+          "change": "+1.00",
+          "current": "26.00",
+          "pct": "+4.0%",
+          "prior": "25.00"
+         },
+         "VOLUME": {
+          "change": "+1,000",
+          "current": "5,000",
+          "pct": "+25.0%",
+          "prior": "4,000"
+         }
+        },
+        "key": "Northstar Lines",
+        "pct": {
+         "GP": 30.0,
+         "MARGIN": 4.0,
+         "VOLUME": 25.0
+        },
+        "prior": {
+         "GP": 100000.0,
+         "MARGIN": 25.0,
+         "VOLUME": 4000.0
+        },
+        "status": "both"
+       },
+       {
+        "change": {
+         "GP": 6000.0,
+         "MARGIN": 3.0,
+         "VOLUME": 0.0
+        },
+        "current": {
+         "GP": 66000.0,
+         "MARGIN": 33.0,
+         "VOLUME": 2000.0
+        },
+        "display": {
+         "GP": {
+          "change": "+6,000",
+          "current": "66,000",
+          "pct": "+10.0%",
+          "prior": "60,000"
+         },
+         "MARGIN": {
+          "change": "+3.00",
+          "current": "33.00",
+          "pct": "+10.0%",
+          "prior": "30.00"
+         },
+         "VOLUME": {
+          "change": "flat",
+          "current": "2,000",
+          "pct": "flat",
+          "prior": "2,000"
+         }
+        },
+        "key": "Atlas Tankers",
+        "pct": {
+         "GP": 10.0,
+         "MARGIN": 10.0,
+         "VOLUME": 0.0
+        },
+        "prior": {
+         "GP": 60000.0,
+         "MARGIN": 30.0,
+         "VOLUME": 2000.0
+        },
+        "status": "both"
+       },
+       {
+        "change": {
+         "GP": 12000.0,
+         "MARGIN": 24.0,
+         "VOLUME": 500.0
+        },
+        "current": {
+         "GP": 12000.0,
+         "MARGIN": 24.0,
+         "VOLUME": 500.0
+        },
+        "display": {
+         "GP": {
+          "change": "+12,000",
+          "current": "12,000",
+          "pct": "new",
+          "prior": "0"
+         },
+         "MARGIN": {
+          "change": "+24.00",
+          "current": "24.00",
+          "pct": "new",
+          "prior": "0.00"
+         },
+         "VOLUME": {
+          "change": "+500",
+          "current": "500",
+          "pct": "new",
+          "prior": "0"
+         }
+        },
+        "key": "Orion Offshore",
+        "pct": {
+         "GP": null,
+         "MARGIN": null,
+         "VOLUME": null
+        },
+        "prior": {
+         "GP": 0.0,
+         "MARGIN": 0.0,
+         "VOLUME": 0.0
+        },
+        "status": "new"
+       },
+       {
+        "change": {
+         "GP": 5000.0,
+         "MARGIN": 50.0,
+         "VOLUME": 0.0
+        },
+        "current": {
+         "GP": 5000.0,
+         "MARGIN": 50.0,
+         "VOLUME": 100.0
+        },
+        "display": {
+         "GP": {
+          "change": "+5,000",
+          "current": "5,000",
+          "pct": "new",
+          "prior": "0"
+         },
+         "MARGIN": {
+          "change": "+50.00",
+          "current": "50.00",
+          "pct": "new",
+          "prior": "0.00"
+         },
+         "VOLUME": {
+          "change": "flat",
+          "current": "100",
+          "pct": "flat",
+          "prior": "100"
+         }
+        },
+        "key": "Vega Bulk",
+        "pct": {
+         "GP": null,
+         "MARGIN": null,
+         "VOLUME": 0.0
+        },
+        "prior": {
+         "GP": 0.0,
+         "MARGIN": 0.0,
+         "VOLUME": 100.0
+        },
+        "status": "both"
+       },
+       {
+        "change": {
+         "GP": -20000.0,
+         "MARGIN": -33.333333333333336,
+         "VOLUME": -600.0
+        },
+        "current": {
+         "GP": 0.0,
+         "MARGIN": 0.0,
+         "VOLUME": 0.0
+        },
+        "display": {
+         "GP": {
+          "change": "-20,000",
+          "current": "0",
+          "pct": "-100.0%",
+          "prior": "20,000"
+         },
+         "MARGIN": {
+          "change": "-33.33",
+          "current": "0.00",
+          "pct": "-100.0%",
+          "prior": "33.33"
+         },
+         "VOLUME": {
+          "change": "-600",
+          "current": "0",
+          "pct": "-100.0%",
+          "prior": "600"
+         }
+        },
+        "key": "Kestrel Lines",
+        "pct": {
+         "GP": -100.0,
+         "MARGIN": -100.0,
+         "VOLUME": -100.0
+        },
+        "prior": {
+         "GP": 20000.0,
+         "MARGIN": 33.333333333333336,
+         "VOLUME": 600.0
+        },
+        "status": "lost"
+       }
+      ]
+     },
+     "ports_by_gp": {
+      "footer": {
+       "change": {
+        "GP": -27000.0,
+        "MARGIN": 0.27864673850075405,
+        "VOLUME": -1100.0
+       },
+       "current": {
+        "GP": 353000.0,
+        "MARGIN": 28.015873015873016,
+        "VOLUME": 12600.0
+       },
+       "display": {
+        "GP": {
+         "change": "-27,000",
+         "current": "353,000",
+         "pct": "-7.1%",
+         "prior": "380,000"
+        },
+        "MARGIN": {
+         "change": "+0.28",
+         "current": "28.02",
+         "pct": "+1.0%",
+         "prior": "27.74"
+        },
+        "VOLUME": {
+         "change": "-1,100",
+         "current": "12,600",
+         "pct": "-8.0%",
+         "prior": "13,700"
+        }
+       },
+       "key": "Total",
+       "pct": {
+        "GP": -7.105263157894736,
+        "MARGIN": 1.0045948203842976,
+        "VOLUME": -8.02919708029197
+       },
+       "prior": {
+        "GP": 380000.0,
+        "MARGIN": 27.73722627737226,
+        "VOLUME": 13700.0
+       },
+       "status": "both"
+      },
+      "other": null,
+      "rows": [
+       {
+        "change": {
+         "GP": -38000.0,
+         "MARGIN": -0.7290640394088648,
+         "VOLUME": -1100.0
+        },
+        "current": {
+         "GP": 282000.0,
+         "MARGIN": 26.857142857142858,
+         "VOLUME": 10500.0
+        },
+        "display": {
+         "GP": {
+          "change": "-38,000",
+          "current": "282,000",
+          "pct": "-11.9%",
+          "prior": "320,000"
+         },
+         "MARGIN": {
+          "change": "-0.73",
+          "current": "26.86",
+          "pct": "-2.6%",
+          "prior": "27.59"
+         },
+         "VOLUME": {
+          "change": "-1,100",
+          "current": "10,500",
+          "pct": "-9.5%",
+          "prior": "11,600"
+         }
+        },
+        "key": "Gibraltar",
+        "pct": {
+         "GP": -11.875,
+         "MARGIN": -2.642857142857135,
+         "VOLUME": -9.482758620689655
+        },
+        "prior": {
+         "GP": 320000.0,
+         "MARGIN": 27.586206896551722,
+         "VOLUME": 11600.0
+        },
+        "status": "both"
+       },
+       {
+        "change": {
+         "GP": 11000.0,
+         "MARGIN": 5.238095238095237,
+         "VOLUME": 0.0
+        },
+        "current": {
+         "GP": 71000.0,
+         "MARGIN": 33.80952380952381,
+         "VOLUME": 2100.0
+        },
+        "display": {
+         "GP": {
+          "change": "+11,000",
+          "current": "71,000",
+          "pct": "+18.3%",
+          "prior": "60,000"
+         },
+         "MARGIN": {
+          "change": "+5.24",
+          "current": "33.81",
+          "pct": "+18.3%",
+          "prior": "28.57"
+         },
+         "VOLUME": {
+          "change": "flat",
+          "current": "2,100",
+          "pct": "flat",
+          "prior": "2,100"
+         }
+        },
+        "key": "Ceuta",
+        "pct": {
+         "GP": 18.333333333333332,
+         "MARGIN": 18.33333333333333,
+         "VOLUME": 0.0
+        },
+        "prior": {
+         "GP": 60000.0,
+         "MARGIN": 28.571428571428573,
+         "VOLUME": 2100.0
+        },
+        "status": "both"
+       }
+      ]
+     },
+     "ports_by_volume": {
+      "footer": {
+       "change": {
+        "GP": -27000.0,
+        "MARGIN": 0.27864673850075405,
+        "VOLUME": -1100.0
+       },
+       "current": {
+        "GP": 353000.0,
+        "MARGIN": 28.015873015873016,
+        "VOLUME": 12600.0
+       },
+       "display": {
+        "GP": {
+         "change": "-27,000",
+         "current": "353,000",
+         "pct": "-7.1%",
+         "prior": "380,000"
+        },
+        "MARGIN": {
+         "change": "+0.28",
+         "current": "28.02",
+         "pct": "+1.0%",
+         "prior": "27.74"
+        },
+        "VOLUME": {
+         "change": "-1,100",
+         "current": "12,600",
+         "pct": "-8.0%",
+         "prior": "13,700"
+        }
+       },
+       "key": "Total",
+       "pct": {
+        "GP": -7.105263157894736,
+        "MARGIN": 1.0045948203842976,
+        "VOLUME": -8.02919708029197
+       },
+       "prior": {
+        "GP": 380000.0,
+        "MARGIN": 27.73722627737226,
+        "VOLUME": 13700.0
+       },
+       "status": "both"
+      },
+      "other": null,
+      "rows": [
+       {
+        "change": {
+         "GP": -38000.0,
+         "MARGIN": -0.7290640394088648,
+         "VOLUME": -1100.0
+        },
+        "current": {
+         "GP": 282000.0,
+         "MARGIN": 26.857142857142858,
+         "VOLUME": 10500.0
+        },
+        "display": {
+         "GP": {
+          "change": "-38,000",
+          "current": "282,000",
+          "pct": "-11.9%",
+          "prior": "320,000"
+         },
+         "MARGIN": {
+          "change": "-0.73",
+          "current": "26.86",
+          "pct": "-2.6%",
+          "prior": "27.59"
+         },
+         "VOLUME": {
+          "change": "-1,100",
+          "current": "10,500",
+          "pct": "-9.5%",
+          "prior": "11,600"
+         }
+        },
+        "key": "Gibraltar",
+        "pct": {
+         "GP": -11.875,
+         "MARGIN": -2.642857142857135,
+         "VOLUME": -9.482758620689655
+        },
+        "prior": {
+         "GP": 320000.0,
+         "MARGIN": 27.586206896551722,
+         "VOLUME": 11600.0
+        },
+        "status": "both"
+       },
+       {
+        "change": {
+         "GP": 11000.0,
+         "MARGIN": 5.238095238095237,
+         "VOLUME": 0.0
+        },
+        "current": {
+         "GP": 71000.0,
+         "MARGIN": 33.80952380952381,
+         "VOLUME": 2100.0
+        },
+        "display": {
+         "GP": {
+          "change": "+11,000",
+          "current": "71,000",
+          "pct": "+18.3%",
+          "prior": "60,000"
+         },
+         "MARGIN": {
+          "change": "+5.24",
+          "current": "33.81",
+          "pct": "+18.3%",
+          "prior": "28.57"
+         },
+         "VOLUME": {
+          "change": "flat",
+          "current": "2,100",
+          "pct": "flat",
+          "prior": "2,100"
+         }
+        },
+        "key": "Ceuta",
+        "pct": {
+         "GP": 18.333333333333332,
+         "MARGIN": 18.33333333333333,
+         "VOLUME": 0.0
+        },
+        "prior": {
+         "GP": 60000.0,
+         "MARGIN": 28.571428571428573,
+         "VOLUME": 2100.0
+        },
+        "status": "both"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "kind": "proof",
+   "payload": {
+    "lines": [
+     "Entity: MARINE_SALES_PLANNING_V - source: synthetic - CUSTOMER_TEAM_NAME = Gibraltar Office",
+     "Windows: 2026-05-01..2026-06-01 (prior) - 2026-06-01..2026-07-01 (current) - basis: prior month - window: complete",
+     "Frames: six-way group-by, prior 5 rows, current 5 rows; totals reconciled to the cent",
+     "Context: 6 movers x 2 windows, whole book",
+     "narrative: template; model narrative skipped: stub mode",
+     "Run: report_run 0199a000-0000-7000-8000-000000000001"
+    ]
+   }
+  },
+  {
+   "kind": "artifact",
+   "payload": {
+    "mime": "application/pdf",
+    "name": "Gibraltar Office June 2026.pdf",
+    "url": "/api/reports/0199a000-0000-7000-8000-000000000001/pdf"
+   }
+  },
+  {
+   "kind": "chips",
+   "payload": {
+    "options": [
+     {
+      "id": "q1",
+      "label": "Why did GP change for Meridian Bunkering?",
+      "send_text": "Why did GP change for Meridian Bunkering?"
+     },
+     {
+      "id": "q2",
+      "label": "Where else does Meridian Bunkering lift fuel?",
+      "send_text": "Where else does Meridian Bunkering lift fuel?"
+     },
+     {
+      "id": "q3",
+      "label": "What were the top ports in the report?",
+      "send_text": "What were the top ports in the report?"
+     }
+    ]
+   }
+  }
+ ],
+ "scenario": "report_turn",
+ "terminal": {
+  "data": {
+   "event_seq": 8,
+   "message_id": "msg-1",
+   "turn_id": "turn-1",
+   "usage": {
+    "input_tokens": 0,
+    "output_tokens": 0
+   }
+  },
+  "event": "done"
+ }
+}

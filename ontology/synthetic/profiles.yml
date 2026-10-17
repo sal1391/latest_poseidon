@@ -66,6 +66,15 @@ MARINE_SALES_PLANNING_V:
     team_offices: [Houston, Singapore, Rotterdam, Hong Kong]
     regions: [Americas, EMEA, APAC]
     supply_team_names: [Gulf Coast Desk, ARA Desk, Far East Desk, Med & Black Sea Desk]
+  # Multi-office overlay (generate_synthetic.py::_apply_multi_office_overlay):
+  # a post-pass on its own seeded stream that rewrites only CUSTOMER_TEAM_NAME
+  # and PRIMARY_SUPPLY_TEAM_OFFICE on some rows, so a customer's book spans
+  # several offices. Customer totals and every other column are untouched.
+  multi_office:
+    customer_share: 0.3      # share of the customer pool that trades under extra offices; named customers always
+    extra_offices: [1, 2]    # inclusive range of extra office values per chosen customer, per column
+    row_share: 0.35          # probability that one of a chosen customer's rows moves to one of its extra offices
+    seed_offset: 7
 
 # =============================================================================
 # W_MARINE_GL_SOURCE_AI — rows_per_period x len(all_months_in_window) rows.

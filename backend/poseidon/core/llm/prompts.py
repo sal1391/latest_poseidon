@@ -353,6 +353,39 @@ def render_state_block(slots: ConversationSlots, parsed: ParsedTurn | None) -> s
 _CARRIED_CONTEXT_LABEL = "Carried context (prior turns, NOT current results):"
 
 
+# The column a report ranks, per perspective (the router's view of what the carried
+# perspective means). Book ranks customers like the customer perspective.
+_REPORT_ENTITY_COLUMN = {"customer": "CUST_NM", "supplier": "SUPPLIER_NM", "book": "CUST_NM"}
+
+
+def _render_report_lines(slots: ConversationSlots) -> list[str]:
+    """The carried perspective / office / report lines (Phase 17 PR A2). Each is
+    anchored on its own label, so none can match dev_router's carried-customer or
+    carried-port patterns."""
+    lines: list[str] = []
+    if slots.perspective is not None:
+        ranks = _REPORT_ENTITY_COLUMN.get(slots.perspective, "CUST_NM")
+        if slots.office_column is None:
+            office = "no office column"
+        else:
+            office = f"office column {slots.office_column}"
+        lines.append(f"Carried perspective: {slots.perspective} (ranks {ranks}; {office})")
+    if slots.office_column is not None and slots.office_value is not None:
+        lines.append(
+            f"Carried office: {slots.office_column} = {slots.office_value}. "
+            "data_qa.metric_query applies it when "
+            'scope="office" (the default). Use scope="book" for the whole book, the full '
+            "account, other locations or offices, or a share of the total."
+        )
+    if slots.report_ref is not None:
+        scope = slots.report_label or slots.office_value or "Whole book"
+        lines.append(
+            f"Report context: {scope}. Quote the report's own figures only through "
+            "reporting.report_lookup."
+        )
+    return lines
+
+
 def _render_slots(slots: ConversationSlots) -> list[str]:
     lines = [f"Mode: {slots.mode}"]
     if slots.customer is not None:
@@ -363,6 +396,7 @@ def _render_slots(slots: ConversationSlots) -> list[str]:
         lines.append(_render_slot_window("Carried period A", slots.period_a, slots.period_a_end))
     if slots.period_b is not None:
         lines.append(_render_slot_window("Carried period B", slots.period_b, slots.period_b_end))
+    lines.extend(_render_report_lines(slots))
     if slots.region is not None:
         lines.append(f"Region: {slots.region}")
     if slots.topic is not None:

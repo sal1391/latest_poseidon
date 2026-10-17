@@ -44,6 +44,7 @@ the offline tests can replace them.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import cast
@@ -107,6 +108,18 @@ PERSPECTIVES = {
 def _today() -> date:
     """The reference date for period resolution; tests monkeypatch it."""
     return date.today()
+
+
+def _now() -> datetime:
+    """The run's generated_at; tests monkeypatch it."""
+    return datetime.now(UTC)
+
+
+def safe_filename(name: str) -> str:
+    """Ruling 13: keep [A-Za-z0-9 ._-], replace the rest with _, collapse spaces."""
+    cleaned = re.sub(r"[^A-Za-z0-9 ._-]", "_", name)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned or "report"
 
 
 def _fail(status: int, title: str, detail: str) -> SkillResult:
@@ -212,7 +225,7 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
 
     # 5-6. the template narrative, the narrative decision, the questions
     run_id = str(uuid7())
-    generated_at = datetime.now(UTC)
+    generated_at = _now()
     source = ctx.settings.data_backend
     generated_by = (user.name or user.email or user.sub) if user is not None else ANONYMOUS
     created_by = user.sub if user is not None else ANONYMOUS
@@ -312,6 +325,7 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
     except Exception as exc:  # noqa: BLE001 - ruling 13: a flag, not a failed report
         pdf = None
         payload = with_flag(payload, f"PDF not rendered: {type(exc).__name__}")
+        html = render.render_html(payload)  # the stored HTML carries the notice too
 
     # 8. one report_run row
     store.insert_run(
@@ -333,7 +347,7 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
             narrative_grounded=grounded,
             source=source,
             created_by=created_by,
-            conversation_id=None,
+            conversation_id=ctx.conversation_id,
             generated_at=generated_at,
         ),
     )
@@ -349,7 +363,7 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
     artifacts = (
         [
             ArtifactRef(
-                name=f"{scope_name} {period_name}.pdf",
+                name=safe_filename(f"{scope_name} {period_name}") + ".pdf",
                 url=f"/api/reports/{run_id}/pdf",
                 mime="application/pdf",
             )

@@ -176,6 +176,11 @@ def dispatch_skill(skill_id: str, body: _DispatchRequest, request: Request) -> A
             # leave the identity mutable through it.
             roles=tuple(body.identity.roles),
         ),
+        # Phase 17 PR A2: getattr for the same reason as artifact_store above;
+        # a direct skill call belongs to no conversation.
+        report_store=getattr(request.app.state, "report_store", None),
+        prompt_tree=getattr(request.app.state, "prompt_tree", None),
+        conversation_id=None,
     )
     return _serialize(registry.dispatch(skill_id, body.args, ctx))
 

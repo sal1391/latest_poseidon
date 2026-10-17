@@ -43,7 +43,10 @@ Everything here is OFFLINE: the same hand-rolled ``FakeDataClient`` /
 network, no database, no provider call.
 """
 
+import itertools
 from collections.abc import Callable
+from datetime import UTC, date, datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -51,13 +54,24 @@ from poseidon.api.live_chat import _decode_frame, _record_transcript_frame
 from poseidon.core.chat.events import SseEnvelopeSink
 from poseidon.core.chat.history import TurnTranscriptBuffer
 from poseidon.core.chat.orchestrator import execute_turn
+from poseidon.core.chat.report_flow import ENTRY_PHRASE_REPORT
 from poseidon.core.chat.state import ConversationStateStore
 from poseidon.core.identity import DISABLED_DEFAULT_USER
+from poseidon.core.llm.prompt_tree import PromptTree
 from poseidon.core.llm.prompts import DEFAULT_PROMPTS_DIR, PromptRegistry
 from poseidon.core.llm.roles import RoleClient
 from poseidon.core.llm.stub import StubProvider
 from poseidon.core.llm.types import LLMResponse, ToolCall
 from poseidon.core.runlog import ReplayTurn
+from poseidon.tasks.reporting.skills.monthly_performance import skill as skill_module
+from poseidon.tasks.reporting.skills.monthly_performance.tests.fake_client import (
+    FakeDataClient as ReportFakeDataClient,
+)
+from poseidon.tasks.reporting.skills.monthly_performance.tests.fake_client import (
+    FakeReportStore,
+)
+from poseidon.tasks.reporting.skills.monthly_performance.tools import frames as report_frames
+from poseidon.tasks.reporting.skills.monthly_performance.tools import render
 from tests.test_chat_orchestrator import (
     REFERENCE_DATE,
     REGISTRY,
@@ -404,12 +418,114 @@ def all_part_kinds(_monkeypatch: pytest.MonkeyPatch) -> Recorded:
     return frames, _fold(frames, sink.message_id)
 
 
+# ===========================================================================
+# Report scenarios -- the monthly report flow, pinned through deterministic hooks
+# ===========================================================================
+
+
+def _report_turn(
+    monkeypatch: pytest.MonkeyPatch,
+    text: str,
+    *,
+    settings,
+    state: ConversationStateStore,
+    store: FakeReportStore,
+    data: ReportFakeDataClient,
+    writer: RecordingWriter,
+    role_client: RoleClient,
+    turn_no: int,
+) -> tuple[list[str], SseEnvelopeSink]:
+    """One turn of the report conversation over throwaway-or-recorded frames."""
+    frames, send = _capturing_send()
+    sink = SseEnvelopeSink(
+        turn_id=f"turn-{turn_no}", message_id=f"msg-{turn_no}", send=send, registry=REGISTRY
+    )
+    execute_turn(
+        user=DISABLED_DEFAULT_USER,
+        conversation_id="conv-report",
+        text=text,
+        client_turn_key=None,
+        settings=settings,
+        registry=REGISTRY,
+        data=data,
+        state=state,
+        writer=writer,
+        role_client=role_client,
+        prompt_registry=PromptRegistry(DEFAULT_PROMPTS_DIR),
+        sink=sink,
+        reference_date=date(2026, 7, 15),
+        report_store=store,
+        prompt_tree=PromptTree(),
+    )
+    return frames, sink
+
+
+def report_entry(monkeypatch: pytest.MonkeyPatch) -> Recorded:
+    """The report entry chip's phrase on a fresh conversation: the perspective
+    question as text plus the two perspective chips, no dispatch.
+    """
+    settings = _settings(monkeypatch, LLM_MODE="stub", LLM_PROFILE="bedrock")
+    frames, sink = _report_turn(
+        monkeypatch,
+        ENTRY_PHRASE_REPORT,
+        settings=settings,
+        state=ConversationStateStore(),
+        store=FakeReportStore(),
+        data=ReportFakeDataClient(),
+        writer=RecordingWriter(),
+        role_client=_dev_role_client(settings),
+        turn_no=1,
+    )
+    return frames, _fold(frames, sink.message_id)
+
+
+def report_turn(monkeypatch: pytest.MonkeyPatch) -> Recorded:
+    """The report turn itself: entry, perspective and office steps run on
+    throwaway sinks, then the recorded month turn ("June 2026") dispatches
+    ``reporting.monthly_performance``. Every non-deterministic value is pinned
+    through hooks (ruling 17): ``uuid7`` (run_id), ``_now`` (generated_at),
+    ``_today`` (periods), the report frames' ``time`` (each query reads 1 ms)
+    and ``render_pdf`` (fixed bytes). A change to any is a contract change.
+    """
+    settings = _settings(monkeypatch, LLM_MODE="stub", LLM_PROFILE="bedrock")
+    monkeypatch.setattr(skill_module, "uuid7", lambda: "0199a000-0000-7000-8000-000000000001")
+    monkeypatch.setattr(skill_module, "_now", lambda: datetime(2026, 7, 15, 9, 0, tzinfo=UTC))
+    monkeypatch.setattr(skill_module, "_today", lambda: date(2026, 7, 15))
+    # The brief names ``frames.monotonic``; the report frames module times each
+    # query with ``time.perf_counter`` (read twice per query), so that is the hook.
+    monkeypatch.setattr(
+        report_frames, "time", SimpleNamespace(perf_counter=itertools.count(0, 0.001).__next__)
+    )
+    monkeypatch.setattr(render, "render_pdf", lambda html: b"%PDF-1.4 fake")
+
+    state = ConversationStateStore()
+    store = FakeReportStore()
+    data = ReportFakeDataClient()
+    writer = RecordingWriter()
+    role_client = _dev_role_client(settings)
+    kw = dict(
+        settings=settings,
+        state=state,
+        store=store,
+        data=data,
+        writer=writer,
+        role_client=role_client,
+    )
+    prep = (ENTRY_PHRASE_REPORT, "customer office report", "Gibraltar Office")
+    for n, text in enumerate(prep, 1):
+        _report_turn(monkeypatch, text, turn_no=n, **kw)
+    frames, sink = _report_turn(monkeypatch, "June 2026", turn_no=1, **kw)
+    return frames, _fold(frames, sink.message_id)
+
+
 SCENARIOS: dict[str, Callable[[pytest.MonkeyPatch], Recorded]] = {
     "metric_query_flagship": metric_query_flagship,
     "clarify_ambiguous_customer": clarify_ambiguous_customer,
     "error_mid_turn": error_mid_turn,
     "replay_after_ok": replay_after_ok,
     "all_part_kinds": all_part_kinds,
+    "report_entry": report_entry,
+    "report_turn": report_turn,
 }
 
 __all__ = ["SCENARIOS", "Recorded", "to_json"]

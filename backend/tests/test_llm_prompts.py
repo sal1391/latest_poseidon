@@ -481,6 +481,77 @@ def test_render_state_block_carried_customer_and_period_golden():
     )
 
 
+def _report_slots(**overrides) -> ConversationSlots:
+    fields = dict(
+        mode="default",
+        period_a=date(2026, 6, 1),
+        period_a_end=date(2026, 7, 1),
+        period_b=date(2026, 5, 1),
+        period_b_end=date(2026, 6, 1),
+        perspective="supplier",
+        office_column="PRIMARY_SUPPLY_TEAM_OFFICE",
+        office_value="MED SUPPLY OFFICE",
+        report_ref="run-1",
+        report_label="MED SUPPLY OFFICE, June 2026 vs May 2026",
+    )
+    fields.update(overrides)
+    return ConversationSlots(**fields)
+
+
+def test_render_state_block_report_lines_golden():
+    from poseidon.core.chat import dev_router
+
+    rendered = render_state_block(_report_slots(), None)
+
+    assert rendered == (
+        "Mode: default\n"
+        "Carried period A: June 2026 (2026-06-01..2026-07-01)\n"
+        "Carried period B: May 2026 (2026-05-01..2026-06-01)\n"
+        "Carried perspective: supplier (ranks SUPPLIER_NM; office column "
+        "PRIMARY_SUPPLY_TEAM_OFFICE)\n"
+        "Carried office: PRIMARY_SUPPLY_TEAM_OFFICE = MED SUPPLY OFFICE. "
+        "data_qa.metric_query applies it when "
+        'scope="office" (the default). Use scope="book" for the whole book, the full '
+        "account, other locations or offices, or a share of the total.\n"
+        "Report context: MED SUPPLY OFFICE, June 2026 vs May 2026. Quote the report's "
+        "own figures only through reporting.report_lookup."
+    )
+    assert dev_router._CARRIED_CUSTOMER_RE.search(rendered) is None
+    assert dev_router._CARRIED_PORT_RE.search(rendered) is None
+
+
+def test_report_context_line_ignores_the_carried_periods():
+    rendered = render_state_block(
+        _report_slots(
+            report_label="Rotterdam, June 2026 vs May 2026",
+            period_a=date(2026, 4, 1),
+            period_a_end=date(2026, 5, 1),
+            period_b=date(2026, 3, 1),
+            period_b_end=date(2026, 4, 1),
+        ),
+        None,
+    )
+
+    assert "Report context: Rotterdam, June 2026 vs May 2026. Quote" in rendered
+    assert "Carried period A: April 2026" in rendered
+
+
+def test_render_state_block_book_report_has_no_office_line():
+    rendered = render_state_block(
+        _report_slots(
+            perspective="book",
+            office_column=None,
+            office_value=None,
+            report_label="Whole book, June 2026 vs May 2026",
+        ),
+        None,
+    )
+
+    assert "Carried perspective: book (ranks CUST_NM; no office column)" in rendered
+    assert "Carried office:" not in rendered
+    assert "Report context: Whole book, June 2026 vs May 2026." in rendered
+
+
 def test_render_state_block_carried_year_and_range_windows_golden():
     slots = ConversationSlots(
         period_a=date(2025, 1, 1),

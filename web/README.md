@@ -60,6 +60,20 @@ the routes it defines and anything else under `/api/` falls through to Python,
 so Python's access log shows only `/internal/v1/...` for a turn. Do not
 restore the array form.
 
+### Report downloads
+
+Two route handlers serve a stored monthly report's bytes, both `GET`, both
+`Content-Disposition: attachment` with a sanitised file name:
+
+- `/api/reports/<run id>/pdf`
+- `/api/reports/<run id>/html`
+
+They take precedence over the Python backend for the same reason `/api/chat/[cid]`
+does (the `fallback` rewrite). Both the proxy and the handler enforce
+`Poseidon:Sales`, so a caller without the role gets a 403 problem body from
+whichever sees it first. A run with no PDF (rendered on a host without Pango)
+answers 404 on `/pdf` and still serves `/html`.
+
 ### Checking the 403
 
 Start the dev server in SPCS ingress mode with an allowlist that excludes the

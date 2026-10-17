@@ -85,6 +85,12 @@ def _run(**overrides) -> NewRun:
     return NewRun(**base)
 
 
+def test_get_bytes_rejects_an_unknown_kind_before_touching_the_uuid():
+    store = ReportStore(engine=object())  # never used: the kind check comes first
+    with pytest.raises(ValueError, match="kind must be 'html' or 'pdf'"):
+        store.get_bytes("test|alice", "not-a-uuid", "txt")
+
+
 @pytest.mark.pg
 def test_insert_then_get_round_trips_every_column(pg_engine, effective_app_role):
     store = ReportStore(pg_engine, app_role=effective_app_role)

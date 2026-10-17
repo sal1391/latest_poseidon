@@ -171,6 +171,8 @@ class ReportStore:
         )
 
     def get_bytes(self, user_sub: str, run_id: str, kind: Literal["html", "pdf"]) -> bytes | None:
+        if kind not in _SELECT_BYTES_SQL:
+            raise ValueError(f"kind must be 'html' or 'pdf', got {kind!r}")
         statement = _SELECT_BYTES_SQL[kind]
         parsed = _parse_uuid(run_id)
         if parsed is None:

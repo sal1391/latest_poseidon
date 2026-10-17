@@ -165,6 +165,7 @@ _METRIC_QUERY_DESCRIPTION = REGISTRY.get("data_qa.metric_query").description
 # Phase 7 Task 4: research.web_research joined the real registry as its
 # second enabled skill -- see test_get_skills_returns_registry_backed_shape
 # below.
+_REPORT_LOOKUP_DESCRIPTION = REGISTRY.get("reporting.report_lookup").description
 _RESEARCH_DESCRIPTION = REGISTRY.get("research.web_research").description
 # Phase 8 Task 4: both customer_insight brief skills join as the registry's
 # third and fourth entries (customer_insight sorts before data_qa).
@@ -908,6 +909,11 @@ async def test_get_skills_returns_registry_backed_shape():
             "description": _METRIC_QUERY_DESCRIPTION,
         },
         {
+            "id": "reporting.report_lookup",
+            "label": "Report lookup",
+            "description": _REPORT_LOOKUP_DESCRIPTION,
+        },
+        {
             "id": "research.web_research",
             "label": "Web research",
             "description": _RESEARCH_DESCRIPTION,
@@ -944,7 +950,7 @@ async def test_post_conversations_returns_the_same_opener_shape_as_mock(pg_datab
     assert kinds == ["text", "chips"]
     options = opener["parts"][1]["payload"]["options"]
     ids = [o["id"] for o in options]
-    assert ids == ["existing_customer", "new_prospect"]
+    assert ids == ["existing_customer", "new_prospect", "monthly_report"]
 
 
 @pytest.mark.pg
@@ -976,6 +982,7 @@ async def test_opener_flow_chips_carry_the_d19_pinned_entry_phrases_as_send_text
             "label": "New customer prospect",
             "send_text": "start a new-prospect brief",
         },
+        {"id": "monthly_report", "label": "Monthly report", "send_text": "start a monthly report"},
     ]
 
 

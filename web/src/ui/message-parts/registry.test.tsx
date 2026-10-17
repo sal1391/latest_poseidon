@@ -68,7 +68,7 @@ describe("PartRenderer", () => {
     render(<PartRenderer part={{ kind: "error", payload: { code: "x", message: "It broke" } }} />);
     expect(screen.getByText("It broke")).toBeTruthy();
     cleanup();
-    render(<PartRenderer part={{ kind: "report", payload: { any: 1 } }} />);
+    render(<PartRenderer part={{ kind: "hologram", payload: { any: 1 } }} />);
     expect(screen.getByText(/"any": 1/)).toBeTruthy();
   });
 });

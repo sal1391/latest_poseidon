@@ -145,7 +145,11 @@ from datetime import date, datetime
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from poseidon.core.chat.orchestrator import ENTRY_PHRASE_EXISTING, ENTRY_PHRASE_PROSPECT
+from poseidon.core.chat.orchestrator import (
+    ENTRY_PHRASE_EXISTING,
+    ENTRY_PHRASE_PROSPECT,
+    ENTRY_PHRASE_REPORT,
+)
 from poseidon.core.db import rls_transaction
 from poseidon.core.skills.context import ConversationSlots
 from poseidon.core.util.uuid7 import uuid7
@@ -335,8 +339,9 @@ _NEXT_TURN_INDEX_SQL = text(
 def _build_opener_parts() -> list[dict]:
     """A fresh opener parts list every call -- never a shared module-level
     literal -- mirroring ``TranscriptStore.create_conversation``'s own
-    "build a new dict every time" discipline (live_chat.py:292-336). Same
-    two flow chips, same D19 pinned ``send_text`` phrases, IMPORTED from
+    "build a new dict every time" discipline (live_chat.py:292-336). Three
+    flow chips (the monthly report joined in Phase 17 PR A2), their pinned
+    entry ``send_text`` phrases IMPORTED from
     ``orchestrator.py`` rather than retyped (the same discipline that
     module's own docstring names for ``TranscriptStore`` itself)."""
     return [
@@ -354,6 +359,11 @@ def _build_opener_parts() -> list[dict]:
                         "id": "new_prospect",
                         "label": "New customer prospect",
                         "send_text": ENTRY_PHRASE_PROSPECT,
+                    },
+                    {
+                        "id": "monthly_report",
+                        "label": "Monthly report",
+                        "send_text": ENTRY_PHRASE_REPORT,
                     },
                 ]
             },
@@ -848,6 +858,11 @@ def slots_to_json(slots: ConversationSlots) -> dict:
         "pass_through": [[key, value] for key, value in slots.pass_through],
         "period_a_end": slots.period_a_end.isoformat() if slots.period_a_end is not None else None,
         "period_b_end": slots.period_b_end.isoformat() if slots.period_b_end is not None else None,
+        "perspective": slots.perspective,
+        "office_column": slots.office_column,
+        "office_value": slots.office_value,
+        "report_ref": slots.report_ref,
+        "report_label": slots.report_label,
     }
 
 
@@ -872,6 +887,11 @@ def slots_from_json(raw: dict) -> ConversationSlots:
         pass_through=tuple((pair[0], pair[1]) for pair in pass_through_raw),
         period_a_end=_iso_date(raw.get("period_a_end")),
         period_b_end=_iso_date(raw.get("period_b_end")),
+        perspective=raw.get("perspective"),
+        office_column=raw.get("office_column"),
+        office_value=raw.get("office_value"),
+        report_ref=raw.get("report_ref"),
+        report_label=raw.get("report_label"),
     )
 
 

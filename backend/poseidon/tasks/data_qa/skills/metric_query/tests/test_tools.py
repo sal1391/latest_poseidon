@@ -16,17 +16,20 @@ the spec-shape tests it is really about.
 """
 
 import datetime as dt
+from dataclasses import replace
 
 from poseidon.core.config import Settings
 from poseidon.core.data.client import BreakdownResult, BreakdownRow, MetricResult, PeriodRange
 from poseidon.core.data.specs import BreakdownQuerySpec, MetricQuerySpec, PeriodWindow
 from poseidon.core.identity import UserContext
-from poseidon.core.skills.context import SkillContext
-from poseidon.core.skills.registry import SkillRegistry
+from poseidon.core.skills.context import ConversationSlots, SkillContext
 from poseidon.tasks._shared.fragments import DimFilter, PeriodArg
 from poseidon.tasks.data_qa.skills.metric_query.schema import Args
 from poseidon.tasks.data_qa.skills.metric_query.skill import run
 from poseidon.tasks.data_qa.skills.metric_query.tools.build_spec import build_spec
+from poseidon.tasks.data_qa.skills.metric_query.tools.compare_breakdown import (
+    compare_breakdown_parts,
+)
 from poseidon.tasks.data_qa.skills.metric_query.tools.format_parts import format_parts
 
 SALES = "MARINE_SALES_PLANNING_V"
@@ -131,60 +134,25 @@ def test_build_spec_over_a_swapped_compare_period_maps_it_as_the_window():
 
 
 # ---------------------------------------------------------------------------
-# Args validation: breakdown + compare_period is rejected, through dispatch
+# Args validation: breakdown + compare_period is legal; office scope defaults
 # ---------------------------------------------------------------------------
 
 
-class _UnreachableDataClient:
-    """A ``DataClient`` stand-in whose every method fails loudly.
-
-    ``Args`` validation must reject the group_by/compare_period combination
-    before ``dispatch`` ever calls the skill, so none of these should run -
-    if one does, that is a bug in the validator (or in this test), not a
-    reason to require a real data client.
-    """
-
-    _MESSAGE = "compare_period + group_by must 422 at argument validation, before the data layer"
-
-    def list_dimension_values(self, *args: object, **kwargs: object) -> list[str]:
-        raise AssertionError(self._MESSAGE)
-
-    def available_periods(self, *args: object, **kwargs: object) -> PeriodRange:
-        raise AssertionError(self._MESSAGE)
-
-    def run_metric_query(self, *args: object, **kwargs: object) -> MetricResult:
-        raise AssertionError(self._MESSAGE)
-
-    def run_breakdown_query(self, *args: object, **kwargs: object) -> BreakdownResult:
-        raise AssertionError(self._MESSAGE)
-
-
-def test_dispatch_rejects_breakdown_combined_with_compare_period():
-    """``format_parts`` has no "breakdown + comparison" shape (see its module
-    docstring), so ``Args`` itself rejects the combination - a structured 422
-    the router can read and correct itself from, rather than a breakdown that
-    silently answers a different question than the one asked."""
-    reg = SkillRegistry.discover()
-    ctx = SkillContext(data=_UnreachableDataClient(), artifacts=None, settings=SETTINGS)
-
-    res = reg.dispatch(
-        "data_qa.metric_query",
-        {
-            "entity": SALES,
-            "metrics": ["GP"],
-            "period": {"start": "2026-04-01", "end": "2026-05-01"},
-            "compare_period": {"start": "2025-04-01", "end": "2025-05-01"},
-            "group_by": "CUST_NM",
-        },
-        ctx,
+def test_args_accepts_breakdown_combined_with_compare_period():
+    """Phase 17 A2: a breakdown with a comparison window runs both windows
+    and merges them into comparison tables, so the combination validates."""
+    args = _args(
+        group_by="CUST_NM",
+        compare_period=PeriodArg(start=dt.date(2025, 4, 1), end=dt.date(2025, 5, 1)),
     )
 
-    assert res.ok is False
-    assert res.error["status"] == 422
-    assert (
-        "compare_period is not supported with group_by — run the breakdown "
-        "once per period instead"
-    ) in res.error["detail"]
+    assert args.group_by == "CUST_NM"
+    assert args.compare_period is not None
+    assert args.scope == "office"
+
+
+def test_args_accepts_scope_book():
+    assert _args(scope="book").scope == "book"
 
 
 # ---------------------------------------------------------------------------
@@ -471,9 +439,11 @@ class _RecordingDataClient:
     for ``format_parts`` to render a "No data" part, which is all these tests
     need past the spec itself."""
 
-    def __init__(self) -> None:
+    def __init__(self, breakdown_rows: list[list[BreakdownRow]] | None = None) -> None:
         self.metric_specs: list[MetricQuerySpec] = []
         self.breakdown_specs: list[BreakdownQuerySpec] = []
+        # One row list per breakdown call, in call order; empty when unset.
+        self._breakdown_rows = list(breakdown_rows or [])
 
     def list_dimension_values(self, *args: object, **kwargs: object) -> list[str]:
         raise AssertionError("metric_query must never list dimension values")
@@ -489,11 +459,22 @@ class _RecordingDataClient:
 
     def run_breakdown_query(self, spec: BreakdownQuerySpec) -> BreakdownResult:
         self.breakdown_specs.append(spec)
-        return BreakdownResult(entity=spec.entity, group_by=spec.group_by, rows=[])
+        rows = self._breakdown_rows.pop(0) if self._breakdown_rows else []
+        return BreakdownResult(entity=spec.entity, group_by=spec.group_by, rows=rows)
 
 
-def _ctx(client: _RecordingDataClient, user: object = ALICE) -> SkillContext:
-    return SkillContext(data=client, artifacts=None, settings=SETTINGS, user=user)
+def _ctx(
+    client: _RecordingDataClient,
+    user: object = ALICE,
+    state: ConversationSlots | None = None,
+) -> SkillContext:
+    return SkillContext(
+        data=client,
+        artifacts=None,
+        settings=SETTINGS,
+        user=user,
+        state=ConversationSlots() if state is None else state,
+    )
 
 
 def test_run_consults_the_row_scope_resolver_with_the_caller_identity(monkeypatch):
@@ -558,3 +539,226 @@ def test_run_still_works_for_a_dispatch_with_no_caller_identity():
 
     assert result.ok is True
     assert client.metric_specs[0].scope_value is None
+
+
+# ---------------------------------------------------------------------------
+# compare_breakdown_parts - breakdown with comparison (Phase 17 A2)
+# ---------------------------------------------------------------------------
+
+
+def _breakdown_spec(period: PeriodWindow) -> BreakdownQuerySpec:
+    return BreakdownQuerySpec(
+        entity=SALES,
+        metrics=("GP", "VOLUME"),
+        period=period,
+        group_by="CUST_NM",
+        order_by_metric="GP",
+        top_n=50,
+        filters={},
+    )
+
+
+def _rows(**by_key: tuple[float, float]) -> list[BreakdownRow]:
+    return [
+        BreakdownRow(key=k, values={"GP": gp, "VOLUME": vol}) for k, (gp, vol) in by_key.items()
+    ]
+
+
+def _result(rows: list[BreakdownRow]) -> BreakdownResult:
+    return BreakdownResult(entity=SALES, group_by="CUST_NM", rows=rows)
+
+
+def test_compare_breakdown_parts_shape_and_driver():
+    prior = _result(_rows(A=(100.0, 10.0), B=(200.0, 20.0)))
+    current = _result(_rows(A=(150.0, 10.0), C=(50.0, 5.0)))
+
+    parts, proof = compare_breakdown_parts(
+        _breakdown_spec(APRIL), current, _breakdown_spec(PRIOR_APRIL), prior, SETTINGS, 5
+    )
+
+    assert [p["kind"] for p in parts] == ["table", "table"]
+    gp_table, volume_table = (p["payload"] for p in parts)
+    assert gp_table["columns"] == [
+        "Customer",
+        "Gross Profit prior",
+        "Gross Profit current",
+        "Change",
+        "%",
+        "Driver",
+    ]
+    # B fell 200 (lost); A and C each rose 50 - the tie breaks by key.
+    assert gp_table["rows"] == [
+        ["B", 200, 0, -200, -100.0, "lost"],
+        ["A", 100, 150, 50, 50.0, "margin-driven"],
+        ["C", 0, 50, 50, "new", "new"],
+    ]
+    assert volume_table["columns"] == [
+        "Customer",
+        "Volume prior",
+        "Volume current",
+        "Change",
+        "%",
+        "Driver",
+    ]
+    assert volume_table["rows"] == [
+        ["B", 20, 0, -20, -100.0, "lost"],
+        ["A", 10, 10, 0, 0.0, "margin-driven"],
+        ["C", 0, 5, 5, "new", "new"],
+    ]
+    assert proof == [
+        "Entity: SANDBOX.MCA.MARINE_SALES_PLANNING_V",
+        "Backend: synthetic",
+        "Period: 2026-04-01..2026-05-01",
+        "Compare: 2025-04-01..2025-05-01",
+        "Filters: none",
+        "Group by: CUST_NM (top 50)",
+        "Rows: 3 (merged over the top 50 per window)",
+    ]
+
+
+def test_compare_breakdown_parts_caps_at_top_n_and_omits_driver_without_volume():
+    spec_c = replace(_breakdown_spec(APRIL), metrics=("GP",))
+    spec_p = replace(_breakdown_spec(PRIOR_APRIL), metrics=("GP",))
+    prior = _result([BreakdownRow(key=k, values={"GP": v}) for k, v in (("A", 10.0), ("B", 10.0))])
+    current = _result(
+        [BreakdownRow(key=k, values={"GP": v}) for k, v in (("A", 40.0), ("B", 15.0))]
+    )
+
+    parts, proof = compare_breakdown_parts(spec_c, current, spec_p, prior, SETTINGS, 1)
+
+    assert parts == [
+        {
+            "kind": "table",
+            "payload": {
+                "columns": [
+                    "Customer",
+                    "Gross Profit prior",
+                    "Gross Profit current",
+                    "Change",
+                    "%",
+                ],
+                "rows": [["A", 10, 40, 30, 300.0]],
+            },
+        }
+    ]
+    assert proof[-1] == "Rows: 1 (merged over the top 50 per window)"
+
+
+def test_compare_breakdown_parts_both_sides_empty_is_no_data():
+    empty = _result([])
+
+    parts, proof = compare_breakdown_parts(
+        _breakdown_spec(APRIL), empty, _breakdown_spec(PRIOR_APRIL), empty, SETTINGS, 5
+    )
+
+    assert parts == [{"kind": "text", "payload": {"markdown": "No data for this selection."}}]
+    assert proof[-1] == "Result: empty"
+    assert "Compare: 2025-04-01..2025-05-01" in proof
+
+
+# ---------------------------------------------------------------------------
+# skill.run - office scope stamping from the carried office (Phase 17 A2)
+# ---------------------------------------------------------------------------
+
+_ROTTERDAM = ConversationSlots(office_column="CUSTOMER_TEAM_NAME", office_value="Rotterdam")
+_STAMPED_LINE = "Office scope: CUSTOMER_TEAM_NAME = Rotterdam (carried; scope=office)"
+_BOOK_LINE = "Office scope: book (carried office not applied)"
+_PRIOR_ARG = PeriodArg(start=dt.date(2025, 4, 1), end=dt.date(2025, 5, 1))
+
+
+def test_carried_office_is_stamped_on_every_spec():
+    plain, compare, breakdown = (_RecordingDataClient() for _ in range(3))
+
+    plain_res = run(_ctx(plain, state=_ROTTERDAM), _args())
+    compare_res = run(_ctx(compare, state=_ROTTERDAM), _args(compare_period=_PRIOR_ARG))
+    breakdown_res = run(_ctx(breakdown, state=_ROTTERDAM), _args(group_by="CUST_NM"))
+
+    specs = [*plain.metric_specs, *compare.metric_specs, *breakdown.breakdown_specs]
+    assert len(specs) == 4
+    assert [spec.filters.get("CUSTOMER_TEAM_NAME") for spec in specs] == [("Rotterdam",)] * 4
+    for res in (plain_res, compare_res, breakdown_res):
+        assert res.ok is True
+        assert res.proof[-1] == _STAMPED_LINE
+
+
+def test_carried_office_replaces_a_model_filter_on_the_same_column():
+    client = _RecordingDataClient()
+    args = _args(
+        filters=[
+            DimFilter(column="CUSTOMER_TEAM_NAME", values=["Houston"]),
+            DimFilter(column="LOC_NM", values=["Singapore"]),
+        ]
+    )
+
+    res = run(_ctx(client, state=_ROTTERDAM), args)
+
+    assert client.metric_specs[0].filters == {
+        "CUSTOMER_TEAM_NAME": ("Rotterdam",),
+        "LOC_NM": ("Singapore",),
+    }
+    assert res.proof[-1] == _STAMPED_LINE
+
+
+def test_scope_book_drops_the_carried_office():
+    client = _RecordingDataClient()
+
+    res = run(_ctx(client, state=_ROTTERDAM), _args(scope="book", group_by="CUST_NM"))
+
+    assert "CUSTOMER_TEAM_NAME" not in client.breakdown_specs[0].filters
+    assert res.proof[-1] == _BOOK_LINE
+
+
+def test_no_carried_office_means_no_scope_line():
+    client = _RecordingDataClient()
+
+    res = run(_ctx(client), _args())
+
+    assert client.metric_specs[0].filters == {}
+    assert not any(line.startswith("Office scope") for line in res.proof)
+
+
+def test_group_by_with_compare_period_runs_both_windows_and_returns_comparison_tables():
+    current_rows = _rows(A=(150.0, 10.0), C=(50.0, 5.0))
+    prior_rows = _rows(A=(100.0, 10.0), B=(200.0, 20.0))
+    # The current window is queried first, the prior second.
+    client = _RecordingDataClient(breakdown_rows=[current_rows, prior_rows])
+    args = _args(group_by="CUST_NM", compare_period=_PRIOR_ARG, top_n=5)
+
+    res = run(_ctx(client, state=_ROTTERDAM), args)
+
+    assert res.ok is True, res.error
+    assert [spec.top_n for spec in client.breakdown_specs] == [50, 50]
+    assert [spec.period for spec in client.breakdown_specs] == [APRIL, PRIOR_APRIL]
+    assert [spec.filters for spec in client.breakdown_specs] == [
+        {"CUSTOMER_TEAM_NAME": ("Rotterdam",)}
+    ] * 2
+    expected_parts, expected_proof = compare_breakdown_parts(
+        client.breakdown_specs[0],
+        _result(current_rows),
+        client.breakdown_specs[1],
+        _result(prior_rows),
+        SETTINGS,
+        5,
+    )
+    assert res.parts == expected_parts
+    assert res.proof == [*expected_proof, _STAMPED_LINE]
+    # _repopulate_pass_through reads the first table's first column as keys.
+    assert [row[0] for row in res.parts[0]["payload"]["rows"]] == ["B", "A", "C"]
+
+
+def test_carried_office_is_not_stamped_on_an_entity_without_the_column():
+    """The office stamp follows the entity, as D16 row scope does: the GL
+    entity has no CUSTOMER_TEAM_NAME dimension, so the carried office stays
+    off the spec (the builder would 422 on it) and the proof says why."""
+    client = _RecordingDataClient()
+
+    args = _args(entity="W_MARINE_GL_SOURCE_AI", metrics=["MONETARY_TOTAL"])
+
+    res = run(_ctx(client, state=_ROTTERDAM), args)
+
+    assert res.ok is True
+    assert "CUSTOMER_TEAM_NAME" not in client.metric_specs[0].filters
+    assert res.proof[-1] == (
+        "Office scope: CUSTOMER_TEAM_NAME is not a dimension of W_MARINE_GL_SOURCE_AI; "
+        "carried office not applied"
+    )

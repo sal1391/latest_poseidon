@@ -18,6 +18,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from markupsafe import Markup
 
 import poseidon
+from poseidon.core.analytics import mom
 
 TEMPLATES_DIR = Path(poseidon.__file__).resolve().parent / "config" / "templates"
 
@@ -50,6 +51,16 @@ def narrative_html(markdown_text: str) -> Markup:
     return Markup(_markdown().convert(_html.escape(markdown_text)))
 
 
+KPI_LABELS: dict[str, str] = {
+    "VOLUME": "Volume (tons)",
+    "GP": "Gross profit",
+    "MARGIN": "Margin (per ton)",
+    "NUM_WON": "# Won",
+    "NUM_INQUIRIES": "# Inquiries",
+    "NUM_LOST": "# Lost",
+    "WIN_RATE": "Win rate",
+}
+
 _ENV = Environment(
     loader=FileSystemLoader(TEMPLATES_DIR),
     autoescape=True,
@@ -60,7 +71,8 @@ _ENV.filters["narrative_html"] = narrative_html
 
 
 def render_html(payload: Mapping[str, Any]) -> str:
-    out = _ENV.get_template("report.html.j2").render(**payload)
+    kpi_tiles = [(m, KPI_LABELS[m]) for m in mom.KPI_METRICS]
+    out = _ENV.get_template("report.html.j2").render(**payload, kpi_tiles=kpi_tiles)
     # The delimiters are entity-encoded after rendering because the test contract (reports
     # design 5.7 / Review Focus 2) requires that no Jinja delimiter reaches the stored HTML,
     # which also keeps the stored document inert if a later pass (Phase 18 email) ever runs

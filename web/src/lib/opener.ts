@@ -3,7 +3,8 @@ import type { MessagePart } from "./message-parts";
 /**
  * Python's `_build_opener_parts()` (backend/poseidon/core/chat/history.py),
  * transcribed. The D19 entry phrases are pinned on the Python side
- * (orchestrator.py ENTRY_PHRASE_EXISTING / ENTRY_PHRASE_PROSPECT) and by
+ * (orchestrator.py ENTRY_PHRASE_EXISTING / ENTRY_PHRASE_PROSPECT /
+ * ENTRY_PHRASE_REPORT) and by
  * contracts/turns/opener.json, which opener.test.ts compares against.
  */
 export const OPENER_PARTS: MessagePart[] = [
@@ -14,6 +15,7 @@ export const OPENER_PARTS: MessagePart[] = [
       options: [
         { id: "existing_customer", label: "Existing customer", send_text: "start an existing-customer brief" },
         { id: "new_prospect", label: "New customer prospect", send_text: "start a new-prospect brief" },
+        { id: "monthly_report", label: "Monthly report", send_text: "start a monthly report" },
       ],
     },
   },

@@ -581,6 +581,8 @@ def build_months_query(
 
     params: list = []
     conditions = _filter_conditions(entity_obj, filters, params)
+    if entity_obj.dual_purpose_exclusion:
+        conditions.append(entity_obj.dual_purpose_exclusion)
     scope = _scope_condition(entity_obj, scope_value, params)
     if scope is not None:
         conditions.append(scope)

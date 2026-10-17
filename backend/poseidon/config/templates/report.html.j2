@@ -16,8 +16,6 @@ td.ctx { text-align: left; background: #fafafa; font-size: 11px; }
 .meta { color: #555555; margin: 2px 0; }
 .badge { background: #fff3cd; border: 1px solid #e0c36a; padding: 1px 6px; font-weight: bold; }
 .notice { background: #fdecea; border: 1px solid #e0a8a2; padding: 4px 8px; }
-.pos { color: #1a7f37; }
-.neg { color: #b42318; }
 </style>
 </head>
 <body>
@@ -33,10 +31,10 @@ td.ctx { text-align: left; background: #fafafa; font-size: 11px; }
 <tr>{% for i in range(3) %}<th>Prior</th><th>Current</th><th>Change</th><th>%</th>{% endfor %}</tr>
 {%- endmacro %}
 
-{% macro ranked(title, table) -%}
+{% macro ranked(title, table, header) -%}
 <h2>{{ title }}</h2>
-<table data-run="{{ run_id }}">
-<thead>{{ head(entity.label if "Customer" in title or "Supplier" in title else "Name") }}</thead>
+<table>
+<thead>{{ head(header) }}</thead>
 <tbody>
 {% for r in table.rows -%}
 <tr><td class="name">{{ r.key }}</td>{{ cells(r) }}</tr>
@@ -90,17 +88,17 @@ Reconciliation: office {{ c.reconciliation.display.office_change }}; other offic
 <table class="kpis">
 <thead><tr><th class="name">Metric</th><th>Prior</th><th>Current</th><th>Change</th><th>%</th></tr></thead>
 <tbody>
-{% for metric, label in [("VOLUME", "Volume (tons)"), ("GP", "Gross profit"), ("MARGIN", "Margin (per ton)"), ("NUM_WON", "# Won"), ("NUM_INQUIRIES", "# Inquiries"), ("NUM_LOST", "# Lost"), ("WIN_RATE", "Win rate")] -%}
+{% for metric, label in kpi_tiles -%}
 <tr><td class="name">{{ label }}</td><td>{{ kpis[metric].display.prior }}</td><td>{{ kpis[metric].display.current }}</td><td>{{ kpis[metric].display.change }}</td><td>{{ kpis[metric].display.pct }}</td></tr>
 {% endfor -%}
 </tbody>
 </table>
 
-{{ ranked(entity.label ~ "s by GP", tables.entities_by_gp) }}
-{{ ranked(entity.label ~ "s by volume", tables.entities_by_volume) }}
-{{ ranked("Ports by GP", tables.ports_by_gp) }}
-{{ ranked("Ports by volume", tables.ports_by_volume) }}
-{{ ranked("Deal class", tables.deal_class) }}
+{{ ranked(entity.label ~ "s by GP", tables.entities_by_gp, entity.label) }}
+{{ ranked(entity.label ~ "s by volume", tables.entities_by_volume, entity.label) }}
+{{ ranked("Ports by GP", tables.ports_by_gp, "Port") }}
+{{ ranked("Ports by volume", tables.ports_by_volume, "Port") }}
+{{ ranked("Deal class", tables.deal_class, "Deal class") }}
 
 <h2>Top increases</h2>
 {{ mover_table(movers.increases) }}
