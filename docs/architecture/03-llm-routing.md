@@ -91,7 +91,13 @@ brief for X"), never as a filter on available skills.
 2. The user's personal system instruction (doc 05 §5).
 3. The user's memory document (markdown, size-capped — doc 05 §5).
 4. Conversation state: slots, carried entities (active customer, port, period), pass-through
-   values (doc 02 §5).
+   values (doc 02 §5). After an in-chat report (Phase 17 PR A2) the block gains up to three
+   lines, each anchored on its own label so none can be read as a carried customer or port:
+   `Carried perspective: {p} (ranks {column}; office column {c})`, `Carried office: {col} =
+   {value}. data_qa.metric_query applies it when scope="office" (the default). Use
+   scope="book" ...` and `Report context: {scope}. Quote the report's own figures only through
+   reporting.report_lookup.` Internal skills are not in the router's tool list, and the loop
+   refuses a call to one with a 403 `internal skill` problem.
 5. `ParsedTurn` rendered as a structured context block + conversation window.
 
 The agent loop (per turn):
@@ -191,6 +197,13 @@ Case format (YAML, colocated per skill in `tests/test_routing.py` data):
   user: "which existing customers do we serve at that port?"
   expect: { skill: data_qa.metric_query, args_subset: { port: "ROTTERDAM" } }
 ```
+
+Phase 17 PR A2 adds four report cases to `backend/tests/routing_cases.yml` (stub mode), beyond
+the five above: `report_followup_why_gp_dropped` (a "why" over a carried customer becomes a
+breakdown with a comparison window), `report_followup_where_else` (leaves the carried office
+with `scope="book"`), `supplier_report_break_down_by_customer` (keeps the supplier filter) and
+`report_lookup_top_ports` (a question about the report's own figures goes to
+`reporting.report_lookup`).
 
 Execution modes:
 

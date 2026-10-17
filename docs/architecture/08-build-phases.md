@@ -281,7 +281,23 @@ The tables and the writer already exist from Phase 6; this phase makes them usef
   naming `snowflake` as source; user testing proceeds on real data.
 - Depends on: 15.
 
-## Phase 17 — Retrieval (thin slice, optional)
+## Phase 17 (as executed) — Report in chat
+
+Phase 17 shipped as the PR split of D61 (spec `docs/superpowers/specs/2026-10-12-phase-17-report-in-chat-design.md`).
+
+- **PR 0 (shipped, #7):** the C03 fix.
+- **PR A1 (shipped, #8):** the report engine: `reporting.monthly_performance` (internal, D70),
+  `report_run` (Drizzle `0003`, D65), the grounding check (D67), the HTML and PDF renderers,
+  `demo_report.py`.
+- **PR A2 (shipped, this branch):** report in chat. The three-step report flow (D71), four
+  state slots and state-block lines, `reporting.report_lookup` and `metric_query`'s `scope`
+  (D72), breakdown with comparison (D73), the two Next.js download routes, the `report`
+  renderer, the synthetic multi-office overlay and the suggested-questions chips (D74), the
+  `report_entry` and `report_turn` contract goldens and `test_report_flow_pg.py`.
+- **PR B (next):** `metric_query` extensions (may lift the top-50 cap of D73).
+- **PR C (next):** provider profiles (D68).
+
+## Phase 17b — Retrieval (thin slice, optional)
 
 - Deliverables: `embeddings` table (pgvector, RLS); config-driven `embeddings` role; index
   briefs/research on completion; a `find_prior_insight` tool + one router-decision case.

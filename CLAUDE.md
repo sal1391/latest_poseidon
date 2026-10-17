@@ -33,15 +33,16 @@ doc as current. Decisions taken in feature specs used to not propagate; that is 
 - **Cortex via the SQL `COMPLETE` function with emulated tools.** D40 chose the Cortex REST
   Messages endpoint with native tool calling.
 
-## Commands — verified 2026-10-14 (Phase 17 PR A1) (frontend line excepted), copy-pasteable
+## Commands — verified 2026-10-16 (Phase 17 PR A2), copy-pasteable
 
 ```bash
-# Offline Python suite -> 2178 passed, 14 skipped, 126 deselected (~251s)
+# Offline Python suite -> 2255 passed, 15 skipped, 130 deselected (~180s)
 cd backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest \
   -p no:cacheprovider \
   -m 'not pg and not minio and not pdf and not router_live and not research_live'
 
-# Postgres-backed suite (needs the compose `db` service up) -> 352 passed, 1 skipped
+# Postgres-backed suite (needs the compose `db` service up; DATABASE_URL points at it, e.g.
+# postgresql+psycopg://poseidon:poseidon@localhost:5434/poseidon under the dev override) -> 354 passed, 1 skipped
 # (Drizzle-only database; Alembic no longer owns this schema, D58)
 cd backend && .venv/Scripts/python.exe -B -m pytest -p no:cacheprovider -m pg
 
@@ -53,15 +54,14 @@ cd backend && .venv/Scripts/python.exe -m ruff check .
 cd backend && POSEIDON_UPDATE_CONTRACTS=1 .venv/Scripts/python.exe -B -m pytest \
   -p no:cacheprovider tests/contracts -q
 
-# Frontend -> 171 passed, 18 files; lint clean (not re-run 2026-10-14)
+# Frontend (Vite, untouched by PR A2) -> 171 passed, 18 files; lint clean
 cd frontend && npm test -- --run
 cd frontend && npm run lint
 
-# Web (Next.js) -> 151 passed, 13 skipped, offline (db-backed files skip without
-# DRIZZLE_DATABASE_URL); 162 passed with it set against the compose `db` service (reported by an
-# implementer on 2026-10-12, not re-run by the orchestrator)
+# Web (Next.js) -> 169 passed, 14 skipped, offline (21 files passed, 1 skipped; db-backed files
+# skip without DRIZZLE_DATABASE_URL). The web package has NO lint script: its static gate is tsc.
 cd web && npm test
-cd web && npx tsc --noEmit
+cd web && npx tsc --noEmit             # clean
 
 # Run the whole app locally (Drizzle migrate + synthetic seed + uvicorn, then Vite). Compose sets
 # POSEIDON_INTERNAL_TOKEN=dev-internal-token for the backend; a host-run Next dev server
@@ -73,17 +73,14 @@ cd web && npx drizzle-kit migrate      # reads DRIZZLE_DATABASE_URL
 # Fresh local database after the Phase 16 cutover: docker compose -f infra/docker-compose.yml down -v
 ```
 
-Web (Next.js) suite verified 2026-10-14: `npm test` → 151 passed, 13 skipped offline
-(19 files: 18 passed, 1 skipped); `npx tsc --noEmit` → clean. The 162-passed
-`DRIZZLE_DATABASE_URL`-set figure was reported by an implementer on 2026-10-12 and has not been
-re-run since. The frontend (Vite) figure above was not re-run 2026-10-14.
-
-**pg suite verified 2026-10-14 (Phase 17 PR A1):** 352 passed, 1 skipped, run serially against the
-compose `db` service. Offline Python suite (2178 passed, 14 skipped, 126 deselected), `ruff check`
-and `tests/contracts` (7 passed, `contracts/` unchanged) were also run 2026-10-14. One offline run
-failed `test_auth0_bogus_kid_after_the_fetch_finished_401s_at_once_without_waiting` on a 1.0s
-wall-clock bound (took 1.12s); it passed alone and in the full re-run, so the figure above is the
-re-run.
+**All figures above verified 2026-10-16 (Phase 17 PR A2), each run once, to its own file, never
+piped:** offline Python 2255 passed, 15 skipped, 130 deselected; `ruff check` clean;
+`tests/contracts` 9 passed (`contracts/` unchanged by the final task); pg suite 354 passed, 1
+skipped, run serially against the compose `db` service (host port 5434 under the dev override);
+web `npm test` 169 passed, 14 skipped offline (the DRIZZLE_DATABASE_URL-set figure was not re-run);
+web `npx tsc --noEmit` clean; Vite frontend 171 passed in 18 files and `npm run lint` clean (the
+Vite app is untouched by PR A2, figures refreshed only). The web package defines no lint script,
+so there is no web lint figure.
 
 **CI: there is none.** No `.github/workflows`. Nothing gates a merge except Carlos, so the suites
 above *are* the gate.

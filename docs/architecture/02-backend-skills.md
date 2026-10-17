@@ -60,6 +60,8 @@ backend/tasks/
         tools/                   # periods.py frames.py context.py narrative_template.py
                                  #   grounding.py questions.py narrate.py payload.py render.py
         tests/
+      report_lookup/             # router-visible: reads a section of the open report, runs no query
+        skill.py  schema.py  tools/  tests/
 ```
 
 Naming rules: snake_case directories; skill id is `"<task>.<skill>"` (e.g.
@@ -134,6 +136,50 @@ GP customers for Port of Singapore in April 2026" → breakdown spec (metric `GP
 `CUST_NM`, filter `LOC_NM`, period April 2026) → `table` part + proof block, values stored for
 exact pass-through. Ambiguity produces clarification chips, never guesses.
 
+**`data_qa.metric_query` extensions (Phase 17 PR A2).** The skill takes `scope: "office" | "book"`
+(default `"office"`). With a carried office (section 5) and `scope="office"`, the query builder
+stamps the office filter on the office column, replacing any model-supplied filter on that
+column; it is not applied when the column is not a certified dimension of the entity, and the
+proof says so. `scope="book"` drops the carried office and says that too. The proof's last line
+names the outcome: `Office scope: {col} = {value} (carried; scope=office)`, `Office scope: book
+(carried office not applied)` or `Office scope: {col} is not a dimension of {entity}; carried
+office not applied` (D72). A breakdown with a comparison runs each window's top-50 breakdown and
+merges them; when GP and VOLUME are both requested every comparison table gains a Driver column
+(D73).
+
+**`reporting.report_lookup`** (router-visible; Phase 17 PR A2): reads one section of the report
+open in the conversation (`kpis`, `entities_by_gp`, `entities_by_volume`, `ports_by_gp`,
+`ports_by_volume`, `deal_class`, `movers`, `new_lost`, `narrative`, `context`) from the stored
+`report_run` row via `SkillContext.report_store` and `conversation_id`, with `limit`/`offset`
+paging. It runs no query, so every figure it returns is one the report already showed. With no
+open report it answers a text part ("open a report first", `ok=true`) that the router relays
+(D72).
+
+**`reporting.monthly_performance`** (internal, D70) is the third flow's engine and is never
+chosen by the router; the report flow dispatches it deterministically (below).
+
+**The monthly report flow** (decisions D63, D64, D71, D74; `core/chat/report_flow.py` is the
+pure step module). The opener chip "Monthly report" sends `start a monthly report`
+(`ENTRY_PHRASE_REPORT`); a second click resets the flow slots. Three steps, each validated
+before any dispatch, each re-asking as a clarify turn (a text part plus chips, no tool frames)
+when the answer is not usable (D71):
+
+1. **Perspective:** `customer`, `supplier` or `book` (chips `customer office report`,
+   `supplier office report`, `whole book report`). `book` skips the office step.
+2. **Office:** chips from the certified office dimension; typed answers match
+   case-insensitively; an unknown office re-asks with the chips.
+3. **Month:** chips of the latest complete months, or a typed month ("June 2026"). Month to
+   date is recognised by the step itself (D64 phrases, or naming the running month), never by
+   the period parser; a month that is not complete or has no data re-asks.
+
+On the last step the orchestrator dispatches `reporting.monthly_performance` and the turn's
+wire order is `accepted`, `tool` start and done, the `report` part, the `proof` part, the
+`artifact` part (omitted when the PDF could not be rendered; the HTML is then the durable
+artifact and a flag says why), one `chips` part with three suggested questions (D74), `done`.
+A failed dispatch keeps the flow at the month step. The report run is stored once
+(`report_run`, with `conversation_id`), the mode returns to `default`, and the report's
+perspective, office and run id are carried in the slots so follow-ups answer from them.
+
 **`research.web_research`** (core; today's researcher agent, generalized): a focused Perplexity
 query with the marine-fuels/shipping-services lens and the existing structured-output schemas,
 callable in any flow — e.g. after the Singapore answer, "any relevant news on customer X I
@@ -194,6 +240,12 @@ parsed sentinel blocks out of its replies).
 Slot carry semantics across turns (TM1 `ConversationBuffer`, adopted verbatim): omitted slot →
 carry previous; explicit empty → clear; new value → **replace, never merge**. Stored in
 `conversations.state` (doc 05) so a resumed chat parses identically.
+
+Four report slots ride in `ConversationSlots` and `conversations.state` (Phase 17 PR A2):
+`perspective` (`customer | supplier | book`), `office_column`, `office_value` and `report_ref`
+(the open report's run id). The report flow writes them; `data_qa.metric_query` reads the office
+pair for `scope` stamping and `reporting.report_lookup` reads `report_ref`. They follow the
+carry rules above and are rendered into the router's state block (doc 03 section 3).
 
 Cross-turn value pass-through (mom-comparison's strongest idea, kept): when a skill returns
 ranked entities (e.g. top movers), the exact values are stored in conversation state and injected
