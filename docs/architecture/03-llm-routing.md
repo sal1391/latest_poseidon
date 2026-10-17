@@ -95,8 +95,8 @@ brief for X"), never as a filter on available skills.
    lines, each anchored on its own label so none can be read as a carried customer or port:
    `Carried perspective: {p} (ranks {column}; office column {c})`, `Carried office: {col} =
    {value}. data_qa.metric_query applies it when scope="office" (the default). Use
-   scope="book" ...` and `Report context: {scope}. Quote the report's own figures only through
-   reporting.report_lookup.` Internal skills are not in the router's tool list, and the loop
+   scope="book" ...` and `Report context: {report_label}. Quote the report's own figures only through
+   reporting.report_lookup.` The `report_label` slot carries the report's own months, so a later follow-up that moves the carried periods never changes this line. Internal skills are not in the router's tool list, and the loop
    refuses a call to one with a 403 `internal skill` problem.
 5. `ParsedTurn` rendered as a structured context block + conversation window.
 

@@ -492,6 +492,7 @@ def _report_slots(**overrides) -> ConversationSlots:
         office_column="PRIMARY_SUPPLY_TEAM_OFFICE",
         office_value="MED SUPPLY OFFICE",
         report_ref="run-1",
+        report_label="MED SUPPLY OFFICE, June 2026 vs May 2026",
     )
     fields.update(overrides)
     return ConversationSlots(**fields)
@@ -519,9 +520,31 @@ def test_render_state_block_report_lines_golden():
     assert dev_router._CARRIED_PORT_RE.search(rendered) is None
 
 
+def test_report_context_line_ignores_the_carried_periods():
+    rendered = render_state_block(
+        _report_slots(
+            report_label="Rotterdam, June 2026 vs May 2026",
+            period_a=date(2026, 4, 1),
+            period_a_end=date(2026, 5, 1),
+            period_b=date(2026, 3, 1),
+            period_b_end=date(2026, 4, 1),
+        ),
+        None,
+    )
+
+    assert "Report context: Rotterdam, June 2026 vs May 2026. Quote" in rendered
+    assert "Carried period A: April 2026" in rendered
+
+
 def test_render_state_block_book_report_has_no_office_line():
     rendered = render_state_block(
-        _report_slots(perspective="book", office_column=None, office_value=None), None
+        _report_slots(
+            perspective="book",
+            office_column=None,
+            office_value=None,
+            report_label="Whole book, June 2026 vs May 2026",
+        ),
+        None,
     )
 
     assert "Carried perspective: book (ranks CUST_NM; no office column)" in rendered

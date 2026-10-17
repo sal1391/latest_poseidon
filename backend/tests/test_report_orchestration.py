@@ -18,7 +18,11 @@ import pytest
 
 from poseidon.core.chat.dev_router import DevDeterministicRouter
 from poseidon.core.chat.events import SseEnvelopeSink
-from poseidon.core.chat.orchestrator import ENTRY_PHRASE_REPORT, execute_turn
+from poseidon.core.chat.orchestrator import (
+    ENTRY_PHRASE_EXISTING,
+    ENTRY_PHRASE_REPORT,
+    execute_turn,
+)
 from poseidon.core.chat.report_flow import (
     MONTH_PROMPT,
     MTD_DAY_ONE,
@@ -296,6 +300,7 @@ def test_month_step_dispatches_the_report_and_seeds_the_slots(monkeypatch):
     slots = flow.slots
     assert slots.mode == "default"
     assert slots.report_ref == run_id
+    assert slots.report_label == "Gibraltar Office, June 2026 vs May 2026"
     assert (slots.period_a, slots.period_a_end) == (date(2026, 6, 1), date(2026, 7, 1))
     assert (slots.period_b, slots.period_b_end) == (date(2026, 5, 1), date(2026, 6, 1))
     assert slots.perspective == "customer"
@@ -381,8 +386,44 @@ def test_second_entry_click_starts_over(monkeypatch):
         None,
         None,
     )
+    assert slots.report_label is None
     # the periods the report carried survive the reset
     assert slots.period_a == date(2026, 6, 1)
+
+
+def test_a_brief_entry_mid_flow_clears_the_report_fields(monkeypatch):
+    flow = _Flow(monkeypatch)
+    flow.to_month_step()
+    assert flow.slots.perspective == "customer"
+    assert flow.slots.office_value == "Gibraltar Office"
+
+    outcome, _ = flow.say(ENTRY_PHRASE_EXISTING)
+
+    assert outcome.status == "clarify"
+    slots = flow.slots
+    assert slots.mode == "existing_customer"
+    assert (
+        slots.perspective,
+        slots.office_column,
+        slots.office_value,
+        slots.report_ref,
+        slots.report_label,
+    ) == (None, None, None, None, None)
+
+
+def test_a_brief_entry_after_a_finished_report_keeps_the_office(monkeypatch):
+    flow = _Flow(monkeypatch)
+    flow.to_month_step()
+    flow.say("June 2026")
+    run_id = flow.slots.report_ref
+    assert run_id is not None
+
+    flow.say(ENTRY_PHRASE_EXISTING)
+
+    slots = flow.slots
+    assert slots.mode == "existing_customer"
+    assert slots.office_value == "Gibraltar Office"
+    assert slots.report_ref == run_id
 
 
 def test_a_question_after_the_report_routes_with_the_carried_office(monkeypatch):

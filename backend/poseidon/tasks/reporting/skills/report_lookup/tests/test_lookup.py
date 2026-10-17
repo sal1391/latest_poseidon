@@ -173,6 +173,15 @@ def test_context_for_a_book_report_is_a_sentence(registry):
     ]
 
 
+def test_context_for_an_office_report_with_no_movers_is_an_empty_table(registry):
+    office = minimal_payload(entity_context={})
+    result = _lookup(registry, _ctx(store=_FakeStore(office)), section="context")
+    (part,) = result.parts
+    assert part["kind"] == "table"
+    assert part["payload"]["rows"] == []
+    assert "rows 1-0 of 0" in " ".join(result.proof)
+
+
 def test_context_table_joins_offsets_and_ports(registry):
     result = _lookup(registry, _ctx(), section="context")
     (part,) = result.parts

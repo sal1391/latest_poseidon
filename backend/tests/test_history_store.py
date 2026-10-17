@@ -123,6 +123,7 @@ def test_slots_to_json_and_back_round_trips_a_populated_instance():
         "office_column": None,
         "office_value": None,
         "report_ref": None,
+        "report_label": None,
     }
     assert slots_from_json(raw) == slots
 
@@ -133,6 +134,7 @@ def test_slots_round_trip_carries_the_report_fields():
         office_column="PRIMARY_SUPPLY_TEAM_OFFICE",
         office_value="MED SUPPLY OFFICE",
         report_ref="run-1",
+        report_label="MED SUPPLY OFFICE, June 2026 vs May 2026",
     )
 
     raw = slots_to_json(slots)
@@ -141,6 +143,7 @@ def test_slots_round_trip_carries_the_report_fields():
     assert raw["office_column"] == "PRIMARY_SUPPLY_TEAM_OFFICE"
     assert raw["office_value"] == "MED SUPPLY OFFICE"
     assert raw["report_ref"] == "run-1"
+    assert raw["report_label"] == "MED SUPPLY OFFICE, June 2026 vs May 2026"
     assert slots_from_json(raw) == slots
 
 
@@ -151,6 +154,7 @@ def test_slots_from_json_without_report_keys_reads_none():
     assert slots.office_column is None
     assert slots.office_value is None
     assert slots.report_ref is None
+    assert slots.report_label is None
 
 
 def test_slots_to_json_and_back_round_trips_the_empty_default_instance():
@@ -173,6 +177,7 @@ def test_slots_to_json_and_back_round_trips_the_empty_default_instance():
         "office_column": None,
         "office_value": None,
         "report_ref": None,
+        "report_label": None,
     }
     assert slots_from_json(raw) == slots
 

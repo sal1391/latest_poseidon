@@ -90,7 +90,7 @@ def _clean(text: str) -> str:
 
 
 def flow_slots_reset(slots: ConversationSlots) -> ConversationSlots:
-    """A fresh report flow: mode ``report`` and the four report fields
+    """A fresh report flow: mode ``report`` and the five report fields
     cleared; every other slot (customer, periods, pass_through) is kept."""
     return dataclasses.replace(
         slots,
@@ -99,6 +99,7 @@ def flow_slots_reset(slots: ConversationSlots) -> ConversationSlots:
         office_column=None,
         office_value=None,
         report_ref=None,
+        report_label=None,
     )
 
 
@@ -240,6 +241,10 @@ def slots_after_report(slots: ConversationSlots, payload: dict) -> ConversationS
         period_b=date.fromisoformat(periods["prior"]["start"]),
         period_b_end=date.fromisoformat(periods["prior"]["end"]),
         report_ref=payload["run_id"],
+        report_label=(
+            f"{slots.office_value or 'Whole book'}, "
+            f"{periods['current']['label']} vs {periods['prior']['label']}"
+        ),
         pass_through=tuple((column, row["key"]) for row in rows),
     )
 

@@ -192,7 +192,7 @@ The monthly report flow (Phase 17 PR A2): a third entry phrase and a third
 pre-parse branch
 -----------------------------------------------------------------------------
 ``"start a monthly report"`` (``report_flow.ENTRY_PHRASE_REPORT``) is a third
-entry phrase: :func:`_finish_entry` resets the four report slots and asks the
+entry phrase: :func:`_finish_entry` resets the five report slots and asks the
 perspective (text, then chips). While ``slots.mode == "report"`` every turn is
 one step (:func:`_finish_report_step`): perspective, office (skipped for the
 whole book), month. A usable answer advances and writes the slots; an
@@ -1241,7 +1241,7 @@ def _finish_entry(
     via ``dataclasses.replace`` (the P6 pass_through precedent), one text
     part asking the subject, ``clarify`` finalize, no dispatch, no router.
 
-    Phase 17 PR A2: the report entry resets the four report slots
+    Phase 17 PR A2: the report entry resets the five report slots
     (``report_flow.flow_slots_reset``) and asks the perspective as a text
     part then a chips part; ``brief_done`` is left alone for that mode.
     ``data``/``reference_date`` are only read for the report entry.
@@ -1252,11 +1252,22 @@ def _finish_entry(
     below.
     """
     is_report = entry_mode == MODE_REPORT
-    new_slots = (
-        report_flow.flow_slots_reset(prior_slots)
-        if is_report
-        else dataclasses.replace(prior_slots, mode=entry_mode)
-    )
+    if is_report:
+        new_slots = report_flow.flow_slots_reset(prior_slots)
+    elif prior_slots.mode == MODE_REPORT:
+        # A brief entry mid-flow abandons the half-filled report; a finished
+        # report (mode "default") is untouched and keeps its carried office.
+        new_slots = dataclasses.replace(
+            prior_slots,
+            mode=entry_mode,
+            perspective=None,
+            office_column=None,
+            office_value=None,
+            report_ref=None,
+            report_label=None,
+        )
+    else:
+        new_slots = dataclasses.replace(prior_slots, mode=entry_mode)
     turn_index, turn_run_id, retry_outcome = _begin_turn(
         conversation_id=conversation_id,
         user=user,

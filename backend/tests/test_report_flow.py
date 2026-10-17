@@ -115,6 +115,7 @@ def test_slots_after_report_seeds_periods_ref_and_pass_through():
     assert (after.period_a, after.period_a_end) == (date(2026, 9, 1), date(2026, 10, 1))
     assert (after.period_b, after.period_b_end) == (date(2026, 8, 1), date(2026, 9, 1))
     assert after.report_ref == "run-test-0001"
+    assert after.report_label == "Rotterdam, September 2026 vs August 2026"
     assert after.pass_through == (
         ("CUST_NM", "Meridian Bunkering"),
         ("CUST_NM", "Northstar Lines"),
@@ -137,7 +138,7 @@ def test_slots_after_report_caps_pass_through_at_ten():
     assert after.pass_through[-1] == ("CUST_NM", "Customer 9")
 
 
-def test_flow_slots_reset_clears_the_four_fields_and_keeps_the_rest():
+def test_flow_slots_reset_clears_the_five_fields_and_keeps_the_rest():
     slots = ConversationSlots(
         customer="Northstar Lines",
         period_a=date(2026, 6, 1),
@@ -147,15 +148,17 @@ def test_flow_slots_reset_clears_the_four_fields_and_keeps_the_rest():
         office_column="CUSTOMER_TEAM_NAME",
         office_value="Gibraltar Office",
         report_ref="run-1",
+        report_label="Gibraltar Office, June 2026 vs May 2026",
     )
     reset = rf.flow_slots_reset(slots)
     assert reset.mode == "report"
-    assert (reset.perspective, reset.office_column, reset.office_value, reset.report_ref) == (
-        None,
-        None,
-        None,
-        None,
-    )
+    assert (
+        reset.perspective,
+        reset.office_column,
+        reset.office_value,
+        reset.report_ref,
+        reset.report_label,
+    ) == (None, None, None, None, None)
     assert reset.customer == "Northstar Lines"
     assert (reset.period_a, reset.period_a_end) == (date(2026, 6, 1), date(2026, 7, 1))
     assert reset.pass_through == (("CUST_NM", "Northstar Lines"),)

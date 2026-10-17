@@ -39,11 +39,12 @@ export function RankedTables({ tables, entityLabel }: { tables: ReportPayload["t
   const { rows, other, footer } = tab.table;
   return (
     <section className="space-y-2">
-      <div role="group" aria-label="Ranked tables" className="flex flex-wrap gap-1">
+      <div role="tablist" aria-label="Ranked tables" className="flex flex-wrap gap-1">
         {tabs.map((t) => (
           <button
             key={t.id}
             type="button"
+            role="tab"
             aria-selected={t.id === active}
             onClick={() => setActive(t.id)}
             className={`rounded-md border px-2 py-1 text-sm ${t.id === active ? "border-neutral-500 font-medium" : "border-neutral-200 dark:border-neutral-800"}`}
@@ -52,7 +53,7 @@ export function RankedTables({ tables, entityLabel }: { tables: ReportPayload["t
           </button>
         ))}
       </div>
-      <div className="overflow-x-auto">
+      <div role="tabpanel" className="overflow-x-auto">
         <table className="w-full border-collapse text-sm">
           <thead>
             <tr>

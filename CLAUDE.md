@@ -36,13 +36,13 @@ doc as current. Decisions taken in feature specs used to not propagate; that is 
 ## Commands — verified 2026-10-16 (Phase 17 PR A2), copy-pasteable
 
 ```bash
-# Offline Python suite -> 2255 passed, 15 skipped, 130 deselected (~180s)
+# Offline Python suite -> 2259 passed, 15 skipped, 130 deselected (~180s)
 cd backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest \
   -p no:cacheprovider \
   -m 'not pg and not minio and not pdf and not router_live and not research_live'
 
 # Postgres-backed suite (needs the compose `db` service up; DATABASE_URL points at it, e.g.
-# postgresql+psycopg://poseidon:poseidon@localhost:5434/poseidon under the dev override) -> 354 passed, 1 skipped
+# postgresql+psycopg://poseidon:poseidon@localhost:5434/poseidon when the compose db is started with a port override; the tracked compose file maps 5432) -> 354 passed, 1 skipped
 # (Drizzle-only database; Alembic no longer owns this schema, D58)
 cd backend && .venv/Scripts/python.exe -B -m pytest -p no:cacheprovider -m pg
 
@@ -58,7 +58,7 @@ cd backend && POSEIDON_UPDATE_CONTRACTS=1 .venv/Scripts/python.exe -B -m pytest 
 cd frontend && npm test -- --run
 cd frontend && npm run lint
 
-# Web (Next.js) -> 169 passed, 14 skipped, offline (21 files passed, 1 skipped; db-backed files
+# Web (Next.js) -> 170 passed, 14 skipped, offline (21 files passed, 1 skipped; db-backed files
 # skip without DRIZZLE_DATABASE_URL). The web package has NO lint script: its static gate is tsc.
 cd web && npm test
 cd web && npx tsc --noEmit             # clean
@@ -74,10 +74,10 @@ cd web && npx drizzle-kit migrate      # reads DRIZZLE_DATABASE_URL
 ```
 
 **All figures above verified 2026-10-16 (Phase 17 PR A2), each run once, to its own file, never
-piped:** offline Python 2255 passed, 15 skipped, 130 deselected; `ruff check` clean;
+piped:** offline Python 2259 passed, 15 skipped, 130 deselected; `ruff check` clean;
 `tests/contracts` 9 passed (`contracts/` unchanged by the final task); pg suite 354 passed, 1
-skipped, run serially against the compose `db` service (host port 5434 under the dev override);
-web `npm test` 169 passed, 14 skipped offline (the DRIZZLE_DATABASE_URL-set figure was not re-run);
+skipped, run serially against the compose `db` service (host port 5434 when the compose db is started with a port override; the tracked compose file maps 5432);
+web `npm test` 170 passed, 14 skipped offline (the DRIZZLE_DATABASE_URL-set figure was not re-run);
 web `npx tsc --noEmit` clean; Vite frontend 171 passed in 18 files and `npm run lint` clean (the
 Vite app is untouched by PR A2, figures refreshed only). The web package defines no lint script,
 so there is no web lint figure.

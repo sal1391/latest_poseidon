@@ -862,6 +862,7 @@ def slots_to_json(slots: ConversationSlots) -> dict:
         "office_column": slots.office_column,
         "office_value": slots.office_value,
         "report_ref": slots.report_ref,
+        "report_label": slots.report_label,
     }
 
 
@@ -890,6 +891,7 @@ def slots_from_json(raw: dict) -> ConversationSlots:
         office_column=raw.get("office_column"),
         office_value=raw.get("office_value"),
         report_ref=raw.get("report_ref"),
+        report_label=raw.get("report_label"),
     )
 
 

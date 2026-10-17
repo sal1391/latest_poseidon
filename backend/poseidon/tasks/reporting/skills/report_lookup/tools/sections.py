@@ -56,7 +56,7 @@ def render(
         return _narrative(payload, proof)
     if section == "context":
         context = payload.get("entity_context")
-        if not context:
+        if context is None:
             text = "A whole-book report has no entity context."
             return [text_part(text)], [*proof, "Section: context"]
         return _paged(section, _context_table(payload, context), limit, offset, proof)

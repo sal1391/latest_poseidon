@@ -378,11 +378,7 @@ def _render_report_lines(slots: ConversationSlots) -> list[str]:
             "account, other locations or offices, or a share of the total."
         )
     if slots.report_ref is not None:
-        scope = slots.office_value or "Whole book"
-        if slots.period_a is not None and slots.period_b is not None:
-            label_a = label_window(slot_window(slots.period_a, slots.period_a_end))
-            label_b = label_window(slot_window(slots.period_b, slots.period_b_end))
-            scope = f"{scope}, {label_a} vs {label_b}"
+        scope = slots.report_label or slots.office_value or "Whole book"
         lines.append(
             f"Report context: {scope}. Quote the report's own figures only through "
             "reporting.report_lookup."

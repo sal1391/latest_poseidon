@@ -137,7 +137,7 @@ GP customers for Port of Singapore in April 2026" → breakdown spec (metric `GP
 exact pass-through. Ambiguity produces clarification chips, never guesses.
 
 **`data_qa.metric_query` extensions (Phase 17 PR A2).** The skill takes `scope: "office" | "book"`
-(default `"office"`). With a carried office (section 5) and `scope="office"`, the query builder
+(default `"office"`). With a carried office (section 5) and `scope="office"`, `metric_query`'s `skill.run`
 stamps the office filter on the office column, replacing any model-supplied filter on that
 column; it is not applied when the column is not a certified dimension of the entity, and the
 proof says so. `scope="book"` drops the carried office and says that too. The proof's last line
@@ -150,7 +150,7 @@ merges them; when GP and VOLUME are both requested every comparison table gains 
 **`reporting.report_lookup`** (router-visible; Phase 17 PR A2): reads one section of the report
 open in the conversation (`kpis`, `entities_by_gp`, `entities_by_volume`, `ports_by_gp`,
 `ports_by_volume`, `deal_class`, `movers`, `new_lost`, `narrative`, `context`) from the stored
-`report_run` row via `SkillContext.report_store` and `conversation_id`, with `limit`/`offset`
+`report_run` row named by `slots.report_ref` through `SkillContext.report_store`, with `limit`/`offset`
 paging. It runs no query, so every figure it returns is one the report already showed. With no
 open report it answers a text part ("open a report first", `ok=true`) that the router relays
 (D72).
@@ -241,9 +241,9 @@ Slot carry semantics across turns (TM1 `ConversationBuffer`, adopted verbatim): 
 carry previous; explicit empty → clear; new value → **replace, never merge**. Stored in
 `conversations.state` (doc 05) so a resumed chat parses identically.
 
-Four report slots ride in `ConversationSlots` and `conversations.state` (Phase 17 PR A2):
-`perspective` (`customer | supplier | book`), `office_column`, `office_value` and `report_ref`
-(the open report's run id). The report flow writes them; `data_qa.metric_query` reads the office
+Five report slots ride in `ConversationSlots` and `conversations.state` (Phase 17 PR A2):
+`perspective` (`customer | supplier | book`), `office_column`, `office_value`, `report_ref`
+(the open report's run id) and `report_label` (its scope and months, e.g. `Gibraltar Office, June 2026 vs May 2026`). The report flow writes them; `data_qa.metric_query` reads the office
 pair for `scope` stamping and `reporting.report_lookup` reads `report_ref`. They follow the
 carry rules above and are rendered into the router's state block (doc 03 section 3).
 

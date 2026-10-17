@@ -49,10 +49,23 @@ describe("ReportPart", () => {
     expect(screen.getByText("Decreases")).toBeTruthy();
     expect(screen.getAllByText("volume-driven").length).toBeGreaterThan(0);
     const key = payload.movers.decreases[0].key;
-    const ctx = payload.entity_context[key];
+    const ctx = payload.entity_context![key];
     const d = ctx.reconciliation.display;
     expect(screen.getByText(`Office ${d.office_change} | other offices ${d.other_offices_net} | book ${d.book_change}`)).toBeTruthy();
     expect(screen.getByText(`share of book ${ctx.share_of_book.display.prior} -> ${ctx.share_of_book.display.current}`)).toBeTruthy();
+  });
+
+  it("renders a whole-book report without entity context", () => {
+    const { container } = show({
+      ...payload,
+      scope: { perspective: "book", office_column: null, office_value: null, label: "Whole book" },
+      entity_context: null,
+    } as unknown as ReportPayload);
+    expect(screen.getByRole("heading", { level: 3 }).textContent).toBe("Whole book");
+    expect(screen.getByText("Increases")).toBeTruthy();
+    expect(screen.getAllByText("volume-driven").length).toBeGreaterThan(0);
+    expect(container.textContent).not.toContain("share of book");
+    expect(container.textContent).not.toContain("other offices");
   });
 
   it("narrative never renders links or html", () => {

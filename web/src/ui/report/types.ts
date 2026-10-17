@@ -43,7 +43,7 @@ export interface ReportNarrative {
 }
 export interface ReportPayload {
   entity: { column: string; label: string };
-  entity_context: Record<string, EntityContext>;
+  entity_context: Record<string, EntityContext> | null;
   generated_at: string;
   source: string;
   kpis: Record<string, Delta>;

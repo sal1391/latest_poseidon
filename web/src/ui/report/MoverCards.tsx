@@ -20,7 +20,7 @@ function Card({ mover, ctx }: { mover: Mover; ctx?: EntityContext }) {
   );
 }
 
-export function MoverCards({ movers, context }: { movers: { increases: Mover[]; decreases: Mover[] }; context: Record<string, EntityContext> }) {
+export function MoverCards({ movers, context }: { movers: { increases: Mover[]; decreases: Mover[] }; context: Record<string, EntityContext> | null }) {
   return (
     <div className="grid gap-3 sm:grid-cols-2">
       {(
@@ -33,7 +33,7 @@ export function MoverCards({ movers, context }: { movers: { increases: Mover[]; 
           <h4 className="mb-1 text-sm font-medium">{title}</h4>
           <ul className="space-y-2">
             {list.map((m) => (
-              <Card key={m.key} mover={m} ctx={context[m.key]} />
+              <Card key={m.key} mover={m} ctx={context?.[m.key]} />
             ))}
           </ul>
         </div>

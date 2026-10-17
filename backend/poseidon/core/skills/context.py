@@ -157,6 +157,7 @@ class ConversationSlots:
     office_column: str | None = None  # CUSTOMER_TEAM_NAME | PRIMARY_SUPPLY_TEAM_OFFICE
     office_value: str | None = None
     report_ref: str | None = None  # report_run.id of the last report in this conversation
+    report_label: str | None = None  # the report's scope and months, e.g. 'Rotterdam, June 2026'
 
 
 @dataclass(frozen=True)
