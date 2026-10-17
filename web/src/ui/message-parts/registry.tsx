@@ -6,6 +6,7 @@ import { ErrorPart } from "./ErrorPart";
 import { FallbackPart } from "./FallbackPart";
 import { MetricGridPart } from "./MetricGridPart";
 import { PhaseSectionPart } from "./PhaseSectionPart";
+import { ReportPart } from "../report/ReportPart";
 import { ProofPart } from "./ProofPart";
 import { TablePart } from "./TablePart";
 import { TextPart } from "./TextPart";
@@ -77,7 +78,7 @@ export interface PartProps {
   disabled?: boolean;
 }
 
-// The nine registered kinds plus FallbackPart = doc 01 section 4's ten.
+// The ten registered kinds plus FallbackPart (doc 01 section 4 plus report).
 const registry: Record<string, ComponentType<PartProps>> = {
   text: TextPart,
   chips: ChipsPart,
@@ -88,6 +89,7 @@ const registry: Record<string, ComponentType<PartProps>> = {
   metric_grid: MetricGridPart,
   artifact: ArtifactPart,
   phase_section: PhaseSectionPart,
+  report: ReportPart,
 };
 
 export function PartRenderer(props: PartProps) {
