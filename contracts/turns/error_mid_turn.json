@@ -65,7 +65,7 @@
    "data": {
     "code": "unknown skill",
     "event_seq": 6,
-    "message": "no skill is registered as 'data_qa.made_up'; registered: customer_insight.existing_customer_brief, customer_insight.new_prospect_brief, data_qa.metric_query, research.web_research",
+    "message": "no skill is registered as 'data_qa.made_up'; registered: customer_insight.existing_customer_brief, customer_insight.new_prospect_brief, data_qa.metric_query, reporting.report_lookup, research.web_research",
     "message_id": "msg-1",
     "turn_id": "turn-1"
    },
@@ -99,7 +99,7 @@
   "data": {
    "code": "unknown skill",
    "event_seq": 6,
-   "message": "no skill is registered as 'data_qa.made_up'; registered: customer_insight.existing_customer_brief, customer_insight.new_prospect_brief, data_qa.metric_query, research.web_research",
+   "message": "no skill is registered as 'data_qa.made_up'; registered: customer_insight.existing_customer_brief, customer_insight.new_prospect_brief, data_qa.metric_query, reporting.report_lookup, research.web_research",
    "message_id": "msg-1",
    "turn_id": "turn-1"
   },

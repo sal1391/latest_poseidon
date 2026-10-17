@@ -27,6 +27,7 @@ import os
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -235,15 +236,24 @@ def _call(args: dict, *, call_id: str = "tool-1", skill: str = METRIC_QUERY) -> 
     return ToolCall(id=call_id, name=skill, arguments=args)
 
 
+class _FakeReportStore:
+    """Serves ``minimal_payload()`` for whatever run the conversation points at."""
+
+    def get_run(self, user_sub, run_id):
+        return SimpleNamespace(payload=minimal_payload())
+
+
 def _context(
     settings: Settings, slots: ConversationSlots | None = None, tools: object | None = None
 ) -> SkillContext:
+    state = ConversationSlots() if slots is None else slots
     return SkillContext(
         data=FakeDataClient(),
         artifacts=None,
         settings=settings,
-        state=ConversationSlots() if slots is None else slots,
+        state=state,
         tools=tools,
+        report_store=_FakeReportStore() if state.report_ref else None,
     )
 
 
@@ -1522,6 +1532,7 @@ DOC_CASE_IDS = [
     "report_followup_why_gp_dropped",
     "report_followup_where_else",
     "supplier_report_break_down_by_customer",
+    "report_lookup_top_ports",
 ]
 
 ROUTING_CASES = yaml.safe_load(ROUTING_CASES_PATH.read_text(encoding="utf-8"))
@@ -1535,7 +1546,7 @@ _ARGS_SUBSET_DIMENSION = {"customer": "CUST_NM", "port": "LOC_NM", "supplier": "
 
 # Top-level Args fields an expectation may name directly. A dict value (a
 # period) is checkable only for presence, through the "*" pattern.
-_ARGS_SUBSET_TOP_LEVEL = ("group_by", "scope", "compare_period")
+_ARGS_SUBSET_TOP_LEVEL = ("group_by", "scope", "compare_period", "section")
 
 # doc 03 section 6's setup vocabulary -> the real ConversationSlots fields.
 _MODE_ALIASES = {"default": "default", "existing": "existing_customer", "prospect": "new_prospect"}
@@ -1637,12 +1648,12 @@ def test_exactly_two_cases_are_live_only_and_each_names_its_owning_phase():
     grows from 2 to 3 -- see the sibling test below. (Task 4/Phase 7 made
     the identical move for pivot_to_research_with_carry one case earlier.)
     Phase 17 PR A2 adds three stub-run report follow-ups: still two
-    live-only, six offline.
+    live-only; the report_lookup case makes it seven offline.
     """
     live_only = [case for case in ROUTING_CASES if case["execution"].get("live_only")]
 
     assert len(live_only) == 2
-    assert len(OFFLINE_CASES) == 6
+    assert len(OFFLINE_CASES) == 7
     for case in live_only:
         reason = case["execution"]["reason"]
         assert "Phase" in reason, case["id"]
@@ -1653,7 +1664,7 @@ def test_the_offline_cases_are_the_brief_metric_query_and_research_each_carrying
     ``test_routing_cases_are_doc_03_section_6_verbatim_in_order`` already
     pins to ``DOC_CASE_IDS`` -- so indexing ``[0]``/``[1]``/``[2]`` here is
     reading a guaranteed fixed order, not assuming one."""
-    assert len(OFFLINE_CASES) == 6
+    assert len(OFFLINE_CASES) == 7
 
     brief_case = OFFLINE_CASES[0]
     assert brief_case["id"] == "existing_brief_by_name"
@@ -1675,10 +1686,13 @@ def test_the_offline_cases_are_the_brief_metric_query_and_research_each_carrying
         "report_followup_why_gp_dropped",
         "report_followup_where_else",
         "supplier_report_break_down_by_customer",
+        "report_lookup_top_ports",
     ]
-    for case in followups:
+    for case in followups[:3]:
         assert case["expect"]["skill"] == METRIC_QUERY
         assert len(case["execution"]["stub_script"]) == 2
+    assert followups[3]["expect"]["skill"] == "reporting.report_lookup"
+    assert len(followups[3]["execution"]["stub_script"]) == 2
 
 
 def test_every_case_setup_maps_onto_real_conversation_slots():

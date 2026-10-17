@@ -205,12 +205,14 @@ def test_discovery_finds_all_five_registered_skills_and_four_router_visible():
         "customer_insight.new_prospect_brief",
         "data_qa.metric_query",
         "reporting.monthly_performance",
+        "reporting.report_lookup",
         "research.web_research",
     ]
     assert reg.router_skill_ids == [
         "customer_insight.existing_customer_brief",
         "customer_insight.new_prospect_brief",
         "data_qa.metric_query",
+        "reporting.report_lookup",
         "research.web_research",
     ]
     assert reg.get("reporting.monthly_performance").internal is True

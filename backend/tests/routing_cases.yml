@@ -228,3 +228,30 @@
         input_tokens: 1480
         output_tokens: 66
         text: "Here is the Vitol business broken down by customer."
+
+- id: report_lookup_top_ports
+  setup:
+    mode: default
+    state:
+      perspective: customer
+      office_column: CUSTOMER_TEAM_NAME
+      office_value: Rotterdam
+      report_ref: run-1
+  user: "what were the top ports in the report"
+  expect:
+    skill: reporting.report_lookup
+    args_subset: { section: ports_by_gp }
+  execution:
+    stub_script:
+      - stop_reason: tool_use
+        input_tokens: 1180
+        output_tokens: 70
+        tool_use:
+          id: tool-1
+          skill: reporting.report_lookup
+          arguments:
+            section: ports_by_gp
+      - stop_reason: end_turn
+        input_tokens: 1400
+        output_tokens: 60
+        text: "Here are the report's top ports by gross profit."

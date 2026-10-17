@@ -165,6 +165,7 @@ _METRIC_QUERY_DESCRIPTION = REGISTRY.get("data_qa.metric_query").description
 # Phase 7 Task 4: research.web_research joined the real registry as its
 # second enabled skill -- see test_get_skills_returns_registry_backed_shape
 # below.
+_REPORT_LOOKUP_DESCRIPTION = REGISTRY.get("reporting.report_lookup").description
 _RESEARCH_DESCRIPTION = REGISTRY.get("research.web_research").description
 # Phase 8 Task 4: both customer_insight brief skills join as the registry's
 # third and fourth entries (customer_insight sorts before data_qa).
@@ -906,6 +907,11 @@ async def test_get_skills_returns_registry_backed_shape():
             "id": "data_qa.metric_query",
             "label": "Metric query",
             "description": _METRIC_QUERY_DESCRIPTION,
+        },
+        {
+            "id": "reporting.report_lookup",
+            "label": "Report lookup",
+            "description": _REPORT_LOOKUP_DESCRIPTION,
         },
         {
             "id": "research.web_research",
