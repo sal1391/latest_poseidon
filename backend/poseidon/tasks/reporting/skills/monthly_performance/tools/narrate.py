@@ -156,9 +156,11 @@ def _parse(response: LLMResponse) -> _Reply | str:
     ):
         return _MALFORMED
     llm_md = narrative_md
+    if insights:
+        llm_md += "\n\n## Insights\n" + "\n".join(f"- {insight}" for insight in insights)
     if notes:
         llm_md += "\n\n## Notes\n" + "\n".join(f"- {note}" for note in notes)
-    grounding_text = "\n\n".join([llm_md, *insights])
+    grounding_text = llm_md  # the insights are inside it now
     return _Reply(llm_md=llm_md, grounding_text=grounding_text, questions=list(questions))
 
 

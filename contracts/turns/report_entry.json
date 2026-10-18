@@ -1,0 +1,108 @@
+{
+ "frames": [
+  {
+   "data": {
+    "event_seq": 1,
+    "message_id": "msg-1",
+    "turn_id": "turn-1",
+    "turn_index": 1
+   },
+   "event": "accepted"
+  },
+  {
+   "data": {
+    "event_seq": 2,
+    "kind": "text",
+    "message_id": "msg-1",
+    "payload": {
+     "markdown": "Monthly performance report. Which perspective?"
+    },
+    "turn_id": "turn-1"
+   },
+   "event": "part"
+  },
+  {
+   "data": {
+    "event_seq": 3,
+    "kind": "chips",
+    "message_id": "msg-1",
+    "payload": {
+     "options": [
+      {
+       "id": "customer",
+       "label": "Customer office",
+       "send_text": "customer office report"
+      },
+      {
+       "id": "supplier",
+       "label": "Supplier office",
+       "send_text": "supplier office report"
+      },
+      {
+       "id": "book",
+       "label": "Whole book",
+       "send_text": "whole book report"
+      }
+     ]
+    },
+    "turn_id": "turn-1"
+   },
+   "event": "part"
+  },
+  {
+   "data": {
+    "event_seq": 4,
+    "message_id": "msg-1",
+    "turn_id": "turn-1",
+    "usage": {
+     "input_tokens": 0,
+     "output_tokens": 0
+    }
+   },
+   "event": "done"
+  }
+ ],
+ "parts": [
+  {
+   "kind": "text",
+   "payload": {
+    "markdown": "Monthly performance report. Which perspective?"
+   }
+  },
+  {
+   "kind": "chips",
+   "payload": {
+    "options": [
+     {
+      "id": "customer",
+      "label": "Customer office",
+      "send_text": "customer office report"
+     },
+     {
+      "id": "supplier",
+      "label": "Supplier office",
+      "send_text": "supplier office report"
+     },
+     {
+      "id": "book",
+      "label": "Whole book",
+      "send_text": "whole book report"
+     }
+    ]
+   }
+  }
+ ],
+ "scenario": "report_entry",
+ "terminal": {
+  "data": {
+   "event_seq": 4,
+   "message_id": "msg-1",
+   "turn_id": "turn-1",
+   "usage": {
+    "input_tokens": 0,
+    "output_tokens": 0
+   }
+  },
+  "event": "done"
+ }
+}

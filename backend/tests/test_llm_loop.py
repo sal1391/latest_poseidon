@@ -27,6 +27,7 @@ import os
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -42,6 +43,7 @@ from poseidon.core.llm.loop import (
     RecordingSink,
     ToolRecord,
     TurnResult,
+    _part_content,
     run_turn,
     tool_result_digest,
 )
@@ -56,6 +58,9 @@ from poseidon.core.skills.registry import RegisteredSkill, SkillRegistry
 from poseidon.core.skills.result import SkillResult, problem, table_part, text_part
 from poseidon.mcp.perplexity.fixture_tool import FixtureResearchTool
 from poseidon.mcp.registry import ToolServerRegistry
+from poseidon.tasks.reporting.skills.monthly_performance.tests.payload_fixture import (
+    minimal_payload,
+)
 
 REQUIRED_ENV = {
     "DATABASE_URL": "postgresql+psycopg://x:x@localhost:5432/poseidon",
@@ -231,15 +236,24 @@ def _call(args: dict, *, call_id: str = "tool-1", skill: str = METRIC_QUERY) -> 
     return ToolCall(id=call_id, name=skill, arguments=args)
 
 
+class _FakeReportStore:
+    """Serves ``minimal_payload()`` for whatever run the conversation points at."""
+
+    def get_run(self, user_sub, run_id):
+        return SimpleNamespace(payload=minimal_payload())
+
+
 def _context(
     settings: Settings, slots: ConversationSlots | None = None, tools: object | None = None
 ) -> SkillContext:
+    state = ConversationSlots() if slots is None else slots
     return SkillContext(
         data=FakeDataClient(),
         artifacts=None,
         settings=settings,
-        state=ConversationSlots() if slots is None else slots,
+        state=state,
         tools=tools,
+        report_store=_FakeReportStore() if state.report_ref else None,
     )
 
 
@@ -400,6 +414,39 @@ def test_router_guardrail_entity_matches_the_parser_default_entity():
 # ===========================================================================
 # tool_result_digest -- the context-hygiene contract, unit level
 # ===========================================================================
+
+
+def test_a_stub_router_naming_an_internal_skill_is_refused_without_dispatch(settings, monkeypatch):
+    calls: list[str] = []
+    real_dispatch = REGISTRY.dispatch
+
+    def spy(skill_id, raw_args, ctx):
+        calls.append(skill_id)
+        return real_dispatch(skill_id, raw_args, ctx)
+
+    monkeypatch.setattr(REGISTRY, "dispatch", spy)
+    script = [
+        _tool_use(_call({"anything": 1}, skill="reporting.monthly_performance")),
+        _end_turn("Sorry."),
+    ]
+
+    result, sink, _ = _run(settings, script)
+
+    assert result.tool_records[0].status == "error"
+    done = [payload for kind, payload in sink.events if kind == "tool_done"][0]
+    assert done["problem"]["title"] == "internal skill"
+    assert done["problem"]["status"] == 403
+    assert calls == []
+
+
+def test_report_part_content_is_a_one_line_summary():
+    lines = _part_content(1, {"kind": "report", "payload": minimal_payload()})
+
+    assert len(lines) == 1
+    assert "run-test-0001" in lines[0]
+    assert "Rotterdam (Customer Broker Office)" in lines[0]
+    assert "September 2026 vs August 2026" in lines[0]
+    assert "kpis" not in lines[0]
 
 
 def test_digest_success_pins_kind_row_count_and_proof():
@@ -1481,6 +1528,11 @@ DOC_CASE_IDS = [
     "default_data_qa_breakdown",
     "pivot_to_research_with_carry",
     "post_brief_pivot_to_internal",
+    # Phase 17 PR A2: report follow-ups, appended after doc 03's five.
+    "report_followup_why_gp_dropped",
+    "report_followup_where_else",
+    "supplier_report_break_down_by_customer",
+    "report_lookup_top_ports",
 ]
 
 ROUTING_CASES = yaml.safe_load(ROUTING_CASES_PATH.read_text(encoding="utf-8"))
@@ -1490,7 +1542,11 @@ OFFLINE_CASES = [case for case in ROUTING_CASES if not case["execution"].get("li
 # ("metric", "port"), not of a skill's ``Args`` model ("metrics", a LOC_NM
 # dimension filter). This table is the one place that gap is bridged, so the
 # doc's cases stay transcribed verbatim and still execute.
-_ARGS_SUBSET_DIMENSION = {"customer": "CUST_NM", "port": "LOC_NM"}
+_ARGS_SUBSET_DIMENSION = {"customer": "CUST_NM", "port": "LOC_NM", "supplier": "SUPPLIER_NM"}
+
+# Top-level Args fields an expectation may name directly. A dict value (a
+# period) is checkable only for presence, through the "*" pattern.
+_ARGS_SUBSET_TOP_LEVEL = ("group_by", "scope", "compare_period", "section")
 
 # doc 03 section 6's setup vocabulary -> the real ConversationSlots fields.
 _MODE_ALIASES = {"default": "default", "existing": "existing_customer", "prospect": "new_prospect"}
@@ -1508,9 +1564,9 @@ def _filter_values(arguments: dict, column: str) -> list[str]:
 def _candidate_values(key: str, arguments: dict) -> list[str]:
     if key == "metric":
         return [str(value) for value in arguments.get("metrics") or []]
-    if key == "group_by":
-        group_by = arguments.get("group_by")
-        return [] if group_by is None else [str(group_by)]
+    if key in _ARGS_SUBSET_TOP_LEVEL:
+        value = arguments.get(key)
+        return [] if value is None else [str(value)]
     values = _filter_values(arguments, _ARGS_SUBSET_DIMENSION[key])
     top_level = arguments.get(key)
     if isinstance(top_level, str):
@@ -1543,6 +1599,11 @@ def _slots_for(case: dict) -> ConversationSlots:
         kwargs["customer"] = state["active_customer"]
     if "mentioned_ports" in state:
         kwargs["pass_through"] = tuple(("mentioned port", p) for p in state["mentioned_ports"])
+    if "pass_through" in state:
+        kwargs["pass_through"] = tuple((label, value) for label, value in state["pass_through"])
+    for slot in ("perspective", "office_column", "office_value", "report_ref"):
+        if slot in state:
+            kwargs[slot] = state[slot]
     return ConversationSlots(**kwargs)
 
 
@@ -1586,11 +1647,13 @@ def test_exactly_two_cases_are_live_only_and_each_names_its_owning_phase():
     enabled), so the live-only count drops from 3 to 2 and OFFLINE_CASES
     grows from 2 to 3 -- see the sibling test below. (Task 4/Phase 7 made
     the identical move for pivot_to_research_with_carry one case earlier.)
+    Phase 17 PR A2 adds three stub-run report follow-ups: still two
+    live-only; the report_lookup case makes it seven offline.
     """
     live_only = [case for case in ROUTING_CASES if case["execution"].get("live_only")]
 
     assert len(live_only) == 2
-    assert len(OFFLINE_CASES) == 3
+    assert len(OFFLINE_CASES) == 7
     for case in live_only:
         reason = case["execution"]["reason"]
         assert "Phase" in reason, case["id"]
@@ -1601,7 +1664,7 @@ def test_the_offline_cases_are_the_brief_metric_query_and_research_each_carrying
     ``test_routing_cases_are_doc_03_section_6_verbatim_in_order`` already
     pins to ``DOC_CASE_IDS`` -- so indexing ``[0]``/``[1]``/``[2]`` here is
     reading a guaranteed fixed order, not assuming one."""
-    assert len(OFFLINE_CASES) == 3
+    assert len(OFFLINE_CASES) == 7
 
     brief_case = OFFLINE_CASES[0]
     assert brief_case["id"] == "existing_brief_by_name"
@@ -1618,6 +1681,19 @@ def test_the_offline_cases_are_the_brief_metric_query_and_research_each_carrying
     assert research_case["expect"]["skill"] == RESEARCH
     assert len(research_case["execution"]["stub_script"]) == 2
 
+    followups = OFFLINE_CASES[3:]
+    assert [case["id"] for case in followups] == [
+        "report_followup_why_gp_dropped",
+        "report_followup_where_else",
+        "supplier_report_break_down_by_customer",
+        "report_lookup_top_ports",
+    ]
+    for case in followups[:3]:
+        assert case["expect"]["skill"] == METRIC_QUERY
+        assert len(case["execution"]["stub_script"]) == 2
+    assert followups[3]["expect"]["skill"] == "reporting.report_lookup"
+    assert len(followups[3]["execution"]["stub_script"]) == 2
+
 
 def test_every_case_setup_maps_onto_real_conversation_slots():
     """The live executor builds its context from these; proving the mapping
@@ -1629,6 +1705,16 @@ def test_every_case_setup_maps_onto_real_conversation_slots():
     assert slots["pivot_to_research_with_carry"].customer == "CUSTOMER_X"
     assert slots["post_brief_pivot_to_internal"].mode == "new_prospect"
     assert slots["post_brief_pivot_to_internal"].pass_through == (("mentioned port", "ROTTERDAM"),)
+    why = slots["report_followup_why_gp_dropped"]
+    assert (why.perspective, why.office_column, why.office_value, why.report_ref) == (
+        "customer",
+        "CUSTOMER_TEAM_NAME",
+        "Rotterdam",
+        "run-1",
+    )
+    supplier = slots["supplier_report_break_down_by_customer"]
+    assert supplier.perspective == "supplier"
+    assert supplier.pass_through == (("SUPPLIER_NM", "Vitol"),)
 
 
 # --- the args_subset matcher itself: it has to be able to FAIL ------------
@@ -1649,6 +1735,9 @@ def test_args_subset_matcher_accepts_the_doc_expectation():
         pytest.param({"port": "ROTTERDAM"}, id="wrong_port"),
         pytest.param({"port": "SINGAPOREAN"}, id="prefix_star_is_not_a_substring_match"),
         pytest.param({"customer": "MAERSK*"}, id="dimension_absent_entirely"),
+        pytest.param({"supplier": "VITOL"}, id="supplier_absent"),
+        pytest.param({"scope": "book"}, id="scope_absent"),
+        pytest.param({"compare_period": "*"}, id="compare_period_absent"),
     ],
 )
 def test_args_subset_matcher_rejects_a_wrong_expectation(args_subset):
@@ -1660,7 +1749,19 @@ def test_args_subset_matcher_rejects_an_unknown_expectation_key():
     """An expectation key nobody taught the matcher must be loud, never a
     silently-skipped assertion that turns a live case green for free."""
     with pytest.raises(KeyError):
-        assert_args_subset({"supplier": "X"}, GOOD_ARGS)
+        assert_args_subset({"vessel": "X"}, GOOD_ARGS)
+
+
+def test_args_subset_matcher_reads_scope_compare_period_and_supplier():
+    arguments = {
+        **COMPARE_ARGS,
+        "scope": "book",
+        "filters": [{"column": "SUPPLIER_NM", "values": ["Vitol"]}],
+    }
+
+    assert_args_subset({"scope": "book", "compare_period": "*", "supplier": "Vitol"}, arguments)
+    with pytest.raises(AssertionError):
+        assert_args_subset({"scope": "office"}, arguments)
 
 
 # --- stub executor --------------------------------------------------------

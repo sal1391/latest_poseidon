@@ -205,12 +205,14 @@ def test_discovery_finds_all_five_registered_skills_and_four_router_visible():
         "customer_insight.new_prospect_brief",
         "data_qa.metric_query",
         "reporting.monthly_performance",
+        "reporting.report_lookup",
         "research.web_research",
     ]
     assert reg.router_skill_ids == [
         "customer_insight.existing_customer_brief",
         "customer_insight.new_prospect_brief",
         "data_qa.metric_query",
+        "reporting.report_lookup",
         "research.web_research",
     ]
     assert reg.get("reporting.monthly_performance").internal is True
@@ -230,21 +232,22 @@ def test_metric_query_router_facing_fields_carry_descriptions():
     """The three fields a router gets wrong without help — which dimension a
     breakdown is over, that a comparison is a SECOND window, and how large a
     breakdown may be — must describe themselves in the generated schema, not
-    only in a Python comment the model never sees. ``group_by`` and
-    ``compare_period`` additionally state their mutual exclusion, because the
-    ``Args`` validator rejects the combination as a 422 and the cheapest place
-    to prevent that round trip is the tool definition itself."""
+    only in a Python comment the model never sees. Since Phase 17 A2 the two
+    combine: ``compare_period`` says what a breakdown with a second window
+    returns, and ``scope`` says when to leave the carried office."""
     reg = SkillRegistry.discover()
     schema = next(s for s in reg.tool_schemas if s["name"] == "data_qa.metric_query")
     properties = schema["input_schema"]["properties"]
 
     assert properties["group_by"]["description"] == (
-        "Certified dimension column to break down by (e.g. CUST_NM, LOC_NM). "
-        "Cannot be combined with compare_period."
+        "Certified dimension column to break down by (e.g. CUST_NM, LOC_NM)."
     )
     assert properties["compare_period"]["description"] == (
-        "Second window for side-by-side comparison. Cannot be combined with group_by."
+        "Second window for side-by-side comparison. With group_by, both windows run "
+        "and the result is one comparison table per metric."
     )
+    assert properties["scope"]["description"].startswith('Office scope. "office" (default)')
+    assert properties["scope"]["enum"] == ["office", "book"]
     assert properties["top_n"]["description"] == "Row limit for breakdowns, 1-50."
 
 

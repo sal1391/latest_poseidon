@@ -846,3 +846,31 @@ def test_entry_orchestration_module_files_are_ascii_on_disk():
     for path in paths:
         offending = sorted({byte for byte in path.read_bytes() if byte > 0x7F})
         assert not offending, f"{path.name} holds non-ASCII bytes: {offending}"
+
+
+# ===========================================================================
+# The opener's flow chips (Phase 17 PR A2 Task 6: a third, "Monthly report")
+# ===========================================================================
+
+
+def test_opener_flow_chips_carry_the_three_entry_phrases():
+    """Each opener chip sends the exact phrase an entry branch matches; the
+    third chip opens the monthly report flow."""
+    from poseidon.core.chat.history import _build_opener_parts
+
+    parts = _build_opener_parts()
+    assert [p["kind"] for p in parts] == ["text", "chips"]
+    assert parts[1]["payload"]["options"] == [
+        {
+            "id": "existing_customer",
+            "label": "Existing customer",
+            "send_text": "start an existing-customer brief",
+        },
+        {
+            "id": "new_prospect",
+            "label": "New customer prospect",
+            "send_text": "start a new-prospect brief",
+        },
+        {"id": "monthly_report", "label": "Monthly report", "send_text": "start a monthly report"},
+    ]
+    assert orchestrator.ENTRY_PHRASE_REPORT == "start a monthly report"

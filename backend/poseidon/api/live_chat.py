@@ -1048,6 +1048,11 @@ async def stream_turn(
                 profile_store=app_state.profile_store,
                 memory_store=app_state.memory_store,
                 outbox_store=app_state.outbox_store,
+                # Phase 17 PR A2: the report store and prompt tree
+                # _wire_live_chat builds; getattr because an app that never
+                # ran that wiring has neither.
+                report_store=getattr(app_state, "report_store", None),
+                prompt_tree=getattr(app_state, "prompt_tree", None),
             )
         except Exception as exc:  # noqa: BLE001 - a crash mid-turn must still end the stream cleanly
             # execute_turn's own contract only produces a `turn_error` frame

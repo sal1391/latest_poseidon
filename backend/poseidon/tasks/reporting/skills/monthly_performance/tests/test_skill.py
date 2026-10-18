@@ -2,6 +2,7 @@
 multi-office rows. Every number asserted below is derived by hand from
 fake_client.multi_office_rows() -- the derivations are in the comments."""
 
+import dataclasses
 from datetime import date
 
 import pytest
@@ -15,7 +16,10 @@ from poseidon.core.skills.context import ConversationSlots, SkillContext
 from poseidon.core.skills.registry import SkillRegistry
 from poseidon.tasks.reporting.skills.monthly_performance import skill as skill_module
 from poseidon.tasks.reporting.skills.monthly_performance.tests.fake_client import (
+    MAY,
     FakeDataClient,
+    FakeReportStore,
+    _row,
     multi_office_rows,
 )
 from poseidon.tasks.reporting.skills.monthly_performance.tools import render
@@ -27,14 +31,6 @@ USER = UserContext(
     sub="dev|alice", email="alice@example.com", name="Alice", roles=("Poseidon:Sales",)
 )
 JUNE = date(2026, 6, 1)
-
-
-class _FakeStore:
-    def __init__(self):
-        self.inserted = []
-
-    def insert_run(self, user_sub, run):
-        self.inserted.append((user_sub, run))
 
 
 class _ExplodingLLM:
@@ -64,7 +60,7 @@ def _ctx(data=None, store=None, llm=None, llm_mode="stub", user=USER):
         state=ConversationSlots(),
         llm=llm,
         user=user,
-        report_store=_FakeStore() if store is None else store,
+        report_store=FakeReportStore() if store is None else store,
     )
 
 
@@ -271,7 +267,7 @@ def test_payload_carries_a_hostile_name_verbatim(registry):
         dict(r, CUST_NM=hostile) if r["CUST_NM"] == "Atlas Tankers" else r
         for r in multi_office_rows()
     ]
-    store = _FakeStore()
+    store = FakeReportStore()
     payload = _payload(_run(registry, _ctx(data=FakeDataClient(rows=rows), store=store)))
     assert any(r["key"] == hostile for r in payload["tables"]["entities_by_gp"]["rows"])
     assert hostile in payload["entity_context"]
@@ -280,7 +276,7 @@ def test_payload_carries_a_hostile_name_verbatim(registry):
 
 
 def test_run_row_and_artifact(registry):
-    store = _FakeStore()
+    store = FakeReportStore()
     result = _run(registry, _ctx(store=store))
     payload = _payload(result)
     assert len(store.inserted) == 1
@@ -308,7 +304,7 @@ def test_pdf_failure_is_a_flag_not_a_failed_run(registry, monkeypatch):
         raise OSError("cannot load library 'gobject-2.0-0'")
 
     monkeypatch.setattr(render, "render_pdf", _boom)
-    store = _FakeStore()
+    store = FakeReportStore()
     result = _run(registry, _ctx(store=store))
     payload = _payload(result)
     assert "PDF not rendered: OSError" in payload["narrative"]["flags"]
@@ -348,7 +344,7 @@ def test_supplier_perspective_ranks_suppliers_in_the_supply_office(registry):
 def test_book_perspective_has_no_office_and_no_context(registry):
     """Whole book June: 130+40+140+150+66+12+5 = 543,000;
     May: 100+50+200+100+60+20+0+30 = 560,000."""
-    store = _FakeStore()
+    store = FakeReportStore()
     result = _run(registry, _ctx(store=store), perspective="book", office_value=None)
     payload = _payload(result)
     assert payload["scope"] == {"office_column": None, "office_value": None, "label": "Whole book"}
@@ -386,7 +382,7 @@ def test_customer_perspective_requires_an_office_value(registry):
 def test_office_with_rows_in_the_prior_month_only_is_an_ok_run_with_lost_entities(registry):
     """Malta Office: Solent Ferries in May only. Current is all zero, Solent
     is lost, the footers are zero, no narrative call, questions backfilled."""
-    store = _FakeStore()
+    store = FakeReportStore()
     ctx = _ctx(store=store, llm=_ExplodingLLM(), llm_mode="live")
     payload = _payload(_run(registry, ctx, office_value="Malta Office"))
     assert payload["kpis"]["GP"]["display"] == {
@@ -418,7 +414,7 @@ def test_office_with_rows_in_the_prior_month_only_is_an_ok_run_with_lost_entitie
 
 def test_no_rows_in_either_month_is_an_ok_run_with_no_data_sections(registry):
     """Valencia Office exists (April rows) but has nothing in May or June."""
-    store = _FakeStore()
+    store = FakeReportStore()
     ctx = _ctx(store=store, llm=_ExplodingLLM(), llm_mode="live")
     payload = _payload(_run(registry, ctx, office_value="Valencia Office"))
     assert payload["narrative"]["flags"] == ["no data in either month"]
@@ -447,7 +443,7 @@ def test_no_rows_in_either_month_is_an_ok_run_with_no_data_sections(registry):
 
 
 def test_month_absent_from_the_data_is_a_422_and_writes_nothing(registry):
-    store = _FakeStore()
+    store = FakeReportStore()
     result = _run(registry, _ctx(store=store), month="2026-03-01")
     assert result.ok is False and result.error["status"] == 422
     assert result.error["title"] == "no data for that month"
@@ -516,7 +512,7 @@ def test_missing_report_store_is_a_structured_500(registry):
 
 
 def test_reconciliation_failure_is_an_error_and_writes_no_row(registry):
-    store = _FakeStore()
+    store = FakeReportStore()
     result = _run(registry, _ctx(data=FakeDataClient(tamper_total=1.0), store=store))
     assert result.ok is False and result.error["status"] == 500
     assert result.error["title"] == "reconciliation failed"
@@ -529,7 +525,7 @@ def test_reconciliation_tolerates_half_a_cent(registry):
 
 
 def test_data_backend_error_is_a_500_and_writes_no_row(registry):
-    store = _FakeStore()
+    store = FakeReportStore()
     data = FakeDataClient(fail_frames_with=RuntimeError("connection reset"))
     result = _run(registry, _ctx(data=data, store=store))
     assert result.ok is False and result.error["status"] == 500
@@ -563,7 +559,8 @@ def test_row_scope_is_resolved_once_and_stamped_on_every_spec(registry, monkeypa
 def test_live_mode_uses_the_model_narrative_when_it_grounds(registry):
     ctx, provider = _live_ctx([_tool_reply(GOOD_NARRATIVE, GOOD_QUESTIONS)])
     payload = _payload(_run(registry, ctx))
-    assert payload["narrative"]["llm_md"] == GOOD_NARRATIVE
+    llm_md = payload["narrative"]["llm_md"]
+    assert llm_md.startswith(GOOD_NARRATIVE + "\n\n## Insights\n- ")
     assert payload["narrative"]["grounded"] is True and payload["narrative"]["flags"] == []
     assert payload["suggested_questions"] == GOOD_QUESTIONS
     assert len(provider.calls) == 1
@@ -578,7 +575,7 @@ def test_live_mode_uses_the_model_narrative_when_it_grounds(registry):
 def test_grounding_failure_twice_uses_the_template_and_flags_the_count(registry):
     """Review Focus 4: the retry names the offending sentence; the second
     failure withholds the model prose and shows the count."""
-    store = _FakeStore()
+    store = FakeReportStore()
     ctx, provider = _live_ctx(
         [_tool_reply(BAD_NARRATIVE, GOOD_QUESTIONS), _tool_reply(BAD_NARRATIVE, GOOD_QUESTIONS)],
         store=store,
@@ -601,7 +598,7 @@ def test_grounding_failure_then_success_keeps_the_retry(registry):
     payload = _payload(_run(registry, ctx))
     assert len(provider.calls) == 2
     assert (
-        payload["narrative"]["llm_md"] == GOOD_NARRATIVE
+        payload["narrative"]["llm_md"].startswith(GOOD_NARRATIVE + "\n\n## Insights\n- ")
         and payload["narrative"]["grounded"] is True
     )
 
@@ -637,7 +634,7 @@ def test_llm_exception_uses_the_template_and_flags_a_provider_error(registry):
         def invoke(self, *args, **kwargs):
             raise RuntimeError("boom")
 
-    store = _FakeStore()
+    store = FakeReportStore()
     result = _run(registry, _ctx(store=store, llm=_Boom(), llm_mode="live"))
     assert result.ok, result.error
     payload = result.parts[0]["payload"]
@@ -687,6 +684,71 @@ def test_no_llm_client_in_live_mode_is_a_flag(registry):
 
 
 def test_anonymous_caller_is_recorded_as_dev_anonymous(registry):
-    store = _FakeStore()
+    store = FakeReportStore()
     payload = _payload(_run(registry, _ctx(store=store, user=None)))
     assert store.inserted[0][0] == "dev|anonymous" and payload["generated_by"] == "dev|anonymous"
+
+
+def test_ports_rest_of_book_never_lists_a_flat_port(registry):
+    """Meridian also lifts at Tangier under Spain Office with identical GP in
+    both months: a zero change, so it must not appear among the rest-of-book
+    ports, while Algeciras (+50,000) still does."""
+    june_day = date(2026, 6, 10)
+    tangier = ("Meridian Bunkering", "BP", "Tangier", "Spain Office", "INVENTORY")
+    extra = [
+        _row(MAY, *tangier, 5_000, 100, 1, 1),
+        _row(june_day, *tangier, 5_000, 100, 1, 1),
+    ]
+    rows = multi_office_rows() + extra
+    payload = _payload(_run(registry, _ctx(data=FakeDataClient(rows=rows))))
+    ports = payload["entity_context"]["Meridian Bunkering"]["ports_rest_of_book"]
+    assert [p["key"] for p in ports] == ["Algeciras"]
+
+
+# ---------------------------------------------------------------------------
+# insights, stored-HTML flag, sanitised name, conversation_id
+# ---------------------------------------------------------------------------
+
+
+def test_model_insights_render_as_an_insights_section_in_llm_md(registry):
+    narrative = "Overall summary. " + GOOD_NARRATIVE
+    ctx, _ = _live_ctx([_tool_reply(narrative, GOOD_QUESTIONS)])
+    payload = _payload(_run(registry, ctx))
+    llm_md = payload["narrative"]["llm_md"]
+    assert payload["narrative"]["grounded"] is True
+    assert "\n\n## Insights\n- " in llm_md
+    assert llm_md.index("## Insights") > llm_md.index("Overall summary") and (
+        "## Notes" not in llm_md or llm_md.index("## Insights") < llm_md.index("## Notes")
+    )
+
+
+def test_stored_html_carries_the_pdf_not_rendered_flag(registry, monkeypatch):
+    monkeypatch.setattr(
+        render, "render_pdf", lambda html: (_ for _ in ()).throw(OSError("no pango"))
+    )
+    store = FakeReportStore()
+    _payload(_run(registry, _ctx(store=store)))
+    html = store.runs[-1].html.decode()
+    assert "PDF not rendered: OSError" in html
+
+
+def test_artifact_name_is_sanitised(registry):
+    office = 'Rotterdam/"x" Office'
+    rows = [
+        dict(r, CUSTOMER_TEAM_NAME=office) if r["CUSTOMER_TEAM_NAME"] == "Gibraltar Office" else r
+        for r in multi_office_rows()
+    ]
+    result = _run(registry, _ctx(data=FakeDataClient(rows=rows)), office_value=office)
+    payload = _payload(result)
+    assert result.artifacts[0].name == "Rotterdam__x_ Office June 2026.pdf"
+    assert payload["scope"]["office_value"] == office
+
+
+def test_conversation_id_reaches_the_run_row(registry):
+    store = FakeReportStore()
+    ctx = dataclasses.replace(_ctx(store=store), conversation_id="conv-42")
+    _payload(_run(registry, ctx))
+    assert store.runs[-1].conversation_id == "conv-42"
+    store2 = FakeReportStore()
+    _payload(_run(registry, _ctx(store=store2)))
+    assert store2.runs[-1].conversation_id is None

@@ -24,3 +24,10 @@ Nothing in these files is normalised. Every scenario runs offline against fixed 
 `msg-1`, and `turn-2`/`msg-2` for the replay scenario's retry) and a fixed reference date, so no
 uuid, clock, presigned URL or database value ever reaches a frame. If a future scenario introduces
 one, normalise it in `scenarios.to_json` and list it here.
+
+The two report scenarios (`report_entry`, `report_turn`) are the exception to "no clock, no uuid":
+`report_turn` pins `run_id` (`skill.uuid7`), `generated_at` (`skill._now`), the period window
+(`skill._today`), every `queries[].ms` (the report frames module's `time.perf_counter`, one
+millisecond per query) and the PDF bytes (`render.render_pdf`) through those five monkeypatched
+hooks, so the golden is byte-stable. A change to any of those hooks or their fixed values is a
+contract change.

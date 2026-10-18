@@ -2,6 +2,7 @@ import re
 
 import pytest
 
+from poseidon.core.analytics import mom
 from poseidon.tasks.reporting.skills.monthly_performance.tests.payload_fixture import (
     minimal_payload,
 )
@@ -141,3 +142,17 @@ def test_narrative_html_is_reentrant_across_calls():
     second = render.narrative_html("[d][ref]")
     assert "href" not in first
     assert "href" not in second
+
+
+def test_kpi_tiles_follow_kpi_metrics():
+    assert list(render.KPI_LABELS) == list(mom.KPI_METRICS)
+    html = render.render_html(minimal_payload())
+    assert html.index("Volume (tons)") < html.index("Gross profit") < html.index("Win rate")
+
+
+def test_ranked_table_headers_are_explicit_and_dead_markup_is_gone():
+    html = render.render_html(minimal_payload())
+    assert "data-run=" not in html and ".pos {" not in html and ".neg {" not in html
+    first = '<th class="name" rowspan="2">'
+    assert html.count(f"{first}Port</th>") == 2
+    assert f"{first}Deal class</th>" in html and f"{first}Name</th>" not in html

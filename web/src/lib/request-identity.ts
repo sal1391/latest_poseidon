@@ -37,3 +37,30 @@ export function requireSales(h: Headers | ReadonlyHeaders): { sub: string; roles
   }
   return { sub, roles };
 }
+
+/**
+ * The handler-side role gate for the report downloads: a missing role is a
+ * 403 problem body the caller can read, while a missing sub still throws
+ * (a proxy wiring fault, not a permission answer).
+ */
+export function salesOr403(
+  h: Headers | ReadonlyHeaders,
+): { ok: true; sub: string; roles: string[] } | { ok: false; response: Response } {
+  const sub = requireSub(h);
+  const roles = (h.get("x-poseidon-roles") ?? "").split(",").filter((r) => r !== "");
+  if (!roles.includes(SALES_ROLE)) {
+    return {
+      ok: false,
+      response: Response.json(
+        {
+          type: "about:blank",
+          title: "insufficient role",
+          detail: `caller lacks required role '${SALES_ROLE}'`,
+          status: 403,
+        },
+        { status: 403 },
+      ),
+    };
+  }
+  return { ok: true, sub, roles };
+}

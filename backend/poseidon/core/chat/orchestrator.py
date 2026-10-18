@@ -188,6 +188,22 @@ independently near-identical copies drifting apart. Behavior-preserving
 for the pre-existing normal path: identical kwargs, identical order,
 verified against this module's own pre-Task-5 test suite (zero diffs).
 
+The monthly report flow (Phase 17 PR A2): a third entry phrase and a third
+pre-parse branch
+-----------------------------------------------------------------------------
+``"start a monthly report"`` (``report_flow.ENTRY_PHRASE_REPORT``) is a third
+entry phrase: :func:`_finish_entry` resets the five report slots and asks the
+perspective (text, then chips). While ``slots.mode == "report"`` every turn is
+one step (:func:`_finish_report_step`): perspective, office (skipped for the
+whole book), month. A usable answer advances and writes the slots; an
+unusable one re-asks the step with its chips and writes nothing. The month is
+validated by the flow before dispatch, so a bad month never reaches a tool.
+A valid month is the report turn (:func:`_finish_report_turn`), which
+dispatches ``reporting.monthly_performance`` by hand exactly as the subject
+turn dispatches a brief, then returns the slots to ``default`` mode carrying
+the report's periods, run id, office and top entities. Every copy string and
+step function lives in the pure ``report_flow`` module.
+
 Ids: who mints what
 -----------------------
 ``turn_run_id`` IS :attr:`~poseidon.core.chat.events.SseEnvelopeSink.
@@ -270,7 +286,9 @@ from datetime import date
 from time import monotonic
 from typing import TYPE_CHECKING
 
+from poseidon.core.chat import report_flow
 from poseidon.core.chat.events import SseEnvelopeSink
+from poseidon.core.chat.report_flow import ENTRY_PHRASE_REPORT, MODE_REPORT
 from poseidon.core.chat.state import ConversationStateStore
 from poseidon.core.config import Settings
 from poseidon.core.data.client import DataClient
@@ -359,6 +377,9 @@ ENTRY_PHRASE_PROSPECT = "start a new-prospect brief"
 _ENTRY_MODE_BY_PHRASE = {
     ENTRY_PHRASE_EXISTING: _MODE_EXISTING,
     ENTRY_PHRASE_PROSPECT: _MODE_PROSPECT,
+    # Phase 17 PR A2: the monthly report flow. Its phrase and every copy
+    # string live in report_flow.py; this table only routes to it.
+    ENTRY_PHRASE_REPORT: MODE_REPORT,
 }
 
 _SUBJECT_PROMPT_BY_MODE = {
@@ -462,9 +483,19 @@ def execute_turn(
     profile_store: ProfileStore | None = None,
     memory_store: MemoryStore | None = None,
     outbox_store: OutboxStore | None = None,
+    report_store: object | None = None,
+    prompt_tree: object | None = None,
 ) -> TurnOutcome:
     """Run one chat turn to completion. See the module docstring for the
     full pinned order and the three terminal-state disciplines.
+
+    ``report_store``/``prompt_tree`` (Phase 17 PR A2, additive, default
+    ``None``) are threaded unexamined into the normal path's and the report
+    turn's ``SkillContext``, with ``conversation_id`` (the brief subject
+    turn's context does not need them): the report turn's dispatch of
+    ``reporting.monthly_performance`` needs the store and stamps the run with
+    the conversation, and a routed ``reporting.report_lookup`` reads the run
+    back through the same store.
 
     ``writer`` may be ``None`` (no ``DATABASE_URL`` configured) -- every
     writer call below is guarded by ``writer is not None and turn_run_id is
@@ -561,6 +592,8 @@ def execute_turn(
             writer=writer,
             sink=sink,
             outbox_store=outbox_store,
+            data=data,
+            reference_date=reference_date,
         )
 
     # D19, branch 2: the subject turn following a successful entry branch
@@ -583,6 +616,30 @@ def execute_turn(
             tools=tools,
             artifacts=artifacts,
             outbox_store=outbox_store,
+        )
+
+    # Phase 17 PR A2, branch 3: a turn inside the monthly report flow (one of
+    # its three steps) -- also checked BEFORE parse_turn.
+    if prior_slots.mode == MODE_REPORT:
+        return _finish_report_step(
+            text=text,
+            conversation_id=conversation_id,
+            user=user,
+            client_turn_key=client_turn_key,
+            prior_slots=prior_slots,
+            settings=settings,
+            registry=registry,
+            data=data,
+            state=state,
+            writer=writer,
+            role_client=role_client,
+            sink=sink,
+            reference_date=reference_date,
+            tools=tools,
+            artifacts=artifacts,
+            outbox_store=outbox_store,
+            report_store=report_store,
+            prompt_tree=prompt_tree,
         )
 
     # Phase 11 Task 2 (doc 06 section 3): a pure span() wrapper around this
@@ -700,6 +757,11 @@ def execute_turn(
         # THAT still needs the per-dispatch rebinding described above, and
         # remains genuinely out of this phase's sanctioned edit.
         emit_part=sink.part_emitter(1),
+        # Phase 17 PR A2: a routed reporting.report_lookup reads the carried
+        # report_ref's run back through this store.
+        report_store=report_store,
+        prompt_tree=prompt_tree,
+        conversation_id=conversation_id,
     )
     # Phase 13 Task 2: fetched ONCE per turn, not once per _router_prompt_
     # provenance/run_turn render -- see execute_turn's own docstring for why
@@ -1171,18 +1233,41 @@ def _finish_entry(
     writer: RunLogWriter | None,
     sink: SseEnvelopeSink,
     outbox_store: OutboxStore | None = None,
+    data: DataClient,
+    reference_date: date,
 ) -> TurnOutcome:
     """D19 branch 1: the bubble-entry phrase itself -- see the module
     docstring's "D19 entry orchestration" for the full contract. Mode set
     via ``dataclasses.replace`` (the P6 pass_through precedent), one text
     part asking the subject, ``clarify`` finalize, no dispatch, no router.
 
+    Phase 17 PR A2: the report entry resets the five report slots
+    (``report_flow.flow_slots_reset``) and asks the perspective as a text
+    part then a chips part; ``brief_done`` is left alone for that mode.
+    ``data``/``reference_date`` are only read for the report entry.
+
     ``outbox_store`` (Phase 13 Task 2, additive): threaded straight from
     ``execute_turn``'s own parameter of the same name -- see :func:`_touch_
     outbox`, called immediately after this function's own ``state.put``
     below.
     """
-    new_slots = dataclasses.replace(prior_slots, mode=entry_mode)
+    is_report = entry_mode == MODE_REPORT
+    if is_report:
+        new_slots = report_flow.flow_slots_reset(prior_slots)
+    elif prior_slots.mode == MODE_REPORT:
+        # A brief entry mid-flow abandons the half-filled report; a finished
+        # report (mode "default") is untouched and keeps its carried office.
+        new_slots = dataclasses.replace(
+            prior_slots,
+            mode=entry_mode,
+            perspective=None,
+            office_column=None,
+            office_value=None,
+            report_ref=None,
+            report_label=None,
+        )
+    else:
+        new_slots = dataclasses.replace(prior_slots, mode=entry_mode)
     turn_index, turn_run_id, retry_outcome = _begin_turn(
         conversation_id=conversation_id,
         user=user,
@@ -1198,8 +1283,13 @@ def _finish_entry(
         return retry_outcome
 
     started = monotonic()
-    prompt_text = _SUBJECT_PROMPT_BY_MODE[entry_mode]
-    sink.push_part("text", {"markdown": prompt_text})
+    if is_report:
+        parts = report_flow.step_parts("perspective", new_slots, data, reference_date)
+    else:
+        parts = [{"kind": "text", "payload": {"markdown": _SUBJECT_PROMPT_BY_MODE[entry_mode]}}]
+    prompt_text = parts[0]["payload"]["markdown"]
+    for part in parts:
+        sink.push_part(part["kind"], part["payload"])
     sink.done({"input_tokens": 0, "output_tokens": 0})
 
     latency_ms = int((monotonic() - started) * 1000)
@@ -1218,9 +1308,10 @@ def _finish_entry(
 
     state.put(conversation_id, new_slots)
     _touch_outbox(outbox_store=outbox_store, user_sub=user.sub, conversation_id=conversation_id)
-    # A second flow-chip click starts a SECOND brief in the same
-    # conversation -- never blocked by an earlier one's completion.
-    state.set_brief_done(conversation_id, False)
+    if not is_report:
+        # A second flow-chip click starts a SECOND brief in the same
+        # conversation -- never blocked by an earlier one's completion.
+        state.set_brief_done(conversation_id, False)
     return TurnOutcome(status="clarify", message_id=sink.message_id, turn_run_id=turn_run_id)
 
 
@@ -1449,6 +1540,323 @@ def _finish_subject_turn(
     except Exception as exc:  # noqa: BLE001 - a second failure must never re-terminate a finished turn
         logger.error(
             "pass-through repopulation failed: conversation_id=%s turn_run_id=%s: %s: %s",
+            conversation_id,
+            turn_run_id,
+            type(exc).__name__,
+            exc,
+        )
+
+    return TurnOutcome(status="ok", message_id=sink.message_id, turn_run_id=turn_run_id)
+
+
+def _finish_report_step(
+    *,
+    text: str,
+    conversation_id: str,
+    user: UserContext,
+    client_turn_key: str | None,
+    prior_slots: ConversationSlots,
+    settings: Settings,
+    registry: SkillRegistry,
+    data: DataClient,
+    state: ConversationStateStore,
+    writer: RunLogWriter | None,
+    role_client: RoleClient,
+    sink: SseEnvelopeSink,
+    reference_date: date,
+    tools: object | None,
+    artifacts: "ArtifactStore | None",
+    outbox_store: OutboxStore | None,
+    report_store: object | None,
+    prompt_tree: object | None,
+) -> TurnOutcome:
+    """Phase 17 PR A2, branch 3: one turn of the monthly report flow.
+
+    The step is read from the slots (``report_flow.step_for``). A usable
+    perspective or office answer advances to the next step's question (a
+    clarify turn, slots written); an unusable one re-asks the same step with
+    its chips (a clarify turn, slots NOT written). At the month step a
+    month that fails validation re-asks with the reason and the chips, and
+    no tool frame is sent; a valid month is the report turn
+    (:func:`_finish_report_turn`). All copy and step logic lives in
+    ``report_flow``; this function is only the turn plumbing.
+    """
+    step = report_flow.step_for(prior_slots)
+    _turn_index, turn_run_id, retry_outcome = _begin_turn(
+        conversation_id=conversation_id,
+        user=user,
+        text=text,
+        client_turn_key=client_turn_key,
+        mode=MODE_REPORT,
+        parsed_loggable={"report_step": step, "text": text},
+        state=state,
+        writer=writer,
+        sink=sink,
+    )
+    if retry_outcome is not None:
+        return retry_outcome
+
+    started = monotonic()
+
+    def ask(step_name, slots, reask=None, new_slots=None) -> TurnOutcome:
+        parts = report_flow.step_parts(step_name, slots, data, reference_date, reask=reask)
+        return _finish_report_clarify(
+            parts=parts,
+            new_slots=new_slots,
+            conversation_id=conversation_id,
+            user=user,
+            state=state,
+            writer=writer,
+            sink=sink,
+            turn_run_id=turn_run_id,
+            started=started,
+            outbox_store=outbox_store,
+        )
+
+    if step == "perspective":
+        perspective = report_flow.match_perspective(text)
+        if perspective is None:
+            return ask("perspective", prior_slots, reask=report_flow.PERSPECTIVE_REASK)
+        advanced = dataclasses.replace(
+            prior_slots,
+            perspective=perspective,
+            office_column=report_flow.OFFICE_COLUMN[perspective],
+        )
+        return ask(report_flow.step_for(advanced), advanced, new_slots=advanced)
+
+    if step == "office":
+        values = [
+            chip["id"] for chip in report_flow.office_chips(data, prior_slots.office_column or "")
+        ]
+        office = report_flow.match_office(text, values)
+        if office is None:
+            return ask("office", prior_slots, reask=report_flow.OFFICE_REASK)
+        advanced = dataclasses.replace(prior_slots, office_value=office)
+        return ask("month", advanced, new_slots=advanced)
+
+    choice = report_flow.resolve_month(text, data, reference_date)
+    if isinstance(choice, str):
+        return ask("month", prior_slots, reask=choice)
+    return _finish_report_turn(
+        choice=choice,
+        conversation_id=conversation_id,
+        user=user,
+        prior_slots=prior_slots,
+        settings=settings,
+        registry=registry,
+        data=data,
+        state=state,
+        writer=writer,
+        role_client=role_client,
+        sink=sink,
+        tools=tools,
+        artifacts=artifacts,
+        outbox_store=outbox_store,
+        report_store=report_store,
+        prompt_tree=prompt_tree,
+        turn_run_id=turn_run_id,
+        started=started,
+    )
+
+
+def _finish_report_clarify(
+    *,
+    parts: list[dict],
+    new_slots: ConversationSlots | None,
+    conversation_id: str,
+    user: UserContext,
+    state: ConversationStateStore,
+    writer: RunLogWriter | None,
+    sink: SseEnvelopeSink,
+    turn_run_id: str | None,
+    started: float,
+    outbox_store: OutboxStore | None,
+) -> TurnOutcome:
+    """A report-flow question: the parts (text, then chips), ``done``,
+    ``clarify`` finalize with the text as the summary. ``new_slots`` is
+    written only when the step advanced; a re-ask leaves the slots alone."""
+    for part in parts:
+        sink.push_part(part["kind"], part["payload"])
+    sink.done({"input_tokens": 0, "output_tokens": 0})
+
+    latency_ms = int((monotonic() - started) * 1000)
+    if writer is not None and turn_run_id is not None:
+        writer.finalize(
+            turn_run_id=turn_run_id,
+            user_sub=user.sub,
+            status="clarify",
+            message_id=sink.message_id,
+            answer_summary=_capped(parts[0]["payload"]["markdown"]),
+            input_tokens=0,
+            output_tokens=0,
+            latency_ms=latency_ms,
+            error=None,
+        )
+
+    if new_slots is not None:
+        state.put(conversation_id, new_slots)
+        _touch_outbox(outbox_store=outbox_store, user_sub=user.sub, conversation_id=conversation_id)
+    return TurnOutcome(status="clarify", message_id=sink.message_id, turn_run_id=turn_run_id)
+
+
+def _finish_report_turn(
+    *,
+    choice: report_flow.MonthChoice,
+    conversation_id: str,
+    user: UserContext,
+    prior_slots: ConversationSlots,
+    settings: Settings,
+    registry: SkillRegistry,
+    data: DataClient,
+    state: ConversationStateStore,
+    writer: RunLogWriter | None,
+    role_client: RoleClient,
+    sink: SseEnvelopeSink,
+    tools: object | None,
+    artifacts: "ArtifactStore | None",
+    outbox_store: OutboxStore | None,
+    report_store: object | None,
+    prompt_tree: object | None,
+    turn_run_id: str | None,
+    started: float,
+) -> TurnOutcome:
+    """The report turn: ``reporting.monthly_performance`` dispatched by hand,
+    mirroring :func:`_finish_subject_turn`'s dispatch block (tool frames,
+    one ``ToolRecord``, a synthetic ``TurnResult``, ``_append_records``).
+
+    Wire order: ``accepted, tool(start), tool(done), part report, part
+    proof, [part artifact], part chips, done`` -- the sink emits the report,
+    proof and artifact parts from ``tool_done``; the suggested questions
+    follow as one chips part, only when there are any. On success the slots
+    go back to ``default`` mode carrying the report (``report_flow.
+    slots_after_report``). On failure: one ``error`` frame, ``error``
+    finalize, and no ``state.put`` -- the flow stays at the month step.
+    """
+    skill_id = report_flow.REPORT_SKILL_ID
+    arguments = report_flow.report_arguments(prior_slots, choice)
+    context = SkillContext(
+        data=data,
+        artifacts=artifacts,
+        settings=settings,
+        state=prior_slots,
+        tools=tools,
+        user=user,
+        llm=role_client,
+        # tool_seq 1: the report is this turn's only dispatch.
+        emit_part=sink.part_emitter(1),
+        report_store=report_store,
+        prompt_tree=prompt_tree,
+        conversation_id=conversation_id,
+    )
+
+    sink.emit("tool_start", {"tool_seq": 1, "skill_id": skill_id, "arguments": dict(arguments)})
+    dispatch_started = monotonic()
+    result = registry.dispatch(skill_id, dict(arguments), context)
+    duration_ms = int((monotonic() - dispatch_started) * 1000)
+    digest = tool_result_digest(skill_id, result)
+    status = "ok" if result.ok else "error"
+    sink.emit(
+        "tool_done",
+        {
+            "tool_seq": 1,
+            "skill_id": skill_id,
+            "status": status,
+            "duration_ms": duration_ms,
+            "digest": digest,
+            "parts": result.parts,
+            "proof": result.proof,
+            "artifacts": result.artifacts,
+            "problem": result.error,
+        },
+    )
+    tool_record = ToolRecord(
+        tool_seq=1,
+        skill_id=skill_id,
+        arguments=dict(arguments),
+        status=status,
+        duration_ms=duration_ms,
+        result_digest=digest,
+    )
+    fake_turn_result = TurnResult(
+        text="",
+        status=status,
+        tool_records=(tool_record,),
+        llm_records=(),
+        problem=(result.error if not result.ok else None),
+    )
+
+    if not result.ok:
+        sink.emit("turn_error", {"problem": result.error})
+        latency_ms = int((monotonic() - started) * 1000)
+        if writer is not None and turn_run_id is not None:
+            _append_records(
+                writer=writer,
+                turn_run_id=turn_run_id,
+                user=user,
+                turn_result=fake_turn_result,
+                router_version="",
+                router_hash="",
+                settings=settings,
+            )
+            writer.finalize(
+                turn_run_id=turn_run_id,
+                user_sub=user.sub,
+                status="error",
+                message_id=sink.message_id,
+                answer_summary=None,
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=latency_ms,
+                error=result.error,
+            )
+        # No state.put: still mode report, still at the month step.
+        return TurnOutcome(status="error", message_id=sink.message_id, turn_run_id=turn_run_id)
+
+    payload = result.parts[0]["payload"]
+    questions = payload["suggested_questions"]
+    if questions:
+        sink.push_part(
+            "chips",
+            {
+                "options": [
+                    {"id": f"q{i + 1}", "label": q, "send_text": q}
+                    for i, q in enumerate(questions)
+                ]
+            },
+        )
+    sink.done({"input_tokens": 0, "output_tokens": 0})
+
+    latency_ms = int((monotonic() - started) * 1000)
+    if writer is not None and turn_run_id is not None:
+        _append_records(
+            writer=writer,
+            turn_run_id=turn_run_id,
+            user=user,
+            turn_result=fake_turn_result,
+            router_version="",
+            router_hash="",
+            settings=settings,
+        )
+        writer.finalize(
+            turn_run_id=turn_run_id,
+            user_sub=user.sub,
+            status="ok",
+            message_id=sink.message_id,
+            answer_summary=_capped(report_flow.answer_summary(payload)),
+            input_tokens=0,
+            output_tokens=0,
+            latency_ms=latency_ms,
+            error=None,
+        )
+
+    # The double-terminal guard _finish_subject_turn uses: done and the ok
+    # finalize already went out, so a failure here must not re-terminate.
+    try:
+        state.put(conversation_id, report_flow.slots_after_report(prior_slots, payload))
+        _touch_outbox(outbox_store=outbox_store, user_sub=user.sub, conversation_id=conversation_id)
+    except Exception as exc:  # noqa: BLE001 - a second failure must never re-terminate a finished turn
+        logger.error(
+            "report slot carry failed: conversation_id=%s turn_run_id=%s: %s: %s",
             conversation_id,
             turn_run_id,
             type(exc).__name__,
@@ -1740,6 +2148,7 @@ def _json_safe(value):
 __all__ = [
     "ENTRY_PHRASE_EXISTING",
     "ENTRY_PHRASE_PROSPECT",
+    "ENTRY_PHRASE_REPORT",
     "TurnOutcome",
     "execute_turn",
 ]

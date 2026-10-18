@@ -1,8 +1,9 @@
 """Ground truth for reporting.monthly_performance through the real registry
 against the seeded Postgres. Expectations are recomputed from
-generate(seed=SEED), never hand-copied. The generator gives every customer
-exactly one office today, so share_of_book is 100% and offsets are empty;
-PR A2's multi-office overlay re-pins those two assertions."""
+generate(seed=SEED), never hand-copied. The generator's multi-office overlay
+lets a share of customers trade under several offices, so each mover's
+share_of_book and offsets are recomputed here by hand from DATASET.sales_rows,
+mirroring tools/context.py."""
 
 import datetime as dt
 import os
@@ -133,6 +134,47 @@ def _by(rows, column):
     return out
 
 
+def _gp(rows):
+    return fsum(r["GROSS_PROFIT"] for r in rows)
+
+
+def _share_display(office_gp, book_gp):
+    share = mom.share(office_gp, book_gp)
+    return "n/a" if share is None else f"{share:.1f}%"
+
+
+def _expected_context(name, office, office_column, prior, current):
+    """Hand sums mirroring tools/context.py's share_of_book and offsets for one mover."""
+    book_a = _rows(prior, "CUST_NM", name)
+    book_b = _rows(current, "CUST_NM", name)
+    office_gp_a = _gp(r for r in book_a if r[office_column] == office)
+    office_gp_b = _gp(r for r in book_b if r[office_column] == office)
+    office_change = office_gp_b - office_gp_a
+    offsets = []
+    if office_change != 0:
+        others = sorted({r[office_column] for r in (*book_a, *book_b)} - {office})
+        for other in others:
+            change = _gp(r for r in book_b if r[office_column] == other) - _gp(
+                r for r in book_a if r[office_column] == other
+            )
+            if change * office_change < 0:
+                offsets.append((other, change))
+    offsets = sorted(offsets, key=lambda kv: (-abs(kv[1]), kv[0]))[:5]
+    return {
+        "share": {
+            "prior": _share_display(office_gp_a, _gp(book_a)),
+            "current": _share_display(office_gp_b, _gp(book_b)),
+        },
+        "offsets": [
+            {"key": k, "change": c, "display": mom.fmt_change(c, "money")} for k, c in offsets
+        ],
+    }
+
+
+def _customer_office():
+    return sorted({r["CUSTOMER_TEAM_NAME"] for r in DATASET.sales_rows})[0]
+
+
 def _run(registry, store, **args):
     result = registry.dispatch(SKILL, args, _ctx(store))
     assert result.ok, result.error
@@ -181,12 +223,20 @@ def test_customer_office_golden(registry, store):
     assert payload["tables"]["entities_by_gp"]["rows"][0]["key"] == top
     assert len(payload["tables"]["entities_by_gp"]["rows"]) <= 10
     _assert_footers_equal_tiles(payload)
+    assert payload["entity_context"]
     for name, context in payload["entity_context"].items():
-        assert context["offsets"] == [], (
-            name
-        )  # one office per customer today (A2 overlay changes this)
+        expected = _expected_context(name, office, "CUSTOMER_TEAM_NAME", prior, current)
         for side in ("prior", "current"):
-            assert context["share_of_book"]["display"][side] in ("100.0%", "n/a"), (name, side)
+            assert context["share_of_book"]["display"][side] == expected["share"][side], (
+                name,
+                side,
+            )
+        got = context["offsets"]
+        assert [(o["key"], o["display"]) for o in got] == [
+            (o["key"], o["display"]) for o in expected["offsets"]
+        ], name
+        for o, e in zip(got, expected["offsets"], strict=True):
+            assert mom.reconciles(o["change"], e["change"]), (name, o["key"])
     assert payload["narrative"]["flags"][0] == "model narrative skipped: stub mode"
     assert len(payload["suggested_questions"]) == 3
 
@@ -202,6 +252,19 @@ def test_customer_office_golden(registry, store):
             pdf.startswith(b"%PDF")
             and result.artifacts[0].url == f"/api/reports/{payload['run_id']}/pdf"
         )
+
+
+def test_overlay_is_visible_in_the_golden_run(registry, store):
+    month = _latest_complete_month()
+    _, payload = _run(
+        registry,
+        store,
+        perspective="customer",
+        office_value=_customer_office(),
+        month=month.isoformat(),
+    )
+    shares = [c["share_of_book"]["display"]["current"] for c in payload["entity_context"].values()]
+    assert any(s != "100.0%" for s in shares), shares
 
 
 def test_supplier_office_golden(registry, store):
