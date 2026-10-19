@@ -34,7 +34,15 @@ import yaml
 from pydantic import BaseModel
 
 from poseidon.core.config import Settings
-from poseidon.core.data.client import BreakdownResult, BreakdownRow, MetricResult, PeriodRange
+from poseidon.core.data.client import (
+    BreakdownResult,
+    BreakdownRow,
+    FrameResult,
+    FrameRow,
+    MetricResult,
+    PeriodRange,
+)
+from poseidon.core.data.query_builder import TIME_BUCKETS
 from poseidon.core.llm import loop, titles
 from poseidon.core.llm.loop import (
     ROUTER_GUARDRAIL_ENTITY,
@@ -176,6 +184,29 @@ class FakeDataClient:
             for customer in _CUSTOMERS[: spec.top_n]
         ]
         return BreakdownResult(entity=spec.entity, group_by=spec.group_by, rows=rows)
+
+    def run_frame_query(self, spec) -> FrameResult:
+        self.calls.append(("run_frame_query", spec))
+        buckets = [c for c in spec.group_by if c in TIME_BUCKETS]
+        keys_per_column = {
+            "CUST_NM": list(_CUSTOMERS[:3]),
+            "LOC_NM": ["Singapore", "Rotterdam"],
+            "DEAL_CLASSIFICATION_TRADE_CUT": ["Spot", "Contract"],
+        }
+        rows = []
+        plain = [c for c in spec.group_by if c not in TIME_BUCKETS]
+        combos = [()]
+        for column in plain:
+            combos = [
+                (*combo, key) for combo in combos for key in keys_per_column.get(column, ["Other"])
+            ]
+        for combo in combos:
+            for bucket_start in ["2025-01-01", "2025-02-01"] if buckets else [None]:
+                keys = list(combo)
+                if bucket_start is not None:
+                    keys.insert(spec.group_by.index(buckets[0]), bucket_start)
+                rows.append(FrameRow(keys=tuple(keys), values={m: 100.0 for m in spec.metrics}))
+        return FrameResult(entity=spec.entity, group_by=tuple(spec.group_by), rows=rows)
 
 
 # ===========================================================================
@@ -1519,7 +1550,11 @@ def test_title_for_accepts_an_injected_prompt_registry(settings, tmp_path):
 
 
 # ===========================================================================
-# routing_cases.yml -- doc 03 section 6's five cases
+# routing_cases.yml -- doc 03 section 6's five cases, then seventeen in all:
+# four Phase 17 A2 follow-ups and eight PR B rows, two of which
+# (report_followup_compare_to_june, slice_it_another_way) are pointer
+# entries naming the deterministic test that pins them, run in neither the
+# stub nor the live executor.
 # ===========================================================================
 
 DOC_CASE_IDS = [
@@ -1533,10 +1568,24 @@ DOC_CASE_IDS = [
     "report_followup_where_else",
     "supplier_report_break_down_by_customer",
     "report_lookup_top_ports",
+    # Phase 17 PR B: the remaining reports-design 7.6 rows.
+    "report_followup_full_account_gp",
+    "report_followup_share_of_total",
+    "report_followup_gp_by_month_2025",
+    "report_followup_then_by_port",
+    "report_followup_by_port_by_month",
+    "report_followup_compare_to_june",
+    "report_followup_break_down_by_deal_class",
+    "slice_it_another_way",
 ]
 
 ROUTING_CASES = yaml.safe_load(ROUTING_CASES_PATH.read_text(encoding="utf-8"))
-OFFLINE_CASES = [case for case in ROUTING_CASES if not case["execution"].get("live_only")]
+OFFLINE_CASES = [case for case in ROUTING_CASES if "stub_script" in case["execution"]]
+LIVE_CASES = [
+    case
+    for case in ROUTING_CASES
+    if "stub_script" in case["execution"] or case["execution"].get("live_only")
+]
 
 # doc 03 section 6 writes its expectations in the vocabulary of the QUESTION
 # ("metric", "port"), not of a skill's ``Args`` model ("metrics", a LOC_NM
@@ -1546,7 +1595,7 @@ _ARGS_SUBSET_DIMENSION = {"customer": "CUST_NM", "port": "LOC_NM", "supplier": "
 
 # Top-level Args fields an expectation may name directly. A dict value (a
 # period) is checkable only for presence, through the "*" pattern.
-_ARGS_SUBSET_TOP_LEVEL = ("group_by", "scope", "compare_period", "section")
+_ARGS_SUBSET_TOP_LEVEL = ("group_by", "scope", "compare_period", "section", "share_of_total")
 
 # doc 03 section 6's setup vocabulary -> the real ConversationSlots fields.
 _MODE_ALIASES = {"default": "default", "existing": "existing_customer", "prospect": "new_prospect"}
@@ -1566,7 +1615,11 @@ def _candidate_values(key: str, arguments: dict) -> list[str]:
         return [str(value) for value in arguments.get("metrics") or []]
     if key in _ARGS_SUBSET_TOP_LEVEL:
         value = arguments.get(key)
-        return [] if value is None else [str(value)]
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item) for item in value]
+        return [str(value)]
     values = _filter_values(arguments, _ARGS_SUBSET_DIMENSION[key])
     top_level = arguments.get(key)
     if isinstance(top_level, str):
@@ -1586,9 +1639,11 @@ def _matches(pattern: str, value: str) -> bool:
 def assert_args_subset(args_subset: dict, arguments: dict) -> None:
     for key, pattern in args_subset.items():
         values = _candidate_values(key, arguments)
-        assert any(_matches(str(pattern), value) for value in values), (
-            f"expected {key}={pattern!r} among {values!r} (arguments: {arguments!r})"
-        )
+        patterns = pattern if isinstance(pattern, list) else [pattern]
+        for one in patterns:
+            assert any(_matches(str(one), value) for value in values), (
+                f"expected {key}={one!r} among {values!r} (arguments: {arguments!r})"
+            )
 
 
 def _slots_for(case: dict) -> ConversationSlots:
@@ -1601,6 +1656,9 @@ def _slots_for(case: dict) -> ConversationSlots:
         kwargs["pass_through"] = tuple(("mentioned port", p) for p in state["mentioned_ports"])
     if "pass_through" in state:
         kwargs["pass_through"] = tuple((label, value) for label, value in state["pass_through"])
+    for slot in ("period_a", "period_a_end", "period_b", "period_b_end"):
+        if slot in state:
+            kwargs[slot] = date.fromisoformat(state[slot])
     for slot in ("perspective", "office_column", "office_value", "report_ref"):
         if slot in state:
             kwargs[slot] = state[slot]
@@ -1653,7 +1711,7 @@ def test_exactly_two_cases_are_live_only_and_each_names_its_owning_phase():
     live_only = [case for case in ROUTING_CASES if case["execution"].get("live_only")]
 
     assert len(live_only) == 2
-    assert len(OFFLINE_CASES) == 7
+    assert len(OFFLINE_CASES) == 13
     for case in live_only:
         reason = case["execution"]["reason"]
         assert "Phase" in reason, case["id"]
@@ -1664,7 +1722,7 @@ def test_the_offline_cases_are_the_brief_metric_query_and_research_each_carrying
     ``test_routing_cases_are_doc_03_section_6_verbatim_in_order`` already
     pins to ``DOC_CASE_IDS`` -- so indexing ``[0]``/``[1]``/``[2]`` here is
     reading a guaranteed fixed order, not assuming one."""
-    assert len(OFFLINE_CASES) == 7
+    assert len(OFFLINE_CASES) == 13
 
     brief_case = OFFLINE_CASES[0]
     assert brief_case["id"] == "existing_brief_by_name"
@@ -1687,8 +1745,14 @@ def test_the_offline_cases_are_the_brief_metric_query_and_research_each_carrying
         "report_followup_where_else",
         "supplier_report_break_down_by_customer",
         "report_lookup_top_ports",
+        "report_followup_full_account_gp",
+        "report_followup_share_of_total",
+        "report_followup_gp_by_month_2025",
+        "report_followup_then_by_port",
+        "report_followup_by_port_by_month",
+        "report_followup_break_down_by_deal_class",
     ]
-    for case in followups[:3]:
+    for case in followups[:3] + followups[4:]:
         assert case["expect"]["skill"] == METRIC_QUERY
         assert len(case["execution"]["stub_script"]) == 2
     assert followups[3]["expect"]["skill"] == "reporting.report_lookup"
@@ -1715,6 +1779,48 @@ def test_every_case_setup_maps_onto_real_conversation_slots():
     supplier = slots["supplier_report_break_down_by_customer"]
     assert supplier.perspective == "supplier"
     assert supplier.pass_through == (("SUPPLIER_NM", "Vitol"),)
+
+
+def test_pointer_cases_name_an_existing_test_and_are_neither_offline_nor_live():
+    pointers = [
+        c for c in ROUTING_CASES
+        if "parser_case" in c["execution"] or "orchestrator_case" in c["execution"]
+    ]
+    assert [c["id"] for c in pointers] == [
+        "report_followup_compare_to_june",
+        "slice_it_another_way",
+    ]
+    for case in pointers:
+        target = case["execution"].get("parser_case") or case["execution"]["orchestrator_case"]
+        path, name = target.split("::")
+        resolved = Path(__file__).resolve().parents[1] / Path(path).relative_to("backend")
+        assert resolved.exists()
+        assert name in resolved.read_text(encoding="utf-8")
+        assert case not in OFFLINE_CASES and case not in LIVE_CASES
+
+
+def test_assert_args_subset_reads_list_group_by_and_list_patterns():
+    arguments = {"group_by": ["LOC_NM", "MONTH"], "share_of_total": ["CUSTOMER_TEAM_NAME"]}
+    assert_args_subset({"group_by": "MONTH"}, arguments)
+    assert_args_subset({"group_by": ["LOC_NM", "MONTH"]}, arguments)
+    assert_args_subset({"share_of_total": "CUSTOMER_TEAM_NAME"}, arguments)
+    with pytest.raises(AssertionError):
+        assert_args_subset({"group_by": ["LOC_NM", "YEAR"]}, arguments)
+
+
+def test_slots_for_reads_the_pr_b_setup_vocabulary():
+    slots = {case["id"]: _slots_for(case) for case in ROUTING_CASES}
+    then_by_port = slots["report_followup_then_by_port"]
+    assert then_by_port.customer == "Northstar Lines"
+    assert (then_by_port.period_a, then_by_port.period_a_end) == (
+        date(2025, 1, 1),
+        date(2026, 1, 1),
+    )
+    assert then_by_port.office_value == "Rotterdam"
+    assert slots["report_followup_break_down_by_deal_class"].pass_through == (
+        ("CUST_NM", "Northstar Lines"),
+        ("CUST_NM", "Meridian Bunkering"),
+    )
 
 
 # --- the args_subset matcher itself: it has to be able to FAIL ------------
@@ -1817,13 +1923,14 @@ _HAS_AWS_CREDENTIALS = bool(os.environ.get("AWS_ACCESS_KEY_ID") or os.environ.ge
 
 @pytest.mark.router_live
 @pytest.mark.skipif(not _HAS_AWS_CREDENTIALS, reason=_NO_CREDENTIALS_REASON)
-@pytest.mark.parametrize("case", ROUTING_CASES, ids=[c["id"] for c in ROUTING_CASES])
+@pytest.mark.parametrize("case", LIVE_CASES, ids=[c["id"] for c in LIVE_CASES])
 def test_live_routing_case(case, monkeypatch):
-    """Every case -- including the four whose expected skills are not
-    registered yet -- against the real router role (doc 03 section 6 mode
-    2). What is asserted is the ROUTING DECISION: the skill id and a subset
-    of critical arguments read off the first ToolRecord, which records what
-    the model ASKED for whether or not dispatch then answered with a 404.
+    """Every LIVE_CASES entry (a stub-script or live-only case; the two
+    pointer cases are pinned by deterministic suites) against the real
+    router role (doc 03 section 6 mode 2). What is asserted is the ROUTING
+    DECISION: the skill id and a subset of critical arguments read off the
+    first ToolRecord, which records what the model ASKED for whether or not
+    dispatch then answered with a 404.
     Data comes from the same offline fake as every stub run: a live model
     over fake rows is exactly the isolation this suite wants."""
     from poseidon.core.llm.bedrock import BedrockProvider
