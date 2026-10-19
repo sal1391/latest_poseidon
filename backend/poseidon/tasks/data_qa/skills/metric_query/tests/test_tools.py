@@ -18,15 +18,24 @@ the spec-shape tests it is really about.
 import datetime as dt
 from dataclasses import replace
 
+import pytest
+from pydantic import ValidationError
+
 from poseidon.core.config import Settings
 from poseidon.core.data.client import BreakdownResult, BreakdownRow, MetricResult, PeriodRange
-from poseidon.core.data.specs import BreakdownQuerySpec, MetricQuerySpec, PeriodWindow
+from poseidon.core.data.query_builder import TIME_BUCKETS
+from poseidon.core.data.specs import (
+    BreakdownQuerySpec,
+    FrameQuerySpec,
+    MetricQuerySpec,
+    PeriodWindow,
+)
 from poseidon.core.identity import UserContext
 from poseidon.core.skills.context import ConversationSlots, SkillContext
 from poseidon.tasks._shared.fragments import DimFilter, PeriodArg
 from poseidon.tasks.data_qa.skills.metric_query.schema import Args
 from poseidon.tasks.data_qa.skills.metric_query.skill import run
-from poseidon.tasks.data_qa.skills.metric_query.tools.build_spec import build_spec
+from poseidon.tasks.data_qa.skills.metric_query.tools.build_spec import build_spec, is_frame_path
 from poseidon.tasks.data_qa.skills.metric_query.tools.compare_breakdown import (
     compare_breakdown_parts,
 )
@@ -34,6 +43,7 @@ from poseidon.tasks.data_qa.skills.metric_query.tools.format_parts import format
 
 SALES = "MARINE_SALES_PLANNING_V"
 APRIL = PeriodWindow(dt.date(2026, 4, 1), dt.date(2026, 5, 1))
+_APRIL_ARG = PeriodArg(start=dt.date(2026, 4, 1), end=dt.date(2026, 5, 1))
 PRIOR_APRIL = PeriodWindow(dt.date(2025, 4, 1), dt.date(2025, 5, 1))
 
 # Present-and-non-blank is all Settings asks of these two fields; nothing in
@@ -146,7 +156,7 @@ def test_args_accepts_breakdown_combined_with_compare_period():
         compare_period=PeriodArg(start=dt.date(2025, 4, 1), end=dt.date(2025, 5, 1)),
     )
 
-    assert args.group_by == "CUST_NM"
+    assert args.group_by == ["CUST_NM"]
     assert args.compare_period is not None
     assert args.scope == "office"
 
@@ -762,3 +772,81 @@ def test_carried_office_is_not_stamped_on_an_entity_without_the_column():
         "Office scope: CUSTOMER_TEAM_NAME is not a dimension of W_MARINE_GL_SOURCE_AI; "
         "carried office not applied"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 17 PR B Task 1: Args growth and the path rule
+# ---------------------------------------------------------------------------
+
+
+def test_args_group_by_string_is_wrapped_into_a_list():
+    args = Args(metrics=["GP"], period=_APRIL_ARG, group_by="CUST_NM")
+    assert args.group_by == ["CUST_NM"]
+
+
+def test_args_group_by_accepts_up_to_three_entries_and_one_bucket():
+    args = Args(metrics=["GP"], period=_APRIL_ARG, group_by=["LOC_NM", "SUPPLIER_NM", "MONTH"])
+    assert args.group_by == ["LOC_NM", "SUPPLIER_NM", "MONTH"]
+
+
+@pytest.mark.parametrize(
+    "group_by, fragment",
+    [
+        ([], "one to three"),
+        (["A", "B", "C", "D"], "one to three"),
+        (["LOC_NM", "LOC_NM"], "repeats"),
+        (["MONTH", "YEAR"], "at most one time bucket"),
+    ],
+)
+def test_args_group_by_rejects_bad_shapes(group_by, fragment):
+    with pytest.raises(ValidationError) as excinfo:
+        Args(metrics=["GP"], period=_APRIL_ARG, group_by=group_by)
+    assert fragment in str(excinfo.value)
+
+
+def test_args_order_defaults_and_accepts_asc():
+    args = Args(metrics=["GP", "VOLUME"], period=_APRIL_ARG)
+    assert (args.order_by, args.order) == (None, "desc")
+    assert Args(metrics=["GP"], period=_APRIL_ARG, order="asc").order == "asc"
+
+
+def test_args_order_by_must_be_a_requested_metric():
+    with pytest.raises(ValidationError) as excinfo:
+        Args(metrics=["GP"], period=_APRIL_ARG, order_by="VOLUME")
+    assert "order_by" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("extra", [{"group_by": "CUST_NM"}, {"compare_period": _PRIOR_ARG}])
+def test_args_share_of_total_cannot_combine_with_group_by_or_compare(extra):
+    with pytest.raises(ValidationError) as excinfo:
+        Args(metrics=["GP"], period=_APRIL_ARG, share_of_total=["CUSTOMER_TEAM_NAME"], **extra)
+    assert "share_of_total" in str(excinfo.value)
+
+
+def test_is_frame_path_rule():
+    assert is_frame_path(None) is False
+    assert is_frame_path(["CUST_NM"]) is False
+    assert is_frame_path(["MONTH"]) is True
+    assert is_frame_path(["LOC_NM", "MONTH"]) is True
+    assert is_frame_path(["LOC_NM", "SUPPLIER_NM"]) is True
+
+
+def test_build_spec_single_dimension_keeps_the_breakdown_spec_with_order():
+    spec = build_spec(
+        Args(
+            metrics=["GP", "VOLUME"],
+            period=_APRIL_ARG,
+            group_by=["LOC_NM"],
+            order_by="VOLUME",
+            order="asc",
+        )
+    )
+    assert isinstance(spec, BreakdownQuerySpec)
+    assert (spec.group_by, spec.order_by_metric, spec.order) == ("LOC_NM", "VOLUME", "asc")
+
+
+def test_build_spec_frame_path_returns_a_frame_spec_in_group_by_order():
+    spec = build_spec(Args(metrics=["GP"], period=_APRIL_ARG, group_by=["LOC_NM", "MONTH"]))
+    assert isinstance(spec, FrameQuerySpec)
+    assert spec.group_by == ("LOC_NM", "MONTH")
+    assert set(TIME_BUCKETS) == {"MONTH", "QUARTER", "YEAR"}

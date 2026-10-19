@@ -1259,3 +1259,43 @@ def test_resolve_row_scope_value_is_none_for_every_certified_entity():
     call site actually passes today, for both queryable entities."""
     for entity in ("MARINE_SALES_PLANNING_V", "W_MARINE_GL_SOURCE_AI"):
         assert qb.resolve_row_scope_value(entity, ALICE) is None
+
+
+def test_breakdown_asc_renders_order_by_asc_postgres():
+    spec = BreakdownQuerySpec(
+        entity="MARINE_SALES_PLANNING_V",
+        metrics=("GP",),
+        period=APRIL,
+        group_by="LOC_NM",
+        order_by_metric="GP",
+        top_n=5,
+        order="asc",
+    )
+    sql, params = qb.build_breakdown_query(spec, "postgres")
+    assert sql.endswith('ORDER BY "GP" ASC NULLS LAST\nLIMIT %s')
+    assert params[-1] == 5
+
+
+def test_breakdown_default_order_is_unchanged_desc():
+    spec = BreakdownQuerySpec(
+        entity="MARINE_SALES_PLANNING_V",
+        metrics=("GP",),
+        period=APRIL,
+        group_by="LOC_NM",
+        order_by_metric="GP",
+    )
+    sql, _ = qb.build_breakdown_query(spec, "snowflake")
+    assert sql.endswith('ORDER BY "GP" DESC\nLIMIT %s')
+
+
+def test_breakdown_rejects_an_unknown_order():
+    spec = BreakdownQuerySpec(
+        entity="MARINE_SALES_PLANNING_V",
+        metrics=("GP",),
+        period=APRIL,
+        group_by="LOC_NM",
+        order_by_metric="GP",
+        order="sideways",
+    )
+    with pytest.raises(qb.SpecValidationError, match="order must be 'desc' or 'asc'"):
+        qb.build_breakdown_query(spec, "postgres")

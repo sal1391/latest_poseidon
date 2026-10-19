@@ -10,7 +10,7 @@ from dataclasses import replace
 from typing import TypeVar, cast
 
 from poseidon.core.data.query_builder import SpecValidationError, resolve_row_scope_value
-from poseidon.core.data.specs import BreakdownQuerySpec, MetricQuerySpec
+from poseidon.core.data.specs import BreakdownQuerySpec, FrameQuerySpec, MetricQuerySpec
 from poseidon.core.identity import UserContext
 from poseidon.core.ontology.loader import get_ontology
 from poseidon.core.skills.context import ConversationSlots, SkillContext
@@ -21,7 +21,7 @@ from .tools.build_spec import build_spec
 from .tools.compare_breakdown import WINDOW_TOP_N, compare_breakdown_parts
 from .tools.format_parts import format_parts
 
-Spec = MetricQuerySpec | BreakdownQuerySpec
+Spec = MetricQuerySpec | BreakdownQuerySpec | FrameQuerySpec
 _S = TypeVar("_S", MetricQuerySpec, BreakdownQuerySpec)
 
 

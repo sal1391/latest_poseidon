@@ -239,12 +239,12 @@ def test_metric_query_router_facing_fields_carry_descriptions():
     schema = next(s for s in reg.tool_schemas if s["name"] == "data_qa.metric_query")
     properties = schema["input_schema"]["properties"]
 
-    assert properties["group_by"]["description"] == (
-        "Certified dimension column to break down by (e.g. CUST_NM, LOC_NM)."
+    assert properties["group_by"]["description"].startswith(
+        "One to three certified dimension columns to break down by (e.g. CUST_NM, LOC_NM)"
     )
     assert properties["compare_period"]["description"] == (
-        "Second window for side-by-side comparison. With group_by, both windows run "
-        "and the result is one comparison table per metric."
+        "Second window for side-by-side comparison. With a single-column group_by, both "
+        "windows run and the result is one comparison table per metric."
     )
     assert properties["scope"]["description"].startswith('Office scope. "office" (default)')
     assert properties["scope"]["enum"] == ["office", "book"]

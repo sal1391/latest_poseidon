@@ -89,6 +89,10 @@ _SMALL_SAMPLE_HAVING = 'HAVING SUM("#_INQUIRIES") >= 5'
 # unit and the guard would otherwise contradict it.
 _MONETARY_METRIC = "MONETARY_TOTAL"
 
+# Pseudo-dimensions a FrameQuerySpec may group by (Phase 17 PR B): rendered
+# as DATE_TRUNC on the entity's date column, never certified columns.
+TIME_BUCKETS: dict[str, str] = {"MONTH": "month", "QUARTER": "quarter", "YEAR": "year"}
+
 
 class SpecValidationError(ValueError):
     """A spec references something outside the certified ontology.
@@ -433,6 +437,8 @@ def build_breakdown_query(spec: BreakdownQuerySpec, dialect: str) -> tuple[str, 
         )
     if spec.top_n < 1:
         raise SpecValidationError(f"top_n must be >= 1, got {spec.top_n}")
+    if spec.order not in ("desc", "asc"):
+        raise SpecValidationError(f"order must be 'desc' or 'asc', got {spec.order!r}")
     if _is_volume_mode(entity, spec.filters):
         required = _volume_mode_required_group_by(entity)
         if spec.group_by != required:
@@ -460,7 +466,7 @@ def build_breakdown_query(spec: BreakdownQuerySpec, dialect: str) -> tuple[str, 
         clauses.append(_SMALL_SAMPLE_HAVING)
 
     nulls_last = " NULLS LAST" if dialect == "postgres" else ""
-    clauses.append(f'ORDER BY "{spec.order_by_metric}" DESC{nulls_last}')
+    clauses.append(f'ORDER BY "{spec.order_by_metric}" {spec.order.upper()}{nulls_last}')
     clauses.append("LIMIT %s")
     params.append(spec.top_n)
 

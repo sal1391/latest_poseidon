@@ -16,7 +16,13 @@ on the same ``args`` (period swapped) is exactly "the same query, a
 different window", with no separate comparison code path to keep in sync.
 """
 
-from poseidon.core.data.specs import BreakdownQuerySpec, MetricQuerySpec, PeriodWindow
+from poseidon.core.data.query_builder import TIME_BUCKETS
+from poseidon.core.data.specs import (
+    BreakdownQuerySpec,
+    FrameQuerySpec,
+    MetricQuerySpec,
+    PeriodWindow,
+)
 
 from ..schema import Args
 
@@ -31,33 +37,45 @@ def _filters(args: Args) -> dict[str, tuple[str, ...]]:
     return {f.column: tuple(f.values) for f in args.filters}
 
 
-def build_spec(args: Args) -> MetricQuerySpec | BreakdownQuerySpec:
+def is_frame_path(group_by: list[str] | None) -> bool:
+    """Plan ruling 1: one plain certified dimension keeps the breakdown SQL;
+    two or more columns, or any time bucket, go through a frame."""
+    if group_by is None:
+        return False
+    return len(group_by) > 1 or group_by[0] in TIME_BUCKETS
+
+
+def build_spec(args: Args) -> MetricQuerySpec | BreakdownQuerySpec | FrameQuerySpec:
     """One certified spec for one metric question.
 
-    ``group_by`` present selects a :class:`BreakdownQuerySpec`, ordered by
-    the FIRST requested metric ("top GP customers" -> ``metrics=["GP",
-    ...]`` -> ``order_by_metric="GP"``, matching how a router names metrics
-    in the order that answers the question). ``group_by`` absent selects a
-    flat :class:`MetricQuerySpec` over every requested metric.
+    The path rule (:func:`is_frame_path`): a single plain ``group_by`` column
+    selects a :class:`BreakdownQuerySpec`, ranked by ``order_by`` (default the
+    FIRST requested metric: "top GP customers" -> ``order_by_metric="GP"``) in
+    ``order``. Two or more columns, or any time bucket, select a
+    :class:`FrameQuerySpec` in ``group_by`` order. ``group_by`` absent selects
+    a flat :class:`MetricQuerySpec` over every requested metric.
     """
     period = PeriodWindow(args.period.start, args.period.end)
     metrics = tuple(args.metrics)
     filters = _filters(args)
 
+    if args.group_by is not None and is_frame_path(args.group_by):
+        return FrameQuerySpec(
+            entity=args.entity,
+            metrics=metrics,
+            period=period,
+            group_by=tuple(args.group_by),
+            filters=filters,
+        )
     if args.group_by is not None:
         return BreakdownQuerySpec(
             entity=args.entity,
             metrics=metrics,
             period=period,
-            group_by=args.group_by,
-            order_by_metric=metrics[0],
+            group_by=args.group_by[0],
+            order_by_metric=args.order_by or metrics[0],
             top_n=args.top_n,
             filters=filters,
+            order=args.order,
         )
-
-    return MetricQuerySpec(
-        entity=args.entity,
-        metrics=metrics,
-        period=period,
-        filters=filters,
-    )
+    return MetricQuerySpec(entity=args.entity, metrics=metrics, period=period, filters=filters)
