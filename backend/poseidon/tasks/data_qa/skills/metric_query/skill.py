@@ -20,7 +20,11 @@ from .schema import Args
 from .tools.build_spec import build_spec, is_frame_path
 from .tools.compare_breakdown import WINDOW_TOP_N, compare_breakdown_parts
 from .tools.format_parts import format_parts
-from .tools.frame_breakdown import frame_breakdown_parts
+from .tools.frame_breakdown import (
+    RATIO_COMPONENTS,
+    frame_breakdown_parts,
+    ranks_by_period_ratio,
+)
 from .tools.share_of_total import denominator_spec, share_parts
 
 Spec = MetricQuerySpec | BreakdownQuerySpec | FrameQuerySpec
@@ -196,19 +200,31 @@ def _frame(
     ctx: SkillContext, args: Args, scoped: Callable[[Args], Spec]
 ) -> tuple[list[dict], list[str]]:
     """Multi-column or bucketed breakdown: one frame query, ordered and
-    capped in Python by ``frame_breakdown_parts``."""
+    capped in Python by ``frame_breakdown_parts``.
+
+    A bucketed frame ranked by a ratio metric (MARGIN) also fetches the
+    ratio's components (GP, VOLUME) so keys rank by the recomputed period
+    ratio. The query spec is derived from the already-scoped spec, so the
+    row scope and office stamp carry over, and only the requested metrics
+    render (``tools/frame_breakdown.py``)."""
     spec = scoped(args)
     if not isinstance(spec, FrameQuerySpec):
         # is_frame_path held, so build_spec returns a frame - a python
         # -O-proof guard against that mapping ever breaking.
         raise TypeError("build_spec on the frame path did not return a FrameQuerySpec")
+    order_by = args.order_by or args.metrics[0]
+    query_spec = spec
+    if ranks_by_period_ratio(spec.group_by, order_by):
+        metrics = tuple(dict.fromkeys([*spec.metrics, *RATIO_COMPONENTS[order_by]]))
+        query_spec = replace(spec, metrics=metrics)
     return frame_breakdown_parts(
-        spec,
-        ctx.data.run_frame_query(spec),
+        query_spec,
+        ctx.data.run_frame_query(query_spec),
         ctx.settings,
-        order_by=args.order_by or args.metrics[0],
+        order_by=order_by,
         order=args.order,
         top_n=args.top_n,
+        display_metrics=spec.metrics,
     )
 
 
@@ -217,8 +233,10 @@ def _compare_breakdown(
 ) -> tuple[list[dict], list[str]]:
     """Breakdown with comparison: both windows at ``WINDOW_TOP_N`` rows (plan
     ruling 7), each scoped and stamped, merged by ``compare_breakdown_parts``
-    and capped at the router's own ``top_n``."""
-    wide = args.model_copy(update={"top_n": WINDOW_TOP_N})
+    and capped at the router's own ``top_n``. The merge orders by absolute
+    change (D73), so ``order``/``order_by`` do not reach the windows: each
+    fetches its top ``WINDOW_TOP_N`` by the first metric, descending."""
+    wide = args.model_copy(update={"top_n": WINDOW_TOP_N, "order": "desc", "order_by": None})
     spec_current = scoped(wide)
     spec_prior = scoped(wide.model_copy(update={"period": args.compare_period}))
     if not isinstance(spec_current, BreakdownQuerySpec) or not isinstance(

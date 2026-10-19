@@ -1020,6 +1020,128 @@ def test_run_single_column_asc_adds_an_order_line_and_default_adds_none():
     assert not any(line.startswith("Order:") for line in res.proof)
 
 
+
+def test_compare_windows_ignore_order_and_order_by():
+    """Final review Important 1: the windows always fetch the top 50 by the
+    first metric, descending; the merge orders by absolute change (D73), so
+    ``order``/``order_by`` must not reach the window queries."""
+    client = _RecordingDataClient(breakdown_rows=[[], []])
+    res = run(
+        _ctx(client),
+        _args(
+            metrics=["GP", "VOLUME"],
+            group_by=["CUST_NM"],
+            compare_period=_PRIOR_ARG,
+            order="asc",
+            order_by="VOLUME",
+        ),
+    )
+    assert res.ok is True, res.error
+    assert len(client.breakdown_specs) == 2
+    assert [spec.order for spec in client.breakdown_specs] == ["desc", "desc"]
+    assert [spec.order_by_metric for spec in client.breakdown_specs] == ["GP", "GP"]
+    assert [spec.top_n for spec in client.breakdown_specs] == [50, 50]
+
+
+def _margin_frame(rows):
+    spec = FrameQuerySpec(
+        entity=SALES,
+        metrics=("MARGIN", "GP", "VOLUME"),
+        period=_YEAR_2025,
+        group_by=("LOC_NM", "MONTH"),
+    )
+    return spec, FrameResult(
+        entity=spec.entity, group_by=spec.group_by, rows=[FrameRow(k, v) for k, v in rows]
+    )
+
+
+def test_frame_breakdown_ranks_a_ratio_metric_by_the_period_ratio():
+    """Final review Important 2: Rotterdam's two months of margin 10 would
+    sum to 20 and outrank Singapore's single 15; the period margin is
+    sum(GP)/sum(VOLUME) = 10 vs 15, so Singapore leads."""
+    spec, result = _margin_frame(
+        [
+            (("Rotterdam", "2025-01-01"), {"MARGIN": 10.0, "GP": 100.0, "VOLUME": 10.0}),
+            (("Rotterdam", "2025-02-01"), {"MARGIN": 10.0, "GP": 100.0, "VOLUME": 10.0}),
+            (("Singapore", "2025-02-01"), {"MARGIN": 15.0, "GP": 150.0, "VOLUME": 10.0}),
+        ]
+    )
+    parts, proof = frame_breakdown_parts(
+        spec,
+        result,
+        SETTINGS,
+        order_by="MARGIN",
+        order="desc",
+        top_n=1,
+        display_metrics=("MARGIN",),
+    )
+    (table,) = parts
+    assert table["payload"]["columns"] == ["Month", "Port", "Margin"]
+    assert table["payload"]["rows"] == [["Feb 2025", "Singapore", 15.0]]
+    assert proof[-3:] == [
+        "Group by: LOC_NM, MONTH (top 1 keys; every bucket)",
+        "Order: MARGIN desc (period ratio)",
+        "Rows: 1",
+    ]
+
+
+@pytest.mark.parametrize("order", ["desc", "asc"])
+def test_frame_breakdown_zero_volume_key_ranks_last_under_a_ratio_order(order):
+    spec, result = _margin_frame(
+        [
+            (("Houston", "2025-01-01"), {"MARGIN": None, "GP": 5.0, "VOLUME": 0.0}),
+            (("Antwerp", "2025-01-01"), {"MARGIN": None, "GP": None, "VOLUME": None}),
+            (("Rotterdam", "2025-01-01"), {"MARGIN": 10.0, "GP": 100.0, "VOLUME": 10.0}),
+            (("Singapore", "2025-01-01"), {"MARGIN": 15.0, "GP": 150.0, "VOLUME": 10.0}),
+        ]
+    )
+    parts, _ = frame_breakdown_parts(
+        spec,
+        result,
+        SETTINGS,
+        order_by="MARGIN",
+        order=order,
+        top_n=4,
+        display_metrics=("MARGIN",),
+    )
+    ports = [row[1] for row in parts[0]["payload"]["rows"]]
+    ranked = ["Singapore", "Rotterdam"] if order == "desc" else ["Rotterdam", "Singapore"]
+    # Unrankable keys come after every ranked key, ties broken by key.
+    assert ports == [*ranked, "Antwerp", "Houston"]
+
+
+def test_run_adds_gp_and_volume_to_a_bucketed_margin_frame_but_renders_only_margin():
+    client = _RecordingDataClient(
+        frame_rows=[
+            [
+                FrameRow(
+                    ("Rotterdam", "2026-04-01"), {"MARGIN": 10.0, "GP": 100.0, "VOLUME": 10.0}
+                )
+            ]
+        ]
+    )
+    res = run(
+        _ctx(client, state=_ROTTERDAM),
+        _args(metrics=["MARGIN"], group_by=["LOC_NM", "MONTH"]),
+    )
+    assert res.ok is True, res.error
+    (spec,) = client.frame_specs
+    assert spec.metrics == ("MARGIN", "GP", "VOLUME")
+    assert spec.filters == {"CUSTOMER_TEAM_NAME": ("Rotterdam",)}
+    assert res.parts[0]["payload"]["columns"] == ["Month", "Port", "Margin"]
+    assert res.parts[0]["payload"]["rows"] == [["Apr 2026", "Rotterdam", 10.0]]
+    assert "Order: MARGIN desc (period ratio)" in res.proof
+
+
+def test_run_bucketed_additive_frame_queries_only_the_requested_metrics():
+    client = _RecordingDataClient()
+    res = run(_ctx(client), _args(metrics=["GP"], group_by=["LOC_NM", "MONTH"]))
+    assert res.ok is True, res.error
+    assert client.frame_specs[0].metrics == ("GP",)
+    assert "Order: GP desc" in res.proof
+
+
+
 # ---------------------------------------------------------------------------
 # share_of_total in the C04 order (Phase 17 PR B Task 4)
 # ---------------------------------------------------------------------------
