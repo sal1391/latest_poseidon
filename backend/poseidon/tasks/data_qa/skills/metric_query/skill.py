@@ -21,6 +21,7 @@ from .tools.build_spec import build_spec, is_frame_path
 from .tools.compare_breakdown import WINDOW_TOP_N, compare_breakdown_parts
 from .tools.format_parts import format_parts
 from .tools.frame_breakdown import frame_breakdown_parts
+from .tools.share_of_total import denominator_spec, share_parts
 
 Spec = MetricQuerySpec | BreakdownQuerySpec | FrameQuerySpec
 _S = TypeVar("_S", MetricQuerySpec, BreakdownQuerySpec, FrameQuerySpec)
@@ -97,6 +98,16 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
     and ``compare_period`` with a frame ``group_by`` (compare one dimension
     at a time).
 
+    SHARE OF TOTAL (Phase 17 PR B; reports codex review C04). With
+    ``args.share_of_total`` set (``Args`` forbids it with ``group_by`` and
+    ``compare_period``) the order is fixed: the SELECTION spec is built
+    through ``scoped`` - row scope and carried-office stamp included - and
+    the TOTAL is derived from it by REMOVING the named columns from its
+    effective filters (``tools/share_of_total.py``). The total is never
+    restamped, so the carried office can only sit on the numerator, and it
+    keeps the selection's ``scope_value``. A named column that is not among
+    the effective filters is a 422 before any query runs.
+
     OFFICE SCOPE (Phase 17 A2). Under ``args.scope == "office"`` (the
     default) with an office carried in ``ctx.state``, every spec this run
     builds - both windows of any comparison - carries that office as a
@@ -146,7 +157,9 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
             spec = replace(build_spec(spec_args), scope_value=scope_value)
             return _stamp_office(spec, ctx.state) if stamp else spec
 
-        if frame:
+        if args.share_of_total:
+            parts, proof = _share(ctx, args, scoped)
+        elif frame:
             parts, proof = _frame(ctx, args, scoped)
         elif args.group_by is not None and args.compare_period is not None:
             parts, proof = _compare_breakdown(ctx, args, scoped)
@@ -156,6 +169,27 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
         return SkillResult(ok=False, error=problem(422, "invalid query", str(exc)))
 
     return SkillResult(ok=True, parts=parts, proof=[*proof, *_office_proof(args, ctx.state)])
+
+
+def _share(
+    ctx: SkillContext, args: Args, scoped: Callable[[Args], Spec]
+) -> tuple[list[dict], list[str]]:
+    """C04 order: the stamped selection first, then the total derived from
+    it; never restamped."""
+    selection = scoped(args)
+    if not isinstance(selection, MetricQuerySpec):
+        # Args forbids group_by with share_of_total, so build_spec returns a
+        # MetricQuerySpec - a python -O-proof guard, not a reachable case.
+        raise TypeError("share_of_total without group_by must build a MetricQuerySpec")
+    total = denominator_spec(selection, args.share_of_total)
+    return share_parts(
+        selection,
+        ctx.data.run_metric_query(selection),
+        total,
+        ctx.data.run_metric_query(total),
+        ctx.settings,
+        args.share_of_total,
+    )
 
 
 def _frame(

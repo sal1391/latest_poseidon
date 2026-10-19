@@ -57,6 +57,10 @@ from poseidon.tasks.data_qa.skills.metric_query.tools.frame_breakdown import (
     bucket_label,
     frame_breakdown_parts,
 )
+from poseidon.tasks.data_qa.skills.metric_query.tools.share_of_total import (
+    denominator_spec,
+    share_parts,
+)
 
 SALES = "MARINE_SALES_PLANNING_V"
 APRIL = PeriodWindow(dt.date(2026, 4, 1), dt.date(2026, 5, 1))
@@ -1012,3 +1016,128 @@ def test_run_single_column_asc_adds_an_order_line_and_default_adds_none():
     default = _RecordingDataClient(breakdown_rows=[[row]])
     res = run(_ctx(default), _args(group_by=["LOC_NM"]))
     assert not any(line.startswith("Order:") for line in res.proof)
+
+
+# ---------------------------------------------------------------------------
+# share_of_total in the C04 order (Phase 17 PR B Task 4)
+# ---------------------------------------------------------------------------
+
+
+class _ShareClient(_RecordingDataClient):
+    """Answers the selection and the total in call order."""
+
+    def __init__(self, values: list[dict[str, float | None]]):
+        super().__init__()
+        self._values = list(values)
+
+    def run_metric_query(self, spec: MetricQuerySpec) -> MetricResult:
+        self.metric_specs.append(spec)
+        return MetricResult(entity=spec.entity, period=spec.period, values=self._values.pop(0))
+
+
+def test_share_of_total_office_gp_20_of_book_100_is_20_percent_with_the_office_only_on_the_numerator():  # noqa: E501
+    client = _ShareClient([{"GP": 20.0}, {"GP": 100.0}])
+    args = _args(
+        metrics=["GP"],
+        filters=[DimFilter(column="CUST_NM", values=["Northstar Lines"])],
+        share_of_total=["CUSTOMER_TEAM_NAME"],
+    )
+    res = run(_ctx(client, state=_ROTTERDAM), args)
+    assert res.ok is True
+    numerator, denominator = client.metric_specs
+    assert numerator.filters == {
+        "CUST_NM": ("Northstar Lines",),
+        "CUSTOMER_TEAM_NAME": ("Rotterdam",),
+    }
+    assert denominator.filters == {"CUST_NM": ("Northstar Lines",)}
+    (table,) = res.parts
+    assert table["payload"]["columns"] == ["Metric", "Selection", "Total", "Share %"]
+    assert table["payload"]["rows"] == [["Gross Profit", 20, 100, 20.0]]
+    assert (
+        "Selection filters: CUST_NM IN (Northstar Lines) AND CUSTOMER_TEAM_NAME IN (Rotterdam)"
+        in res.proof
+    )
+    assert "Total filters: CUST_NM IN (Northstar Lines)" in res.proof
+    assert "Share of total: removed CUSTOMER_TEAM_NAME" in res.proof
+    assert res.proof[-1] == _STAMPED_LINE
+
+
+def test_share_of_total_column_absent_from_effective_filters_is_a_422():
+    client = _ShareClient([])
+    # no office carried, so CUSTOMER_TEAM_NAME is not among the effective filters
+    res = run(_ctx(client), _args(metrics=["GP"], share_of_total=["CUSTOMER_TEAM_NAME"]))
+    assert res.ok is False and res.error["status"] == 422
+    assert (
+        "share_of_total column 'CUSTOMER_TEAM_NAME' is not among the effective filters []"
+        in res.error["detail"]
+    )
+    assert client.metric_specs == []
+
+
+def test_share_of_total_zero_total_renders_na():
+    client = _ShareClient([{"GP": 5.0}, {"GP": 0.0}])
+    res = run(
+        _ctx(client, state=_ROTTERDAM),
+        _args(metrics=["GP"], share_of_total=["CUSTOMER_TEAM_NAME"]),
+    )
+    assert res.parts[0]["payload"]["rows"] == [["Gross Profit", 5, 0, "n/a"]]
+
+
+def test_share_of_total_both_sides_empty_is_no_data():
+    client = _ShareClient([{"GP": None}, {"GP": None}])
+    res = run(
+        _ctx(client, state=_ROTTERDAM),
+        _args(metrics=["GP"], share_of_total=["CUSTOMER_TEAM_NAME"]),
+    )
+    assert res.parts == [text_part(NO_DATA_TEXT)]
+
+
+def test_share_of_total_keeps_row_scope_on_both_queries(monkeypatch):
+    monkeypatch.setattr(_RESOLVER, lambda entity, user: "alice@example.com")
+    client = _ShareClient([{"GP": 1.0}, {"GP": 2.0}])
+    run(
+        _ctx(client, state=_ROTTERDAM),
+        _args(metrics=["GP"], share_of_total=["CUSTOMER_TEAM_NAME"]),
+    )
+    assert [s.scope_value for s in client.metric_specs] == [
+        "alice@example.com",
+        "alice@example.com",
+    ]
+
+
+def test_denominator_spec_removes_only_the_named_columns_and_keeps_scope_value():
+    selection = MetricQuerySpec(
+        entity=SALES,
+        metrics=("GP",),
+        period=APRIL,
+        filters={"CUST_NM": ("A",), "CUSTOMER_TEAM_NAME": ("Rotterdam",)},
+        scope_value="dev|alice",
+    )
+    total = denominator_spec(selection, ["CUSTOMER_TEAM_NAME"])
+    assert total == replace(selection, filters={"CUST_NM": ("A",)})
+    assert selection.filters["CUSTOMER_TEAM_NAME"] == ("Rotterdam",)  # selection untouched
+
+
+def test_share_parts_total_without_filters_reads_none():
+    selection = MetricQuerySpec(
+        entity=SALES,
+        metrics=("GP",),
+        period=APRIL,
+        filters={"CUSTOMER_TEAM_NAME": ("Rotterdam",)},
+    )
+    total = denominator_spec(selection, ["CUSTOMER_TEAM_NAME"])
+    _, proof = share_parts(
+        selection,
+        MetricResult(entity=SALES, period=APRIL, values={"GP": 3.0}),
+        total,
+        MetricResult(entity=SALES, period=APRIL, values={"GP": 12.0}),
+        SETTINGS,
+        ["CUSTOMER_TEAM_NAME"],
+    )
+    assert proof[-4:] == [
+        "Selection filters: CUSTOMER_TEAM_NAME IN (Rotterdam)",
+        "Total filters: none",
+        "Share of total: removed CUSTOMER_TEAM_NAME",
+        "Metrics: 1 values",
+    ]
+    assert not any(line.startswith("Filters:") for line in proof)
