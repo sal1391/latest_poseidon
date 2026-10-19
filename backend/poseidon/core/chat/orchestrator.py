@@ -2123,7 +2123,10 @@ def _repopulate_pass_through(
         if table is None:
             continue
         rows = table["payload"].get("rows") or []
-        new_pairs = tuple((row[column], row[column]) for row in rows[:_PASS_THROUGH_CAP])
+        # Dedupe in first-seen order BEFORE the cap: a bucketed or
+        # multi-column table repeats each key once per bucket / sub-key.
+        values = list(dict.fromkeys(row[column] for row in rows))[:_PASS_THROUGH_CAP]
+        new_pairs = tuple((value, value) for value in values)
     if new_pairs is None:
         return slots
     return dataclasses.replace(slots, pass_through=new_pairs)

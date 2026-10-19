@@ -2139,6 +2139,41 @@ def test_pass_through_after_a_bucketed_breakdown_reads_the_first_non_time_column
     assert slots.pass_through == (("Rotterdam", "Rotterdam"), ("Singapore", "Singapore"))
 
 
+def test_pass_through_dedupes_column_values_before_the_cap():
+    """Bucket-major rows repeat each key per bucket: pass-through carries
+    each distinct key once, first-seen order, and the cap counts distinct keys."""
+
+    @dataclass(frozen=True)
+    class _FakeRecord:
+        tool_seq: int
+        arguments: dict
+
+    def _sink(rows):
+        class _FakeSink:
+            tool_result_parts = {
+                1: [{"kind": "table", "payload": {"columns": ["Month", "Port"], "rows": rows}}]
+            }
+
+        return _FakeSink()
+
+    record = _FakeRecord(tool_seq=1, arguments={"group_by": ["LOC_NM", "MONTH"]})
+    two_months = [
+        ["Jan 2025", "Rotterdam", 1],
+        ["Jan 2025", "Singapore", 2],
+        ["Feb 2025", "Rotterdam", 3],
+        ["Feb 2025", "Singapore", 4],
+    ]
+    slots = _repopulate_pass_through(ConversationSlots(), (record,), _sink(two_months))
+    assert slots.pass_through == (("Rotterdam", "Rotterdam"), ("Singapore", "Singapore"))
+
+    ports = [f"Port {i}" for i in range(12)]
+    # Each port twice in a row (as a multi-column table repeats a port per
+    # sub-key): without the dedupe the first 10 rows hold only 5 ports.
+    repeated = [[month, port, 1] for port in ports for month in ("Jan 2025", "Feb 2025")]
+    slots = _repopulate_pass_through(ConversationSlots(), (record,), _sink(repeated))
+    assert slots.pass_through == tuple((p, p) for p in ports[:10])
+
+
 def test_pass_through_untouched_when_no_group_by_dispatch_happened():
     @dataclass(frozen=True)
     class _FakeRecord:
