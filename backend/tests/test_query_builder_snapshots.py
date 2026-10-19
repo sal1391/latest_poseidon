@@ -613,6 +613,80 @@ def test_frame_carries_row_scope_last_like_the_other_builders(fixture_ontology):
     assert params == [dt.date(2026, 4, 1), dt.date(2026, 5, 1), SCOPE_VALUE]
 
 
+
+def test_frame_by_port_and_month_postgres():
+    spec = FrameQuerySpec(
+        entity="MARINE_SALES_PLANNING_V",
+        metrics=("GP",),
+        period=PeriodWindow(dt.date(2025, 1, 1), dt.date(2026, 1, 1)),
+        group_by=("LOC_NM", "MONTH"),
+        filters={"CUST_NM": ("Northstar Lines",)},
+    )
+    sql, params = qb.build_frame_query(spec, "postgres")
+    assert sql == (
+        "SELECT COALESCE(LOC_NM, 'Unknown') AS LOC_NM, "
+        "CAST(DATE_TRUNC('month', LIFT_ETA_DATE) AS DATE) AS \"MONTH\", "
+        'SUM(GROSS_PROFIT) AS "GP"\n'
+        "FROM synthetic.marine_sales_planning_v\n"
+        "WHERE LIFT_ETA_DATE >= %s AND LIFT_ETA_DATE < %s "
+        "AND COALESCE(CUST_NM, 'Unknown') IN (%s)\n"
+        "GROUP BY 1, 2"
+    )
+    assert params == [dt.date(2025, 1, 1), dt.date(2026, 1, 1), "Northstar Lines"]
+
+
+def test_frame_by_quarter_on_the_gl_view_wraps_the_varchar_date_snowflake():
+    spec = FrameQuerySpec(
+        entity="W_MARINE_GL_SOURCE_AI",
+        metrics=("MONETARY_TOTAL",),
+        period=PeriodWindow(dt.date(2025, 1, 1), dt.date(2026, 1, 1)),
+        group_by=("QUARTER",),
+    )
+    sql, _ = qb.build_frame_query(spec, "snowflake")
+    assert sql.startswith(
+        "SELECT CAST(DATE_TRUNC('quarter', TO_DATE(PERIOD_DATE)) AS DATE) AS \"QUARTER\", "
+    )
+    assert "GROUP BY 1" in sql
+
+
+def test_frame_by_year_alone_postgres():
+    spec = FrameQuerySpec(
+        entity="MARINE_SALES_PLANNING_V",
+        metrics=("GP", "VOLUME"),
+        period=PeriodWindow(dt.date(2024, 1, 1), dt.date(2026, 1, 1)),
+        group_by=("YEAR",),
+    )
+    sql, _ = qb.build_frame_query(spec, "postgres")
+    assert sql.startswith("SELECT CAST(DATE_TRUNC('year', LIFT_ETA_DATE) AS DATE) AS \"YEAR\", ")
+
+
+def test_frame_refuses_two_time_buckets():
+    spec = FrameQuerySpec(
+        entity="MARINE_SALES_PLANNING_V", metrics=("GP",), period=APRIL, group_by=("MONTH", "YEAR")
+    )
+    with pytest.raises(qb.SpecValidationError, match="at most one time bucket"):
+        qb.build_frame_query(spec, "postgres")
+
+
+def test_frame_still_refuses_a_non_dimension_that_is_not_a_bucket():
+    spec = FrameQuerySpec(
+        entity="MARINE_SALES_PLANNING_V", metrics=("GP",), period=APRIL, group_by=("GROSS_PROFIT",)
+    )
+    with pytest.raises(qb.SpecValidationError, match="is not a dimension"):
+        qb.build_frame_query(spec, "postgres")
+
+
+def test_a_bucket_name_in_filters_is_still_not_a_dimension():
+    spec = FrameQuerySpec(
+        entity="MARINE_SALES_PLANNING_V",
+        metrics=("GP",),
+        period=APRIL,
+        group_by=("LOC_NM",),
+        filters={"MONTH": ("2025-01-01",)},
+    )
+    with pytest.raises(qb.SpecValidationError, match="'MONTH' is not a dimension"):
+        qb.build_frame_query(spec, "postgres")
+
 # ---------------------------------------------------------------------------
 # build_months_query
 # ---------------------------------------------------------------------------

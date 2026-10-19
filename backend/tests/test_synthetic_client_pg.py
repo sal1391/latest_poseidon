@@ -515,6 +515,19 @@ def test_frame_rollup_equals_the_independent_total_to_the_cent():
     assert abs(sum(r.values["VOLUME"] for r in frame.rows) - total.values["VOLUME"]) < 0.005
 
 
+
+def test_frame_month_bucket_keys_come_back_as_iso_strings():
+    spec = FrameQuerySpec(
+        entity=SALES,
+        metrics=("GP",),
+        period=PeriodWindow(dt.date(2026, 4, 1), dt.date(2026, 6, 1)),
+        group_by=("MONTH",),
+        scope_value=None,
+    )
+    result = CLIENT.run_frame_query(spec)
+    assert sorted(row.keys[0] for row in result.rows) == ["2026-04-01", "2026-05-01"]
+    assert all(isinstance(row.keys[0], str) for row in result.rows)
+
 def test_snapshot_client_answers_like_the_plain_client():
     spec = MetricQuerySpec(SALES, ("GP",), APRIL_2026, scope_value=None)
     with CLIENT.snapshot() as snap:
