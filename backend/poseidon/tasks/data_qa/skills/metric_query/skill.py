@@ -17,12 +17,21 @@ from poseidon.core.skills.context import ConversationSlots, SkillContext
 from poseidon.core.skills.result import SkillResult, problem
 
 from .schema import Args
-from .tools.build_spec import build_spec
+from .tools.build_spec import build_spec, is_frame_path
 from .tools.compare_breakdown import WINDOW_TOP_N, compare_breakdown_parts
 from .tools.format_parts import format_parts
+from .tools.frame_breakdown import frame_breakdown_parts
 
 Spec = MetricQuerySpec | BreakdownQuerySpec | FrameQuerySpec
-_S = TypeVar("_S", MetricQuerySpec, BreakdownQuerySpec)
+_S = TypeVar("_S", MetricQuerySpec, BreakdownQuerySpec, FrameQuerySpec)
+
+WIN_RATE_FRAME_TEXT = (
+    "WIN_RATE cannot be broken down by more than one column or by a time bucket; "
+    "ask for NUM_WON and NUM_INQUIRIES instead"
+)
+COMPARE_MULTI_TEXT = (
+    "compare one dimension at a time: compare_period needs a single plain group_by column"
+)
 
 
 def _carried_office(state: ConversationSlots) -> tuple[str, str] | None:
@@ -80,6 +89,14 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
     ``WINDOW_TOP_N`` rows and merge into one comparison table per metric
     (``tools/compare_breakdown.py``).
 
+    FRAME PATH (Phase 17 PR B). A ``group_by`` of two or more columns, or
+    with a MONTH/QUARTER/YEAR bucket (:func:`is_frame_path`), runs ONE frame
+    query and is ordered and capped in Python (``tools/frame_breakdown.py``).
+    Two combinations are refused with a 422 BEFORE any query runs:
+    ``WIN_RATE`` on the frame path (a ratio does not roll up; the counts do)
+    and ``compare_period`` with a frame ``group_by`` (compare one dimension
+    at a time).
+
     OFFICE SCOPE (Phase 17 A2). Under ``args.scope == "office"`` (the
     default) with an office carried in ``ctx.state``, every spec this run
     builds - both windows of any comparison - carries that office as a
@@ -113,6 +130,12 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
     without an identified caller raises ``SpecValidationError`` and lands in
     the 422 below rather than answering with rows the caller cannot see.
     """
+    frame = is_frame_path(args.group_by)
+    if frame and "WIN_RATE" in args.metrics:
+        return SkillResult(ok=False, error=problem(422, "invalid query", WIN_RATE_FRAME_TEXT))
+    if frame and args.compare_period is not None:
+        return SkillResult(ok=False, error=problem(422, "invalid query", COMPARE_MULTI_TEXT))
+
     stamp = args.scope == "office" and _office_applies(args.entity, ctx.state)
     try:
         scope_value = resolve_row_scope_value(args.entity, cast(UserContext | None, ctx.user))
@@ -123,7 +146,9 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
             spec = replace(build_spec(spec_args), scope_value=scope_value)
             return _stamp_office(spec, ctx.state) if stamp else spec
 
-        if args.group_by is not None and args.compare_period is not None:
+        if frame:
+            parts, proof = _frame(ctx, args, scoped)
+        elif args.group_by is not None and args.compare_period is not None:
             parts, proof = _compare_breakdown(ctx, args, scoped)
         else:
             parts, proof = _single(ctx, args, scoped)
@@ -131,6 +156,26 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
         return SkillResult(ok=False, error=problem(422, "invalid query", str(exc)))
 
     return SkillResult(ok=True, parts=parts, proof=[*proof, *_office_proof(args, ctx.state)])
+
+
+def _frame(
+    ctx: SkillContext, args: Args, scoped: Callable[[Args], Spec]
+) -> tuple[list[dict], list[str]]:
+    """Multi-column or bucketed breakdown: one frame query, ordered and
+    capped in Python by ``frame_breakdown_parts``."""
+    spec = scoped(args)
+    if not isinstance(spec, FrameQuerySpec):
+        # is_frame_path held, so build_spec returns a frame - a python
+        # -O-proof guard against that mapping ever breaking.
+        raise TypeError("build_spec on the frame path did not return a FrameQuerySpec")
+    return frame_breakdown_parts(
+        spec,
+        ctx.data.run_frame_query(spec),
+        ctx.settings,
+        order_by=args.order_by or args.metrics[0],
+        order=args.order,
+        top_n=args.top_n,
+    )
 
 
 def _compare_breakdown(

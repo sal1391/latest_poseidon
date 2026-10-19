@@ -2101,6 +2101,44 @@ def test_pass_through_capped_at_ten_rows():
     assert new_slots.pass_through[-1] == ("Customer 9", "Customer 9")
 
 
+def test_pass_through_column_skips_time_buckets():
+    assert orchestrator._pass_through_column("CUST_NM") == 0
+    assert orchestrator._pass_through_column(["CUST_NM"]) == 0
+    assert orchestrator._pass_through_column(["MONTH", "LOC_NM"]) == 1
+    # The frame table leads with the bucket whatever the group-by order.
+    assert orchestrator._pass_through_column(["LOC_NM", "MONTH"]) == 1
+    assert orchestrator._pass_through_column(["LOC_NM", "SUPPLIER_NM"]) == 0
+    assert orchestrator._pass_through_column(["MONTH"]) is None
+    assert orchestrator._pass_through_column(None) is None
+
+
+def test_pass_through_after_a_bucketed_breakdown_reads_the_first_non_time_column():
+    """A frame table with the bucket first (plan ruling 8): pass-through
+    carries the Port column, never the month labels."""
+
+    class _FakeSink:
+        tool_result_parts = {
+            1: [
+                {
+                    "kind": "table",
+                    "payload": {
+                        "columns": ["Month", "Port", "GP"],
+                        "rows": [["Jan 2025", "Rotterdam", 1], ["Jan 2025", "Singapore", 2]],
+                    },
+                }
+            ]
+        }
+
+    @dataclass(frozen=True)
+    class _FakeRecord:
+        tool_seq: int
+        arguments: dict
+
+    record = _FakeRecord(tool_seq=1, arguments={"group_by": ["MONTH", "LOC_NM"]})
+    slots = _repopulate_pass_through(ConversationSlots(), (record,), _FakeSink())
+    assert slots.pass_through == (("Rotterdam", "Rotterdam"), ("Singapore", "Singapore"))
+
+
 def test_pass_through_untouched_when_no_group_by_dispatch_happened():
     @dataclass(frozen=True)
     class _FakeRecord:

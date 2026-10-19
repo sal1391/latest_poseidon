@@ -22,7 +22,14 @@ import pytest
 from pydantic import ValidationError
 
 from poseidon.core.config import Settings
-from poseidon.core.data.client import BreakdownResult, BreakdownRow, MetricResult, PeriodRange
+from poseidon.core.data.client import (
+    BreakdownResult,
+    BreakdownRow,
+    FrameResult,
+    FrameRow,
+    MetricResult,
+    PeriodRange,
+)
 from poseidon.core.data.query_builder import TIME_BUCKETS
 from poseidon.core.data.specs import (
     BreakdownQuerySpec,
@@ -32,6 +39,7 @@ from poseidon.core.data.specs import (
 )
 from poseidon.core.identity import UserContext
 from poseidon.core.skills.context import ConversationSlots, SkillContext
+from poseidon.core.skills.result import text_part
 from poseidon.tasks._shared.fragments import DimFilter, PeriodArg
 from poseidon.tasks.data_qa.skills.metric_query.schema import Args
 from poseidon.tasks.data_qa.skills.metric_query.skill import run
@@ -39,7 +47,16 @@ from poseidon.tasks.data_qa.skills.metric_query.tools.build_spec import build_sp
 from poseidon.tasks.data_qa.skills.metric_query.tools.compare_breakdown import (
     compare_breakdown_parts,
 )
-from poseidon.tasks.data_qa.skills.metric_query.tools.format_parts import format_parts
+from poseidon.tasks.data_qa.skills.metric_query.tools.format_parts import (
+    EMPTY_RESULT_PROOF,
+    NO_DATA_TEXT,
+    format_parts,
+)
+from poseidon.tasks.data_qa.skills.metric_query.tools.frame_breakdown import (
+    BUCKET_HEADERS,
+    bucket_label,
+    frame_breakdown_parts,
+)
 
 SALES = "MARINE_SALES_PLANNING_V"
 APRIL = PeriodWindow(dt.date(2026, 4, 1), dt.date(2026, 5, 1))
@@ -449,11 +466,17 @@ class _RecordingDataClient:
     for ``format_parts`` to render a "No data" part, which is all these tests
     need past the spec itself."""
 
-    def __init__(self, breakdown_rows: list[list[BreakdownRow]] | None = None) -> None:
+    def __init__(
+        self,
+        breakdown_rows: list[list[BreakdownRow]] | None = None,
+        frame_rows: list[list[FrameRow]] | None = None,
+    ) -> None:
         self.metric_specs: list[MetricQuerySpec] = []
         self.breakdown_specs: list[BreakdownQuerySpec] = []
-        # One row list per breakdown call, in call order; empty when unset.
+        self.frame_specs: list[FrameQuerySpec] = []
+        # One row list per breakdown / frame call, in call order; empty when unset.
         self._breakdown_rows = list(breakdown_rows or [])
+        self._frame_rows = list(frame_rows or [])
 
     def list_dimension_values(self, *args: object, **kwargs: object) -> list[str]:
         raise AssertionError("metric_query must never list dimension values")
@@ -471,6 +494,11 @@ class _RecordingDataClient:
         self.breakdown_specs.append(spec)
         rows = self._breakdown_rows.pop(0) if self._breakdown_rows else []
         return BreakdownResult(entity=spec.entity, group_by=spec.group_by, rows=rows)
+
+    def run_frame_query(self, spec: FrameQuerySpec) -> FrameResult:
+        self.frame_specs.append(spec)
+        rows = self._frame_rows.pop(0) if self._frame_rows else []
+        return FrameResult(entity=spec.entity, group_by=tuple(spec.group_by), rows=rows)
 
 
 def _ctx(
@@ -850,3 +878,137 @@ def test_build_spec_frame_path_returns_a_frame_spec_in_group_by_order():
     assert isinstance(spec, FrameQuerySpec)
     assert spec.group_by == ("LOC_NM", "MONTH")
     assert set(TIME_BUCKETS) == {"MONTH", "QUARTER", "YEAR"}
+
+
+# ---------------------------------------------------------------------------
+# frame_breakdown_parts and skill.run on the frame path
+# ---------------------------------------------------------------------------
+
+_YEAR_2025 = PeriodWindow(dt.date(2025, 1, 1), dt.date(2026, 1, 1))
+
+
+def _frame(group_by, rows):
+    spec = FrameQuerySpec(
+        entity=SALES, metrics=("GP", "VOLUME"), period=_YEAR_2025, group_by=group_by
+    )
+    return spec, FrameResult(
+        entity=spec.entity, group_by=group_by, rows=[FrameRow(k, v) for k, v in rows]
+    )
+
+
+def test_bucket_labels():
+    assert bucket_label("MONTH", "2025-01-01") == "Jan 2025"
+    assert bucket_label("QUARTER", "2025-04-01") == "Q2 2025"
+    assert bucket_label("YEAR", "2025-01-01") == "2025"
+    assert BUCKET_HEADERS == {"MONTH": "Month", "QUARTER": "Quarter", "YEAR": "Year"}
+
+
+def test_frame_breakdown_omits_missing_buckets_and_ranks_by_period_total():
+    spec, result = _frame(
+        ("LOC_NM", "MONTH"),
+        [
+            (("Singapore", "2025-02-01"), {"GP": 50.0, "VOLUME": 5.0}),
+            (("Rotterdam", "2025-01-01"), {"GP": 40.0, "VOLUME": 4.0}),
+            (("Rotterdam", "2025-02-01"), {"GP": 30.0, "VOLUME": 3.0}),
+            (("Houston", "2025-01-01"), {"GP": 10.0, "VOLUME": 1.0}),
+        ],
+    )
+    parts, proof = frame_breakdown_parts(
+        spec, result, SETTINGS, order_by="GP", order="desc", top_n=2
+    )
+    (table,) = parts
+    assert table["payload"]["columns"] == ["Month", "Port", "Gross Profit", "Volume"]
+    # Rotterdam (70 over the year) outranks Singapore (50); Houston is cut;
+    # no zero row for Singapore in January.
+    assert table["payload"]["rows"] == [
+        ["Jan 2025", "Rotterdam", 40, 4],
+        ["Feb 2025", "Rotterdam", 30, 3],
+        ["Feb 2025", "Singapore", 50, 5],
+    ]
+    assert proof[-3:] == [
+        "Group by: LOC_NM, MONTH (top 2 keys; every bucket)",
+        "Order: GP desc",
+        "Rows: 3",
+    ]
+
+
+def test_frame_breakdown_month_only_shows_every_month_chronologically():
+    spec, result = _frame(
+        ("MONTH",),
+        [
+            (("2025-03-01",), {"GP": 3.0, "VOLUME": 1.0}),
+            (("2025-01-01",), {"GP": 1.0, "VOLUME": 1.0}),
+        ],
+    )
+    parts, proof = frame_breakdown_parts(
+        spec, result, SETTINGS, order_by="GP", order="desc", top_n=5
+    )
+    assert [row[0] for row in parts[0]["payload"]["rows"]] == ["Jan 2025", "Mar 2025"]
+    assert "Group by: MONTH (top 5 keys; every bucket)" in proof
+
+
+def test_frame_breakdown_two_plain_columns_orders_asc_and_caps_rows():
+    spec, result = _frame(
+        ("LOC_NM", "SUPPLIER_NM"),
+        [
+            (("Singapore", "Vitol"), {"GP": 50.0, "VOLUME": 5.0}),
+            (("Rotterdam", "Shell"), {"GP": 40.0, "VOLUME": 4.0}),
+            (("Houston", "BP"), {"GP": 10.0, "VOLUME": 1.0}),
+        ],
+    )
+    parts, proof = frame_breakdown_parts(
+        spec, result, SETTINGS, order_by="GP", order="asc", top_n=2
+    )
+    assert [row[:2] for row in parts[0]["payload"]["rows"]] == [
+        ["Houston", "BP"],
+        ["Rotterdam", "Shell"],
+    ]
+    assert "Group by: LOC_NM, SUPPLIER_NM (top 2)" in proof and "Order: GP asc" in proof
+
+
+def test_frame_breakdown_empty_is_no_data():
+    spec, result = _frame(("MONTH",), [])
+    parts, proof = frame_breakdown_parts(
+        spec, result, SETTINGS, order_by="GP", order="desc", top_n=5
+    )
+    assert parts == [text_part(NO_DATA_TEXT)] and proof[-1] == EMPTY_RESULT_PROOF
+
+
+def test_run_frame_path_queries_a_frame_and_stamps_the_office():
+    client = _RecordingDataClient(
+        frame_rows=[[FrameRow(("Rotterdam", "2026-04-01"), {"GP": 1.0})]]
+    )
+    res = run(_ctx(client, state=_ROTTERDAM), _args(metrics=["GP"], group_by=["LOC_NM", "MONTH"]))
+    assert res.ok is True
+    (spec,) = client.frame_specs
+    assert spec.filters == {"CUSTOMER_TEAM_NAME": ("Rotterdam",)}
+    assert res.proof[-1] == _STAMPED_LINE
+
+
+def test_run_refuses_win_rate_on_the_frame_path_before_querying():
+    client = _RecordingDataClient()
+    res = run(_ctx(client), _args(metrics=["WIN_RATE"], group_by=["MONTH"]))
+    assert res.ok is False and res.error["status"] == 422
+    assert (
+        "WIN_RATE cannot be broken down by more than one column or by a time bucket"
+        in res.error["detail"]
+    )
+    assert client.frame_specs == []
+
+
+def test_run_refuses_compare_with_a_multi_column_group_by():
+    client = _RecordingDataClient()
+    res = run(_ctx(client), _args(group_by=["LOC_NM", "MONTH"], compare_period=_PRIOR_ARG))
+    assert res.ok is False and "compare one dimension at a time" in res.error["detail"]
+    assert client.frame_specs == [] and client.breakdown_specs == []
+
+
+def test_run_single_column_asc_adds_an_order_line_and_default_adds_none():
+    row = BreakdownRow("Singapore", {"GP": 1.0, "VOLUME": 1.0})
+    asc = _RecordingDataClient(breakdown_rows=[[row]])
+    asc_res = run(_ctx(asc), _args(group_by=["LOC_NM"], order="asc"))
+    assert asc.breakdown_specs[0].order == "asc"
+    assert asc_res.proof[-2:] == ["Order: GP asc", "Rows: 1"]
+    default = _RecordingDataClient(breakdown_rows=[[row]])
+    res = run(_ctx(default), _args(group_by=["LOC_NM"]))
+    assert not any(line.startswith("Order:") for line in res.proof)

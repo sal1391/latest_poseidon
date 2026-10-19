@@ -292,6 +292,7 @@ from poseidon.core.chat.report_flow import ENTRY_PHRASE_REPORT, MODE_REPORT
 from poseidon.core.chat.state import ConversationStateStore
 from poseidon.core.config import Settings
 from poseidon.core.data.client import DataClient
+from poseidon.core.data.query_builder import TIME_BUCKETS
 from poseidon.core.identity import UserContext
 from poseidon.core.llm.loop import (
     ROUTER_GUARDRAIL_ENTITY,
@@ -2054,6 +2055,24 @@ def _append_records(
         )
 
 
+def _pass_through_column(group_by: object) -> int | None:
+    """The table column pass-through reads (plan ruling 8): the column of the
+    first group-by entry that is not a time bucket; None when there is no
+    group-by or only a bucket.
+
+    That is a TABLE index, not a group-by index: the frame table
+    (``metric_query/tools/frame_breakdown.py``) always leads with the bucket
+    column, then the dimension columns in group-by order. So the first
+    dimension sits at 1 whenever a bucket is present -- ``["LOC_NM",
+    "MONTH"]`` renders ``Month, Port, ...`` -- and at 0 otherwise."""
+    if not group_by:
+        return None
+    columns = [group_by] if isinstance(group_by, str) else list(group_by)
+    if all(column in TIME_BUCKETS for column in columns):
+        return None
+    return 1 if any(column in TIME_BUCKETS for column in columns) else 0
+
+
 def _repopulate_pass_through(
     slots: ConversationSlots, tool_records, sink: SseEnvelopeSink
 ) -> ConversationSlots:
@@ -2096,14 +2115,15 @@ def _repopulate_pass_through(
     """
     new_pairs: tuple[tuple[str, str], ...] | None = None
     for record in tool_records:
-        if not record.arguments.get("group_by"):
+        column = _pass_through_column(record.arguments.get("group_by"))
+        if column is None:
             continue
         parts = sink.tool_result_parts.get(record.tool_seq, [])
         table = next((part for part in parts if part.get("kind") == "table"), None)
         if table is None:
             continue
         rows = table["payload"].get("rows") or []
-        new_pairs = tuple((row[0], row[0]) for row in rows[:_PASS_THROUGH_CAP])
+        new_pairs = tuple((row[column], row[column]) for row in rows[:_PASS_THROUGH_CAP])
     if new_pairs is None:
         return slots
     return dataclasses.replace(slots, pass_through=new_pairs)

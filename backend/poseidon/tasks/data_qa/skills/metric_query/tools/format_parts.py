@@ -80,7 +80,12 @@ from collections.abc import Mapping
 
 from poseidon.core.config import Settings
 from poseidon.core.data.client import BreakdownResult, MetricResult
-from poseidon.core.data.specs import BreakdownQuerySpec, MetricQuerySpec, PeriodWindow
+from poseidon.core.data.specs import (
+    BreakdownQuerySpec,
+    FrameQuerySpec,
+    MetricQuerySpec,
+    PeriodWindow,
+)
 from poseidon.core.ontology.loader import get_ontology
 from poseidon.core.skills.result import metric_grid_part, table_part, text_part
 
@@ -147,12 +152,13 @@ def _filters_proof(filters: Mapping[str, tuple[str, ...]]) -> str:
 
 
 def _header_proof(
-    spec: MetricQuerySpec | BreakdownQuerySpec,
+    spec: MetricQuerySpec | BreakdownQuerySpec | FrameQuerySpec,
     settings: Settings,
     compare_period: PeriodWindow | None,
 ) -> list[str]:
     """The proof lines every shape shares: entity, backend, period(s) and
-    filters, plus (breakdown only) the group-by line."""
+    filters, plus (single-column breakdown only) the group-by line. A frame
+    gets its own group-by line from ``frame_breakdown_parts``."""
     entity = get_ontology().entity(spec.entity)
     proof = [
         f"Entity: {entity.fqn}",
@@ -165,6 +171,17 @@ def _header_proof(
     if isinstance(spec, BreakdownQuerySpec):
         proof.append(f"Group by: {spec.group_by} (top {spec.top_n})")
     return proof
+
+
+def _order_proof(
+    order_by: str, order: str, default_metric: str, *, force: bool = False
+) -> list[str]:
+    """``Order: <metric> <dir>`` -- always on the frame path (``force``), and
+    on the single-column path only when the order is not the default, so
+    every pre-existing proof stays byte-identical (plan ruling 6)."""
+    if force or order_by != default_metric or order != "desc":
+        return [f"Order: {order_by} {order}"]
+    return []
 
 
 def _is_empty(result: MetricResult) -> bool:
@@ -235,6 +252,7 @@ def format_parts(
     proof = _header_proof(spec, settings, compare_period)
 
     if isinstance(spec, BreakdownQuerySpec):
+        proof.extend(_order_proof(spec.order_by_metric, spec.order, spec.metrics[0]))
         return _breakdown_parts(spec, result, proof)
 
     if _is_empty(result) and (compare_result is None or _is_empty(compare_result)):
