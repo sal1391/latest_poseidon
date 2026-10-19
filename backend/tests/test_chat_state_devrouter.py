@@ -40,6 +40,7 @@ keep it so).
 """
 
 import threading
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -1568,3 +1569,14 @@ def test_chat_module_files_are_ascii_on_disk():
     for path in paths:
         offending = sorted({byte for byte in path.read_bytes() if byte > 0x7F})
         assert not offending, f"{path.name} holds non-ASCII bytes: {offending}"
+
+
+def test_scope_hint_line_does_not_change_the_dev_router_decision():
+    router = DevDeterministicRouter()
+    without = _system(_parsed(period_a=_PERIOD_A))
+    with_hint = _system(replace(_parsed(period_a=_PERIOD_A), scope_hint="share"))
+    assert "Scope hint: share" in with_hint
+    message = [_user_message("gp this period")]
+    a = router.invoke(system=without, messages=message, tools=[], model="m", params={})
+    b = router.invoke(system=with_hint, messages=message, tools=[], model="m", params={})
+    assert a == b

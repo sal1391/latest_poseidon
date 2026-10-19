@@ -46,6 +46,7 @@ Order
 8. Hint skills from the UNMASKED normalized text and the POST-carry slots
    (masking is a period-parsing concern only; the hinter's lexicon has
    nothing to do with dates, and a mode hint should see the freshest mode).
+8b. Scope hint from the UNMASKED normalized text (``scope_hinter``).
 9. Collect every issue (customer, then port, then period -- an arbitrary
    but fixed, documented order, since ``ParsedTurn.issues`` has no
    precedence rule of its own the way ``PeriodParse.issue`` does) into one
@@ -281,6 +282,7 @@ from poseidon.core.parsing.carry import UNSET, SlotUpdates, _UnsetType, apply_ca
 from poseidon.core.parsing.customer_resolver import resolve
 from poseidon.core.parsing.normalize import normalize
 from poseidon.core.parsing.period_parser import parse_periods
+from poseidon.core.parsing.scope_hinter import scope_hint
 from poseidon.core.parsing.skill_hinter import hint
 from poseidon.core.parsing.types import ParsedTurn, ParseIssue, ResolvedEntity
 from poseidon.core.skills.context import ConversationSlots
@@ -811,6 +813,7 @@ def parse_turn(
     post_carry_slots = apply_carry(slots, updates)
 
     hints = hint(normalized, post_carry_slots)
+    scope = scope_hint(normalized)
 
     issues = tuple(
         issue
@@ -827,4 +830,5 @@ def parse_turn(
         port=port_plan.entity,
         hints=hints,
         issues=issues,
+        scope_hint=scope,
     )

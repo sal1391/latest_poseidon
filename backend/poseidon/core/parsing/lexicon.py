@@ -119,3 +119,23 @@ MODE_SLOT_ALIASES: dict[str, str] = {
     "existing_customer": "existing customer",
     "new_prospect": "prospect",
 }
+
+
+# Phase 17 PR B: the scope hinter's phrase table (reports design 7.2). The
+# value is the ParsedTurn.scope_hint the phrase argues for. Advisory only.
+SCOPE_HINTS: dict[str, str] = {
+    "where else": "book",
+    "other ports": "book",
+    "other offices": "book",
+    "other locations": "book",
+    "full account": "book",
+    "whole book": "book",
+    "overall": "book",
+    "across all offices": "book",
+    "how much of": "share",
+    "share of": "share",
+    "% of": "share",
+    "percent of": "share",
+    "portion of": "share",
+    "makes up": "share",
+}

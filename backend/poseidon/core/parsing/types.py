@@ -74,3 +74,4 @@ class ParsedTurn:
     port: ResolvedEntity | None
     hints: tuple[CandidateSkill, ...]
     issues: tuple[ParseIssue, ...]  # empty = clean parse
+    scope_hint: str | None = None  # "book" | "share" | None; the scope hinter's advisory read

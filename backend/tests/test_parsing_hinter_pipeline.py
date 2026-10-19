@@ -63,6 +63,7 @@ from poseidon.core.parsing.lexicon import (
     WEB_RESEARCH,
 )
 from poseidon.core.parsing.pipeline import DEFAULT_ENTITY, parse_turn
+from poseidon.core.parsing.scope_hinter import scope_hint
 from poseidon.core.parsing.skill_hinter import hint
 from poseidon.core.parsing.types import CandidateSkill, ParsedTurn, ParseIssue, ResolvedEntity
 from poseidon.core.skills.context import ConversationSlots
@@ -1621,3 +1622,39 @@ def test_pipeline_module_never_reads_the_wall_clock():
         elif isinstance(node.func, ast.Name):
             called.add(node.func.id)
     assert called.isdisjoint({"today", "now", "utcnow", "time", "monotonic", "fromtimestamp"})
+
+
+# ---------------------------------------------------------------------------
+# Phase 17 PR B Task 5: the scope hinter
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("where else does Northstar lift fuel", "book"),
+        ("show me the other ports", "book"),
+        ("give me the full account GP", "book"),
+        ("whole book please", "book"),
+        ("how does it look overall", "book"),
+        ("across all offices", "book"),
+        ("how much of my GP is of the total account GP", "share"),
+        ("what share of the book is Rotterdam", "share"),
+        ("what % of GP is that", "share"),
+        ("what portion of volume", "share"),
+        ("how much it makes up", "share"),
+        ("how much of the whole book", "share"),  # share wins over book (plan ruling 9)
+        ("top gp customers in april 2026", None),
+        ("overalls are not a scope word", None),  # word boundary
+    ],
+)
+def test_scope_hint_lexicon(text, expected):
+    assert scope_hint(text) == expected
+
+
+def test_parse_turn_sets_scope_hint():
+    client = FakeDataClient()
+    parsed = parse_turn("where else does Northstar Lines lift fuel", NO_SLOTS, REF, client)
+    assert parsed.scope_hint == "book"
+    plain = parse_turn("top gp customers in april 2026", NO_SLOTS, REF, client)
+    assert plain.scope_hint is None
