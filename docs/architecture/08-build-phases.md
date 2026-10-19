@@ -294,7 +294,7 @@ Phase 17 shipped as the PR split of D61 (spec `docs/superpowers/specs/2026-10-12
   (D72), breakdown with comparison (D73), the two Next.js download routes, the `report`
   renderer, the synthetic multi-office overlay and the suggested-questions chips (D74), the
   `report_entry` and `report_turn` contract goldens and `test_report_flow_pg.py`.
-- **PR B (next):** `metric_query` extensions (may lift the top-50 cap of D73).
+- **PR B (shipped, this branch):** `metric_query` extensions (D75-D78). Multi-column and time-bucket `group_by` on the frame path with `order_by`/`order`, share of total with the C04 order, the scope hinter and the deterministic `dimension_unspecified` slice chips, eight reports-design §7.6 routing cases (six stub runs plus two pointer entries), the dev router cues that let the browser gate run offline, and the three A2 leftovers (the compare header names the shown rows, singular "1 row remaining", lookup KPIs as a display-string table). The top-50 cap of D73 is kept.
 - **PR C (next):** provider profiles (D68).
 
 ## Phase 17b — Retrieval (thin slice, optional)

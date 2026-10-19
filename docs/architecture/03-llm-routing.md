@@ -98,7 +98,7 @@ brief for X"), never as a filter on available skills.
    scope="book" ...` and `Report context: {report_label}. Quote the report's own figures only through
    reporting.report_lookup.` The `report_label` slot carries the report's own months, so a later follow-up that moves the carried periods never changes this line. Internal skills are not in the router's tool list, and the loop
    refuses a call to one with a 403 `internal skill` problem.
-5. `ParsedTurn` rendered as a structured context block + conversation window.
+5. `ParsedTurn` rendered as a structured context block + conversation window. The block lists `Skill hints` and, directly after it, `Scope hint: book|share` when the scope hinter (doc 02 section 5, D77) fired; both are advisory.
 
 The agent loop (per turn):
 
@@ -204,6 +204,8 @@ breakdown with a comparison window), `report_followup_where_else` (leaves the ca
 with `scope="book"`), `supplier_report_break_down_by_customer` (keeps the supplier filter) and
 `report_lookup_top_ports` (a question about the report's own figures goes to
 `reporting.report_lookup`).
+
+Phase 17 PR B adds the remaining reports-design §7.6 rows: six stub-run cases (`report_followup_full_account_gp`, `report_followup_share_of_total`, `report_followup_gp_by_month_2025`, `report_followup_then_by_port`, `report_followup_by_port_by_month`, `report_followup_break_down_by_deal_class`) and two pointer entries whose decision is deterministic (`report_followup_compare_to_june` → the C03 suite; `slice_it_another_way` → the orchestrator suite). Pointer entries carry `parser_case`/`orchestrator_case` instead of a script and run in neither executor. The stub-mode dev router now carries the PR B cues (group-by phrases, share phrases on the carried office column, the carried customer under a cue; D78), so these cases and the browser gate run without Bedrock.
 
 Execution modes:
 

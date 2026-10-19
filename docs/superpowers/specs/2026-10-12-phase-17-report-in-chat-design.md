@@ -509,6 +509,8 @@ Scope stamping and breakdown-with-comparison (§6.8).
 - The remaining router-decision cases of the reports design §7.6, pinned in stub mode; the
   widening and share cases also under `router_live`.
 
+**Realised in PR B (2026-10-18):** cap rule (top_n keys, every bucket), the two frame-path refusals, D73's merge kept with a reworded header, the eight curated slice chips, and the offline dev-router gate in place of the live Bedrock gate (owner has no credentials). See D75-D78.
+
 ---
 
 ## 9. PR C — providers

@@ -33,16 +33,16 @@ doc as current. Decisions taken in feature specs used to not propagate; that is 
 - **Cortex via the SQL `COMPLETE` function with emulated tools.** D40 chose the Cortex REST
   Messages endpoint with native tool calling.
 
-## Commands — verified 2026-10-16 (Phase 17 PR A2), copy-pasteable
+## Commands — verified 2026-10-19 (Phase 17 PR B), copy-pasteable
 
 ```bash
-# Offline Python suite -> 2259 passed, 15 skipped, 130 deselected (~180s)
+# Offline Python suite -> 2348 passed, 15 skipped, 136 deselected (~180s)
 cd backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest \
   -p no:cacheprovider \
   -m 'not pg and not minio and not pdf and not router_live and not research_live'
 
 # Postgres-backed suite (needs the compose `db` service up; DATABASE_URL points at it, e.g.
-# postgresql+psycopg://poseidon:poseidon@localhost:5434/poseidon when the compose db is started with a port override; the tracked compose file maps 5432) -> 354 passed, 1 skipped
+# postgresql+psycopg://poseidon:poseidon@localhost:5434/poseidon when the compose db is started with a port override; the tracked compose file maps 5432) -> 355 passed, 1 skipped
 # (Drizzle-only database; Alembic no longer owns this schema, D58)
 cd backend && .venv/Scripts/python.exe -B -m pytest -p no:cacheprovider -m pg
 
@@ -54,7 +54,7 @@ cd backend && .venv/Scripts/python.exe -m ruff check .
 cd backend && POSEIDON_UPDATE_CONTRACTS=1 .venv/Scripts/python.exe -B -m pytest \
   -p no:cacheprovider tests/contracts -q
 
-# Frontend (Vite, untouched by PR A2) -> 171 passed, 18 files; lint clean
+# Frontend (Vite, untouched by PR A2 and PR B) -> 171 passed, 18 files; lint clean
 cd frontend && npm test -- --run
 cd frontend && npm run lint
 
@@ -73,13 +73,13 @@ cd web && npx drizzle-kit migrate      # reads DRIZZLE_DATABASE_URL
 # Fresh local database after the Phase 16 cutover: docker compose -f infra/docker-compose.yml down -v
 ```
 
-**All figures above verified 2026-10-16 (Phase 17 PR A2), each run once, to its own file, never
-piped:** offline Python 2259 passed, 15 skipped, 130 deselected; `ruff check` clean;
-`tests/contracts` 9 passed (`contracts/` unchanged by the final task); pg suite 354 passed, 1
+**All figures above verified 2026-10-19 (Phase 17 PR B), each run once, to its own file, never
+piped:** offline Python 2348 passed, 15 skipped, 136 deselected; `ruff check` clean;
+`tests/contracts` 9 passed (`contracts/` unchanged by PR B; `git status --short contracts/` empty); pg suite 355 passed, 1
 skipped, run serially against the compose `db` service (host port 5434 when the compose db is started with a port override; the tracked compose file maps 5432);
 web `npm test` 170 passed, 14 skipped offline (the DRIZZLE_DATABASE_URL-set figure was not re-run);
-web `npx tsc --noEmit` clean; Vite frontend 171 passed in 18 files and `npm run lint` clean (the
-Vite app is untouched by PR A2, figures refreshed only). The web package defines no lint script,
+web `npx tsc --noEmit` clean (web untouched by PR B, figures refreshed only); Vite frontend 171 passed in 18 files and `npm run lint` clean (the
+Vite app is untouched by PR A2 and PR B; these two figures are carried from A2 and were not re-run in PR B). The web package defines no lint script,
 so there is no web lint figure.
 
 **CI: there is none.** No `.github/workflows`. Nothing gates a merge except Carlos, so the suites
@@ -87,6 +87,8 @@ above *are* the gate.
 
 ## Gotchas — every one of these cost a real debugging session
 
+- **`group_by` is a list now** (Phase 17 PR B). The dev router and the stub scripts may still send a
+  string, which `Args` wraps.
 - **Always spell out `.venv/Scripts/python.exe`. Never a bare `python`.** A bare `python` resolves
   to a *different* global 3.14.4 (`AppData/Local/Python/pythoncore-3.14-64`) with `VIRTUAL_ENV`
   unset. That global has `fastapi` and `pytest 9.0.3` but **no `sqlalchemy`** — so it imports

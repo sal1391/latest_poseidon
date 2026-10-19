@@ -77,7 +77,7 @@ class DataClient(Protocol):
   group-by/top-n. Specs are built by skills from parsed slots; **the LLM never authors SQL**.
 - `FrameQuerySpec` (Phase 17) is one grouped, multi-metric slice with no ORDER BY or LIMIT: the
   report engine ranks, truncates and rolls it up in Python, and `WIN_RATE` is refused (a ratio
-  cannot be re-summed across groups).
+  cannot be re-summed across groups). `group_by` may include one of `MONTH`/`QUARTER`/`YEAR`, rendered `CAST(DATE_TRUNC('<unit>', <date column>) AS DATE)` with the Snowflake `TO_DATE` wrap for VARCHAR date columns; bucket keys come back as ISO strings.
 - `snapshot()` yields a client whose queries share one `REPEATABLE READ`, read-only transaction,
   so every number in one report comes from the same moment of the data (D54).
 - One shared `query_builder` renders specs to SQL from the ontology's certified metric
