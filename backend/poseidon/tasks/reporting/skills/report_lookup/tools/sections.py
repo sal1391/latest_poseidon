@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from poseidon.core.skills.result import metric_grid_part, table_part, text_part
+from poseidon.core.skills.result import table_part, text_part
 
 KPI_FRIENDLY = {
     "VOLUME": ("Volume", "tons"),
@@ -64,24 +64,13 @@ def render(
 
 
 def _kpis(payload: dict[str, Any]) -> dict:
-    periods = payload["periods"]
-    window = {
-        "a": {"start": periods["prior"]["start"], "end": periods["prior"]["end"]},
-        "b": {"start": periods["current"]["start"], "end": periods["current"]["end"]},
-    }
-    metrics = []
+    rows = []
     for name, kpi in payload["kpis"].items():
         friendly, unit = KPI_FRIENDLY.get(name, (name.replace("_", " ").title(), None))
-        metrics.append(
-            {
-                "name": name,
-                "friendly": friendly,
-                "a": kpi["prior"],
-                "b": kpi["current"],
-                "unit": unit,
-            }
-        )
-    return metric_grid_part(periods=window, metrics=metrics)
+        label = f"{friendly} ({unit})" if unit else friendly
+        d = kpi["display"]
+        rows.append([label, d["prior"], d["current"], d["change"], d["pct"]])
+    return table_part(columns=["KPI", "Prior", "Current", "Change", "%"], rows=rows)
 
 
 def _row_cells(row: dict[str, Any]) -> list[str]:
@@ -196,7 +185,9 @@ def _paged(
     end = offset + len(page)
     parts = [table_part(columns=columns, rows=page)]
     if end < total:
-        parts.append(text_part(f"{total - end} rows remaining; ask again with offset={end}."))
+        remaining = total - end
+        noun = "row" if remaining == 1 else "rows"
+        parts.append(text_part(f"{remaining} {noun} remaining; ask again with offset={end}."))
     return parts, [*proof, f"Section: {section} rows {offset + 1}-{end} of {total}"]
 
 

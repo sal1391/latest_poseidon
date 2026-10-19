@@ -653,9 +653,11 @@ def test_compare_breakdown_parts_shape_and_driver():
         "Period: 2026-04-01..2026-05-01",
         "Compare: 2025-04-01..2025-05-01",
         "Filters: none",
-        "Group by: CUST_NM (top 50)",
+        "Group by: CUST_NM (top 5 shown; merged over the top 50 per window)",
         "Rows: 3 (merged over the top 50 per window)",
     ]
+    assert "Group by: CUST_NM (top 5 shown; merged over the top 50 per window)" in proof
+    assert not any(line == "Group by: CUST_NM (top 50)" for line in proof)
 
 
 def test_compare_breakdown_parts_caps_at_top_n_and_omits_driver_without_volume():
