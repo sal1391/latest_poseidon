@@ -383,13 +383,13 @@ there is no code for it here):
     (the ``Resolved port:``/``Resolved customer:`` lines -- THIS turn's
     fresh parse, not the carried ``Carried port:``/``Carried customer:``
     slot lines) each add their own filter, customer first. A resolved
-    compare period (``Compare period:``) adds ``compare_period`` -- and,
-    since ``Args`` itself rejects ``group_by`` combined with
-    ``compare_period`` (its own ``_reject_breakdown_with_compare``
-    validator), a compare period wins over a "top" mention when both are
-    present (disclosed judgment call -- the plan does not name this
-    conflict; a resolved compare period is a stronger, structurally-parsed
-    signal than a lexical cue on the message text). The tool call id is
+    compare period (``Compare period:``) adds ``compare_period``, and it
+    wins over a "top" mention when both are present (disclosed judgment
+    call -- the plan does not name this conflict; a resolved compare period
+    is a stronger, structurally-parsed signal than a lexical cue on the
+    message text). ``Args`` itself allows a compare with a single plain
+    ``group_by``; the skill refuses a compare on a multi-column or bucketed
+    breakdown. The tool call id is
     always ``"dev-1"``: this case never emits more than one call, so
     per-invoke-sequence numbering never has occasion to reach ``"dev-2"``.
 
@@ -412,7 +412,10 @@ there is no code for it here):
       is resolved THIS turn, and a ``Carried customer:`` line exists, the
       carried customer becomes the first filter (``CUST_NM``), ahead of a
       resolved port. Without a cue the carried customer is still ignored,
-      exactly as above.
+      exactly as above. A ``CUST_NM`` cue ("by customer") never takes the
+      carried customer as a filter: a breakdown by customer filtered to one
+      customer is a one-row table (a customer resolved THIS turn still
+      applies).
     Without any cue nothing else in this table moves.
 (b2) (Task 4) Case (b) declined (hints do not permit metric_query), hints
     instead LEAD (tie-inclusive since Task 5 -- see "Task 5 CLOSURE" above)
@@ -970,7 +973,11 @@ def _metric_query_call(parsed_state: _ParsedState, messages: list[dict]) -> LLMR
     filters = []
     if parsed_state.customer is not None:
         filters.append({"column": _CUST_NM, "values": [parsed_state.customer]})
-    elif (cues or share) and parsed_state.carried_customer is not None:
+    elif (
+        (cues or share)
+        and _CUST_NM not in cues
+        and parsed_state.carried_customer is not None
+    ):
         filters.append({"column": _CUST_NM, "values": [parsed_state.carried_customer]})
     if parsed_state.port is not None:
         filters.append({"column": _LOC_NM, "values": [parsed_state.port]})

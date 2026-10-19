@@ -1620,6 +1620,15 @@ def test_group_by_cue_uses_the_carried_customer_when_none_is_resolved_this_turn(
     assert args["group_by"] == ["LOC_NM"]
 
 
+def test_by_customer_cue_does_not_filter_on_the_carried_customer():
+    """A "by customer" breakdown filtered to the carried customer is a
+    one-row table; the carried customer stays off when CUST_NM is a cue."""
+    slots = ConversationSlots(customer="Northstar Lines")
+    args = _call_for("break that down by customer", slots=slots)
+    assert "filters" not in args
+    assert args["group_by"] == ["CUST_NM"]
+
+
 def test_without_a_cue_the_carried_customer_is_still_ignored():
     args = _call_for("gp this period", slots=ConversationSlots(customer="Northstar Lines"))
     assert "filters" not in args
