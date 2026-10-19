@@ -6,6 +6,10 @@ spec by REMOVING the named columns from that already-effective filter set
 and never restamps -- so the office can only ever sit on the numerator.
 D16 row scope rides on ``scope_value`` of the selection spec and is copied
 unchanged onto the total.
+
+A ratio metric (MARGIN, WIN_RATE) has no share - a ratio over a ratio is
+not a part of a whole - so its Share % cell is ``"n/a"`` while its
+Selection and Total cells still render.
 """
 
 from dataclasses import replace
@@ -18,6 +22,7 @@ from poseidon.core.data.specs import MetricQuerySpec
 from poseidon.core.skills.result import table_part, text_part
 
 from .format_parts import (
+    _RATIO_METRICS,
     EMPTY_RESULT_PROOF,
     NO_DATA_TEXT,
     _filters_proof,
@@ -68,7 +73,7 @@ def share_parts(
     for m in selection.metrics:
         sel = sel_result.values.get(m)
         tot = tot_result.values.get(m)
-        share = mom.share(sel or 0.0, tot or 0.0)
+        share = None if m in _RATIO_METRICS else mom.share(sel or 0.0, tot or 0.0)
         rows.append(
             [
                 _friendly_and_unit(selection.entity, m)[0],

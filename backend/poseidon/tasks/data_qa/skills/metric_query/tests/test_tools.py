@@ -1141,3 +1141,15 @@ def test_share_parts_total_without_filters_reads_none():
         "Metrics: 1 values",
     ]
     assert not any(line.startswith("Filters:") for line in proof)
+
+
+def test_share_of_total_ratio_metrics_show_na_share():
+    client = _ShareClient([{"GP": 20.0, "MARGIN": 20.0}, {"GP": 100.0, "MARGIN": 25.0}])
+    res = run(
+        _ctx(client, state=_ROTTERDAM),
+        _args(metrics=["GP", "MARGIN"], share_of_total=["CUSTOMER_TEAM_NAME"]),
+    )
+    assert res.parts[0]["payload"]["rows"] == [
+        ["Gross Profit", 20, 100, 20.0],
+        ["Margin", 20.0, 25.0, "n/a"],
+    ]
