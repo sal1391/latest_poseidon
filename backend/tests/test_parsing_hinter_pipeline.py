@@ -1658,3 +1658,31 @@ def test_parse_turn_sets_scope_hint():
     assert parsed.scope_hint == "book"
     plain = parse_turn("top gp customers in april 2026", NO_SLOTS, REF, client)
     assert plain.scope_hint is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "slice it another way",
+        "Slice that a different way",
+        "cut it another way",
+        "break it down differently",
+        "slice it differently",
+    ],
+)
+def test_slice_phrase_without_a_dimension_raises_dimension_unspecified(text):
+    parsed = parse_turn(text, NO_SLOTS, REF, FakeDataClient())
+    issues = [i for i in parsed.issues if i.code == "dimension_unspecified"]
+    assert len(issues) == 1
+    assert issues[0].kind == "dimension"
+    assert issues[0].message == "Which dimension should I slice by?"
+    assert issues[0].phrase and issues[0].phrase.casefold() in text.casefold()
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["slice it by port", "cut it another way by supplier", "top gp customers in april 2026"],
+)
+def test_slice_phrase_with_a_by_cue_raises_no_issue(text):
+    parsed = parse_turn(text, NO_SLOTS, REF, FakeDataClient())
+    assert not any(i.code == "dimension_unspecified" for i in parsed.issues)

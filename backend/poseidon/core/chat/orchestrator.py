@@ -34,7 +34,8 @@ Three terminal states, three writer/state disciplines
   docstring).
 - **clarify**: ``parsed.issues`` contains a ``customer_ambiguous`` issue
   (customer or port kind), or a port-kind ``customer_unknown`` issue
-  (P16-R23; see ``_select_clarify_issue``).
+  (P16-R23; see ``_select_clarify_issue``), or a ``dimension_unspecified``
+  slice issue ("slice it another way": dimension chips, lowest priority).
   Short-circuits BEFORE ``run_turn`` is ever called -- no LLM call, no
   dispatch, per the Global Constraints' "NO skill dispatch for that turn".
   Chips + text parts, then done; ``finalize(status="clarify")``; ``state.
@@ -402,6 +403,20 @@ _CUSTOMER_UNKNOWN = "customer_unknown"
 # the customer_* CODES, and ``kind`` is what tells the two apart.
 _KIND_CUSTOMER = "customer"
 _KIND_PORT = "port"
+_DIMENSION_UNSPECIFIED = "dimension_unspecified"
+_KIND_DIMENSION = "dimension"
+SLICE_TEXT = "Which dimension should I slice by?"
+# Owner ruling 3 (PR B plan): the seven business cuts plus month, in this order.
+SLICE_CHIPS: tuple[tuple[str, str], ...] = (
+    ("CUST_NM", "Customer"),
+    ("LOC_NM", "Port"),
+    ("SUPPLIER_NM", "Supplier"),
+    ("DEAL_CLASSIFICATION_TRADE_CUT", "Deal class"),
+    ("CUSTOMER_TEAM_NAME", "Customer office"),
+    ("PRIMARY_SUPPLY_TEAM_OFFICE", "Supplier office"),
+    ("VESSEL_DASHBOARD_SHIPTYPE_GRP", "Ship type"),
+    ("MONTH", "Month"),
+)
 
 # User-visible port clarification copy (P16-R23). Kept in these three named
 # constants so the wording can be changed in one place.
@@ -927,7 +942,8 @@ def _select_clarify_issue(issues):
     Order (P16-R23): the first customer-kind ``customer_ambiguous`` issue
     (unchanged behaviour), else the first port-kind ``customer_ambiguous``
     issue (port chips), else the first port-kind ``customer_unknown`` issue
-    (a text-only "which port?" question). A customer-kind
+    (a text-only "which port?" question), else the first ``dimension_
+    unspecified`` slice issue (dimension chips, lowest priority). A customer-kind
     ``customer_unknown`` is deliberately NOT surfaced -- that turn runs as
     it always has.
     """
@@ -935,6 +951,7 @@ def _select_clarify_issue(issues):
         (_CUSTOMER_AMBIGUOUS, _KIND_CUSTOMER),
         (_CUSTOMER_AMBIGUOUS, _KIND_PORT),
         (_CUSTOMER_UNKNOWN, _KIND_PORT),
+        (_DIMENSION_UNSPECIFIED, _KIND_DIMENSION),
     ):
         issue = next((i for i in issues if i.code == code and i.kind == kind), None)
         if issue is not None:
@@ -964,7 +981,9 @@ def _finish_clarify(
 
     P16-R23: a port-kind ambiguous issue gets port chips under
     ``PORT_AMBIGUOUS_TEXT``; a port-kind ``customer_unknown`` gets ONE text
-    part, ``PORT_UNKNOWN_TEXT``, and no chips part at all.
+    part, ``PORT_UNKNOWN_TEXT``, and no chips part at all. A
+    ``dimension_unspecified`` issue gets the eight ``SLICE_CHIPS`` under
+    ``SLICE_TEXT``.
 
     P16-R24: every chip's ``send_text`` is the turn's
     ``parsed.normalized_text`` with the issue's phrase replaced by the
@@ -1005,6 +1024,21 @@ def _finish_clarify(
                         ),
                     }
                     for candidate in ambiguous_issue.candidates
+                ]
+            },
+        )
+    elif ambiguous_issue.kind == _KIND_DIMENSION:
+        message = SLICE_TEXT
+        sink.push_part(
+            "chips",
+            {
+                "options": [
+                    {
+                        "id": f"slice:{column}",
+                        "label": label,
+                        "send_text": f"break that down by {label.lower()}",
+                    }
+                    for column, label in SLICE_CHIPS
                 ]
             },
         )

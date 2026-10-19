@@ -2394,3 +2394,48 @@ def test_chat_orchestrator_module_files_are_ascii_on_disk():
     for path in paths:
         offending = sorted({byte for byte in path.read_bytes() if byte > 0x7F})
         assert not offending, f"{path.name} holds non-ASCII bytes: {offending}"
+
+
+def test_slice_it_another_way_asks_with_dimension_chips(monkeypatch):
+    outcome, decoded, writer, state, data = _run_turn_for(
+        monkeypatch, "slice it another way", conversation_id="conv-slice"
+    )
+    assert outcome.status == "clarify"
+    names = [name for _seq, name, _data in decoded]
+    assert names == ["accepted", "part", "part", "done"]
+    chips = decoded[1][2]
+    assert chips["kind"] == "chips"
+    options = chips["payload"]["options"]
+    assert [o["label"] for o in options] == [
+        "Customer",
+        "Port",
+        "Supplier",
+        "Deal class",
+        "Customer office",
+        "Supplier office",
+        "Ship type",
+        "Month",
+    ]
+    assert options[1] == {
+        "id": "slice:LOC_NM",
+        "label": "Port",
+        "send_text": "break that down by port",
+    }
+    assert options[-1]["send_text"] == "break that down by month"
+    assert decoded[2][2]["payload"] == {"markdown": orchestrator.SLICE_TEXT}
+    assert not [c for c in data.calls if c[0].startswith("run_")]
+    assert writer.finalize_calls[0]["status"] == "clarify"
+
+
+def test_customer_ambiguity_still_wins_over_a_slice_issue():
+    issues = (
+        ParseIssue(code="dimension_unspecified", message=orchestrator.SLICE_TEXT, kind="dimension"),
+        ParseIssue(code="customer_ambiguous", message="m", candidates=("A", "B")),
+    )
+    assert orchestrator._select_clarify_issue(issues).code == "customer_ambiguous"
+
+
+def test_slice_text_matches_the_parser_issue_message():
+    from poseidon.core.parsing import pipeline
+
+    assert orchestrator.SLICE_TEXT == pipeline.SLICE_TEXT
