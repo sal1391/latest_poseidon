@@ -78,7 +78,7 @@ piped:** offline Python 2462 passed, 15 skipped, 142 deselected (136 plus the fo
 `tests/contracts` 9 passed (`contracts/` unchanged by PR C; `git status --short contracts/` empty); pg suite 355 passed, 1
 skipped, run serially against the compose `db` service (host port 5434 when the compose db is started with a port override; the tracked compose file maps 5432).
 Web `npm test` 204 passed, 14 skipped offline (verified 2026-10-23 (UI pass PR 1)), web `npx tsc --noEmit` clean, Vite frontend 171 passed in 18 files and `npm run lint` clean:
-carried from PR B, not re-run in PR C (web and the Vite app are untouched by PR C). The web package defines no lint script,
+the Vite figures carried from PR B, not re-run in PR C or UI pass PR 1 (the Vite app is untouched by both). The web package defines no lint script,
 so there is no web lint figure.
 
 **CI: there is none.** No `.github/workflows`. Nothing gates a merge except Carlos, so the suites
