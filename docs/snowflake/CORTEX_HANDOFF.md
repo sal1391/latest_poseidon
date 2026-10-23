@@ -119,7 +119,7 @@ tail -n 3 parity.txt
 PowerShell equivalent:
 
 ```powershell
-cd <path-to-clone>backend
+cd <path-to-clone>\backend
 Remove-Item Env:PERPLEXITY_API_KEY -ErrorAction SilentlyContinue
 .venv\Scripts\python.exe -B -m pytest -p no:cacheprovider -m "not pg and not minio and not pdf and not router_live and not research_live" tests/test_provider_parity.py tests/test_llm_cortex.py *> parity.txt
 Get-Content parity.txt -Tail 3
@@ -140,7 +140,7 @@ tail -n 5 cortex-live.txt
 PowerShell equivalent:
 
 ```powershell
-cd <path-to-clone>backend
+cd <path-to-clone>\backend
 Remove-Item Env:PERPLEXITY_API_KEY -ErrorAction SilentlyContinue
 .venv\Scripts\python.exe -B -m pytest -p no:cacheprovider -m router_live tests/test_llm_cortex.py *> cortex-live.txt
 Get-Content cortex-live.txt -Tail 5
