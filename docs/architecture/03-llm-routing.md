@@ -12,9 +12,11 @@ backend/core/llm/
                    #   input_tokens, output_tokens) · stop_reason in {tool_use, end_turn, error}
   bedrock.py       # BedrockProvider: boto3 bedrock-runtime Converse/ConverseStream — native
                    #   tool-use (toolConfig) and uniform token usage reporting
-  cortex.py        # CortexProvider: Snowflake Cortex via the Snowpark session (doc 04/07) —
-                   #   tool use via strict-JSON constrained prompting (the proven TM1/wfs_core
-                   #   method), normalized to the same ToolCall/LLMResponse shapes
+  messages_api.py  # shared Messages API translation (Converse dialect <-> Messages body), the
+                   #   httpx invoke, ProviderCredentialsError (D79)
+  anthropic.py     # AnthropicProvider: api.anthropic.com/v1/messages, x-api-key (spec 9.1, D68)
+  cortex.py        # CortexProvider: <account>/api/v2/cortex/v1/messages, bearer token or the
+                   #   SPCS token file; native tool calling (D40, D79)
   roles.py         # RoleClient: resolve(role) -> {provider, model, params}; invoke(role, ...)
   prompts.py       # PromptRegistry: load/render versioned prompt files
   prompt_tree.py   # PromptTree: resolve("reporting/narrate") -> versioned XML system prompt (D46, first step)
@@ -24,20 +26,28 @@ backend/core/llm/
   — one request/response shape across Anthropic and Nova models makes tiers genuinely swappable.
 - Decision D21: provider is resolved **per role** from config. Defaults per deploy target
   (doc 07): SPCS → `cortex` (zero external credentials inside the platform; the current
-  Poseidon already runs Cortex `claude-sonnet-4-5`); local/EC2 → `bedrock` (the natural AWS
+  Poseidon already runs Cortex `claude-sonnet-5-5`); local/EC2 → `bedrock` (the natural AWS
   pairing). Either can be forced anywhere — Bedrock works inside SPCS through an External
   Access Integration (doc 07 §4).
 - The router-decision suite (§6) runs against whichever provider config selects, so the
-  Cortex emulation path is pinned by the same evidence as native tool calling.
+  Cortex path is pinned by the same evidence as native tool calling.
 - **Decision D33 — implementation order, not interface.** The abstraction and the config contract
-  above are final and unchanged; the two implementations arrive at different times. Phase 5 (doc
-  08) ships `BedrockProvider` and the stub provider only. `CortexProvider` is built in the
-  preparation for the SPCS deployment phase (Phase 15), where Cortex is the default, and lands
-  with a **provider-parity contract test**: the same recorded tool-calling scenarios asserted to
-  normalize to identical `ToolCall`/`LLMResponse` shapes on both providers. Reason: prove the seam
-  with one live provider before paying for two.
+  above are final and unchanged; the implementations arrived at different times. Phase 5 (doc 08)
+  shipped `BedrockProvider` and the stub provider only (reason: prove the seam with one live
+  provider before paying for two). D40 then moved `CortexProvider` earlier and fixed its transport,
+  and the **provider-parity contract** shipped in Phase 17 PR C as `tests/test_provider_parity.py`:
+  the same recorded tool-calling scenarios (fifteen fixtures under `tests/fixtures/providers/`)
+  asserted to normalize to identical `ToolCall`/`LLMResponse` shapes across four providers: stub,
+  bedrock, anthropic and cortex (D68, D79).
 - `tool_choice` on `RoleClient.invoke` / `LLMProvider.invoke` forces a named tool (Bedrock
-  `toolConfig.toolChoice`); the report narrative is the first forced call.
+  `toolConfig.toolChoice`); the report narrative is the first forced call. On the Claude 5.5
+  generation native forcing is a 400; the `anthropic` profile sets `tool_choice_mode: instruct`
+  and the provider sends `tool_choice: auto` plus a system instruction naming the tool (D80).
+  The `cortex` profile sets the same mode, so the two Messages API providers behave alike.
+- `LLMResponse.reasoning` carries the model's reasoning blocks from a tool_use turn as Converse
+  `reasoningContent` blocks (empty unless a provider fills it). The agent loop echoes them,
+  deep-copied, ahead of the `toolUse` blocks in the assistant history, which the Claude 5.5
+  generation requires; stub and dev router emit none (D80).
 
 ## 2. Model tier map (config-driven)
 
@@ -54,7 +64,16 @@ it names a role. Every env can override via `LLM_MODEL_<ROLE>` / `LLM_PROVIDER_<
 | `micro` | smallest tier (Nova Micro on Bedrock / smallest Cortex model) | Trivial formatting/normalization jobs (e.g., one-line summaries for the conversation list) |
 
 ```yaml
-# config/models.yml (illustrative — verify current ids per provider console)
+# config/models.yml (verify current ids per provider console)
+# Phase 17 PR C (D68/D79): every model-specific rule lives HERE as params the
+# provider forwards or reads, never in provider code. Unknown keys are dropped
+# by every provider. Keys with meaning:
+#   max_tokens, temperature -> forwarded (omit temperature where the model 400s on it)
+#   thinking                -> forwarded verbatim (Messages API providers only)
+#   tool_choice_mode        -> native (default) | instruct; instruct turns a forced
+#                              tool call into tool_choice auto + a system instruction
+#                              for models that 400 on forced tool_choice
+#   enabled                 -> RoleClient's on/off gate
 profiles:
   bedrock:   # default for local / EC2 (region us-east-1)
     router:     { provider: bedrock, model: us.anthropic.claude-sonnet-4-5-20250929-v1:0, max_tokens: 4096, temperature: 0.2 }
@@ -63,14 +82,26 @@ profiles:
     memory:     { provider: bedrock, model: us.anthropic.claude-sonnet-4-5-20250929-v1:0, max_tokens: 2048, temperature: 0.1 }
     utility:    { provider: bedrock, model: us.amazon.nova-lite-v1:0,  max_tokens: 512, temperature: 0.0 }
     micro:      { provider: bedrock, model: us.amazon.nova-micro-v1:0, max_tokens: 256, temperature: 0.0 }
-  cortex:    # default for SPCS (models resolved by Cortex inside the account)
-    router:     { provider: cortex, model: claude-sonnet-4-5, max_tokens: 4096, temperature: 0.2 }
-    synthesis:  { provider: cortex, model: claude-sonnet-4-5, max_tokens: 8192, temperature: 0.3 }
-    supervisor: { provider: cortex, model: claude-opus-4-1, enabled: false }
-    memory:     { provider: cortex, model: claude-sonnet-4-5, max_tokens: 2048, temperature: 0.1 }
-    utility:    { provider: cortex, model: claude-haiku-4-5, max_tokens: 512, temperature: 0.0 }
-    micro:      { provider: cortex, model: claude-haiku-4-5, max_tokens: 256, temperature: 0.0 }
+  # Cortex Messages endpoint inside Snowflake (D40/D79). Same 5.5 rules as the anthropic profile (owner ruling 2026-10-23); the two profiles differ only in the provider key.
+  cortex:
+    router:     { provider: cortex, model: claude-sonnet-5-5, max_tokens: 4096, thinking: { type: between_tools }, tool_choice_mode: instruct }
+    synthesis:  { provider: cortex, model: claude-sonnet-5-5, max_tokens: 8192, thinking: { type: between_tools }, tool_choice_mode: instruct }
+    supervisor: { provider: cortex, model: claude-opus-5-5, enabled: false }
+    memory:     { provider: cortex, model: claude-sonnet-5-5, max_tokens: 2048, thinking: { type: between_tools }, tool_choice_mode: instruct }
+    utility:    { provider: cortex, model: claude-haiku-5-5, max_tokens: 512, thinking: { type: disabled } }
+    micro:      { provider: cortex, model: claude-haiku-5-5, max_tokens: 256, thinking: { type: disabled } }
+  anthropic: # direct Claude API over httpx (D68). Claude 5.5 generation, owner ruling 2026-10-23:
+             # no temperature (400), thinking off (between_tools on Sonnet 5.5, disabled on Haiku 5.5),
+             # forced calls as instructions on Sonnet 5.5 (native forcing is a 400 there; Haiku accepts it)
+    router:     { provider: anthropic, model: claude-sonnet-5-5, max_tokens: 4096, thinking: { type: between_tools }, tool_choice_mode: instruct }
+    synthesis:  { provider: anthropic, model: claude-sonnet-5-5, max_tokens: 8192, thinking: { type: between_tools }, tool_choice_mode: instruct }
+    supervisor: { provider: anthropic, model: claude-opus-5-5, enabled: false }
+    memory:     { provider: anthropic, model: claude-sonnet-5-5, max_tokens: 2048, thinking: { type: between_tools }, tool_choice_mode: instruct }
+    utility:    { provider: anthropic, model: claude-haiku-5-5, max_tokens: 512, thinking: { type: disabled } }
+    micro:      { provider: anthropic, model: claude-haiku-5-5, max_tokens: 256, thinking: { type: disabled } }
 ```
+
+Params beyond `max_tokens`/`temperature` are provider-specific knobs the profile owns; see the header comment in `models.yml`.
 
 Tiering principle: **anything a smaller model can do deterministically enough is pushed down;
 anything deterministic Python can do is not an LLM job at all.** The deterministic parser (doc 02
@@ -205,17 +236,18 @@ with `scope="book"`), `supplier_report_break_down_by_customer` (keeps the suppli
 `report_lookup_top_ports` (a question about the report's own figures goes to
 `reporting.report_lookup`).
 
-Phase 17 PR B adds the remaining reports-design §7.6 rows: six stub-run cases (`report_followup_full_account_gp`, `report_followup_share_of_total`, `report_followup_gp_by_month_2025`, `report_followup_then_by_port`, `report_followup_by_port_by_month`, `report_followup_break_down_by_deal_class`) and two pointer entries whose decision is deterministic (`report_followup_compare_to_june` → the C03 suite; `slice_it_another_way` → the orchestrator suite). Pointer entries carry `parser_case`/`orchestrator_case` instead of a script and run in neither executor. The stub-mode dev router now carries the PR B cues (group-by phrases, share phrases on the carried office column, the carried customer under a cue; D78), so these cases and the browser gate run without Bedrock.
+Phase 17 PR B adds the remaining reports-design §7.6 rows: six stub-run cases (`report_followup_full_account_gp`, `report_followup_share_of_total`, `report_followup_gp_by_month_2025`, `report_followup_then_by_port`, `report_followup_by_port_by_month`, `report_followup_break_down_by_deal_class`) and two pointer entries whose decision is deterministic (`report_followup_compare_to_june` → the C03 suite; `slice_it_another_way` → the orchestrator suite). Pointer entries carry `parser_case`/`orchestrator_case` instead of a script and run in neither executor. The stub-mode dev router now carries the PR B cues (group-by phrases, share phrases on the carried office column, the carried customer under a cue; D78), so these cases and the browser gate run without Bedrock. Phase 17 PR C closes the drift from the live router (D81): `dev_router.py` documents the remaining divergences in its module docstring and fixes three (first bucket wins, the `% of` boundary, plural cues); routing to `reporting.report_lookup` stays out of the dev router because the recorded stub scripts cover the report cases.
 
 Execution modes:
 
 1. **Stub mode** (default, no network): a `StubRouter` replays recorded `LLMResponse` sequences —
    verifies the loop, dispatch, validation, and memory carry deterministically (TM1
    `test_agent_loop.py` pattern).
-2. **Live mode** (`pytest -m router_live`, requires credentials for the configured provider —
-   Bedrock keys or a Snowflake session for Cortex): sends each case to the real `router` role
+2. **Live mode** (`pytest -m router_live`): the thirteen routing cases run against Bedrock only,
+   gated on `AWS_ACCESS_KEY_ID` or `AWS_PROFILE` (the anthropic and cortex smokes need
+   `ANTHROPIC_API_KEY` or a Cortex token); each case goes to the real `router` role
    and asserts the chosen tool name and a **subset** of critical arguments (never exact-match on
-   free-text args). Ambiguity cases assert the clarify path.
+   free-text args). Ambiguity cases assert the clarify path. Run live tests file-scoped (`-m router_live tests/test_llm_anthropic.py`); a bare `-m router_live` also runs the thirteen routing cases against Bedrock whenever AWS credentials are present, whatever `LLM_PROFILE` says, and the Bedrock smoke with them.
 3. Recorded live transcripts are checked in as fixtures and refreshed deliberately, so drift
    between recordings and reality is a reviewed diff.
 

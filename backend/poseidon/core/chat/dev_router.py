@@ -417,6 +417,26 @@ there is no code for it here):
       customer is a one-row table (a customer resolved THIS turn still
       applies).
     Without any cue nothing else in this table moves.
+
+    Drift from the live router (D78, reconciled in Phase 17 PR C; decision D81).
+    This router is the stub-mode gate, not a model. Its known divergences from
+    the live router are listed here so nobody mistakes a stub quirk for a
+    product behaviour; each is either fixed in PR C or parked with its reason.
+    - Fixed in PR C: two bucket cues keep the first bucket (was a 422); "% of"
+      has a trailing boundary ("100% offshore" is not a share); plural cues
+      match ("by customers").
+    - Parked: no reporting routes. ``reporting.monthly_performance`` is
+      started by chips/the report flow, never by this router, and
+      ``reporting.report_lookup`` is not routable here; the word "report" is a
+      brief cue (A2 ruling 19). The stub-mode report cases run from
+      ``routing_cases.yml`` stub scripts instead. Reason: a report-context
+      parse would mirror model judgment with another regex branch for a path
+      the recorded scripts already cover.
+    - Parked, by design: the period-alone dispatch gate (a research- or
+      brief-shaped question with a period still dispatches metric_query
+      unless hints lead elsewhere); cue regexes stand in for argument filling;
+      the share cue needs a carried office; the carried customer joins only
+      under a cue. The live router decides all of these from the prompt.
 (b2) (Task 4) Case (b) declined (hints do not permit metric_query), hints
     instead LEAD (tie-inclusive since Task 5 -- see "Task 5 CLOSURE" above)
     with ``research.web_research``, AND a customer or port is known,
@@ -613,10 +633,11 @@ _GROUP_BY_CUES: tuple[tuple[str, str], ...] = (
     ("by year", "YEAR"),
 )
 _GROUP_BY_CUE_RE = re.compile(
-    r"\b(" + "|".join(re.escape(phrase) for phrase, _ in _GROUP_BY_CUES) + r")\b"
+    r"\b(" + "|".join(re.escape(phrase) + r"(?:es|s)?" for phrase, _ in _GROUP_BY_CUES) + r")\b"
 )
 _GROUP_BY_BY_PHRASE = dict(_GROUP_BY_CUES)
-_SHARE_CUE_RE = re.compile(r"\b(how much of|share of|percent of|portion of|makes up)\b|% of")
+# "% of" needs a trailing boundary: "100% offshore" is not a share cue (PR B carry-forward).
+_SHARE_CUE_RE = re.compile(r"\b(how much of|share of|percent of|portion of|makes up)\b|% of\b")
 # Spelled here rather than imported (this router imports no builder module);
 # pinned equal to query_builder.TIME_BUCKETS by
 # test_dev_router_bucket_names_match_the_builder.
@@ -924,18 +945,37 @@ def _mentions_top(messages: list[dict]) -> bool:
     return text is not None and _TOP_WORD_RE.search(text.casefold()) is not None
 
 
+def _cue_column(matched: str) -> str:
+    """A matched cue, possibly plural ("by customers", "by deal classes"),
+    back to its column. Longest phrase first in the alternation already
+    keeps "by customer offices" from reading as "by customer"."""
+    for candidate in (matched, matched[:-1], matched[:-2]):
+        if candidate in _GROUP_BY_BY_PHRASE:
+            return _GROUP_BY_BY_PHRASE[candidate]
+    raise KeyError(matched)  # unreachable: the regex only matches a known phrase
+
+
 def _group_by_cues(messages: list[dict]) -> list[str]:
     """Phase 17 PR B: the columns the last user text's "by <x>" cues name,
-    in text order, deduplicated, at most :data:`_MAX_GROUP_BY`."""
+    in text order, deduplicated, at most :data:`_MAX_GROUP_BY`. Plural cues
+    match; a second time bucket is dropped (Args allows one)."""
     text = _last_user_text(messages)
     if text is None:
         return []
     columns: list[str] = []
     for match in _GROUP_BY_CUE_RE.finditer(text.casefold()):
-        column = _GROUP_BY_BY_PHRASE[match.group(1)]
+        column = _cue_column(match.group(1))
         if column not in columns:
             columns.append(column)
-    return columns[:_MAX_GROUP_BY]
+    first_bucket_seen = False
+    kept: list[str] = []
+    for column in columns:
+        if column in _BUCKET_NAMES:
+            if first_bucket_seen:
+                continue
+            first_bucket_seen = True
+        kept.append(column)
+    return kept[:_MAX_GROUP_BY]
 
 
 def _mentions_share(messages: list[dict]) -> bool:

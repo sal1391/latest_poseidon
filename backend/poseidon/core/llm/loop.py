@@ -73,6 +73,7 @@ what keeps that recoverable; surfacing the richer stop reason itself is a
 later product decision, not this loop's.
 """
 
+import copy
 import json
 from dataclasses import dataclass
 from time import monotonic
@@ -406,7 +407,7 @@ def run_turn(
                 spent_corrections.add(call.name)
             result_blocks.append(block)
 
-        messages.append(_assistant_tool_use_message(response.tool_calls))
+        messages.append(_assistant_tool_use_message(response))
         messages.append({"role": "user", "content": result_blocks})
 
     return _failed_turn(
@@ -699,27 +700,33 @@ def _capped(content: str) -> str:
     return f"{head}\n{_CONTENT_TRUNCATED}"
 
 
-def _assistant_tool_use_message(calls: tuple[ToolCall, ...]) -> dict:
+def _assistant_tool_use_message(response: LLMResponse) -> dict:
     """The model's own turn, echoed back into the history.
 
     Required, not decorative: Converse pairs each ``toolResult`` with the
-    ``toolUse`` it answers, and Anthropic models on Bedrock require
-    alternating user/assistant roles -- a results message with no assistant
-    turn before it is a rejected request, not a shorter one. Names stay
-    dotted; ``bedrock.py`` translates them at its own boundary.
+    ``toolUse`` it answers, and Anthropic models require alternating
+    user/assistant roles -- a results message with no assistant turn before
+    it is a rejected request, not a shorter one. Names stay dotted; each
+    provider translates them at its own boundary.
+
+    Phase 17 PR C (D80): ``response.reasoning`` -- the model's thinking
+    blocks from this turn, in Converse ``reasoningContent`` form -- goes
+    FIRST, deep-copied, then the ``toolUse`` blocks. The Claude 5.5
+    generation rejects an assistant turn whose thinking blocks were dropped
+    or reordered. Empty for the stub and the dev router, so their history
+    is unchanged.
 
     ``input`` is a copy of the call's arguments for the same reason the
     event payload and the record are: this dict outlives the iteration that
     built it (it stays in the history for every later call of the turn), so
     it must not alias a dict anyone downstream still holds a reference to.
     """
-    return {
-        "role": "assistant",
-        "content": [
-            {"toolUse": {"toolUseId": call.id, "name": call.name, "input": dict(call.arguments)}}
-            for call in calls
-        ],
-    }
+    content: list[dict] = [copy.deepcopy(block) for block in response.reasoning]
+    content.extend(
+        {"toolUse": {"toolUseId": call.id, "name": call.name, "input": dict(call.arguments)}}
+        for call in response.tool_calls
+    )
+    return {"role": "assistant", "content": content}
 
 
 def _provider_problem(response: LLMResponse) -> dict:

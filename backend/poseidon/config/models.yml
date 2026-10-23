@@ -1,4 +1,13 @@
-# config/models.yml (illustrative — verify current ids per provider console)
+# config/models.yml (verify current ids per provider console)
+# Phase 17 PR C (D68/D79): every model-specific rule lives HERE as params the
+# provider forwards or reads, never in provider code. Unknown keys are dropped
+# by every provider. Keys with meaning:
+#   max_tokens, temperature -> forwarded (omit temperature where the model 400s on it)
+#   thinking                -> forwarded verbatim (Messages API providers only)
+#   tool_choice_mode        -> native (default) | instruct; instruct turns a forced
+#                              tool call into tool_choice auto + a system instruction
+#                              for models that 400 on forced tool_choice
+#   enabled                 -> RoleClient's on/off gate
 profiles:
   bedrock:   # default for local / EC2 (region us-east-1)
     router:     { provider: bedrock, model: us.anthropic.claude-sonnet-4-5-20250929-v1:0, max_tokens: 4096, temperature: 0.2 }
@@ -7,10 +16,20 @@ profiles:
     memory:     { provider: bedrock, model: us.anthropic.claude-sonnet-4-5-20250929-v1:0, max_tokens: 2048, temperature: 0.1 }
     utility:    { provider: bedrock, model: us.amazon.nova-lite-v1:0,  max_tokens: 512, temperature: 0.0 }
     micro:      { provider: bedrock, model: us.amazon.nova-micro-v1:0, max_tokens: 256, temperature: 0.0 }
-  cortex:    # default for SPCS (models resolved by Cortex inside the account)
-    router:     { provider: cortex, model: claude-sonnet-4-5, max_tokens: 4096, temperature: 0.2 }
-    synthesis:  { provider: cortex, model: claude-sonnet-4-5, max_tokens: 8192, temperature: 0.3 }
-    supervisor: { provider: cortex, model: claude-opus-4-1, enabled: false }
-    memory:     { provider: cortex, model: claude-sonnet-4-5, max_tokens: 2048, temperature: 0.1 }
-    utility:    { provider: cortex, model: claude-haiku-4-5, max_tokens: 512, temperature: 0.0 }
-    micro:      { provider: cortex, model: claude-haiku-4-5, max_tokens: 256, temperature: 0.0 }
+  # Cortex Messages endpoint inside Snowflake (D40/D79). Same 5.5 rules as the anthropic profile (owner ruling 2026-10-23); the two profiles differ only in the provider key.
+  cortex:
+    router:     { provider: cortex, model: claude-sonnet-5-5, max_tokens: 4096, thinking: { type: between_tools }, tool_choice_mode: instruct }
+    synthesis:  { provider: cortex, model: claude-sonnet-5-5, max_tokens: 8192, thinking: { type: between_tools }, tool_choice_mode: instruct }
+    supervisor: { provider: cortex, model: claude-opus-5-5, enabled: false }
+    memory:     { provider: cortex, model: claude-sonnet-5-5, max_tokens: 2048, thinking: { type: between_tools }, tool_choice_mode: instruct }
+    utility:    { provider: cortex, model: claude-haiku-5-5, max_tokens: 512, thinking: { type: disabled } }
+    micro:      { provider: cortex, model: claude-haiku-5-5, max_tokens: 256, thinking: { type: disabled } }
+  anthropic: # direct Claude API over httpx (D68). Claude 5.5 generation, owner ruling 2026-10-23:
+             # no temperature (400), thinking off (between_tools on Sonnet 5.5, disabled on Haiku 5.5),
+             # forced calls as instructions on Sonnet 5.5 (native forcing is a 400 there; Haiku accepts it)
+    router:     { provider: anthropic, model: claude-sonnet-5-5, max_tokens: 4096, thinking: { type: between_tools }, tool_choice_mode: instruct }
+    synthesis:  { provider: anthropic, model: claude-sonnet-5-5, max_tokens: 8192, thinking: { type: between_tools }, tool_choice_mode: instruct }
+    supervisor: { provider: anthropic, model: claude-opus-5-5, enabled: false }
+    memory:     { provider: anthropic, model: claude-sonnet-5-5, max_tokens: 2048, thinking: { type: between_tools }, tool_choice_mode: instruct }
+    utility:    { provider: anthropic, model: claude-haiku-5-5, max_tokens: 512, thinking: { type: disabled } }
+    micro:      { provider: anthropic, model: claude-haiku-5-5, max_tokens: 256, thinking: { type: disabled } }

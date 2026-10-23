@@ -191,7 +191,9 @@ from sqlalchemy.engine import Connection, Engine
 
 from poseidon.core.config import Settings, get_settings
 from poseidon.core.db import WORKER_ROLE, assert_boot_privileges, build_engine
+from poseidon.core.llm.anthropic import AnthropicProvider
 from poseidon.core.llm.bedrock import BedrockProvider
+from poseidon.core.llm.cortex import CortexProvider
 from poseidon.core.llm.prompts import (
     DEFAULT_PROMPTS_DIR,
     PromptRegistry,
@@ -880,13 +882,24 @@ class StubMemoryDistiller:
 
 
 def _build_role_client(settings: Settings) -> RoleClient:
-    """Mirrors ``api/app.py``'s own ``RoleClient`` construction -- both
-    providers registered, ``RoleClient.invoke`` reading exactly one per
-    call per ``LLM_MODE`` -- with :class:`StubMemoryDistiller` standing in
+    """Mirrors ``api/app.py``'s own ``RoleClient`` construction -- all
+    three live providers registered lazily (none touches credentials at
+    construction), ``RoleClient.invoke`` reading exactly one per call per
+    ``LLM_MODE`` -- with :class:`StubMemoryDistiller` standing in
     for ``DevDeterministicRouter``, since this process only ever invokes
     the ``memory`` role."""
     return RoleClient(
-        settings, providers={"stub": StubMemoryDistiller(), "bedrock": BedrockProvider()}
+        settings,
+        providers={
+            "stub": StubMemoryDistiller(),
+            "bedrock": BedrockProvider(),
+            "anthropic": AnthropicProvider(api_key=settings.anthropic_api_key),
+            "cortex": CortexProvider(
+                account_url=settings.cortex_account_url,
+                token=settings.snowflake_cortex_token,
+                token_type=settings.snowflake_cortex_token_type,
+            ),
+        },
     )
 
 

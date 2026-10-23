@@ -357,6 +357,40 @@ def test_invoke_normalizes_tool_use_response_to_one_tool_call():
     )
 
 
+def test_invoke_carries_reasoning_content_blocks_on_a_tool_use_turn():
+    reasoning = {
+        "reasoningContent": {"reasoningText": {"text": "thinking...", "signature": "abc"}}
+    }
+    response = {
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [
+                    reasoning,
+                    {
+                        "toolUse": {
+                            "toolUseId": "tu-1",
+                            "name": "data_qa__metric_query",
+                            "input": {"metrics": ["GP"]},
+                        }
+                    },
+                ],
+            }
+        },
+        "stopReason": "tool_use",
+        "usage": {"inputTokens": 3, "outputTokens": 4, "totalTokens": 7},
+    }
+    result = _client(converse_response=response).invoke(
+        system="s",
+        messages=[{"role": "user", "content": "q"}],
+        tools=[_TOOL_SCHEMA],
+        model="m",
+        params={},
+    )
+    assert result.reasoning == (reasoning,)
+    assert result.tool_calls[0].name == "data_qa.metric_query"
+
+
 def test_invoke_normalizes_multiple_tool_use_blocks_in_order():
     provider = _client(converse_response=_MULTI_TOOL_USE_RESPONSE)
 
@@ -557,6 +591,42 @@ def test_invoke_client_error_with_no_code_reports_unknown():
     ],
 )
 def test_invoke_degrades_on_a_malformed_but_2xx_converse_response(response):
+    provider = _client(converse_response=response)
+
+    result = provider.invoke(system="s", messages=[], tools=[], model="m", params={})
+
+    assert result == LLMResponse(
+        text="bedrock error: MalformedResponse",
+        tool_calls=(),
+        stop_reason="error",
+        input_tokens=0,
+        output_tokens=0,
+    )
+
+
+def test_invoke_tool_use_with_non_object_input_is_malformed():
+    """Phase 17 PR C (spec 9.3): a toolUse.input that is not a JSON object
+    (a bare string here) is the pinned malformed-response error, never a
+    ToolCall carrying a string argument -- the same rule the Messages API
+    providers apply, so every provider meets the parity contract."""
+    response = {
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "toolUse": {
+                            "toolUseId": "call-3",
+                            "name": "data_qa__metric_query",
+                            "input": "not json",
+                        }
+                    }
+                ],
+            }
+        },
+        "stopReason": "tool_use",
+        "usage": {"inputTokens": 7, "outputTokens": 3, "totalTokens": 10},
+    }
     provider = _client(converse_response=response)
 
     result = provider.invoke(system="s", messages=[], tools=[], model="m", params={})
@@ -1044,8 +1114,8 @@ def test_invoke_stream_event_stream_error_mid_iteration_returns_pinned_error_res
 
 
 # ---------------------------------------------------------------------------
-# router_live -- credential-gated smoke (skips on this machine: no
-# AWS_ACCESS_KEY_ID / AWS_PROFILE in the ambient environment)
+# router_live -- credential-gated: skips unless AWS_ACCESS_KEY_ID or
+# AWS_PROFILE is set; never run it from this repo's gates
 # ---------------------------------------------------------------------------
 
 _NO_CREDENTIALS_REASON = "no AWS credentials"

@@ -1,0 +1,38 @@
+{
+  "output": {
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "toolUse": {
+            "toolUseId": "call-2",
+            "name": "reporting__narrate",
+            "input": {
+              "narrative_md": "x",
+              "insights": [
+                "a",
+                "b",
+                "c"
+              ],
+              "context_notes": [],
+              "suggested_questions": [
+                "q1",
+                "q2",
+                "q3"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  },
+  "stopReason": "tool_use",
+  "usage": {
+    "inputTokens": 30,
+    "outputTokens": 40,
+    "totalTokens": 70
+  },
+  "metrics": {
+    "latencyMs": 100
+  }
+}

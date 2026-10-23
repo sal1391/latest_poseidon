@@ -1,0 +1,36 @@
+{
+  "output": {
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "text": "Let me look."
+        },
+        {
+          "toolUse": {
+            "toolUseId": "call-1",
+            "name": "data_qa__metric_query",
+            "input": {
+              "metrics": [
+                "GP"
+              ],
+              "period": {
+                "start": "2025-01-01",
+                "end": "2025-12-31"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "stopReason": "tool_use",
+  "usage": {
+    "inputTokens": 20,
+    "outputTokens": 15,
+    "totalTokens": 35
+  },
+  "metrics": {
+    "latencyMs": 100
+  }
+}

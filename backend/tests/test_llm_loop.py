@@ -895,6 +895,46 @@ def test_assistant_echo_uses_dotted_skill_ids_never_wire_names(settings):
     assert "data_qa__metric_query" not in json.dumps(provider.calls[1]["messages"], default=str)
 
 
+_REASONING_BLOCK = {
+    "reasoningContent": {"reasoningText": {"text": "checking the period", "signature": "sig-1"}}
+}
+
+
+def test_second_iteration_echoes_reasoning_before_tool_use():
+    """Sonnet 5.5 returns thinking blocks on a tool-use turn and the Claude
+    API requires them back, unchanged, ahead of the tool_use blocks. The
+    loop carries them in Converse's own slot (reasoningContent)."""
+    first = LLMResponse(
+        text="",
+        tool_calls=(ToolCall(id="t1", name="data_qa.metric_query", arguments={"x": 1}),),
+        stop_reason="tool_use",
+        input_tokens=1,
+        output_tokens=1,
+        reasoning=(_REASONING_BLOCK,),
+    )
+    message = loop._assistant_tool_use_message(first)
+    assert message["role"] == "assistant"
+    assert message["content"][0] == _REASONING_BLOCK
+    assert message["content"][0] is not _REASONING_BLOCK  # a copy, never the response's dict
+    assert message["content"][1] == {
+        "toolUse": {"toolUseId": "t1", "name": "data_qa.metric_query", "input": {"x": 1}}
+    }
+
+
+def test_assistant_tool_use_message_without_reasoning_is_unchanged():
+    response = LLMResponse(
+        text="",
+        tool_calls=(ToolCall(id="t1", name="data_qa.metric_query", arguments={}),),
+        stop_reason="tool_use",
+        input_tokens=0,
+        output_tokens=0,
+    )
+    assert loop._assistant_tool_use_message(response) == {
+        "role": "assistant",
+        "content": [{"toolUse": {"toolUseId": "t1", "name": "data_qa.metric_query", "input": {}}}],
+    }
+
+
 def test_the_callers_window_list_is_never_mutated(settings):
     window = [{"role": "user", "content": USER_QUESTION}]
     _run(settings, [_tool_use(_call(GOOD_ARGS)), _end_turn("done")], window=window)

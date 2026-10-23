@@ -74,7 +74,21 @@ class Settings(BaseSettings):
     # deploy dies at boot, not at first login. Empty/unset otherwise: no
     # other source reads this field.
     snowflake_email_proc: str | None = None
-    llm_profile: Literal["bedrock", "cortex"] = "bedrock"
+    llm_profile: Literal["bedrock", "cortex", "anthropic"] = "bedrock"
+    # Phase 17 PR C (spec 9.1/9.2, D68): credentials for the two new
+    # providers. All optional: both providers construct without credentials
+    # or network, and each names what is missing in its own pinned error at
+    # call time. Inside SPCS the Cortex token is a FILE
+    # (/snowflake/session/token) the provider reads at call time, so there
+    # is deliberately no boot validator for cortex; SPCS also sets
+    # SNOWFLAKE_HOST, which cortex_account_url falls back to.
+    anthropic_api_key: str | None = None
+    snowflake_account_url: str | None = None
+    snowflake_host: str | None = None
+    snowflake_cortex_token: str | None = None
+    snowflake_cortex_token_type: (
+        Literal["OAUTH", "KEYPAIR_JWT", "PROGRAMMATIC_ACCESS_TOKEN"] | None
+    ) = None
     llm_mode: Literal["stub", "live"] = "stub"
     # Phase 5 (doc 03 sections 1-2): LLM role routing. ``None`` defers to the
     # packaged default resolved by the LLM layer itself
@@ -351,6 +365,30 @@ class Settings(BaseSettings):
                 "identity_email_source=snowflake_proc requires snowflake_email_proc"
             )
         return self
+
+    @model_validator(mode="after")
+    def anthropic_key_required_when_live(self) -> "Settings":
+        if (
+            self.llm_mode == "live"
+            and self.llm_profile == "anthropic"
+            and not self.anthropic_api_key
+        ):
+            raise ValueError(
+                "llm_profile=anthropic with llm_mode=live requires anthropic_api_key "
+                "(ANTHROPIC_API_KEY)"
+            )
+        return self
+
+    @property
+    def cortex_account_url(self) -> str | None:
+        """Where the Cortex provider sends requests: the explicit
+        ``snowflake_account_url``, else the SPCS-provided ``snowflake_host``
+        as an https URL, else ``None`` (the provider names what is missing)."""
+        if self.snowflake_account_url:
+            return self.snowflake_account_url
+        if self.snowflake_host:
+            return f"https://{self.snowflake_host}"
+        return None
 
     @property
     def effective_rate_limit_chat_per_minute(self) -> int:

@@ -13,7 +13,7 @@ doc as current. Decisions taken in feature specs used to not propagate; that is 
 
 - **Python 3.14.4** in `backend/.venv` (`requires-python >=3.11`)
 - fastapi 0.140.13 · sqlalchemy 2.0.51 · pydantic 2.13.4 · pytest 9.1.1 · alembic (frozen; not run
-  at boot) · `psycopg[binary]` · weasyprint · boto3 · rapidfuzz · `PyJWT[crypto]`
+  at boot) · `psycopg[binary]` · weasyprint · boto3 · httpx · rapidfuzz · `PyJWT[crypto]`
 - **Node 24.14.1 / npm 11.13.0**
 - React 18.3.1 · Vite 8.1.1 · TypeScript ~6.0.2 · vitest 4.1.10 · zustand 5 · oxlint
 - Postgres 16 + pgvector · MinIO (local object store) · Alembic frozen at **0010** (history
@@ -33,10 +33,10 @@ doc as current. Decisions taken in feature specs used to not propagate; that is 
 - **Cortex via the SQL `COMPLETE` function with emulated tools.** D40 chose the Cortex REST
   Messages endpoint with native tool calling.
 
-## Commands — verified 2026-10-23 (Phase 17 PR B), copy-pasteable
+## Commands — verified 2026-10-23 (Phase 17 PR C), copy-pasteable
 
 ```bash
-# Offline Python suite -> 2355 passed, 15 skipped, 136 deselected (~315s)
+# Offline Python suite -> 2462 passed, 15 skipped, 142 deselected (~250s)
 cd backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest \
   -p no:cacheprovider \
   -m 'not pg and not minio and not pdf and not router_live and not research_live'
@@ -54,7 +54,7 @@ cd backend && .venv/Scripts/python.exe -m ruff check .
 cd backend && POSEIDON_UPDATE_CONTRACTS=1 .venv/Scripts/python.exe -B -m pytest \
   -p no:cacheprovider tests/contracts -q
 
-# Frontend (Vite, untouched by PR A2 and PR B) -> 171 passed, 18 files; lint clean
+# Frontend (Vite, untouched by PR A2, PR B and PR C) -> 171 passed, 18 files; lint clean
 cd frontend && npm test -- --run
 cd frontend && npm run lint
 
@@ -73,13 +73,12 @@ cd web && npx drizzle-kit migrate      # reads DRIZZLE_DATABASE_URL
 # Fresh local database after the Phase 16 cutover: docker compose -f infra/docker-compose.yml down -v
 ```
 
-**All figures above verified 2026-10-23 (Phase 17 PR B), each run once, to its own file, never
-piped:** offline Python 2355 passed, 15 skipped, 136 deselected (the identity timing test now mints its tokens outside the timed window); `ruff check` clean;
-`tests/contracts` 9 passed (`contracts/` unchanged by PR B; `git status --short contracts/` empty); pg suite 355 passed, 1
-skipped, run serially against the compose `db` service (host port 5434 when the compose db is started with a port override; the tracked compose file maps 5432);
-web `npm test` 170 passed, 14 skipped offline (the DRIZZLE_DATABASE_URL-set figure was not re-run);
-web `npx tsc --noEmit` clean (web untouched by PR B, figures refreshed only); Vite frontend 171 passed in 18 files and `npm run lint` clean (the
-Vite app is untouched by PR A2 and PR B; these two figures are carried from A2 and were not re-run in PR B). The web package defines no lint script,
+**Figures verified 2026-10-23 (Phase 17 PR C), each run once, to its own file, never
+piped:** offline Python 2462 passed, 15 skipped, 142 deselected (136 plus the four new `router_live` tests); `ruff check` clean;
+`tests/contracts` 9 passed (`contracts/` unchanged by PR C; `git status --short contracts/` empty); pg suite 355 passed, 1
+skipped, run serially against the compose `db` service (host port 5434 when the compose db is started with a port override; the tracked compose file maps 5432).
+Web `npm test` 170 passed, 14 skipped offline, web `npx tsc --noEmit` clean, Vite frontend 171 passed in 18 files and `npm run lint` clean:
+carried from PR B, not re-run in PR C (web and the Vite app are untouched by PR C). The web package defines no lint script,
 so there is no web lint figure.
 
 **CI: there is none.** No `.github/workflows`. Nothing gates a merge except Carlos, so the suites
@@ -87,6 +86,12 @@ above *are* the gate.
 
 ## Gotchas — every one of these cost a real debugging session
 
+- **`-m router_live` is never bare.** The live routing-case executor in `tests/test_llm_loop.py` is
+  hard-wired to Bedrock and runs the thirteen routing cases, plus the Bedrock smoke, whenever
+  `AWS_ACCESS_KEY_ID` or `AWS_PROFILE` is set, whatever `LLM_PROFILE` says, plus the anthropic and cortex
+  smokes when their variables are set; this shell has AWS credentials. A bare marker
+  run is a paid Bedrock run. Always file-scope it: `-m router_live tests/test_llm_anthropic.py` (needs
+  `ANTHROPIC_API_KEY`; expected pass line `3 passed`) or `-m router_live tests/test_llm_cortex.py` (needs `SNOWFLAKE_ACCOUNT_URL` and a token).
 - **`group_by` is a list now** (Phase 17 PR B). The dev router and the stub scripts may still send a
   string, which `Args` wraps.
 - **Always spell out `.venv/Scripts/python.exe`. Never a bare `python`.** A bare `python` resolves
@@ -129,7 +134,8 @@ above *are* the gate.
 - **The SSE envelope and message-part contract.** Frame kinds
   (`accepted`/`phase`/`tool`/`part`/`token`/`done`/`error`) carrying `turn_id`/`message_id`/
   `event_seq`, and the ten part kinds. The renderer registry and run-log reconciliation both key
-  off these; changing the shape breaks replay.
+  off these; changing the shape breaks replay. `LLMResponse` grew a defaulted `reasoning` field in
+  PR C (D80); its five original fields and `LLMRecord` are unchanged.
 - **The `contracts/turns` corpus.** Golden frame/part sequences pinned on both sides; a change
   lands only with `POSEIDON_UPDATE_CONTRACTS=1` regeneration in the same commit and a reviewer
   reading the diff.
@@ -152,6 +158,9 @@ above *are* the gate.
 - **Internal skills.** `SKILL_META['internal'] = True` registers a skill the router never sees
   (`router_skill_ids`, `tool_schemas`, `/api/skills` all omit it) while `dispatch` still runs it.
   `reporting.monthly_performance` is the first.
+- **LLM profiles.** `LLM_PROFILE` is `bedrock | anthropic | cortex` (D68); the `anthropic` and
+  `cortex` profiles are on Claude 5.5 with model-specific params in `models.yml`, never in provider
+  code (D79).
 
 ## Blast radius
 
