@@ -58,7 +58,7 @@ cd backend && POSEIDON_UPDATE_CONTRACTS=1 .venv/Scripts/python.exe -B -m pytest 
 cd frontend && npm test -- --run
 cd frontend && npm run lint
 
-# Web (Next.js) -> 204 passed, 14 skipped, offline; verified 2026-10-23 (UI pass PR 1) (27 files passed, 1 skipped; db-backed files
+# Web (Next.js) -> 205 passed, 14 skipped, offline; verified 2026-10-23 (UI pass PR 1) (27 files passed, 1 skipped; db-backed files
 # skip without DRIZZLE_DATABASE_URL). The web package has NO lint script: its static gate is tsc.
 cd web && npm test
 cd web && npx tsc --noEmit             # clean
@@ -77,7 +77,7 @@ cd web && npx drizzle-kit migrate      # reads DRIZZLE_DATABASE_URL
 piped:** offline Python 2462 passed, 15 skipped, 142 deselected (136 plus the four new `router_live` tests); `ruff check` clean;
 `tests/contracts` 9 passed (`contracts/` unchanged by PR C; `git status --short contracts/` empty); pg suite 355 passed, 1
 skipped, run serially against the compose `db` service (host port 5434 when the compose db is started with a port override; the tracked compose file maps 5432).
-Web `npm test` 204 passed, 14 skipped offline (verified 2026-10-23 (UI pass PR 1)), web `npx tsc --noEmit` clean, Vite frontend 171 passed in 18 files and `npm run lint` clean:
+Web `npm test` 205 passed, 14 skipped offline (verified 2026-10-23 (UI pass PR 1)), web `npx tsc --noEmit` clean, Vite frontend 171 passed in 18 files and `npm run lint` clean:
 the Vite figures carried from PR B, not re-run in PR C or UI pass PR 1 (the Vite app is untouched by both). The web package defines no lint script,
 so there is no web lint figure.
 
