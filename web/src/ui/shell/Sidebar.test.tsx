@@ -44,6 +44,10 @@ describe("Sidebar", () => {
     expect(active.getAttribute("aria-current")).toBe("page");
     const untitled = screen.getByRole("link", { name: "(untitled)" });
     expect(untitled.getAttribute("aria-current")).toBeNull();
+    expect(untitled.className).toContain("text-ink-muted");
+    expect(/text-ink(?!-)/.test(untitled.className)).toBe(false);
+    expect(active.className).toContain("text-ink");
+    expect(active.className).not.toContain("text-ink-muted");
   });
 
   it("carries a long title in the title attribute so truncation loses nothing", () => {

@@ -26,15 +26,16 @@ export function ConversationList({ conversations }: { conversations: Conversatio
         {conversations.map((c) => {
           const active = c.id === activeId;
           const label = c.title ?? "(untitled)";
+          const tone = c.title === null ? "text-ink-muted" : "text-ink";
           return (
             <li key={c.id}>
               <Link
                 href={`/c/${c.id}`}
                 title={label}
                 aria-current={active ? "page" : undefined}
-                className={`block truncate rounded-chip px-2.5 py-2 text-[13px] transition-colors duration-[120ms] ${
-                  active ? "bg-surface text-ink shadow-[inset_3px_0_0_0_var(--color-accent)]" : "text-ink hover:bg-surface"
-                } ${c.title === null ? "text-ink-muted" : ""}`}
+                className={`block truncate rounded-chip px-2.5 py-2 text-[13px] transition-colors duration-[120ms] ${tone} ${
+                  active ? "bg-surface shadow-[inset_3px_0_0_0_var(--color-accent)]" : "hover:bg-surface"
+                }`}
               >
                 {label}
               </Link>
