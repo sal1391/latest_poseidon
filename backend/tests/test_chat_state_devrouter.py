@@ -1659,3 +1659,29 @@ def test_multi_column_cue_drops_a_resolved_compare_period():
 
 def test_dev_router_bucket_names_match_the_builder():
     assert set(dev_router._BUCKET_NAMES) == set(TIME_BUCKETS)
+
+
+# Phase 17 PR C (owner ruling 2): the three PR B carry-forwards fixed here.
+
+
+def test_two_bucket_cues_keep_only_the_first_bucket():
+    """"by month by year" used to emit both buckets and Args 422s on a
+    second time bucket; the first bucket in text order wins."""
+    assert _call_for("gp for 2025 by month by year")["group_by"] == ["MONTH"]
+    assert _call_for("gp by port by month by year")["group_by"] == ["LOC_NM", "MONTH"]
+    assert _call_for("gp by year by month by port")["group_by"] == ["YEAR", "LOC_NM"]
+
+
+def test_percent_of_needs_a_trailing_word_boundary():
+    slots = ConversationSlots(office_column="CUSTOMER_TEAM_NAME", office_value="Rotterdam")
+    assert "share_of_total" in _call_for("what % of the total is that", slots=slots)
+    assert "share_of_total" not in _call_for("gp for 100% offshore deals", slots=slots)
+
+
+def test_plural_cues_match_their_singular_column():
+    assert _call_for("gp by customers")["group_by"] == ["CUST_NM"]
+    assert _call_for("gp by ports")["group_by"] == ["LOC_NM"]
+    assert _call_for("gp by suppliers")["group_by"] == ["SUPPLIER_NM"]
+    assert _call_for("gp by deal classes")["group_by"] == ["DEAL_CLASSIFICATION_TRADE_CUT"]
+    assert _call_for("gp by customer offices")["group_by"] == ["CUSTOMER_TEAM_NAME"]
+    assert _call_for("gp by months")["group_by"] == ["MONTH"]
