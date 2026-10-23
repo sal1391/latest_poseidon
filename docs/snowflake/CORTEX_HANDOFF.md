@@ -67,8 +67,6 @@ token never appears in an error text (a test pins this).
 
 | Variable | Value | Needed for |
 |---|---|---|
-| `LLM_PROFILE` | `cortex` | D (the live tests set it themselves) |
-| `LLM_MODE` | `live` | D (same) |
 | `SNOWFLAKE_ACCOUNT_URL` | `https://<account_identifier>.snowflakecomputing.com` | B, D (the live tests skip without it) |
 | `SNOWFLAKE_CORTEX_TOKEN` | the PAT secret from section 3 | B, D |
 | `SNOWFLAKE_CORTEX_TOKEN_TYPE` | `PROGRAMMATIC_ACCESS_TOKEN` (or `KEYPAIR_JWT` if you use a key-pair JWT) | B, D |
@@ -78,8 +76,6 @@ token never appears in an error text (a test pins this).
 PowerShell:
 
 ```powershell
-$env:LLM_PROFILE = "cortex"
-$env:LLM_MODE = "live"
 $env:SNOWFLAKE_ACCOUNT_URL = "https://<account_identifier>.snowflakecomputing.com"
 $env:SNOWFLAKE_CORTEX_TOKEN = "<secret>"
 $env:SNOWFLAKE_CORTEX_TOKEN_TYPE = "PROGRAMMATIC_ACCESS_TOKEN"
@@ -90,8 +86,6 @@ $env:S3_BUCKET = "poseidon-artifacts"
 bash:
 
 ```bash
-export LLM_PROFILE=cortex
-export LLM_MODE=live
 export SNOWFLAKE_ACCOUNT_URL=https://<account_identifier>.snowflakecomputing.com
 export SNOWFLAKE_CORTEX_TOKEN='<secret>'
 export SNOWFLAKE_CORTEX_TOKEN_TYPE=PROGRAMMATIC_ACCESS_TOKEN
@@ -99,25 +93,33 @@ export DATABASE_URL=postgresql+psycopg://poseidon:poseidon@localhost:5432/poseid
 export S3_BUCKET=poseidon-artifacts
 ```
 
+Do **not** export `LLM_PROFILE` or `LLM_MODE`. The live tests of Step B set them themselves, and
+Step D's compose override sets them for the backend; exporting them earlier only risks changing
+the offline run of Step A.
+
 If `SNOWFLAKE_ACCOUNT_URL` is unset the provider falls back to `https://$SNOWFLAKE_HOST`
 (the SPCS case). If `SNOWFLAKE_CORTEX_TOKEN_TYPE` is unset, the type header is simply omitted
 (Snowflake then detects the type itself).
 
 ## 5. Step A: offline parity (no Snowflake needed)
 
+In every command below, `<path-to-clone>` is the directory where you cloned this repository.
+Each block starts with its own `cd` to an absolute location, so the blocks run correctly in
+sequence whatever directory the previous one left you in.
+
 All `pytest` commands here are redirected to a file and never piped (a pipe hides a failing
 exit code). The bash form works in Git Bash on Windows; the `env -u` part unsets a key that
 would otherwise trigger paid calls elsewhere in the suite.
 
 ```bash
-cd backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest -p no:cacheprovider -m 'not pg and not minio and not pdf and not router_live and not research_live' tests/test_provider_parity.py tests/test_llm_cortex.py > parity.txt 2>&1
+cd <path-to-clone>/backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest -p no:cacheprovider -m 'not pg and not minio and not pdf and not router_live and not research_live' tests/test_provider_parity.py tests/test_llm_cortex.py > parity.txt 2>&1
 tail -n 3 parity.txt
 ```
 
 PowerShell equivalent:
 
 ```powershell
-cd backend
+cd <path-to-clone>backend
 Remove-Item Env:PERPLEXITY_API_KEY -ErrorAction SilentlyContinue
 .venv\Scripts\python.exe -B -m pytest -p no:cacheprovider -m "not pg and not minio and not pdf and not router_live and not research_live" tests/test_provider_parity.py tests/test_llm_cortex.py *> parity.txt
 Get-Content parity.txt -Tail 3
@@ -131,14 +133,14 @@ wrong; stop and report it.
 ## 6. Step B: two live smokes
 
 ```bash
-cd backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest -p no:cacheprovider -m router_live tests/test_llm_cortex.py > cortex-live.txt 2>&1
+cd <path-to-clone>/backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest -p no:cacheprovider -m router_live tests/test_llm_cortex.py > cortex-live.txt 2>&1
 tail -n 5 cortex-live.txt
 ```
 
 PowerShell equivalent:
 
 ```powershell
-cd backend
+cd <path-to-clone>backend
 Remove-Item Env:PERPLEXITY_API_KEY -ErrorAction SilentlyContinue
 .venv\Scripts\python.exe -B -m pytest -p no:cacheprovider -m router_live tests/test_llm_cortex.py *> cortex-live.txt
 Get-Content cortex-live.txt -Tail 5
@@ -197,9 +199,10 @@ narrative. It needs Docker Desktop and Node.
 
    (`CHAT_MODE: live` is already set in the base file; it is repeated so the override is
    self-explanatory.)
-2. From the repo root start the stack:
+2. Start the stack from the repo root:
 
    ```bash
+   cd <path-to-clone>
    docker compose -f infra/docker-compose.yml -f infra/docker-compose.cortex.yml up -d
    ```
 
@@ -208,14 +211,14 @@ narrative. It needs Docker Desktop and Node.
 3. Start the web app (the chat UI) in a second terminal, in `web/`:
 
    ```powershell
-   cd web
+   cd <path-to-clone>\web
    $env:POSEIDON_INTERNAL_TOKEN = "dev-internal-token"
    $env:DRIZZLE_DATABASE_URL = "postgresql://poseidon:poseidon@localhost:5432/poseidon"
    npm install
    npm run dev
    ```
 
-   bash: `export POSEIDON_INTERNAL_TOKEN=dev-internal-token` and
+   bash: `cd <path-to-clone>/web`, `export POSEIDON_INTERNAL_TOKEN=dev-internal-token` and
    `export DRIZZLE_DATABASE_URL=postgresql://poseidon:poseidon@localhost:5432/poseidon`, then
    `npm install && npm run dev`. Open `http://localhost:3000`.
 4. In the browser, start a new chat, then: click **Monthly report**; pick **Supplier office**;
@@ -232,7 +235,7 @@ row records `grounded: true`). If the narrative reads as the template, or the pr
 not say `grounded`, treat it as a fail and capture the items in section 9 plus the backend log:
 `docker compose -f infra/docker-compose.yml -f infra/docker-compose.cortex.yml logs backend`.
 
-Stop the stack afterwards:
+Stop the stack afterwards (from the repo root, `cd <path-to-clone>`):
 `docker compose -f infra/docker-compose.yml -f infra/docker-compose.cortex.yml down`.
 
 ## 9. What to capture on failure

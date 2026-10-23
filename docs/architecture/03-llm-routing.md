@@ -246,7 +246,7 @@ Execution modes:
 2. **Live mode** (`pytest -m router_live`, requires credentials for the configured provider —
    Bedrock credentials, `ANTHROPIC_API_KEY`, or a Cortex token): sends each case to the real `router` role
    and asserts the chosen tool name and a **subset** of critical arguments (never exact-match on
-   free-text args). Ambiguity cases assert the clarify path. Run live tests file-scoped (`-m router_live tests/test_llm_anthropic.py`); a bare `-m router_live` also sends the thirteen routing cases to the configured provider and runs the Bedrock smoke when AWS credentials are present.
+   free-text args). Ambiguity cases assert the clarify path. Run live tests file-scoped (`-m router_live tests/test_llm_anthropic.py`); a bare `-m router_live` also runs the thirteen routing cases against Bedrock whenever AWS credentials are present, whatever `LLM_PROFILE` says, and the Bedrock smoke with them.
 3. Recorded live transcripts are checked in as fixtures and refreshed deliberately, so drift
    between recordings and reality is a reviewed diff.
 
