@@ -223,6 +223,12 @@ def test_normalize_missing_usage_defaults_to_zero():
     assert (result.input_tokens, result.output_tokens) == (0, 0)
 
 
+def test_normalize_usage_with_null_values_defaults_to_zero():
+    body = dict(_END_TURN, usage={"input_tokens": None, "output_tokens": None})
+    result = normalize_response(body, error_prefix="p")
+    assert (result.input_tokens, result.output_tokens) == (0, 0)
+
+
 @pytest.mark.parametrize("body", [
     {},
     {"stop_reason": "end_turn"},

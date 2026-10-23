@@ -177,3 +177,52 @@ def test_anthropic_forced_narrative_live_smoke(monkeypatch):
     assert [call.name for call in result.tool_calls] == [TOOL_NAME]
     expected_keys = {"narrative_md", "insights", "suggested_questions"}
     assert set(result.tool_calls[0].arguments) >= expected_keys
+
+
+@pytest.mark.router_live
+@pytest.mark.skipif(not _HAS_KEY, reason=_NO_KEY_REASON)
+def test_anthropic_tool_loop_round_trip_live_smoke(monkeypatch):
+    """Review Focus 3 (D80): the first call's reasoning blocks must be echoed
+    back and accepted on the second call. Sonnet 5.5 with between_tools may
+    attach thinking to a tool_use turn; this is the only live path that
+    exercises the echo. Shape only: a tool call, then a non-error reply."""
+    from poseidon.core.llm.loop import _assistant_tool_use_message
+
+    tool = {
+        "name": "data_qa.metric_query",
+        "description": (
+            "Certified metric query over the sales book. Call it for any question "
+            "about gross profit, volume or margin; it returns the figures."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "metrics": {"type": "array", "items": {"type": "string"}},
+                "period": {"type": "string"},
+            },
+            "required": ["metrics", "period"],
+        },
+    }
+    system = (
+        "You answer sales questions by calling the data_qa.metric_query tool first, "
+        "then summarising its result in one sentence."
+    )
+    client = _live_role_client(monkeypatch)
+    messages = [{"role": "user", "content": "What was gross profit for 2025?"}]
+    first = client.invoke("router", system=system, messages=messages, tools=[tool])
+    assert first.stop_reason == "tool_use", first.text
+    messages.append(_assistant_tool_use_message(first))
+    messages.append({
+        "role": "user",
+        "content": [{
+            "toolResult": {
+                "toolUseId": first.tool_calls[0].id,
+                "content": [{"text": "Results: 1\nGP 2025: 1,234,567 USD"}],
+                "status": "success",
+            }
+        }],
+    })
+    second = client.invoke("router", system=system, messages=messages, tools=[tool])
+    assert second.stop_reason != "error", second.text
+    assert second.text.strip() or second.tool_calls
+    print(f"reasoning blocks echoed: {len(first.reasoning)}")

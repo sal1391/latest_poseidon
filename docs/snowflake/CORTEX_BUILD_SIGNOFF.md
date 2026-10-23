@@ -15,12 +15,12 @@ step are in `docs/snowflake/CORTEX_HANDOFF.md` (same folder; section numbers bel
 
 ## Steps
 
-- [ ] **Step A: offline parity** (section 5; expected last line `47 passed, 2 deselected`)
+- [ ] **Step A: offline parity** (section 5; expected last line `47 passed, 3 deselected`)
   - Command run:
   - Last line of output:
   - Pass / fail:
   - Notes:
-- [ ] **Step B: two live smokes** (section 6; expected `2 passed`)
+- [ ] **Step B: three live smokes** (section 6; expected `3 passed`)
   - Command run:
   - Last line of output:
   - Pass / fail:
@@ -31,6 +31,7 @@ step are in `docs/snowflake/CORTEX_HANDOFF.md` (same folder; section numbers bel
   - Pass / fail: skipped, test is Bedrock-only
   - Notes:
 - [ ] **Step D: one report in the running app** (section 8)
+  - Typed data question ("GP by port for that office last month") answered with a table or a sentence, not an error part:
   - Command run:
   - Last line of output (the proof line under the report):
   - Pass / fail (narrative is the AI narrative and the proof line says `grounded`):

@@ -1114,8 +1114,8 @@ def test_invoke_stream_event_stream_error_mid_iteration_returns_pinned_error_res
 
 
 # ---------------------------------------------------------------------------
-# router_live -- credential-gated smoke (skips on this machine: no
-# AWS_ACCESS_KEY_ID / AWS_PROFILE in the ambient environment)
+# router_live -- credential-gated: skips unless AWS_ACCESS_KEY_ID or
+# AWS_PROFILE is set; never run it from this repo's gates
 # ---------------------------------------------------------------------------
 
 _NO_CREDENTIALS_REASON = "no AWS credentials"

@@ -26,7 +26,7 @@ backend/core/llm/
   — one request/response shape across Anthropic and Nova models makes tiers genuinely swappable.
 - Decision D21: provider is resolved **per role** from config. Defaults per deploy target
   (doc 07): SPCS → `cortex` (zero external credentials inside the platform; the current
-  Poseidon already runs Cortex `claude-sonnet-4-5`); local/EC2 → `bedrock` (the natural AWS
+  Poseidon already runs Cortex `claude-sonnet-5-5`); local/EC2 → `bedrock` (the natural AWS
   pairing). Either can be forced anywhere — Bedrock works inside SPCS through an External
   Access Integration (doc 07 §4).
 - The router-decision suite (§6) runs against whichever provider config selects, so the
@@ -243,8 +243,9 @@ Execution modes:
 1. **Stub mode** (default, no network): a `StubRouter` replays recorded `LLMResponse` sequences —
    verifies the loop, dispatch, validation, and memory carry deterministically (TM1
    `test_agent_loop.py` pattern).
-2. **Live mode** (`pytest -m router_live`, requires credentials for the configured provider —
-   Bedrock credentials, `ANTHROPIC_API_KEY`, or a Cortex token): sends each case to the real `router` role
+2. **Live mode** (`pytest -m router_live`): the thirteen routing cases run against Bedrock only,
+   gated on `AWS_ACCESS_KEY_ID` or `AWS_PROFILE` (the anthropic and cortex smokes need
+   `ANTHROPIC_API_KEY` or a Cortex token); each case goes to the real `router` role
    and asserts the chosen tool name and a **subset** of critical arguments (never exact-match on
    free-text args). Ambiguity cases assert the clarify path. Run live tests file-scoped (`-m router_live tests/test_llm_anthropic.py`); a bare `-m router_live` also runs the thirteen routing cases against Bedrock whenever AWS credentials are present, whatever `LLM_PROFILE` says, and the Bedrock smoke with them.
 3. Recorded live transcripts are checked in as fixtures and refreshed deliberately, so drift

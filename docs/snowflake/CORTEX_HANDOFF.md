@@ -17,7 +17,7 @@ proof. It is run by the Snowflake-side owner and is complete when
 `docs/snowflake/CORTEX_BUILD_SIGNOFF.md` is returned signed.
 
 Nothing here writes to Snowflake. The runs send a few small prompts to Cortex and read the
-answers. Expected cost: a handful of small model calls (Step B: two; Step D: a few).
+answers. Expected cost: a handful of small model calls (Step B: four; Step D: a few).
 
 ## 2. Prerequisites
 
@@ -125,12 +125,12 @@ Remove-Item Env:PERPLEXITY_API_KEY -ErrorAction SilentlyContinue
 Get-Content parity.txt -Tail 3
 ```
 
-**Pass:** the last line reads `47 passed, 2 deselected` (recorded on the branch on 2026-10-23).
-The two deselected tests are the two live Cortex smokes of Step B, which this step deliberately
+**Pass:** the last line reads `47 passed, 3 deselected` (recorded on the branch on 2026-10-23).
+The three deselected tests are the three live Cortex smokes of Step B, which this step deliberately
 excludes. Anything else means the checkout is not the PR C merge commit or the environment is
 wrong; stop and report it.
 
-## 6. Step B: two live smokes
+## 6. Step B: three live smokes
 
 ```bash
 cd <path-to-clone>/backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest -p no:cacheprovider -m router_live tests/test_llm_cortex.py > cortex-live.txt 2>&1
@@ -149,8 +149,8 @@ Get-Content cortex-live.txt -Tail 5
 Always name the file (`tests/test_llm_cortex.py`). A bare `-m router_live` would also run the
 live tests of other providers.
 
-**Pass:** `2 passed`. Without the variables of section 4 the two tests are skipped, so a
-`2 skipped` line is not a pass.
+**Pass:** `3 passed`. Without the variables of section 4 the three tests are skipped, so a
+`3 skipped` line is not a pass.
 
 - `test_cortex_utility_role_live_smoke`: one **Haiku 5.5** call through the utility role. It
   checks the reply is non-empty and the token counts are positive, never the wording.
@@ -158,6 +158,10 @@ live tests of other providers.
   role on **Sonnet 5.5**. The provider sends `tool_choice: auto` plus a system instruction
   naming the tool, with `thinking: between_tools` (the 5.5 generation rejects native forcing).
   Pass means the model answered with exactly one `reporting.narrate` tool call.
+- `test_cortex_tool_loop_round_trip_live_smoke`: a two-call tool loop on the router role. The
+  first call must return a tool call; its reasoning blocks are echoed back with a tool result,
+  and the second call must come back as a non-error reply. This proves Cortex accepts the echoed
+  thinking blocks (D80).
 
 If Cortex rejects `between_tools` (HTTP 400, `invalid_request_error`), capture the response body
 (section 9) and **stop**. Whether to fall back to adaptive thinking is a decision for the repo
@@ -194,7 +198,7 @@ narrative. It needs Docker Desktop and Node.
          CHAT_MODE: live
          SNOWFLAKE_ACCOUNT_URL: ${SNOWFLAKE_ACCOUNT_URL}
          SNOWFLAKE_CORTEX_TOKEN: ${SNOWFLAKE_CORTEX_TOKEN}
-         SNOWFLAKE_CORTEX_TOKEN_TYPE: ${SNOWFLAKE_CORTEX_TOKEN_TYPE}
+         SNOWFLAKE_CORTEX_TOKEN_TYPE: ${SNOWFLAKE_CORTEX_TOKEN_TYPE:-PROGRAMMATIC_ACCESS_TOKEN}
    ```
 
    (`CHAT_MODE: live` is already set in the base file; it is repeated so the override is
@@ -226,8 +230,12 @@ narrative. It needs Docker Desktop and Node.
    (including the PDF download and the follow-up questions) is the "Owner gate" section of
    `docs/superpowers/plans/2026-10-16-phase-17-prA2-report-in-chat.md`, which also describes
    what a passing gate looks like; steps 1 and 2 there are all this proof needs.
+5. After the report renders, type one data question in the chat, for example "GP by port for
+   that office last month", so the live router loop runs on Cortex.
 
-**Pass:** the report renders and its narrative section is the AI narrative, not the fixed
+**Pass (data question):** the chat answers with a table or a sentence, not an error part.
+
+**Pass (report):** the report renders and its narrative section is the AI narrative, not the fixed
 template text. The proof line under the report reads `narrative: synthesis role, prompt ... grounded`
 (the code is `_grounded` in
 `backend/poseidon/tasks/reporting/skills/monthly_performance/tools/narrate.py`; the saved run
@@ -251,7 +259,7 @@ Stop the stack afterwards (from the repo root, `cd <path-to-clone>`):
    ```bash
    curl -sS -i -X POST "$SNOWFLAKE_ACCOUNT_URL/api/v2/cortex/v1/messages" \
      -H "Authorization: Bearer $SNOWFLAKE_CORTEX_TOKEN" \
-     -H "X-Snowflake-Authorization-Token-Type: PROGRAMMATIC_ACCESS_TOKEN" \
+     -H "X-Snowflake-Authorization-Token-Type: $SNOWFLAKE_CORTEX_TOKEN_TYPE" \
      -H "anthropic-version: 2023-06-01" \
      -H "content-type: application/json" \
      -d '{"model":"claude-haiku-5-5","max_tokens":64,"messages":[{"role":"user","content":"Say hello."}]}'
@@ -260,6 +268,9 @@ Stop the stack afterwards (from the repo root, `cd <path-to-clone>`):
    PowerShell: use `curl.exe` (not the `curl` alias), `$env:SNOWFLAKE_ACCOUNT_URL` and
    `$env:SNOWFLAKE_CORTEX_TOKEN`.
 4. The model id, the account region, and the token type used.
+
+A `cortex error: MalformedResponse` on a tool-using turn may mean the model returned a thinking
+block without a `signature`; capture the raw response body with the curl above and attach it.
 
 The error text is generated by **Snowflake**, not Anthropic. The codes Snowflake documents for
 this endpoint: 400 `invalid_request_error` / unknown model, 402 budget exceeded, 403 Not
@@ -272,7 +283,18 @@ The offline tests replay recorded Cortex response bodies in
 from a real account. Please save **one real `plain_completion` response body** (the curl in
 section 9 item 3 with the "Say hello." prompt produces one) **and one real `tool_call` response
 body** (a request that includes a `tools` array and a prompt that triggers it) and attach them
-to the signoff, token redacted. Response bodies contain no credentials. The repo owner will
+to the signoff, token redacted. To trigger a real tool call:
+
+```bash
+curl -sS -i -X POST "$SNOWFLAKE_ACCOUNT_URL/api/v2/cortex/v1/messages" \
+  -H "Authorization: Bearer $SNOWFLAKE_CORTEX_TOKEN" \
+  -H "X-Snowflake-Authorization-Token-Type: $SNOWFLAKE_CORTEX_TOKEN_TYPE" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -d '{"model":"claude-sonnet-5-5","max_tokens":512,"tools":[{"name":"data_qa__metric_query","description":"Certified metric query over the sales book. Call it for any question about gross profit, volume or margin; it returns the figures.","input_schema":{"type":"object","properties":{"metrics":{"type":"array","items":{"type":"string"}},"period":{"type":"string"}},"required":["metrics","period"]}}],"messages":[{"role":"user","content":"What was gross profit for 2025?"}]}'
+```
+
+Response bodies contain no credentials. The repo owner will
 refresh the fixtures as a reviewed diff.
 
 ## 11. Where to record the result

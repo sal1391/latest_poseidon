@@ -69,7 +69,7 @@ class LLMProvider(Protocol):
     speaks that grammar natively (see ``loop.py``). It is the canonical
     interchange format above this seam, not a Bedrock detail leaking
     through: ``BedrockProvider`` therefore forwards it nearly verbatim,
-    while a future non-Bedrock provider (Cortex, Phase 14) owns translating
+    while a future non-Bedrock provider (Cortex, Phase 17 PR C, D68) owns translating
     FROM it into whatever its own API wants. Skill ids in those blocks are
     always dotted; a provider whose wire format forbids that translates at
     its own boundary, as ``bedrock.py`` does.

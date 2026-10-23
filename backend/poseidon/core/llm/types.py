@@ -1,6 +1,6 @@
 """Normalized provider response types (doc 03 section 1).
 
-Every provider -- Bedrock, Cortex (Phase 14), and the stub -- speaks its own
+Every provider -- Bedrock, Cortex (Phase 17 PR C, D68), and the stub -- speaks its own
 wire format, so nothing above the provider seam should ever see one: a
 Converse response dict, a Cortex completion, and a scripted stub value are
 all normalized to :class:`LLMResponse` before ``RoleClient`` hands them

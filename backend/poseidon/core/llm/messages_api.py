@@ -89,14 +89,16 @@ Contracts:
   a non-JSON 2xx and a malformed body all return ``stop_reason="error"`` with
   ``text="<prefix> error: <code>"``. The response body is never echoed into
   ``text``; the surface stays fixed and small.
-- It does raise ``ValueError`` for two caller bugs: ``tool_choice`` with no
-  tools, and an unknown ``tool_choice_mode`` (plus an unsupported content
-  block). And ``_endpoint()``/``_headers()`` may raise
+- It does raise ``ValueError`` for three caller bugs: ``tool_choice`` with no
+  tools, an unknown ``tool_choice_mode``, and an unsupported content
+  block. And ``_endpoint()``/``_headers()`` may raise
   :class:`ProviderCredentialsError` when the provider is not configured: a
   deployment error, not a model turn.
-- Nothing here mutates ``messages``, ``tools`` or ``params``; every helper
-  builds new dicts, so a caller's growing history list can be passed again
-  on the next loop iteration untouched.
+- Nothing here mutates ``messages``, ``tools`` or ``params``; the request
+  body is built from new dicts but shares the caller's nested ``input``,
+  ``thinking`` and ``input_schema`` objects, which are never mutated, so a
+  caller's growing history list can be passed again on the next loop
+  iteration untouched.
 - The ``httpx.Client`` is built lazily on the first ``invoke`` (the same
   reason ``bedrock.py`` defers ``boto3.client``: registries build providers
   unconditionally in offline tests and stub-mode boots).
@@ -292,8 +294,8 @@ def normalize_response(body: dict, *, error_prefix: str) -> LLMResponse:
         usage = body.get("usage") or {}
         if not isinstance(usage, dict):
             raise TypeError("usage is not an object")
-        input_tokens = usage.get("input_tokens", 0)
-        output_tokens = usage.get("output_tokens", 0)
+        input_tokens = usage.get("input_tokens") or 0
+        output_tokens = usage.get("output_tokens") or 0
         stop_reason = body["stop_reason"]
         content = body["content"]
         if stop_reason == "refusal":

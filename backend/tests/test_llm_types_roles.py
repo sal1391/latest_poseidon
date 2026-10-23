@@ -375,12 +375,8 @@ def test_invoke_live_mode_anthropic_dispatches_with_profile_params(monkeypatch):
 
 
 def test_invoke_live_mode_bedrock_dispatches_to_registered_provider(monkeypatch):
-    """Live mode is not ONLY a cortex guard: a role configured for bedrock
-    reaches whatever provider is registered under that name -- the same
-    registry ``invoke()`` consults in stub mode, just keyed differently.
-    ``StubProvider`` is reused here purely as a generic recording double
-    (Task 3 has not built a real BedrockProvider yet); nothing about this
-    test exercises stub MODE."""
+    """Live mode dispatches to whatever provider is registered under the
+    resolved name; ``StubProvider`` stands in as a recording double."""
     settings = _settings(monkeypatch, LLM_PROFILE="bedrock", LLM_MODE="live")
     bedrock_provider = StubProvider([_SCRIPTED])
     client = RoleClient(settings, providers={"bedrock": bedrock_provider})

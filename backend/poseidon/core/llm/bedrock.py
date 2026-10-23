@@ -15,7 +15,7 @@ validates requests against and deserializes responses from, so a
 hand-authored test dict that matches it exercises the same shape a real call
 would produce or accept.
 
-Two normalization rules worth stating up front, because nothing else in this
+Four normalization rules worth stating up front, because nothing else in this
 file states them locally:
 
 - ``LLMResponse.stop_reason``'s documented domain is only ``tool_use``/

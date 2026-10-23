@@ -87,10 +87,11 @@ above *are* the gate.
 ## Gotchas — every one of these cost a real debugging session
 
 - **`-m router_live` is never bare.** The live routing-case executor in `tests/test_llm_loop.py` is
-  hard-wired to Bedrock and runs the thirteen routing cases, plus the Bedrock smoke, whenever AWS
-  credentials are present, whatever `LLM_PROFILE` says; this shell has AWS credentials. A bare marker
+  hard-wired to Bedrock and runs the thirteen routing cases, plus the Bedrock smoke, whenever
+  `AWS_ACCESS_KEY_ID` or `AWS_PROFILE` is set, whatever `LLM_PROFILE` says, plus the anthropic and cortex
+  smokes when their variables are set; this shell has AWS credentials. A bare marker
   run is a paid Bedrock run. Always file-scope it: `-m router_live tests/test_llm_anthropic.py` (needs
-  `ANTHROPIC_API_KEY`) or `-m router_live tests/test_llm_cortex.py` (needs `SNOWFLAKE_ACCOUNT_URL` and a token).
+  `ANTHROPIC_API_KEY`; expected pass line `3 passed`) or `-m router_live tests/test_llm_cortex.py` (needs `SNOWFLAKE_ACCOUNT_URL` and a token).
 - **`group_by` is a list now** (Phase 17 PR B). The dev router and the stub scripts may still send a
   string, which `Args` wraps.
 - **Always spell out `.venv/Scripts/python.exe`. Never a bare `python`.** A bare `python` resolves
