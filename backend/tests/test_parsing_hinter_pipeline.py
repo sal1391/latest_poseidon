@@ -63,6 +63,7 @@ from poseidon.core.parsing.lexicon import (
     WEB_RESEARCH,
 )
 from poseidon.core.parsing.pipeline import DEFAULT_ENTITY, parse_turn
+from poseidon.core.parsing.scope_hinter import scope_hint
 from poseidon.core.parsing.skill_hinter import hint
 from poseidon.core.parsing.types import CandidateSkill, ParsedTurn, ParseIssue, ResolvedEntity
 from poseidon.core.skills.context import ConversationSlots
@@ -1621,3 +1622,67 @@ def test_pipeline_module_never_reads_the_wall_clock():
         elif isinstance(node.func, ast.Name):
             called.add(node.func.id)
     assert called.isdisjoint({"today", "now", "utcnow", "time", "monotonic", "fromtimestamp"})
+
+
+# ---------------------------------------------------------------------------
+# Phase 17 PR B Task 5: the scope hinter
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("where else does Northstar lift fuel", "book"),
+        ("show me the other ports", "book"),
+        ("give me the full account GP", "book"),
+        ("whole book please", "book"),
+        ("how does it look overall", "book"),
+        ("across all offices", "book"),
+        ("how much of my GP is of the total account GP", "share"),
+        ("what share of the book is Rotterdam", "share"),
+        ("what % of GP is that", "share"),
+        ("what portion of volume", "share"),
+        ("how much it makes up", "share"),
+        ("how much of the whole book", "share"),  # share wins over book (plan ruling 9)
+        ("top gp customers in april 2026", None),
+        ("overalls are not a scope word", None),  # word boundary
+    ],
+)
+def test_scope_hint_lexicon(text, expected):
+    assert scope_hint(text) == expected
+
+
+def test_parse_turn_sets_scope_hint():
+    client = FakeDataClient()
+    parsed = parse_turn("where else does Northstar Lines lift fuel", NO_SLOTS, REF, client)
+    assert parsed.scope_hint == "book"
+    plain = parse_turn("top gp customers in april 2026", NO_SLOTS, REF, client)
+    assert plain.scope_hint is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "slice it another way",
+        "Slice that a different way",
+        "cut it another way",
+        "break it down differently",
+        "slice it differently",
+    ],
+)
+def test_slice_phrase_without_a_dimension_raises_dimension_unspecified(text):
+    parsed = parse_turn(text, NO_SLOTS, REF, FakeDataClient())
+    issues = [i for i in parsed.issues if i.code == "dimension_unspecified"]
+    assert len(issues) == 1
+    assert issues[0].kind == "dimension"
+    assert issues[0].message == "Which dimension should I slice by?"
+    assert issues[0].phrase and issues[0].phrase.casefold() in text.casefold()
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["slice it by port", "cut it another way by supplier", "top gp customers in april 2026"],
+)
+def test_slice_phrase_with_a_by_cue_raises_no_issue(text):
+    parsed = parse_turn(text, NO_SLOTS, REF, FakeDataClient())
+    assert not any(i.code == "dimension_unspecified" for i in parsed.issues)

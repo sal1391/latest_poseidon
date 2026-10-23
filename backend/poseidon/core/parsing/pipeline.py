@@ -46,7 +46,9 @@ Order
 8. Hint skills from the UNMASKED normalized text and the POST-carry slots
    (masking is a period-parsing concern only; the hinter's lexicon has
    nothing to do with dates, and a mode hint should see the freshest mode).
-9. Collect every issue (customer, then port, then period -- an arbitrary
+8b. Scope hint from the UNMASKED normalized text (``scope_hinter``).
+9. Collect every issue (customer, then port, then period, then a
+   ``dimension_unspecified`` slice issue -- an arbitrary
    but fixed, documented order, since ``ParsedTurn.issues`` has no
    precedence rule of its own the way ``PeriodParse.issue`` does) into one
    tuple and assemble the ``ParsedTurn``.
@@ -281,6 +283,7 @@ from poseidon.core.parsing.carry import UNSET, SlotUpdates, _UnsetType, apply_ca
 from poseidon.core.parsing.customer_resolver import resolve
 from poseidon.core.parsing.normalize import normalize
 from poseidon.core.parsing.period_parser import parse_periods
+from poseidon.core.parsing.scope_hinter import scope_hint
 from poseidon.core.parsing.skill_hinter import hint
 from poseidon.core.parsing.types import ParsedTurn, ParseIssue, ResolvedEntity
 from poseidon.core.skills.context import ConversationSlots
@@ -291,6 +294,9 @@ _CUST_NM = "CUST_NM"
 _LOC_NM = "LOC_NM"
 _KIND_CUSTOMER = "customer"
 _KIND_PORT = "port"
+_KIND_DIMENSION = "dimension"
+_DIMENSION_UNSPECIFIED = "dimension_unspecified"
+SLICE_TEXT = "Which dimension should I slice by?"
 
 # One or more consecutive capitalized words -- see "Phrase detection" above
 # for why the run deliberately does not allow lowercase connectors inside it.
@@ -389,6 +395,24 @@ _PERIOD_TOKEN_RE = re.compile(r"q[1-4]|h[12]|fy\d*|\d{4}", re.IGNORECASE)
 
 _CLEAR_CUSTOMER_RE = re.compile(r"\b(?i:clear|reset)\s+(?:the\s+)?customer\b")
 _CLEAR_PORT_RE = re.compile(r"\b(?i:clear|reset)\s+(?:the\s+)?port\b")
+
+_SLICE_RE = re.compile(
+    r"\b(?i:slice|cut|split|break)\s+(?:it|that|this)(?:\s+down)?\s+"
+    r"(?:(?:another|a different|some other)\s+way|differently)\b"
+)
+_BY_CUE_RE = re.compile(r"\b(?i:by)\s+\w")
+
+
+def _plan_slice(normalized: str) -> ParseIssue | None:
+    """Reports design 7.6's last row: a slice phrase that names no dimension
+    is a clarification, not a guess. A "by <word>" anywhere in the message
+    means the user did name one, so no issue (Review Focus 4)."""
+    match = _SLICE_RE.search(normalized)
+    if match is None or _BY_CUE_RE.search(normalized) is not None:
+        return None
+    return ParseIssue(
+        code=_DIMENSION_UNSPECIFIED, message=SLICE_TEXT, kind=_KIND_DIMENSION, phrase=match.group(0)
+    )
 
 # Calendar month words (full and abbreviated), used only to keep a BARE,
 # single-word TitleCase run from being misread as a customer/port name (see
@@ -811,10 +835,16 @@ def parse_turn(
     post_carry_slots = apply_carry(slots, updates)
 
     hints = hint(normalized, post_carry_slots)
+    scope = scope_hint(normalized)
 
     issues = tuple(
         issue
-        for issue in (customer_plan.issue, port_plan.issue, period_parse.issue)
+        for issue in (
+            customer_plan.issue,
+            port_plan.issue,
+            period_parse.issue,
+            _plan_slice(normalized),
+        )
         if issue is not None
     )
 
@@ -827,4 +857,5 @@ def parse_turn(
         port=port_plan.entity,
         hints=hints,
         issues=issues,
+        scope_hint=scope,
     )

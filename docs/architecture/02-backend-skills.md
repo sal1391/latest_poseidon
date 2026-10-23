@@ -147,6 +147,8 @@ office not applied` (D72). A breakdown with a comparison runs each window's top-
 merges them; when GP and VOLUME are both requested every comparison table gains a Driver column
 (D73).
 
+**`data_qa.metric_query` extensions (Phase 17 PR B, D75-D76).** `group_by` is a list of one to three certified dimensions plus at most one of `MONTH`, `QUARTER`, `YEAR`; `order_by` (default the first metric) and `order` (`desc`/`asc`) rank it. One plain dimension keeps the breakdown query; two or more columns or a time bucket run a frame and are ranked and capped in Python (`top_n` keys, every bucket, bucket column first, labels `Jan 2025`/`Q1 2025`/`2025`). The proof carries an `Order:` line only when the order is non-default on the single-column path, and always on the frame path. `share_of_total: [columns]` runs the stamped selection and a total with those filter columns removed, never restamped, and answers `[Metric, Selection, Total, Share %]`; Share % is `n/a` for the ratio metrics `MARGIN` and `WIN_RATE`. Refused with a 422: `WIN_RATE` or `compare_period` on the frame path, `share_of_total` with `group_by` or `compare_period`, a share column absent from the effective filters.
+
 **`reporting.report_lookup`** (router-visible; Phase 17 PR A2): reads one section of the report
 open in the conversation (`kpis`, `entities_by_gp`, `entities_by_volume`, `ports_by_gp`,
 `ports_by_volume`, `deal_class`, `movers`, `new_lost`, `narrative`, `context`) from the stored
@@ -236,6 +238,8 @@ parsed sentinel blocks out of its replies).
 | `period_parser` | resolve date phrases ("March 2025", "vs last year", "YTD", quarters) into `{period_a, period_b}` half-open windows (stored as first-of-period start plus exclusive end, D62); **carry-over**: an unspecified side inherits its stored window from conversation state, the comparison included, until a single period or a new comparison is named; result **validated against available periods** from the data layer, with a ranged "available data" message on miss | semantics: `mom-comparison/app/agent.py` rules 10–12 + `_extract_new_dates` (:407) + membership test against `get_available_months` (`app/snowflake_client.py:25`) |
 | `customer_resolver` | resolve customer mentions against the customer dimension via a 3-tier match: exact/alias → token-set → fuzzy (rapidfuzz), with confidence thresholds `>=0.80` auto-apply, `0.60–0.80` → clarification chips, `<0.60` → no match | mechanism: TM1 `services/dimension_service.py` (tested by `test_dimension_service.py`); fixes mom-comparison's verbatim `CUST_NM = '<user text>'` exact-match fragility |
 | `skill_hinter` | keyword/intent lexicon produces a ranked candidate-skill shortlist and mode hints; hints are advisory context for the router, never a hard dispatch | replaces mom-comparison's prose "routing tables" (`skills/SKill.md` pattern-selection) with a deterministic shortlist |
+
+Phase 17 PR B adds a lexicon scope hinter after `skill_hinter` that sets `ParsedTurn.scope_hint` to `book` or `share` (advisory; `share` wins, D77), and a parser issue `dimension_unspecified` for "slice it another way" with no `by <dimension>`, which the orchestrator answers deterministically with dimension chips (D77).
 
 Slot carry semantics across turns (TM1 `ConversationBuffer`, adopted verbatim): omitted slot →
 carry previous; explicit empty → clear; new value → **replace, never merge**. Stored in

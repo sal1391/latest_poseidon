@@ -30,6 +30,9 @@ certified dimension of the entity, a filter whose value collection is empty
 :class:`SpecValidationError`, whose message text is itself part of the
 pinned snapshot contract. An inverted/empty period window is rejected even
 earlier, by ``PeriodWindow`` itself (a plain ``ValueError`` at construction).
+The one non-dimension a spec may name is a :data:`TIME_BUCKETS` key (``MONTH``,
+``QUARTER``, ``YEAR``), and only in a frame's ``group_by``, at most one per
+frame; it is never accepted as a filter column.
 
 **NULL placeholder.** Every ``COALESCE(...)`` this module renders — group-by
 projections and filter predicates alike — uses the entity's own certified
@@ -88,6 +91,10 @@ _SMALL_SAMPLE_HAVING = 'HAVING SUM("#_INQUIRIES") >= 5'
 # `_is_volume_mode`), where the caller's own filter already scopes to one
 # unit and the guard would otherwise contradict it.
 _MONETARY_METRIC = "MONETARY_TOTAL"
+
+# Pseudo-dimensions a FrameQuerySpec may group by (Phase 17 PR B): rendered
+# as DATE_TRUNC on the entity's date column, never certified columns.
+TIME_BUCKETS: dict[str, str] = {"MONTH": "month", "QUARTER": "quarter", "YEAR": "year"}
 
 
 class SpecValidationError(ValueError):
@@ -433,6 +440,8 @@ def build_breakdown_query(spec: BreakdownQuerySpec, dialect: str) -> tuple[str, 
         )
     if spec.top_n < 1:
         raise SpecValidationError(f"top_n must be >= 1, got {spec.top_n}")
+    if spec.order not in ("desc", "asc"):
+        raise SpecValidationError(f"order must be 'desc' or 'asc', got {spec.order!r}")
     if _is_volume_mode(entity, spec.filters):
         required = _volume_mode_required_group_by(entity)
         if spec.group_by != required:
@@ -460,7 +469,7 @@ def build_breakdown_query(spec: BreakdownQuerySpec, dialect: str) -> tuple[str, 
         clauses.append(_SMALL_SAMPLE_HAVING)
 
     nulls_last = " NULLS LAST" if dialect == "postgres" else ""
-    clauses.append(f'ORDER BY "{spec.order_by_metric}" DESC{nulls_last}')
+    clauses.append(f'ORDER BY "{spec.order_by_metric}" {spec.order.upper()}{nulls_last}')
     clauses.append("LIMIT %s")
     params.append(spec.top_n)
 
@@ -522,7 +531,10 @@ def build_frame_query(spec: FrameQuerySpec, dialect: str) -> tuple[str, list]:
     """A grouped multi-metric slice with no ORDER BY, LIMIT or HAVING.
 
     WIN_RATE is refused (a ratio cannot be summed; the caller recomputes it
-    from NUM_WON and NUM_INQUIRIES) and so is volume mode.
+    from NUM_WON and NUM_INQUIRIES) and so is volume mode. ``group_by`` may
+    name at most one :data:`TIME_BUCKETS` pseudo-dimension, rendered as
+    ``DATE_TRUNC`` on the entity's date column; with no ORDER BY, putting
+    bucket rows in chronological order is the caller's job.
     """
     entity = _entity(spec.entity)
     _require_scope_value(entity, spec.scope_value)
@@ -539,8 +551,12 @@ def build_frame_query(spec: FrameQuerySpec, dialect: str) -> tuple[str, list]:
         if col in seen:
             raise SpecValidationError(f"group_by repeats {col!r}")
         seen.add(col)
+    buckets = [col for col in spec.group_by if col in TIME_BUCKETS]
+    if len(buckets) > 1:
+        raise SpecValidationError(f"group_by takes at most one time bucket, got {buckets}")
     for col in spec.group_by:
-        _require_dimension(entity, col)
+        if col not in TIME_BUCKETS:
+            _require_dimension(entity, col)
     _validate_filters(entity, spec.filters)
     if _is_volume_mode(entity, spec.filters):
         raise SpecValidationError(
@@ -549,10 +565,16 @@ def build_frame_query(spec: FrameQuerySpec, dialect: str) -> tuple[str, list]:
         )
 
     params: list = []
-    select_list = ", ".join(
-        [f"COALESCE({col}, '{entity.null_placeholder}') AS {col}" for col in spec.group_by]
-        + [_metric_expr(entity, m) for m in spec.metrics]
-    )
+    date_expr = _date_expr(entity, dialect)
+    projections = []
+    for col in spec.group_by:
+        if col in TIME_BUCKETS:
+            projections.append(
+                f"CAST(DATE_TRUNC('{TIME_BUCKETS[col]}', {date_expr}) AS DATE) AS \"{col}\""
+            )
+        else:
+            projections.append(f"COALESCE({col}, '{entity.null_placeholder}') AS {col}")
+    select_list = ", ".join(projections + [_metric_expr(entity, m) for m in spec.metrics])
     where = _where_clause(
         entity, dialect, spec.metrics, spec.period, spec.filters, params, spec.scope_value
     )

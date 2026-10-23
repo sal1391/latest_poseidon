@@ -34,7 +34,8 @@ Three terminal states, three writer/state disciplines
   docstring).
 - **clarify**: ``parsed.issues`` contains a ``customer_ambiguous`` issue
   (customer or port kind), or a port-kind ``customer_unknown`` issue
-  (P16-R23; see ``_select_clarify_issue``).
+  (P16-R23; see ``_select_clarify_issue``), or a ``dimension_unspecified``
+  slice issue ("slice it another way": dimension chips, lowest priority).
   Short-circuits BEFORE ``run_turn`` is ever called -- no LLM call, no
   dispatch, per the Global Constraints' "NO skill dispatch for that turn".
   Chips + text parts, then done; ``finalize(status="clarify")``; ``state.
@@ -292,6 +293,7 @@ from poseidon.core.chat.report_flow import ENTRY_PHRASE_REPORT, MODE_REPORT
 from poseidon.core.chat.state import ConversationStateStore
 from poseidon.core.config import Settings
 from poseidon.core.data.client import DataClient
+from poseidon.core.data.query_builder import TIME_BUCKETS
 from poseidon.core.identity import UserContext
 from poseidon.core.llm.loop import (
     ROUTER_GUARDRAIL_ENTITY,
@@ -401,6 +403,20 @@ _CUSTOMER_UNKNOWN = "customer_unknown"
 # the customer_* CODES, and ``kind`` is what tells the two apart.
 _KIND_CUSTOMER = "customer"
 _KIND_PORT = "port"
+_DIMENSION_UNSPECIFIED = "dimension_unspecified"
+_KIND_DIMENSION = "dimension"
+SLICE_TEXT = "Which dimension should I slice by?"
+# Owner ruling 3 (PR B plan): the seven business cuts plus month, in this order.
+SLICE_CHIPS: tuple[tuple[str, str], ...] = (
+    ("CUST_NM", "Customer"),
+    ("LOC_NM", "Port"),
+    ("SUPPLIER_NM", "Supplier"),
+    ("DEAL_CLASSIFICATION_TRADE_CUT", "Deal class"),
+    ("CUSTOMER_TEAM_NAME", "Customer office"),
+    ("PRIMARY_SUPPLY_TEAM_OFFICE", "Supplier office"),
+    ("VESSEL_DASHBOARD_SHIPTYPE_GRP", "Ship type"),
+    ("MONTH", "Month"),
+)
 
 # User-visible port clarification copy (P16-R23). Kept in these three named
 # constants so the wording can be changed in one place.
@@ -926,7 +942,8 @@ def _select_clarify_issue(issues):
     Order (P16-R23): the first customer-kind ``customer_ambiguous`` issue
     (unchanged behaviour), else the first port-kind ``customer_ambiguous``
     issue (port chips), else the first port-kind ``customer_unknown`` issue
-    (a text-only "which port?" question). A customer-kind
+    (a text-only "which port?" question), else the first ``dimension_
+    unspecified`` slice issue (dimension chips, lowest priority). A customer-kind
     ``customer_unknown`` is deliberately NOT surfaced -- that turn runs as
     it always has.
     """
@@ -934,6 +951,7 @@ def _select_clarify_issue(issues):
         (_CUSTOMER_AMBIGUOUS, _KIND_CUSTOMER),
         (_CUSTOMER_AMBIGUOUS, _KIND_PORT),
         (_CUSTOMER_UNKNOWN, _KIND_PORT),
+        (_DIMENSION_UNSPECIFIED, _KIND_DIMENSION),
     ):
         issue = next((i for i in issues if i.code == code and i.kind == kind), None)
         if issue is not None:
@@ -963,7 +981,9 @@ def _finish_clarify(
 
     P16-R23: a port-kind ambiguous issue gets port chips under
     ``PORT_AMBIGUOUS_TEXT``; a port-kind ``customer_unknown`` gets ONE text
-    part, ``PORT_UNKNOWN_TEXT``, and no chips part at all.
+    part, ``PORT_UNKNOWN_TEXT``, and no chips part at all. A
+    ``dimension_unspecified`` issue gets the eight ``SLICE_CHIPS`` under
+    ``SLICE_TEXT``.
 
     P16-R24: every chip's ``send_text`` is the turn's
     ``parsed.normalized_text`` with the issue's phrase replaced by the
@@ -1004,6 +1024,21 @@ def _finish_clarify(
                         ),
                     }
                     for candidate in ambiguous_issue.candidates
+                ]
+            },
+        )
+    elif ambiguous_issue.kind == _KIND_DIMENSION:
+        message = SLICE_TEXT
+        sink.push_part(
+            "chips",
+            {
+                "options": [
+                    {
+                        "id": f"slice:{column}",
+                        "label": label,
+                        "send_text": f"break that down by {label.lower()}",
+                    }
+                    for column, label in SLICE_CHIPS
                 ]
             },
         )
@@ -2054,6 +2089,24 @@ def _append_records(
         )
 
 
+def _pass_through_column(group_by: object) -> int | None:
+    """The table column pass-through reads (plan ruling 8): the column of the
+    first group-by entry that is not a time bucket; None when there is no
+    group-by or only a bucket.
+
+    That is a TABLE index, not a group-by index: the frame table
+    (``metric_query/tools/frame_breakdown.py``) always leads with the bucket
+    column, then the dimension columns in group-by order. So the first
+    dimension sits at 1 whenever a bucket is present -- ``["LOC_NM",
+    "MONTH"]`` renders ``Month, Port, ...`` -- and at 0 otherwise."""
+    if not group_by:
+        return None
+    columns = [group_by] if isinstance(group_by, str) else list(group_by)
+    if all(column in TIME_BUCKETS for column in columns):
+        return None
+    return 1 if any(column in TIME_BUCKETS for column in columns) else 0
+
+
 def _repopulate_pass_through(
     slots: ConversationSlots, tool_records, sink: SseEnvelopeSink
 ) -> ConversationSlots:
@@ -2096,14 +2149,18 @@ def _repopulate_pass_through(
     """
     new_pairs: tuple[tuple[str, str], ...] | None = None
     for record in tool_records:
-        if not record.arguments.get("group_by"):
+        column = _pass_through_column(record.arguments.get("group_by"))
+        if column is None:
             continue
         parts = sink.tool_result_parts.get(record.tool_seq, [])
         table = next((part for part in parts if part.get("kind") == "table"), None)
         if table is None:
             continue
         rows = table["payload"].get("rows") or []
-        new_pairs = tuple((row[0], row[0]) for row in rows[:_PASS_THROUGH_CAP])
+        # Dedupe in first-seen order BEFORE the cap: a bucketed or
+        # multi-column table repeats each key once per bucket / sub-key.
+        values = list(dict.fromkeys(row[column] for row in rows))[:_PASS_THROUGH_CAP]
+        new_pairs = tuple((value, value) for value in values)
     if new_pairs is None:
         return slots
     return dataclasses.replace(slots, pass_through=new_pairs)

@@ -149,7 +149,7 @@ def _frame_result(spec: FrameQuerySpec, rows: list[tuple]) -> FrameResult:
         group_by=tuple(spec.group_by),
         rows=[
             FrameRow(
-                keys=tuple(row[:n]),
+                keys=tuple(_key_text(cell) for cell in row[:n]),
                 values={
                     name: _as_float(cell) for name, cell in zip(spec.metrics, row[n:], strict=True)
                 },
@@ -157,6 +157,12 @@ def _frame_result(spec: FrameQuerySpec, rows: list[tuple]) -> FrameResult:
             for row in rows
         ],
     )
+
+
+def _key_text(cell: object) -> str:
+    """A bucket column comes back as a ``date``; every other key is text.
+    ISO form keeps the FrameRow.keys contract (strings) and sorts chronologically."""
+    return cell.isoformat() if isinstance(cell, date) else cell
 
 
 def _months(rows: list[tuple]) -> list[date]:

@@ -83,27 +83,31 @@ def test_missing_run_answers_gone(registry):
     assert result.proof == ["Report: run run-other not found"]
 
 
-def test_kpis_is_a_metric_grid_with_prior_as_a(registry):
+def test_kpis_is_a_table_of_the_payloads_display_strings(registry):
     store = _FakeStore()
     result = _lookup(registry, _ctx(store=store), section="kpis")
     assert store.calls == [("dev|alice", RUN_ID)]
     assert result.proof == [HEAD, "Section: kpis"]
     (part,) = result.parts
-    assert part["kind"] == "metric_grid"
-    assert part["payload"]["periods"] == {
-        "a": {"start": "2026-08-01", "end": "2026-09-01"},
-        "b": {"start": "2026-09-01", "end": "2026-10-01"},
-    }
-    by_name = {m["name"]: m for m in part["payload"]["metrics"]}
-    assert by_name["GP"] == {
-        "name": "GP",
-        "friendly": "Gross Profit",
-        "a": 100000,
-        "b": 120000,
-        "unit": "USD",
-    }
-    assert by_name["NUM_WON"]["friendly"] == "# Won"
-    assert by_name["NUM_WON"]["unit"] is None
+    assert part["kind"] == "table"
+    assert part["payload"]["columns"] == ["KPI", "Prior", "Current", "Change", "%"]
+    by_label = {row[0]: row for row in part["payload"]["rows"]}
+    gp = minimal_payload()["kpis"]["GP"]["display"]
+    assert by_label["Gross Profit (USD)"] == [
+        "Gross Profit (USD)",
+        gp["prior"],
+        gp["current"],
+        gp["change"],
+        gp["pct"],
+    ]
+    assert "Win Rate" in by_label
+    assert all(isinstance(cell, str) for row in part["payload"]["rows"] for cell in row)
+
+
+def test_one_row_remaining_is_singular(registry):
+    first = _lookup(registry, _ctx(), section="entities_by_gp", limit=2)
+    _, remaining = first.parts
+    assert remaining["payload"]["markdown"] == "1 row remaining; ask again with offset=2."
 
 
 def test_entities_by_gp_pages_rows_and_reports_remaining(registry):

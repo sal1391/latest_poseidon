@@ -900,3 +900,23 @@ def test_llm_prompts_module_files_are_ascii_on_disk():
     for path in paths:
         offending = sorted({byte for byte in path.read_bytes() if byte > 0x7F})
         assert not offending, f"{path.name} holds non-ASCII bytes: {offending}"
+
+
+def test_render_state_block_scope_hint_golden():
+    parsed = ParsedTurn(
+        normalized_text="where else does northstar lines lift fuel",
+        slots=ConversationSlots(),
+        period_a=PeriodWindow(start=date(2026, 4, 1), end=date(2026, 5, 1)),
+        period_b=None,
+        customer=None,
+        port=None,
+        hints=(CandidateSkill(skill_id="data_qa.metric_query", score=1.0),),
+        issues=(),
+        scope_hint="book",
+    )
+    assert render_state_block(ConversationSlots(), parsed) == (
+        "Mode: default\n\n"
+        "Period: 2026-04-01..2026-05-01\n"
+        "Skill hints: data_qa.metric_query (1.0)\n"
+        "Scope hint: book"
+    )

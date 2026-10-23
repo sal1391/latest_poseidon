@@ -255,3 +255,213 @@
         input_tokens: 1400
         output_tokens: 60
         text: "Here are the report's top ports by gross profit."
+
+# --- Phase 17 PR B: the remaining reports-design 7.6 rows -------------------
+
+- id: report_followup_full_account_gp
+  setup:
+    mode: default
+    state: { perspective: customer, office_column: CUSTOMER_TEAM_NAME, office_value: Rotterdam, report_ref: run-1, active_customer: "Northstar Lines" }
+  user: "give me the full account GP"
+  expect:
+    skill: data_qa.metric_query
+    args_subset: { customer: "Northstar*", scope: book, compare_period: "*" }
+  execution:
+    stub_script:
+      - stop_reason: tool_use
+        input_tokens: 1200
+        output_tokens: 90
+        tool_use:
+          id: tool-1
+          skill: data_qa.metric_query
+          arguments:
+            entity: MARINE_SALES_PLANNING_V
+            metrics: [GP]
+            period: { start: "2026-09-01", end: "2026-10-01" }
+            compare_period: { start: "2026-08-01", end: "2026-09-01" }
+            filters: [{ column: CUST_NM, values: [Northstar Lines] }]
+            scope: book
+      - stop_reason: end_turn
+        input_tokens: 1450
+        output_tokens: 60
+        text: "Here is Northstar Lines' GP across the whole book, September against August."
+
+- id: report_followup_share_of_total
+  setup:
+    mode: default
+    state: { perspective: customer, office_column: CUSTOMER_TEAM_NAME, office_value: Rotterdam, report_ref: run-1, active_customer: "Northstar Lines" }
+  user: "how much of my GP is of the total account GP"
+  expect:
+    skill: data_qa.metric_query
+    args_subset: { customer: "Northstar*", scope: office, share_of_total: CUSTOMER_TEAM_NAME }
+  execution:
+    stub_script:
+      - stop_reason: tool_use
+        input_tokens: 1210
+        output_tokens: 88
+        tool_use:
+          id: tool-1
+          skill: data_qa.metric_query
+          arguments:
+            entity: MARINE_SALES_PLANNING_V
+            metrics: [GP]
+            period: { start: "2026-09-01", end: "2026-10-01" }
+            filters: [{ column: CUST_NM, values: [Northstar Lines] }]
+            scope: office
+            share_of_total: [CUSTOMER_TEAM_NAME]
+      - stop_reason: end_turn
+        input_tokens: 1460
+        output_tokens: 58
+        text: "Rotterdam's share of Northstar Lines' GP."
+
+- id: report_followup_gp_by_month_2025
+  setup:
+    mode: default
+    state: { perspective: customer, office_column: CUSTOMER_TEAM_NAME, office_value: Rotterdam, report_ref: run-1 }
+  user: "give me the GP breakdown for Northstar Lines for 2025 by month"
+  expect:
+    skill: data_qa.metric_query
+    args_subset: { customer: "Northstar*", scope: office, group_by: MONTH }
+  execution:
+    stub_script:
+      - stop_reason: tool_use
+        input_tokens: 1220
+        output_tokens: 95
+        tool_use:
+          id: tool-1
+          skill: data_qa.metric_query
+          arguments:
+            entity: MARINE_SALES_PLANNING_V
+            metrics: [GP]
+            period: { start: "2025-01-01", end: "2026-01-01" }
+            filters: [{ column: CUST_NM, values: [Northstar Lines] }]
+            group_by: [MONTH]
+            scope: office
+      - stop_reason: end_turn
+        input_tokens: 1480
+        output_tokens: 62
+        text: "Northstar Lines' GP by month for 2025."
+
+- id: report_followup_then_by_port
+  setup:
+    mode: default
+    state:
+      perspective: customer
+      office_column: CUSTOMER_TEAM_NAME
+      office_value: Rotterdam
+      report_ref: run-1
+      active_customer: "Northstar Lines"
+      period_a: "2025-01-01"
+      period_a_end: "2026-01-01"
+  user: "then by port"
+  expect:
+    skill: data_qa.metric_query
+    args_subset: { customer: "Northstar*", group_by: LOC_NM }
+  execution:
+    stub_script:
+      - stop_reason: tool_use
+        input_tokens: 1190
+        output_tokens: 80
+        tool_use:
+          id: tool-1
+          skill: data_qa.metric_query
+          arguments:
+            entity: MARINE_SALES_PLANNING_V
+            metrics: [GP]
+            period: { start: "2025-01-01", end: "2026-01-01" }
+            filters: [{ column: CUST_NM, values: [Northstar Lines] }]
+            group_by: [LOC_NM]
+      - stop_reason: end_turn
+        input_tokens: 1440
+        output_tokens: 55
+        text: "Northstar Lines' 2025 GP by port."
+
+- id: report_followup_by_port_by_month
+  setup:
+    mode: default
+    state:
+      perspective: customer
+      office_column: CUSTOMER_TEAM_NAME
+      office_value: Rotterdam
+      report_ref: run-1
+      active_customer: "Northstar Lines"
+      period_a: "2025-01-01"
+      period_a_end: "2026-01-01"
+  user: "and by port by month"
+  expect:
+    skill: data_qa.metric_query
+    args_subset: { customer: "Northstar*", group_by: [LOC_NM, MONTH] }
+  execution:
+    stub_script:
+      - stop_reason: tool_use
+        input_tokens: 1195
+        output_tokens: 84
+        tool_use:
+          id: tool-1
+          skill: data_qa.metric_query
+          arguments:
+            entity: MARINE_SALES_PLANNING_V
+            metrics: [GP]
+            period: { start: "2025-01-01", end: "2026-01-01" }
+            filters: [{ column: CUST_NM, values: [Northstar Lines] }]
+            group_by: [LOC_NM, MONTH]
+      - stop_reason: end_turn
+        input_tokens: 1450
+        output_tokens: 57
+        text: "Northstar Lines' 2025 GP by port by month."
+
+- id: report_followup_compare_to_june
+  setup:
+    mode: default
+    state: { perspective: customer, office_column: CUSTOMER_TEAM_NAME, office_value: Rotterdam, report_ref: run-1 }
+  user: "compare to June instead"
+  expect: { carry: "period B becomes June, period A and the carried office are kept" }
+  execution:
+    parser_case: "backend/tests/test_c03_period_carry.py::test_3_compare_to_another_month_swaps_only_the_comparison"
+    reason: >-
+      A comparison-only phrase is a deterministic period-carry decision (D62),
+      not a router decision; the C03 suite pins it.
+
+- id: report_followup_break_down_by_deal_class
+  setup:
+    mode: default
+    state:
+      perspective: customer
+      office_column: CUSTOMER_TEAM_NAME
+      office_value: Rotterdam
+      report_ref: run-1
+      pass_through: [[CUST_NM, Northstar Lines], [CUST_NM, Meridian Bunkering]]
+  user: "break that down by deal class"
+  expect:
+    skill: data_qa.metric_query
+    args_subset: { customer: "Northstar*", group_by: DEAL_CLASSIFICATION_TRADE_CUT }
+  execution:
+    stub_script:
+      - stop_reason: tool_use
+        input_tokens: 1230
+        output_tokens: 96
+        tool_use:
+          id: tool-1
+          skill: data_qa.metric_query
+          arguments:
+            entity: MARINE_SALES_PLANNING_V
+            metrics: [GP, VOLUME]
+            period: { start: "2026-09-01", end: "2026-10-01" }
+            filters: [{ column: CUST_NM, values: [Northstar Lines, Meridian Bunkering] }]
+            group_by: [DEAL_CLASSIFICATION_TRADE_CUT]
+      - stop_reason: end_turn
+        input_tokens: 1500
+        output_tokens: 64
+        text: "The report's top customers by deal class."
+
+- id: slice_it_another_way
+  setup:
+    mode: default
+    state: { perspective: customer, office_column: CUSTOMER_TEAM_NAME, office_value: Rotterdam, report_ref: run-1 }
+  user: "slice it another way"
+  expect: { clarify: true }
+  execution:
+    orchestrator_case: "backend/tests/test_chat_orchestrator.py::test_slice_it_another_way_asks_with_dimension_chips"
+    reason: >-
+      The parser's dimension_unspecified issue short-circuits the turn before
+      any router runs (reports design 7.6, last row); the orchestrator suite pins it.

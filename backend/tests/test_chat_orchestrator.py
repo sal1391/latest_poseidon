@@ -2101,6 +2101,79 @@ def test_pass_through_capped_at_ten_rows():
     assert new_slots.pass_through[-1] == ("Customer 9", "Customer 9")
 
 
+def test_pass_through_column_skips_time_buckets():
+    assert orchestrator._pass_through_column("CUST_NM") == 0
+    assert orchestrator._pass_through_column(["CUST_NM"]) == 0
+    assert orchestrator._pass_through_column(["MONTH", "LOC_NM"]) == 1
+    # The frame table leads with the bucket whatever the group-by order.
+    assert orchestrator._pass_through_column(["LOC_NM", "MONTH"]) == 1
+    assert orchestrator._pass_through_column(["LOC_NM", "SUPPLIER_NM"]) == 0
+    assert orchestrator._pass_through_column(["MONTH"]) is None
+    assert orchestrator._pass_through_column(None) is None
+
+
+def test_pass_through_after_a_bucketed_breakdown_reads_the_first_non_time_column():
+    """A frame table with the bucket first (plan ruling 8): pass-through
+    carries the Port column, never the month labels."""
+
+    class _FakeSink:
+        tool_result_parts = {
+            1: [
+                {
+                    "kind": "table",
+                    "payload": {
+                        "columns": ["Month", "Port", "GP"],
+                        "rows": [["Jan 2025", "Rotterdam", 1], ["Jan 2025", "Singapore", 2]],
+                    },
+                }
+            ]
+        }
+
+    @dataclass(frozen=True)
+    class _FakeRecord:
+        tool_seq: int
+        arguments: dict
+
+    record = _FakeRecord(tool_seq=1, arguments={"group_by": ["MONTH", "LOC_NM"]})
+    slots = _repopulate_pass_through(ConversationSlots(), (record,), _FakeSink())
+    assert slots.pass_through == (("Rotterdam", "Rotterdam"), ("Singapore", "Singapore"))
+
+
+def test_pass_through_dedupes_column_values_before_the_cap():
+    """Bucket-major rows repeat each key per bucket: pass-through carries
+    each distinct key once, first-seen order, and the cap counts distinct keys."""
+
+    @dataclass(frozen=True)
+    class _FakeRecord:
+        tool_seq: int
+        arguments: dict
+
+    def _sink(rows):
+        class _FakeSink:
+            tool_result_parts = {
+                1: [{"kind": "table", "payload": {"columns": ["Month", "Port"], "rows": rows}}]
+            }
+
+        return _FakeSink()
+
+    record = _FakeRecord(tool_seq=1, arguments={"group_by": ["LOC_NM", "MONTH"]})
+    two_months = [
+        ["Jan 2025", "Rotterdam", 1],
+        ["Jan 2025", "Singapore", 2],
+        ["Feb 2025", "Rotterdam", 3],
+        ["Feb 2025", "Singapore", 4],
+    ]
+    slots = _repopulate_pass_through(ConversationSlots(), (record,), _sink(two_months))
+    assert slots.pass_through == (("Rotterdam", "Rotterdam"), ("Singapore", "Singapore"))
+
+    ports = [f"Port {i}" for i in range(12)]
+    # Each port twice in a row (as a multi-column table repeats a port per
+    # sub-key): without the dedupe the first 10 rows hold only 5 ports.
+    repeated = [[month, port, 1] for port in ports for month in ("Jan 2025", "Feb 2025")]
+    slots = _repopulate_pass_through(ConversationSlots(), (record,), _sink(repeated))
+    assert slots.pass_through == tuple((p, p) for p in ports[:10])
+
+
 def test_pass_through_untouched_when_no_group_by_dispatch_happened():
     @dataclass(frozen=True)
     class _FakeRecord:
@@ -2321,3 +2394,48 @@ def test_chat_orchestrator_module_files_are_ascii_on_disk():
     for path in paths:
         offending = sorted({byte for byte in path.read_bytes() if byte > 0x7F})
         assert not offending, f"{path.name} holds non-ASCII bytes: {offending}"
+
+
+def test_slice_it_another_way_asks_with_dimension_chips(monkeypatch):
+    outcome, decoded, writer, state, data = _run_turn_for(
+        monkeypatch, "slice it another way", conversation_id="conv-slice"
+    )
+    assert outcome.status == "clarify"
+    names = [name for _seq, name, _data in decoded]
+    assert names == ["accepted", "part", "part", "done"]
+    chips = decoded[1][2]
+    assert chips["kind"] == "chips"
+    options = chips["payload"]["options"]
+    assert [o["label"] for o in options] == [
+        "Customer",
+        "Port",
+        "Supplier",
+        "Deal class",
+        "Customer office",
+        "Supplier office",
+        "Ship type",
+        "Month",
+    ]
+    assert options[1] == {
+        "id": "slice:LOC_NM",
+        "label": "Port",
+        "send_text": "break that down by port",
+    }
+    assert options[-1]["send_text"] == "break that down by month"
+    assert decoded[2][2]["payload"] == {"markdown": orchestrator.SLICE_TEXT}
+    assert not [c for c in data.calls if c[0].startswith("run_")]
+    assert writer.finalize_calls[0]["status"] == "clarify"
+
+
+def test_customer_ambiguity_still_wins_over_a_slice_issue():
+    issues = (
+        ParseIssue(code="dimension_unspecified", message=orchestrator.SLICE_TEXT, kind="dimension"),
+        ParseIssue(code="customer_ambiguous", message="m", candidates=("A", "B")),
+    )
+    assert orchestrator._select_clarify_issue(issues).code == "customer_ambiguous"
+
+
+def test_slice_text_matches_the_parser_issue_message():
+    from poseidon.core.parsing import pipeline
+
+    assert orchestrator.SLICE_TEXT == pipeline.SLICE_TEXT

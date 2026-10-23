@@ -1061,6 +1061,10 @@ def test_auth0_bogus_kid_after_the_fetch_finished_401s_at_once_without_waiting(r
     is deliberately loose (one second against twelve) so a loaded CI box
     cannot make this flake -- it is testing an absence of blocking, not a
     latency budget.
+
+    The tokens are minted before the stopwatch starts: the minting is outside
+    the timed window because RSA signing is what made the bound flake under
+    load.
     """
     key1, pub1, _key2, _pub2 = rsa_keys
     transport = JwksTransport([jwk_for(pub1, "key-1")])
@@ -1071,9 +1075,9 @@ def test_auth0_bogus_kid_after_the_fetch_finished_401s_at_once_without_waiting(r
     assert provider._fetch_in_flight is None
     assert provider._last_fetch_at is not None
 
+    tokens = [mint_auth0_token(key1, f"bogus-kid-{index}") for index in range(10)]
     started = time.monotonic()
-    for index in range(10):
-        token = mint_auth0_token(key1, f"bogus-kid-{index}")
+    for token in tokens:
         _expect_auth_error(
             provider, {"authorization": f"Bearer {token}"}, 401, "unknown signing key"
         )

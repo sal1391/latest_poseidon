@@ -327,6 +327,10 @@ def render_state_block(slots: ConversationSlots, parsed: ParsedTurn | None) -> s
     slots (see ``pipeline.py``'s own step 8), not a raw resolution like
     customer/port/period.
 
+    Scope hint (Phase 17 PR B, additive). ``parsed.scope_hint`` (``book`` or
+    ``share``) renders as one ``Scope hint: <value>`` line right after
+    ``Skill hints``, only when set; it is advisory and routes nothing.
+
     ``slots.period_a``/``period_b`` plus their ``_end`` fields (decision
     D62) are stored half-open windows; they render as a human label and
     the ISO bounds (``Carried period A: 2025 (2025-01-01..2026-01-01)``)
@@ -419,6 +423,8 @@ def _render_parsed(parsed: ParsedTurn) -> list[str]:
         lines.append(_render_window("Compare period", parsed.period_b))
     if parsed.hints:
         lines.append(_render_hints(parsed.hints))
+    if parsed.scope_hint:
+        lines.append(f"Scope hint: {parsed.scope_hint}")
     if parsed.issues:
         lines.append("Issues:")
         lines.extend(f"- [{issue.code}] {issue.message}" for issue in parsed.issues)

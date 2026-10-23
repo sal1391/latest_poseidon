@@ -40,6 +40,7 @@ keep it so).
 """
 
 import threading
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -50,6 +51,7 @@ from poseidon.core.chat import dev_router, state
 from poseidon.core.chat.dev_router import DevDeterministicRouter
 from poseidon.core.chat.state import ConversationStateStore
 from poseidon.core.config import Settings
+from poseidon.core.data.query_builder import TIME_BUCKETS
 from poseidon.core.data.specs import PeriodWindow
 from poseidon.core.llm.prompts import (
     DEFAULT_PROMPTS_DIR,
@@ -1568,3 +1570,92 @@ def test_chat_module_files_are_ascii_on_disk():
     for path in paths:
         offending = sorted({byte for byte in path.read_bytes() if byte > 0x7F})
         assert not offending, f"{path.name} holds non-ASCII bytes: {offending}"
+
+
+def test_scope_hint_line_does_not_change_the_dev_router_decision():
+    router = DevDeterministicRouter()
+    without = _system(_parsed(period_a=_PERIOD_A))
+    with_hint = _system(replace(_parsed(period_a=_PERIOD_A), scope_hint="share"))
+    assert "Scope hint: share" in with_hint
+    message = [_user_message("gp this period")]
+    a = router.invoke(system=without, messages=message, tools=[], model="m", params={})
+    b = router.invoke(system=with_hint, messages=message, tools=[], model="m", params={})
+    assert a == b
+
+
+# ---------------------------------------------------------------------------
+# Phase 17 PR B -- group-by, share and carried-customer cues (the stub-mode
+# browser gate must route offline)
+# ---------------------------------------------------------------------------
+
+
+def _call_for(text, *, slots=None, parsed=None):
+    router = DevDeterministicRouter()
+    system = _system(parsed or _parsed(period_a=_PERIOD_A), slots)
+    response = router.invoke(
+        system=system, messages=[_user_message(text)], tools=[], model="m", params={}
+    )
+    (call,) = response.tool_calls
+    _assert_valid_metric_query_args(call)
+    return call.arguments
+
+
+def test_by_month_cue_emits_a_month_group_by():
+    args = _call_for("give me the GP breakdown for 2025 by month")
+    assert args["group_by"] == ["MONTH"] and args["top_n"] == 5
+
+
+def test_longer_cue_wins_over_its_prefix():
+    assert _call_for("gp by customer office")["group_by"] == ["CUSTOMER_TEAM_NAME"]
+    assert _call_for("gp by customer")["group_by"] == ["CUST_NM"]
+
+
+def test_by_port_by_month_emits_both_in_text_order():
+    assert _call_for("and by port by month")["group_by"] == ["LOC_NM", "MONTH"]
+
+
+def test_group_by_cue_uses_the_carried_customer_when_none_is_resolved_this_turn():
+    args = _call_for("then by port", slots=ConversationSlots(customer="Northstar Lines"))
+    assert args["filters"] == [{"column": "CUST_NM", "values": ["Northstar Lines"]}]
+    assert args["group_by"] == ["LOC_NM"]
+
+
+def test_by_customer_cue_does_not_filter_on_the_carried_customer():
+    """A "by customer" breakdown filtered to the carried customer is a
+    one-row table; the carried customer stays off when CUST_NM is a cue."""
+    slots = ConversationSlots(customer="Northstar Lines")
+    args = _call_for("break that down by customer", slots=slots)
+    assert "filters" not in args
+    assert args["group_by"] == ["CUST_NM"]
+
+
+def test_without_a_cue_the_carried_customer_is_still_ignored():
+    args = _call_for("gp this period", slots=ConversationSlots(customer="Northstar Lines"))
+    assert "filters" not in args
+
+
+def test_share_cue_with_a_carried_office_emits_share_of_total_on_that_column():
+    slots = ConversationSlots(
+        customer="Northstar Lines", office_column="CUSTOMER_TEAM_NAME", office_value="Rotterdam"
+    )
+    args = _call_for("how much of my GP is of the total account GP", slots=slots)
+    assert args["share_of_total"] == ["CUSTOMER_TEAM_NAME"]
+    assert args["filters"] == [{"column": "CUST_NM", "values": ["Northstar Lines"]}]
+    assert "group_by" not in args and "compare_period" not in args
+
+
+def test_share_cue_without_a_carried_office_is_a_plain_total():
+    args = _call_for("how much of my GP is that")
+    assert "share_of_total" not in args
+
+
+def test_multi_column_cue_drops_a_resolved_compare_period():
+    parsed = _parsed(period_a=_PERIOD_A, period_b=_PERIOD_B)
+    args = _call_for("by port by month", parsed=parsed)
+    assert args["group_by"] == ["LOC_NM", "MONTH"] and "compare_period" not in args
+    single = _call_for("by port", parsed=parsed)
+    assert single["group_by"] == ["LOC_NM"] and "compare_period" in single
+
+
+def test_dev_router_bucket_names_match_the_builder():
+    assert set(dev_router._BUCKET_NAMES) == set(TIME_BUCKETS)

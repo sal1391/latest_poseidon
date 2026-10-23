@@ -30,6 +30,13 @@ as the LAST section of ``system`` (doc 03 section 3's fixed assembly order;
 below is pinning a contract, not guessing at another module's private
 implementation detail.
 
+Phase 17 PR B adds one more anchored line to that list:
+``_CARRIED_OFFICE_RE`` reads ``Carried office: <COL> = <value>. ...``
+(``prompts.py``'s carried-office line, the ``office_column``/
+``office_value`` slots), keeping only the column; the lazy value stops at
+the first ``". "``, which is where the rendered line's instruction text
+begins.
+
 The hints gap (disclosed; see the task report for the full writeup). The
 phase-6 plan's behavior table gates the tool-call case on "hints lead with
 data_qa.metric_query AND a resolved period". ``ParsedTurn.hints`` (the
@@ -376,15 +383,40 @@ there is no code for it here):
     (the ``Resolved port:``/``Resolved customer:`` lines -- THIS turn's
     fresh parse, not the carried ``Carried port:``/``Carried customer:``
     slot lines) each add their own filter, customer first. A resolved
-    compare period (``Compare period:``) adds ``compare_period`` -- and,
-    since ``Args`` itself rejects ``group_by`` combined with
-    ``compare_period`` (its own ``_reject_breakdown_with_compare``
-    validator), a compare period wins over a "top" mention when both are
-    present (disclosed judgment call -- the plan does not name this
-    conflict; a resolved compare period is a stronger, structurally-parsed
-    signal than a lexical cue on the message text). The tool call id is
+    compare period (``Compare period:``) adds ``compare_period``, and it
+    wins over a "top" mention when both are present (disclosed judgment
+    call -- the plan does not name this conflict; a resolved compare period
+    is a stronger, structurally-parsed signal than a lexical cue on the
+    message text). ``Args`` itself allows a compare with a single plain
+    ``group_by``; the skill refuses a compare on a multi-column or bucketed
+    breakdown. The tool call id is
     always ``"dev-1"``: this case never emits more than one call, so
     per-invoke-sequence numbering never has occasion to reach ``"dev-2"``.
+
+    PR B cues (Phase 17 PR B, owner ruling 2: the stub-mode browser gate
+    must route offline). Read off the last user text, casefolded:
+    - Group-by cues (:data:`_GROUP_BY_CUES`, longest phrase first so "by
+      customer office" never reads as "by customer"): every match in text
+      order, deduplicated, at most three -> ``group_by=[...]``/``top_n=5``.
+      A resolved compare period is kept only when the list is ONE plain
+      dimension (no MONTH/QUARTER/YEAR bucket); the skill refuses a
+      compare on a multi-column or bucketed breakdown, so it is dropped
+      otherwise. Cues replace the "top" rule; without cues it stands.
+    - A share cue (:data:`_SHARE_CUE_RE`: how much of / share of / percent
+      of / portion of / makes up / % of) AND a ``Carried office:`` line ->
+      ``share_of_total=[<carried office column>]`` and nothing else: no
+      ``group_by``, ``top_n`` or ``compare_period`` (``Args`` rejects
+      share with either). A share cue with no carried office is ignored
+      (a plain total).
+    - When a group-by cue or an effective share cue is present, no customer
+      is resolved THIS turn, and a ``Carried customer:`` line exists, the
+      carried customer becomes the first filter (``CUST_NM``), ahead of a
+      resolved port. Without a cue the carried customer is still ignored,
+      exactly as above. A ``CUST_NM`` cue ("by customer") never takes the
+      carried customer as a filter: a breakdown by customer filtered to one
+      customer is a one-row table (a customer resolved THIS turn still
+      applies).
+    Without any cue nothing else in this table moves.
 (b2) (Task 4) Case (b) declined (hints do not permit metric_query), hints
     instead LEAD (tie-inclusive since Task 5 -- see "Task 5 CLOSURE" above)
     with ``research.web_research``, AND a customer or port is known,
@@ -530,6 +562,11 @@ _COMPARE_PERIOD_RE = re.compile(
 # must never be mistaken for a differently-prefixed line sharing a substring.
 _CARRIED_CUSTOMER_RE = re.compile(r"^Carried customer: (?P<value>.+)$", re.MULTILINE)
 _CARRIED_PORT_RE = re.compile(r"^Carried port: (?P<value>.+)$", re.MULTILINE)
+# Phase 17 PR B: prompts.py renders "Carried office: <COL> = <value>. <instruction
+# text>" on one line; the lazy value stops at the first ". ".
+_CARRIED_OFFICE_RE = re.compile(
+    r"^Carried office: (?P<column>\w+) = (?P<value>.+?)\. ", re.MULTILINE
+)
 
 # Anchored to the WHOLE pinned line format `prompts.py`'s new `_render_hints`
 # produces ("Skill hints: <id> (<score>), <id> (<score>), ..."), same
@@ -561,6 +598,31 @@ _TOP_WORD_RE = re.compile(r"\btop\b")
 # docstring's opening contract paragraph).
 _BRIEF_WORD_RE = re.compile(r"\b(brief|report|profile|overview)\b")
 
+# Phase 17 PR B (owner ruling: the stub-mode browser gate must route offline).
+# Longest phrase first so "by customer office" never reads as "by customer".
+_GROUP_BY_CUES: tuple[tuple[str, str], ...] = (
+    ("by customer office", "CUSTOMER_TEAM_NAME"),
+    ("by supplier office", "PRIMARY_SUPPLY_TEAM_OFFICE"),
+    ("by deal class", "DEAL_CLASSIFICATION_TRADE_CUT"),
+    ("by ship type", "VESSEL_DASHBOARD_SHIPTYPE_GRP"),
+    ("by customer", "CUST_NM"),
+    ("by port", "LOC_NM"),
+    ("by supplier", "SUPPLIER_NM"),
+    ("by month", "MONTH"),
+    ("by quarter", "QUARTER"),
+    ("by year", "YEAR"),
+)
+_GROUP_BY_CUE_RE = re.compile(
+    r"\b(" + "|".join(re.escape(phrase) for phrase, _ in _GROUP_BY_CUES) + r")\b"
+)
+_GROUP_BY_BY_PHRASE = dict(_GROUP_BY_CUES)
+_SHARE_CUE_RE = re.compile(r"\b(how much of|share of|percent of|portion of|makes up)\b|% of")
+# Spelled here rather than imported (this router imports no builder module);
+# pinned equal to query_builder.TIME_BUCKETS by
+# test_dev_router_bucket_names_match_the_builder.
+_BUCKET_NAMES = ("MONTH", "QUARTER", "YEAR")
+_MAX_GROUP_BY = 3
+
 # Task 4: read off the toolResult digest text a research.web_research
 # dispatch produced -- loop.py's own tool_result_digest renders this
 # skill's "Results: {n}" proof line (tools/format_parts.py) verbatim into
@@ -590,7 +652,8 @@ class _ParsedState:
     ``hints_permit_dispatch`` fields are computed by the SAME
     :func:`_hints_lead` helper against the SAME parsed hint-entry tuple, so
     the four gates can never disagree about what the hints line's maximum
-    score is.
+    score is. ``carried_office_column`` (Phase 17 PR B) is the column off
+    the ``Carried office:`` line, read by the share cue.
     """
 
     customer: str | None
@@ -603,6 +666,7 @@ class _ParsedState:
     hints_lead_new_prospect_brief: bool
     carried_customer: str | None
     carried_port: str | None
+    carried_office_column: str | None
 
 
 class DevDeterministicRouter:
@@ -719,6 +783,7 @@ def _parse_state(system: str) -> _ParsedState:
     hint_entries = _parse_hint_entries(block)
     carried_customer_match = _CARRIED_CUSTOMER_RE.search(block)
     carried_port_match = _CARRIED_PORT_RE.search(block)
+    carried_office_match = _CARRIED_OFFICE_RE.search(block)
     return _ParsedState(
         customer=customer_match.group("value") if customer_match else None,
         port=port_match.group("value") if port_match else None,
@@ -746,6 +811,9 @@ def _parse_state(system: str) -> _ParsedState:
         hints_lead_new_prospect_brief=_hints_lead(hint_entries, _NEW_PROSPECT_BRIEF_SKILL_ID),
         carried_customer=carried_customer_match.group("value") if carried_customer_match else None,
         carried_port=carried_port_match.group("value") if carried_port_match else None,
+        carried_office_column=carried_office_match.group("column")
+        if carried_office_match
+        else None,
     )
 
 
@@ -856,6 +924,27 @@ def _mentions_top(messages: list[dict]) -> bool:
     return text is not None and _TOP_WORD_RE.search(text.casefold()) is not None
 
 
+def _group_by_cues(messages: list[dict]) -> list[str]:
+    """Phase 17 PR B: the columns the last user text's "by <x>" cues name,
+    in text order, deduplicated, at most :data:`_MAX_GROUP_BY`."""
+    text = _last_user_text(messages)
+    if text is None:
+        return []
+    columns: list[str] = []
+    for match in _GROUP_BY_CUE_RE.finditer(text.casefold()):
+        column = _GROUP_BY_BY_PHRASE[match.group(1)]
+        if column not in columns:
+            columns.append(column)
+    return columns[:_MAX_GROUP_BY]
+
+
+def _mentions_share(messages: list[dict]) -> bool:
+    """Phase 17 PR B: whether the last user text asks for a share of a
+    total (:data:`_SHARE_CUE_RE`)."""
+    text = _last_user_text(messages)
+    return text is not None and _SHARE_CUE_RE.search(text.casefold()) is not None
+
+
 def _mentions_brief_word(messages: list[dict]) -> bool:
     """Task 5: whether the LAST user message says brief/report/profile/
     overview -- the brief branch's own required signal, checked ALONGSIDE
@@ -877,18 +966,35 @@ def _metric_query_call(parsed_state: _ParsedState, messages: list[dict]) -> LLMR
         "period": {"start": start, "end": end},
     }
 
+    # PR B cues -- see the module docstring's case (b), "PR B cues".
+    cues = _group_by_cues(messages)
+    share = _mentions_share(messages) and parsed_state.carried_office_column is not None
+
     filters = []
     if parsed_state.customer is not None:
         filters.append({"column": _CUST_NM, "values": [parsed_state.customer]})
+    elif (
+        (cues or share)
+        and _CUST_NM not in cues
+        and parsed_state.carried_customer is not None
+    ):
+        filters.append({"column": _CUST_NM, "values": [parsed_state.carried_customer]})
     if parsed_state.port is not None:
         filters.append({"column": _LOC_NM, "values": [parsed_state.port]})
     if filters:
         arguments["filters"] = filters
 
-    if parsed_state.compare_period is not None:
+    if share:
+        arguments["share_of_total"] = [parsed_state.carried_office_column]
+    elif cues:
+        arguments["group_by"] = cues
+        arguments["top_n"] = _GROUP_BY_TOP_N
+        single_plain = len(cues) == 1 and cues[0] not in _BUCKET_NAMES
+        if parsed_state.compare_period is not None and single_plain:
+            arguments["compare_period"] = _compare_arg(parsed_state.compare_period)
+    elif parsed_state.compare_period is not None:
         # Wins over a "top" mention -- see the module docstring's case (b).
-        compare_start, compare_end = parsed_state.compare_period
-        arguments["compare_period"] = {"start": compare_start, "end": compare_end}
+        arguments["compare_period"] = _compare_arg(parsed_state.compare_period)
     elif _mentions_top(messages):
         arguments["group_by"] = _CUST_NM
         arguments["top_n"] = _GROUP_BY_TOP_N
@@ -897,6 +1003,11 @@ def _metric_query_call(parsed_state: _ParsedState, messages: list[dict]) -> LLMR
     return LLMResponse(
         text="", tool_calls=(call,), stop_reason="tool_use", input_tokens=0, output_tokens=0
     )
+
+
+def _compare_arg(compare_period: tuple[str, str]) -> dict[str, str]:
+    compare_start, compare_end = compare_period
+    return {"start": compare_start, "end": compare_end}
 
 
 def _research_subject(parsed_state: _ParsedState) -> str | None:

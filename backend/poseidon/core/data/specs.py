@@ -65,6 +65,7 @@ class BreakdownQuerySpec:
     top_n: int = 5
     filters: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     scope_value: str | None = None  # see MetricQuerySpec.scope_value
+    order: str = "desc"  # "desc" | "asc"; validated by the builder
 
 
 @dataclass(frozen=True)

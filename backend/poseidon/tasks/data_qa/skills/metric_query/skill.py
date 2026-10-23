@@ -10,19 +10,33 @@ from dataclasses import replace
 from typing import TypeVar, cast
 
 from poseidon.core.data.query_builder import SpecValidationError, resolve_row_scope_value
-from poseidon.core.data.specs import BreakdownQuerySpec, MetricQuerySpec
+from poseidon.core.data.specs import BreakdownQuerySpec, FrameQuerySpec, MetricQuerySpec
 from poseidon.core.identity import UserContext
 from poseidon.core.ontology.loader import get_ontology
 from poseidon.core.skills.context import ConversationSlots, SkillContext
 from poseidon.core.skills.result import SkillResult, problem
 
 from .schema import Args
-from .tools.build_spec import build_spec
+from .tools.build_spec import build_spec, is_frame_path
 from .tools.compare_breakdown import WINDOW_TOP_N, compare_breakdown_parts
 from .tools.format_parts import format_parts
+from .tools.frame_breakdown import (
+    RATIO_COMPONENTS,
+    frame_breakdown_parts,
+    ranks_by_period_ratio,
+)
+from .tools.share_of_total import denominator_spec, share_parts
 
-Spec = MetricQuerySpec | BreakdownQuerySpec
-_S = TypeVar("_S", MetricQuerySpec, BreakdownQuerySpec)
+Spec = MetricQuerySpec | BreakdownQuerySpec | FrameQuerySpec
+_S = TypeVar("_S", MetricQuerySpec, BreakdownQuerySpec, FrameQuerySpec)
+
+WIN_RATE_FRAME_TEXT = (
+    "WIN_RATE cannot be broken down by more than one column or by a time bucket; "
+    "ask for NUM_WON and NUM_INQUIRIES instead"
+)
+COMPARE_MULTI_TEXT = (
+    "compare one dimension at a time: compare_period needs a single plain group_by column"
+)
 
 
 def _carried_office(state: ConversationSlots) -> tuple[str, str] | None:
@@ -80,6 +94,24 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
     ``WINDOW_TOP_N`` rows and merge into one comparison table per metric
     (``tools/compare_breakdown.py``).
 
+    FRAME PATH (Phase 17 PR B). A ``group_by`` of two or more columns, or
+    with a MONTH/QUARTER/YEAR bucket (:func:`is_frame_path`), runs ONE frame
+    query and is ordered and capped in Python (``tools/frame_breakdown.py``).
+    Two combinations are refused with a 422 BEFORE any query runs:
+    ``WIN_RATE`` on the frame path (a ratio does not roll up; the counts do)
+    and ``compare_period`` with a frame ``group_by`` (compare one dimension
+    at a time).
+
+    SHARE OF TOTAL (Phase 17 PR B; reports codex review C04). With
+    ``args.share_of_total`` set (``Args`` forbids it with ``group_by`` and
+    ``compare_period``) the order is fixed: the SELECTION spec is built
+    through ``scoped`` - row scope and carried-office stamp included - and
+    the TOTAL is derived from it by REMOVING the named columns from its
+    effective filters (``tools/share_of_total.py``). The total is never
+    restamped, so the carried office can only sit on the numerator, and it
+    keeps the selection's ``scope_value``. A named column that is not among
+    the effective filters is a 422 before any query runs.
+
     OFFICE SCOPE (Phase 17 A2). Under ``args.scope == "office"`` (the
     default) with an office carried in ``ctx.state``, every spec this run
     builds - both windows of any comparison - carries that office as a
@@ -113,6 +145,12 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
     without an identified caller raises ``SpecValidationError`` and lands in
     the 422 below rather than answering with rows the caller cannot see.
     """
+    frame = is_frame_path(args.group_by)
+    if frame and "WIN_RATE" in args.metrics:
+        return SkillResult(ok=False, error=problem(422, "invalid query", WIN_RATE_FRAME_TEXT))
+    if frame and args.compare_period is not None:
+        return SkillResult(ok=False, error=problem(422, "invalid query", COMPARE_MULTI_TEXT))
+
     stamp = args.scope == "office" and _office_applies(args.entity, ctx.state)
     try:
         scope_value = resolve_row_scope_value(args.entity, cast(UserContext | None, ctx.user))
@@ -123,7 +161,11 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
             spec = replace(build_spec(spec_args), scope_value=scope_value)
             return _stamp_office(spec, ctx.state) if stamp else spec
 
-        if args.group_by is not None and args.compare_period is not None:
+        if args.share_of_total:
+            parts, proof = _share(ctx, args, scoped)
+        elif frame:
+            parts, proof = _frame(ctx, args, scoped)
+        elif args.group_by is not None and args.compare_period is not None:
             parts, proof = _compare_breakdown(ctx, args, scoped)
         else:
             parts, proof = _single(ctx, args, scoped)
@@ -133,13 +175,68 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
     return SkillResult(ok=True, parts=parts, proof=[*proof, *_office_proof(args, ctx.state)])
 
 
+def _share(
+    ctx: SkillContext, args: Args, scoped: Callable[[Args], Spec]
+) -> tuple[list[dict], list[str]]:
+    """C04 order: the stamped selection first, then the total derived from
+    it; never restamped."""
+    selection = scoped(args)
+    if not isinstance(selection, MetricQuerySpec):
+        # Args forbids group_by with share_of_total, so build_spec returns a
+        # MetricQuerySpec - a python -O-proof guard, not a reachable case.
+        raise TypeError("share_of_total without group_by must build a MetricQuerySpec")
+    total = denominator_spec(selection, args.share_of_total)
+    return share_parts(
+        selection,
+        ctx.data.run_metric_query(selection),
+        total,
+        ctx.data.run_metric_query(total),
+        ctx.settings,
+        args.share_of_total,
+    )
+
+
+def _frame(
+    ctx: SkillContext, args: Args, scoped: Callable[[Args], Spec]
+) -> tuple[list[dict], list[str]]:
+    """Multi-column or bucketed breakdown: one frame query, ordered and
+    capped in Python by ``frame_breakdown_parts``.
+
+    A bucketed frame ranked by a ratio metric (MARGIN) also fetches the
+    ratio's components (GP, VOLUME) so keys rank by the recomputed period
+    ratio. The query spec is derived from the already-scoped spec, so the
+    row scope and office stamp carry over, and only the requested metrics
+    render (``tools/frame_breakdown.py``)."""
+    spec = scoped(args)
+    if not isinstance(spec, FrameQuerySpec):
+        # is_frame_path held, so build_spec returns a frame - a python
+        # -O-proof guard against that mapping ever breaking.
+        raise TypeError("build_spec on the frame path did not return a FrameQuerySpec")
+    order_by = args.order_by or args.metrics[0]
+    query_spec = spec
+    if ranks_by_period_ratio(spec.group_by, order_by):
+        metrics = tuple(dict.fromkeys([*spec.metrics, *RATIO_COMPONENTS[order_by]]))
+        query_spec = replace(spec, metrics=metrics)
+    return frame_breakdown_parts(
+        query_spec,
+        ctx.data.run_frame_query(query_spec),
+        ctx.settings,
+        order_by=order_by,
+        order=args.order,
+        top_n=args.top_n,
+        display_metrics=spec.metrics,
+    )
+
+
 def _compare_breakdown(
     ctx: SkillContext, args: Args, scoped: Callable[[Args], Spec]
 ) -> tuple[list[dict], list[str]]:
     """Breakdown with comparison: both windows at ``WINDOW_TOP_N`` rows (plan
     ruling 7), each scoped and stamped, merged by ``compare_breakdown_parts``
-    and capped at the router's own ``top_n``."""
-    wide = args.model_copy(update={"top_n": WINDOW_TOP_N})
+    and capped at the router's own ``top_n``. The merge orders by absolute
+    change (D73), so ``order``/``order_by`` do not reach the windows: each
+    fetches its top ``WINDOW_TOP_N`` by the first metric, descending."""
+    wide = args.model_copy(update={"top_n": WINDOW_TOP_N, "order": "desc", "order_by": None})
     spec_current = scoped(wide)
     spec_prior = scoped(wide.model_copy(update={"period": args.compare_period}))
     if not isinstance(spec_current, BreakdownQuerySpec) or not isinstance(

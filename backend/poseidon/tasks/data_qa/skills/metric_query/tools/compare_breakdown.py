@@ -20,8 +20,10 @@ the A1 rule, reused rather than reimplemented. ``merge_breakdowns`` derives
 MARGIN from the summed GP and VOLUME itself.
 
 The proof reuses ``format_parts``' header (entity, backend, both windows,
-filters, group-by) and ends with ``Rows: N (merged over the top 50 per
-window)``, so a reader knows the union was taken over capped windows.
+filters, group-by) but rewords its last line to ``Group by: X (top N
+shown; merged over the top 50 per window)`` so the cap the table was cut to
+is named, and ends with ``Rows: N (merged over the top 50 per window)``, so a
+reader knows the union was taken over capped windows.
 """
 
 from poseidon.core.analytics import mom
@@ -83,6 +85,10 @@ def compare_breakdown_parts(
     block - see the module docstring for the merge, order and Driver rules.
     """
     proof = _header_proof(spec_current, settings, spec_prior.period)
+    proof[-1] = (
+        f"Group by: {spec_current.group_by} (top {top_n} shown; "
+        f"merged over the top {spec_current.top_n} per window)"
+    )
     if not result_current.rows and not result_prior.rows:
         return [text_part(NO_DATA_TEXT)], [*proof, EMPTY_RESULT_PROOF]
 

@@ -18,22 +18,53 @@ the spec-shape tests it is really about.
 import datetime as dt
 from dataclasses import replace
 
+import pytest
+from pydantic import ValidationError
+
 from poseidon.core.config import Settings
-from poseidon.core.data.client import BreakdownResult, BreakdownRow, MetricResult, PeriodRange
-from poseidon.core.data.specs import BreakdownQuerySpec, MetricQuerySpec, PeriodWindow
+from poseidon.core.data.client import (
+    BreakdownResult,
+    BreakdownRow,
+    FrameResult,
+    FrameRow,
+    MetricResult,
+    PeriodRange,
+)
+from poseidon.core.data.query_builder import TIME_BUCKETS
+from poseidon.core.data.specs import (
+    BreakdownQuerySpec,
+    FrameQuerySpec,
+    MetricQuerySpec,
+    PeriodWindow,
+)
 from poseidon.core.identity import UserContext
 from poseidon.core.skills.context import ConversationSlots, SkillContext
+from poseidon.core.skills.result import text_part
 from poseidon.tasks._shared.fragments import DimFilter, PeriodArg
 from poseidon.tasks.data_qa.skills.metric_query.schema import Args
 from poseidon.tasks.data_qa.skills.metric_query.skill import run
-from poseidon.tasks.data_qa.skills.metric_query.tools.build_spec import build_spec
+from poseidon.tasks.data_qa.skills.metric_query.tools.build_spec import build_spec, is_frame_path
 from poseidon.tasks.data_qa.skills.metric_query.tools.compare_breakdown import (
     compare_breakdown_parts,
 )
-from poseidon.tasks.data_qa.skills.metric_query.tools.format_parts import format_parts
+from poseidon.tasks.data_qa.skills.metric_query.tools.format_parts import (
+    EMPTY_RESULT_PROOF,
+    NO_DATA_TEXT,
+    format_parts,
+)
+from poseidon.tasks.data_qa.skills.metric_query.tools.frame_breakdown import (
+    BUCKET_HEADERS,
+    bucket_label,
+    frame_breakdown_parts,
+)
+from poseidon.tasks.data_qa.skills.metric_query.tools.share_of_total import (
+    denominator_spec,
+    share_parts,
+)
 
 SALES = "MARINE_SALES_PLANNING_V"
 APRIL = PeriodWindow(dt.date(2026, 4, 1), dt.date(2026, 5, 1))
+_APRIL_ARG = PeriodArg(start=dt.date(2026, 4, 1), end=dt.date(2026, 5, 1))
 PRIOR_APRIL = PeriodWindow(dt.date(2025, 4, 1), dt.date(2025, 5, 1))
 
 # Present-and-non-blank is all Settings asks of these two fields; nothing in
@@ -146,7 +177,7 @@ def test_args_accepts_breakdown_combined_with_compare_period():
         compare_period=PeriodArg(start=dt.date(2025, 4, 1), end=dt.date(2025, 5, 1)),
     )
 
-    assert args.group_by == "CUST_NM"
+    assert args.group_by == ["CUST_NM"]
     assert args.compare_period is not None
     assert args.scope == "office"
 
@@ -439,11 +470,17 @@ class _RecordingDataClient:
     for ``format_parts`` to render a "No data" part, which is all these tests
     need past the spec itself."""
 
-    def __init__(self, breakdown_rows: list[list[BreakdownRow]] | None = None) -> None:
+    def __init__(
+        self,
+        breakdown_rows: list[list[BreakdownRow]] | None = None,
+        frame_rows: list[list[FrameRow]] | None = None,
+    ) -> None:
         self.metric_specs: list[MetricQuerySpec] = []
         self.breakdown_specs: list[BreakdownQuerySpec] = []
-        # One row list per breakdown call, in call order; empty when unset.
+        self.frame_specs: list[FrameQuerySpec] = []
+        # One row list per breakdown / frame call, in call order; empty when unset.
         self._breakdown_rows = list(breakdown_rows or [])
+        self._frame_rows = list(frame_rows or [])
 
     def list_dimension_values(self, *args: object, **kwargs: object) -> list[str]:
         raise AssertionError("metric_query must never list dimension values")
@@ -461,6 +498,11 @@ class _RecordingDataClient:
         self.breakdown_specs.append(spec)
         rows = self._breakdown_rows.pop(0) if self._breakdown_rows else []
         return BreakdownResult(entity=spec.entity, group_by=spec.group_by, rows=rows)
+
+    def run_frame_query(self, spec: FrameQuerySpec) -> FrameResult:
+        self.frame_specs.append(spec)
+        rows = self._frame_rows.pop(0) if self._frame_rows else []
+        return FrameResult(entity=spec.entity, group_by=tuple(spec.group_by), rows=rows)
 
 
 def _ctx(
@@ -611,9 +653,11 @@ def test_compare_breakdown_parts_shape_and_driver():
         "Period: 2026-04-01..2026-05-01",
         "Compare: 2025-04-01..2025-05-01",
         "Filters: none",
-        "Group by: CUST_NM (top 50)",
+        "Group by: CUST_NM (top 5 shown; merged over the top 50 per window)",
         "Rows: 3 (merged over the top 50 per window)",
     ]
+    assert "Group by: CUST_NM (top 5 shown; merged over the top 50 per window)" in proof
+    assert not any(line == "Group by: CUST_NM (top 50)" for line in proof)
 
 
 def test_compare_breakdown_parts_caps_at_top_n_and_omits_driver_without_volume():
@@ -762,3 +806,474 @@ def test_carried_office_is_not_stamped_on_an_entity_without_the_column():
         "Office scope: CUSTOMER_TEAM_NAME is not a dimension of W_MARINE_GL_SOURCE_AI; "
         "carried office not applied"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 17 PR B Task 1: Args growth and the path rule
+# ---------------------------------------------------------------------------
+
+
+def test_args_group_by_string_is_wrapped_into_a_list():
+    args = Args(metrics=["GP"], period=_APRIL_ARG, group_by="CUST_NM")
+    assert args.group_by == ["CUST_NM"]
+
+
+def test_args_group_by_accepts_up_to_three_entries_and_one_bucket():
+    args = Args(metrics=["GP"], period=_APRIL_ARG, group_by=["LOC_NM", "SUPPLIER_NM", "MONTH"])
+    assert args.group_by == ["LOC_NM", "SUPPLIER_NM", "MONTH"]
+
+
+@pytest.mark.parametrize(
+    "group_by, fragment",
+    [
+        ([], "one to three"),
+        (["A", "B", "C", "D"], "one to three"),
+        (["LOC_NM", "LOC_NM"], "repeats"),
+        (["MONTH", "YEAR"], "at most one time bucket"),
+    ],
+)
+def test_args_group_by_rejects_bad_shapes(group_by, fragment):
+    with pytest.raises(ValidationError) as excinfo:
+        Args(metrics=["GP"], period=_APRIL_ARG, group_by=group_by)
+    assert fragment in str(excinfo.value)
+
+
+def test_args_order_defaults_and_accepts_asc():
+    args = Args(metrics=["GP", "VOLUME"], period=_APRIL_ARG)
+    assert (args.order_by, args.order) == (None, "desc")
+    assert Args(metrics=["GP"], period=_APRIL_ARG, order="asc").order == "asc"
+
+
+def test_args_order_by_must_be_a_requested_metric():
+    with pytest.raises(ValidationError) as excinfo:
+        Args(metrics=["GP"], period=_APRIL_ARG, order_by="VOLUME")
+    assert "order_by" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("extra", [{"group_by": "CUST_NM"}, {"compare_period": _PRIOR_ARG}])
+def test_args_share_of_total_cannot_combine_with_group_by_or_compare(extra):
+    with pytest.raises(ValidationError) as excinfo:
+        Args(metrics=["GP"], period=_APRIL_ARG, share_of_total=["CUSTOMER_TEAM_NAME"], **extra)
+    assert "share_of_total" in str(excinfo.value)
+
+
+def test_is_frame_path_rule():
+    assert is_frame_path(None) is False
+    assert is_frame_path(["CUST_NM"]) is False
+    assert is_frame_path(["MONTH"]) is True
+    assert is_frame_path(["LOC_NM", "MONTH"]) is True
+    assert is_frame_path(["LOC_NM", "SUPPLIER_NM"]) is True
+
+
+def test_build_spec_single_dimension_keeps_the_breakdown_spec_with_order():
+    spec = build_spec(
+        Args(
+            metrics=["GP", "VOLUME"],
+            period=_APRIL_ARG,
+            group_by=["LOC_NM"],
+            order_by="VOLUME",
+            order="asc",
+        )
+    )
+    assert isinstance(spec, BreakdownQuerySpec)
+    assert (spec.group_by, spec.order_by_metric, spec.order) == ("LOC_NM", "VOLUME", "asc")
+
+
+def test_build_spec_frame_path_returns_a_frame_spec_in_group_by_order():
+    spec = build_spec(Args(metrics=["GP"], period=_APRIL_ARG, group_by=["LOC_NM", "MONTH"]))
+    assert isinstance(spec, FrameQuerySpec)
+    assert spec.group_by == ("LOC_NM", "MONTH")
+    assert set(TIME_BUCKETS) == {"MONTH", "QUARTER", "YEAR"}
+
+
+# ---------------------------------------------------------------------------
+# frame_breakdown_parts and skill.run on the frame path
+# ---------------------------------------------------------------------------
+
+_YEAR_2025 = PeriodWindow(dt.date(2025, 1, 1), dt.date(2026, 1, 1))
+
+
+def _frame(group_by, rows):
+    spec = FrameQuerySpec(
+        entity=SALES, metrics=("GP", "VOLUME"), period=_YEAR_2025, group_by=group_by
+    )
+    return spec, FrameResult(
+        entity=spec.entity, group_by=group_by, rows=[FrameRow(k, v) for k, v in rows]
+    )
+
+
+def test_bucket_labels():
+    assert bucket_label("MONTH", "2025-01-01") == "Jan 2025"
+    assert bucket_label("QUARTER", "2025-04-01") == "Q2 2025"
+    assert bucket_label("YEAR", "2025-01-01") == "2025"
+    assert BUCKET_HEADERS == {"MONTH": "Month", "QUARTER": "Quarter", "YEAR": "Year"}
+
+
+def test_frame_breakdown_omits_missing_buckets_and_ranks_by_period_total():
+    spec, result = _frame(
+        ("LOC_NM", "MONTH"),
+        [
+            (("Singapore", "2025-02-01"), {"GP": 50.0, "VOLUME": 5.0}),
+            (("Rotterdam", "2025-01-01"), {"GP": 40.0, "VOLUME": 4.0}),
+            (("Rotterdam", "2025-02-01"), {"GP": 30.0, "VOLUME": 3.0}),
+            (("Houston", "2025-01-01"), {"GP": 10.0, "VOLUME": 1.0}),
+        ],
+    )
+    parts, proof = frame_breakdown_parts(
+        spec, result, SETTINGS, order_by="GP", order="desc", top_n=2
+    )
+    (table,) = parts
+    assert table["payload"]["columns"] == ["Month", "Port", "Gross Profit", "Volume"]
+    # Rotterdam (70 over the year) outranks Singapore (50); Houston is cut;
+    # no zero row for Singapore in January.
+    assert table["payload"]["rows"] == [
+        ["Jan 2025", "Rotterdam", 40, 4],
+        ["Feb 2025", "Rotterdam", 30, 3],
+        ["Feb 2025", "Singapore", 50, 5],
+    ]
+    assert proof[-3:] == [
+        "Group by: LOC_NM, MONTH (top 2 keys; every bucket)",
+        "Order: GP desc",
+        "Rows: 3",
+    ]
+
+
+def test_frame_breakdown_month_only_shows_every_month_chronologically():
+    spec, result = _frame(
+        ("MONTH",),
+        [
+            (("2025-03-01",), {"GP": 3.0, "VOLUME": 1.0}),
+            (("2025-01-01",), {"GP": 1.0, "VOLUME": 1.0}),
+        ],
+    )
+    parts, proof = frame_breakdown_parts(
+        spec, result, SETTINGS, order_by="GP", order="desc", top_n=5
+    )
+    assert [row[0] for row in parts[0]["payload"]["rows"]] == ["Jan 2025", "Mar 2025"]
+    assert "Group by: MONTH (top 5 keys; every bucket)" in proof
+
+
+def test_frame_breakdown_two_plain_columns_orders_asc_and_caps_rows():
+    spec, result = _frame(
+        ("LOC_NM", "SUPPLIER_NM"),
+        [
+            (("Singapore", "Vitol"), {"GP": 50.0, "VOLUME": 5.0}),
+            (("Rotterdam", "Shell"), {"GP": 40.0, "VOLUME": 4.0}),
+            (("Houston", "BP"), {"GP": 10.0, "VOLUME": 1.0}),
+        ],
+    )
+    parts, proof = frame_breakdown_parts(
+        spec, result, SETTINGS, order_by="GP", order="asc", top_n=2
+    )
+    assert [row[:2] for row in parts[0]["payload"]["rows"]] == [
+        ["Houston", "BP"],
+        ["Rotterdam", "Shell"],
+    ]
+    assert "Group by: LOC_NM, SUPPLIER_NM (top 2)" in proof and "Order: GP asc" in proof
+
+
+def test_frame_breakdown_empty_is_no_data():
+    spec, result = _frame(("MONTH",), [])
+    parts, proof = frame_breakdown_parts(
+        spec, result, SETTINGS, order_by="GP", order="desc", top_n=5
+    )
+    assert parts == [text_part(NO_DATA_TEXT)] and proof[-1] == EMPTY_RESULT_PROOF
+
+
+def test_run_frame_path_queries_a_frame_and_stamps_the_office():
+    client = _RecordingDataClient(
+        frame_rows=[[FrameRow(("Rotterdam", "2026-04-01"), {"GP": 1.0})]]
+    )
+    res = run(_ctx(client, state=_ROTTERDAM), _args(metrics=["GP"], group_by=["LOC_NM", "MONTH"]))
+    assert res.ok is True
+    (spec,) = client.frame_specs
+    assert spec.filters == {"CUSTOMER_TEAM_NAME": ("Rotterdam",)}
+    assert res.proof[-1] == _STAMPED_LINE
+
+
+def test_run_refuses_win_rate_on_the_frame_path_before_querying():
+    client = _RecordingDataClient()
+    res = run(_ctx(client), _args(metrics=["WIN_RATE"], group_by=["MONTH"]))
+    assert res.ok is False and res.error["status"] == 422
+    assert (
+        "WIN_RATE cannot be broken down by more than one column or by a time bucket"
+        in res.error["detail"]
+    )
+    assert client.frame_specs == []
+
+
+def test_run_refuses_compare_with_a_multi_column_group_by():
+    client = _RecordingDataClient()
+    res = run(_ctx(client), _args(group_by=["LOC_NM", "MONTH"], compare_period=_PRIOR_ARG))
+    assert res.ok is False and "compare one dimension at a time" in res.error["detail"]
+    assert client.frame_specs == [] and client.breakdown_specs == []
+
+
+def test_run_single_column_asc_adds_an_order_line_and_default_adds_none():
+    row = BreakdownRow("Singapore", {"GP": 1.0, "VOLUME": 1.0})
+    asc = _RecordingDataClient(breakdown_rows=[[row]])
+    asc_res = run(_ctx(asc), _args(group_by=["LOC_NM"], order="asc"))
+    assert asc.breakdown_specs[0].order == "asc"
+    assert asc_res.proof[-2:] == ["Order: GP asc", "Rows: 1"]
+    default = _RecordingDataClient(breakdown_rows=[[row]])
+    res = run(_ctx(default), _args(group_by=["LOC_NM"]))
+    assert not any(line.startswith("Order:") for line in res.proof)
+
+
+
+def test_compare_windows_ignore_order_and_order_by():
+    """Final review Important 1: the windows always fetch the top 50 by the
+    first metric, descending; the merge orders by absolute change (D73), so
+    ``order``/``order_by`` must not reach the window queries."""
+    client = _RecordingDataClient(breakdown_rows=[[], []])
+    res = run(
+        _ctx(client),
+        _args(
+            metrics=["GP", "VOLUME"],
+            group_by=["CUST_NM"],
+            compare_period=_PRIOR_ARG,
+            order="asc",
+            order_by="VOLUME",
+        ),
+    )
+    assert res.ok is True, res.error
+    assert len(client.breakdown_specs) == 2
+    assert [spec.order for spec in client.breakdown_specs] == ["desc", "desc"]
+    assert [spec.order_by_metric for spec in client.breakdown_specs] == ["GP", "GP"]
+    assert [spec.top_n for spec in client.breakdown_specs] == [50, 50]
+
+
+def _margin_frame(rows):
+    spec = FrameQuerySpec(
+        entity=SALES,
+        metrics=("MARGIN", "GP", "VOLUME"),
+        period=_YEAR_2025,
+        group_by=("LOC_NM", "MONTH"),
+    )
+    return spec, FrameResult(
+        entity=spec.entity, group_by=spec.group_by, rows=[FrameRow(k, v) for k, v in rows]
+    )
+
+
+def test_frame_breakdown_ranks_a_ratio_metric_by_the_period_ratio():
+    """Final review Important 2: Rotterdam's two months of margin 10 would
+    sum to 20 and outrank Singapore's single 15; the period margin is
+    sum(GP)/sum(VOLUME) = 10 vs 15, so Singapore leads."""
+    spec, result = _margin_frame(
+        [
+            (("Rotterdam", "2025-01-01"), {"MARGIN": 10.0, "GP": 100.0, "VOLUME": 10.0}),
+            (("Rotterdam", "2025-02-01"), {"MARGIN": 10.0, "GP": 100.0, "VOLUME": 10.0}),
+            (("Singapore", "2025-02-01"), {"MARGIN": 15.0, "GP": 150.0, "VOLUME": 10.0}),
+        ]
+    )
+    parts, proof = frame_breakdown_parts(
+        spec,
+        result,
+        SETTINGS,
+        order_by="MARGIN",
+        order="desc",
+        top_n=1,
+        display_metrics=("MARGIN",),
+    )
+    (table,) = parts
+    assert table["payload"]["columns"] == ["Month", "Port", "Margin"]
+    assert table["payload"]["rows"] == [["Feb 2025", "Singapore", 15.0]]
+    assert proof[-3:] == [
+        "Group by: LOC_NM, MONTH (top 1 keys; every bucket)",
+        "Order: MARGIN desc (period ratio)",
+        "Rows: 1",
+    ]
+
+
+@pytest.mark.parametrize("order", ["desc", "asc"])
+def test_frame_breakdown_zero_volume_key_ranks_last_under_a_ratio_order(order):
+    spec, result = _margin_frame(
+        [
+            (("Houston", "2025-01-01"), {"MARGIN": None, "GP": 5.0, "VOLUME": 0.0}),
+            (("Antwerp", "2025-01-01"), {"MARGIN": None, "GP": None, "VOLUME": None}),
+            (("Rotterdam", "2025-01-01"), {"MARGIN": 10.0, "GP": 100.0, "VOLUME": 10.0}),
+            (("Singapore", "2025-01-01"), {"MARGIN": 15.0, "GP": 150.0, "VOLUME": 10.0}),
+        ]
+    )
+    parts, _ = frame_breakdown_parts(
+        spec,
+        result,
+        SETTINGS,
+        order_by="MARGIN",
+        order=order,
+        top_n=4,
+        display_metrics=("MARGIN",),
+    )
+    ports = [row[1] for row in parts[0]["payload"]["rows"]]
+    ranked = ["Singapore", "Rotterdam"] if order == "desc" else ["Rotterdam", "Singapore"]
+    # Unrankable keys come after every ranked key, ties broken by key.
+    assert ports == [*ranked, "Antwerp", "Houston"]
+
+
+def test_run_adds_gp_and_volume_to_a_bucketed_margin_frame_but_renders_only_margin():
+    client = _RecordingDataClient(
+        frame_rows=[
+            [
+                FrameRow(
+                    ("Rotterdam", "2026-04-01"), {"MARGIN": 10.0, "GP": 100.0, "VOLUME": 10.0}
+                )
+            ]
+        ]
+    )
+    res = run(
+        _ctx(client, state=_ROTTERDAM),
+        _args(metrics=["MARGIN"], group_by=["LOC_NM", "MONTH"]),
+    )
+    assert res.ok is True, res.error
+    (spec,) = client.frame_specs
+    assert spec.metrics == ("MARGIN", "GP", "VOLUME")
+    assert spec.filters == {"CUSTOMER_TEAM_NAME": ("Rotterdam",)}
+    assert res.parts[0]["payload"]["columns"] == ["Month", "Port", "Margin"]
+    assert res.parts[0]["payload"]["rows"] == [["Apr 2026", "Rotterdam", 10.0]]
+    assert "Order: MARGIN desc (period ratio)" in res.proof
+
+
+def test_run_bucketed_additive_frame_queries_only_the_requested_metrics():
+    client = _RecordingDataClient()
+    res = run(_ctx(client), _args(metrics=["GP"], group_by=["LOC_NM", "MONTH"]))
+    assert res.ok is True, res.error
+    assert client.frame_specs[0].metrics == ("GP",)
+    assert "Order: GP desc" in res.proof
+
+
+
+# ---------------------------------------------------------------------------
+# share_of_total in the C04 order (Phase 17 PR B Task 4)
+# ---------------------------------------------------------------------------
+
+
+class _ShareClient(_RecordingDataClient):
+    """Answers the selection and the total in call order."""
+
+    def __init__(self, values: list[dict[str, float | None]]):
+        super().__init__()
+        self._values = list(values)
+
+    def run_metric_query(self, spec: MetricQuerySpec) -> MetricResult:
+        self.metric_specs.append(spec)
+        return MetricResult(entity=spec.entity, period=spec.period, values=self._values.pop(0))
+
+
+def test_share_of_total_office_gp_20_of_book_100_is_20_percent_with_the_office_only_on_the_numerator():  # noqa: E501
+    client = _ShareClient([{"GP": 20.0}, {"GP": 100.0}])
+    args = _args(
+        metrics=["GP"],
+        filters=[DimFilter(column="CUST_NM", values=["Northstar Lines"])],
+        share_of_total=["CUSTOMER_TEAM_NAME"],
+    )
+    res = run(_ctx(client, state=_ROTTERDAM), args)
+    assert res.ok is True
+    numerator, denominator = client.metric_specs
+    assert numerator.filters == {
+        "CUST_NM": ("Northstar Lines",),
+        "CUSTOMER_TEAM_NAME": ("Rotterdam",),
+    }
+    assert denominator.filters == {"CUST_NM": ("Northstar Lines",)}
+    (table,) = res.parts
+    assert table["payload"]["columns"] == ["Metric", "Selection", "Total", "Share %"]
+    assert table["payload"]["rows"] == [["Gross Profit", 20, 100, 20.0]]
+    assert (
+        "Selection filters: CUST_NM IN (Northstar Lines) AND CUSTOMER_TEAM_NAME IN (Rotterdam)"
+        in res.proof
+    )
+    assert "Total filters: CUST_NM IN (Northstar Lines)" in res.proof
+    assert "Share of total: removed CUSTOMER_TEAM_NAME" in res.proof
+    assert res.proof[-1] == _STAMPED_LINE
+
+
+def test_share_of_total_column_absent_from_effective_filters_is_a_422():
+    client = _ShareClient([])
+    # no office carried, so CUSTOMER_TEAM_NAME is not among the effective filters
+    res = run(_ctx(client), _args(metrics=["GP"], share_of_total=["CUSTOMER_TEAM_NAME"]))
+    assert res.ok is False and res.error["status"] == 422
+    assert (
+        "share_of_total column 'CUSTOMER_TEAM_NAME' is not among the effective filters []"
+        in res.error["detail"]
+    )
+    assert client.metric_specs == []
+
+
+def test_share_of_total_zero_total_renders_na():
+    client = _ShareClient([{"GP": 5.0}, {"GP": 0.0}])
+    res = run(
+        _ctx(client, state=_ROTTERDAM),
+        _args(metrics=["GP"], share_of_total=["CUSTOMER_TEAM_NAME"]),
+    )
+    assert res.parts[0]["payload"]["rows"] == [["Gross Profit", 5, 0, "n/a"]]
+
+
+def test_share_of_total_both_sides_empty_is_no_data():
+    client = _ShareClient([{"GP": None}, {"GP": None}])
+    res = run(
+        _ctx(client, state=_ROTTERDAM),
+        _args(metrics=["GP"], share_of_total=["CUSTOMER_TEAM_NAME"]),
+    )
+    assert res.parts == [text_part(NO_DATA_TEXT)]
+
+
+def test_share_of_total_keeps_row_scope_on_both_queries(monkeypatch):
+    monkeypatch.setattr(_RESOLVER, lambda entity, user: "alice@example.com")
+    client = _ShareClient([{"GP": 1.0}, {"GP": 2.0}])
+    run(
+        _ctx(client, state=_ROTTERDAM),
+        _args(metrics=["GP"], share_of_total=["CUSTOMER_TEAM_NAME"]),
+    )
+    assert [s.scope_value for s in client.metric_specs] == [
+        "alice@example.com",
+        "alice@example.com",
+    ]
+
+
+def test_denominator_spec_removes_only_the_named_columns_and_keeps_scope_value():
+    selection = MetricQuerySpec(
+        entity=SALES,
+        metrics=("GP",),
+        period=APRIL,
+        filters={"CUST_NM": ("A",), "CUSTOMER_TEAM_NAME": ("Rotterdam",)},
+        scope_value="dev|alice",
+    )
+    total = denominator_spec(selection, ["CUSTOMER_TEAM_NAME"])
+    assert total == replace(selection, filters={"CUST_NM": ("A",)})
+    assert selection.filters["CUSTOMER_TEAM_NAME"] == ("Rotterdam",)  # selection untouched
+
+
+def test_share_parts_total_without_filters_reads_none():
+    selection = MetricQuerySpec(
+        entity=SALES,
+        metrics=("GP",),
+        period=APRIL,
+        filters={"CUSTOMER_TEAM_NAME": ("Rotterdam",)},
+    )
+    total = denominator_spec(selection, ["CUSTOMER_TEAM_NAME"])
+    _, proof = share_parts(
+        selection,
+        MetricResult(entity=SALES, period=APRIL, values={"GP": 3.0}),
+        total,
+        MetricResult(entity=SALES, period=APRIL, values={"GP": 12.0}),
+        SETTINGS,
+        ["CUSTOMER_TEAM_NAME"],
+    )
+    assert proof[-4:] == [
+        "Selection filters: CUSTOMER_TEAM_NAME IN (Rotterdam)",
+        "Total filters: none",
+        "Share of total: removed CUSTOMER_TEAM_NAME",
+        "Metrics: 1 values",
+    ]
+    assert not any(line.startswith("Filters:") for line in proof)
+
+
+def test_share_of_total_ratio_metrics_show_na_share():
+    client = _ShareClient([{"GP": 20.0, "MARGIN": 20.0}, {"GP": 100.0, "MARGIN": 25.0}])
+    res = run(
+        _ctx(client, state=_ROTTERDAM),
+        _args(metrics=["GP", "MARGIN"], share_of_total=["CUSTOMER_TEAM_NAME"]),
+    )
+    assert res.parts[0]["payload"]["rows"] == [
+        ["Gross Profit", 20, 100, 20.0],
+        ["Margin", 20.0, 25.0, "n/a"],
+    ]
