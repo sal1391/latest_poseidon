@@ -1,37 +1,16 @@
-import Link from "next/link";
-import { headers } from "next/headers";
-import { redirect } from "next/navigation";
-import { createConversation, listConversations } from "../lib/conversations";
-import { requireSales } from "../lib/request-identity";
+import { newConversation } from "../lib/actions";
 
-export default async function Home() {
-  const { sub } = requireSales(await headers());
-  const rows = await listConversations(sub);
-
-  async function newConversation() {
-    "use server";
-    const { sub } = requireSales(await headers());
-    const id = await createConversation(sub);
-    redirect(`/c/${id}`);
-  }
-
+/** The empty state inside the shell (spec 3.2). The sidebar is the list. */
+export default function Home() {
   return (
-    <main className="p-8">
-      <h1 className="text-xl font-semibold">Conversations for {sub}</h1>
-      <ul className="mt-4 space-y-2">
-        {rows.map((c) => (
-          <li key={c.id}>
-            <Link className="underline" href={`/c/${c.id}`}>
-              {c.title ?? "(untitled)"}
-            </Link>
-          </li>
-        ))}
-      </ul>
-      <form action={newConversation} className="mt-4">
-        <button type="submit" className="rounded border px-3 py-1">
-          New conversation
+    <section className="flex flex-1 flex-col items-center justify-center gap-3 px-4 text-center">
+      <h1 className="text-xl font-semibold">Ask Poseidon</h1>
+      <p className="max-w-md text-[15px] text-ink-muted">Breakdowns, comparisons, briefs and monthly reports for your book.</p>
+      <form action={newConversation}>
+        <button type="submit" className="rounded-card border border-border bg-surface px-4 py-2 text-[13px] font-medium transition-shadow duration-[120ms] hover:shadow-1">
+          New chat
         </button>
       </form>
-    </main>
+    </section>
   );
 }
