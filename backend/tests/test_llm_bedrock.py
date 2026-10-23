@@ -604,6 +604,42 @@ def test_invoke_degrades_on_a_malformed_but_2xx_converse_response(response):
     )
 
 
+def test_invoke_tool_use_with_non_object_input_is_malformed():
+    """Phase 17 PR C (spec 9.3): a toolUse.input that is not a JSON object
+    (a bare string here) is the pinned malformed-response error, never a
+    ToolCall carrying a string argument -- the same rule the Messages API
+    providers apply, so every provider meets the parity contract."""
+    response = {
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "toolUse": {
+                            "toolUseId": "call-3",
+                            "name": "data_qa__metric_query",
+                            "input": "not json",
+                        }
+                    }
+                ],
+            }
+        },
+        "stopReason": "tool_use",
+        "usage": {"inputTokens": 7, "outputTokens": 3, "totalTokens": 10},
+    }
+    provider = _client(converse_response=response)
+
+    result = provider.invoke(system="s", messages=[], tools=[], model="m", params={})
+
+    assert result == LLMResponse(
+        text="bedrock error: MalformedResponse",
+        tool_calls=(),
+        stop_reason="error",
+        input_tokens=0,
+        output_tokens=0,
+    )
+
+
 # ---------------------------------------------------------------------------
 # mutation discipline -- tools/messages arguments are never mutated
 # ---------------------------------------------------------------------------

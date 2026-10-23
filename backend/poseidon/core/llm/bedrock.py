@@ -33,6 +33,9 @@ file states them locally:
 - A ``reasoningContent`` block on a tool_use turn is carried into
   ``LLMResponse.reasoning`` untouched (D80); ``_build_content_block``
   already passes it back verbatim on the way in.
+- A ``toolUse.input`` that is not a JSON object (a bare string, say) is the
+  pinned ``MalformedResponse`` error, never a ``ToolCall`` with a non-dict
+  argument (:func:`_object_input`; the provider-parity contract, spec 9.3).
 
 Tool names cross a translation boundary at every ``toolConfig``/``toolUse``
 touch point (plan amendment aa33a2f, fix round 1): Bedrock's ``ToolName``
@@ -383,7 +386,7 @@ def _normalize_response(response: dict) -> LLMResponse:
                 ToolCall(
                     id=block["toolUse"]["toolUseId"],
                     name=_from_bedrock_tool_name(block["toolUse"]["name"]),
-                    arguments=block["toolUse"]["input"],
+                    arguments=_object_input(block["toolUse"]["input"]),
                 )
                 for block in content
                 if "toolUse" in block
@@ -408,6 +411,15 @@ def _normalize_response(response: dict) -> LLMResponse:
         )
     except (KeyError, IndexError, TypeError):
         return _malformed_response_error()
+
+
+def _object_input(value):
+    """A non-streamed ``toolUse.input`` must be a JSON object; anything else
+    raises ``TypeError``, which :func:`_normalize_response`'s guard turns into
+    the pinned malformed-response error."""
+    if not isinstance(value, dict):
+        raise TypeError("toolUse input is not an object")
+    return value
 
 
 # The pinned "code" half of the malformed-response error text -- plays the

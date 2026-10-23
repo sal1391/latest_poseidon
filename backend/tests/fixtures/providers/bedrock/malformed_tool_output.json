@@ -1,0 +1,25 @@
+{
+  "output": {
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "toolUse": {
+            "toolUseId": "call-3",
+            "name": "data_qa__metric_query",
+            "input": "not json"
+          }
+        }
+      ]
+    }
+  },
+  "stopReason": "tool_use",
+  "usage": {
+    "inputTokens": 7,
+    "outputTokens": 3,
+    "totalTokens": 10
+  },
+  "metrics": {
+    "latencyMs": 100
+  }
+}

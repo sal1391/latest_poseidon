@@ -1,0 +1,32 @@
+{
+  "id": "msg_parity_anthropic_02",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-5-5",
+  "content": [
+    {
+      "type": "text",
+      "text": "Let me look."
+    },
+    {
+      "type": "tool_use",
+      "id": "call-1",
+      "name": "data_qa__metric_query",
+      "input": {
+        "metrics": [
+          "GP"
+        ],
+        "period": {
+          "start": "2025-01-01",
+          "end": "2025-12-31"
+        }
+      }
+    }
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 20,
+    "output_tokens": 15
+  }
+}
