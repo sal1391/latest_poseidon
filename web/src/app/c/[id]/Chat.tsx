@@ -2,6 +2,7 @@
 
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef } from "react";
 import { toMessageParts, type PoseidonUIMessage } from "../../../lib/message-parts";
 import { PartRenderer } from "../../../ui/message-parts/registry";
@@ -37,7 +38,19 @@ export function Chat({ conversationId, initialMessages }: { conversationId: stri
       }),
     [conversationId],
   );
-  const { messages, sendMessage, status, error } = useChat<PoseidonUIMessage>({ id: conversationId, messages: initialMessages, transport });
+  const router = useRouter();
+  // The sidebar list and the header title are rendered by the root layout,
+  // and a layout does not re-render on a soft navigation. Python retitles a
+  // conversation on its first turn and bumps updated_at on every turn, so a
+  // refresh on finish is what keeps the list and the title current. useChat
+  // seeds its messages once per id and ignores later initialMessages, so the
+  // refresh cannot reset the thread.
+  const { messages, sendMessage, status, error } = useChat<PoseidonUIMessage>({
+    id: conversationId,
+    messages: initialMessages,
+    transport,
+    onFinish: () => router.refresh(),
+  });
   /**
    * In flight, which is NOT `status !== "ready"`: the fourth status is
    * `"error"`, and treating it as busy would leave the composer and every chip
@@ -55,7 +68,7 @@ export function Chat({ conversationId, initialMessages }: { conversationId: stri
   const endRef = useRef<HTMLLIElement>(null);
   useEffect(() => {
     endRef.current?.scrollIntoView?.({ block: "end" });
-  }, [messages]);
+  }, [messages, error]);
 
   function send(text: string) {
     if (busy || text.trim() === "") return;

@@ -58,7 +58,7 @@ cd backend && POSEIDON_UPDATE_CONTRACTS=1 .venv/Scripts/python.exe -B -m pytest 
 cd frontend && npm test -- --run
 cd frontend && npm run lint
 
-# Web (Next.js) -> 204 passed, 14 skipped, offline (27 files passed, 1 skipped; verified 2026-10-23 (UI pass PR 1); db-backed files
+# Web (Next.js) -> 204 passed, 14 skipped, offline; verified 2026-10-23 (UI pass PR 1) (27 files passed, 1 skipped; db-backed files
 # skip without DRIZZLE_DATABASE_URL). The web package has NO lint script: its static gate is tsc.
 cd web && npm test
 cd web && npx tsc --noEmit             # clean

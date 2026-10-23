@@ -37,7 +37,7 @@ export function Composer({ disabled, onSend }: { disabled: boolean; onSend: (tex
         type="submit"
         aria-label="Send"
         disabled={disabled || blank}
-        className="inline-flex h-8 w-8 flex-none items-center justify-center rounded-full bg-send text-accent-ink transition-opacity duration-[120ms] disabled:bg-surface-raised disabled:text-ink-muted"
+        className="inline-flex h-8 w-8 flex-none items-center justify-center rounded-full bg-send text-accent-ink transition-colors duration-[120ms] disabled:bg-surface-raised disabled:text-ink-muted"
       >
         <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M8 13V3M4 7l4-4 4 4" />

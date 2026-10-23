@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PoseidonUIMessage } from "../../../lib/message-parts";
 
 const chat = vi.hoisted(() => ({
+  lastOptions: undefined as undefined | { onFinish?: () => void },
   state: {
     messages: [] as PoseidonUIMessage[],
     sendMessage: vi.fn(),
@@ -11,7 +12,14 @@ const chat = vi.hoisted(() => ({
     error: undefined as Error | undefined,
   },
 }));
-vi.mock("@ai-sdk/react", () => ({ useChat: () => chat.state }));
+vi.mock("@ai-sdk/react", () => ({
+  useChat: (options: { onFinish?: () => void }) => {
+    chat.lastOptions = options;
+    return chat.state;
+  },
+}));
+const nav = vi.hoisted(() => ({ refresh: vi.fn() }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: nav.refresh }) }));
 vi.mock("ai", () => ({
   DefaultChatTransport: class {
     constructor(_options: unknown) {}
@@ -22,6 +30,8 @@ import { Chat } from "./Chat";
 
 afterEach(() => {
   cleanup();
+  nav.refresh.mockClear();
+  chat.lastOptions = undefined;
   chat.state.messages = [];
   chat.state.status = "ready";
   chat.state.error = undefined;
@@ -36,6 +46,12 @@ const assistant: PoseidonUIMessage = {
 };
 
 describe("Chat", () => {
+  it("refreshes the server-rendered sidebar and header when a turn finishes", () => {
+    render(<Chat conversationId="c1" initialMessages={[]} />);
+    chat.lastOptions!.onFinish!();
+    expect(nav.refresh).toHaveBeenCalledTimes(1);
+  });
+
   it("renders user text as a bubble with its line breaks and no role labels", () => {
     chat.state.messages = [user, assistant];
     render(<Chat conversationId="c1" initialMessages={[]} />);

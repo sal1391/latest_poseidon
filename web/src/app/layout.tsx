@@ -15,9 +15,9 @@ export const metadata: Metadata = {
  * Every page renders inside the shell. Identity and the conversation list
  * are read here, once, under the same RLS the pages use; the proxy has
  * already refused anyone without Poseidon:Sales, so `requireSales` is the
- * belt to that brace. The list is a layout read, so it refreshes on the New
- * chat action's `revalidatePath("/", "layout")` and on a hard reload, not
- * after every turn (titles set by a turn appear on the next navigation).
+ * belt to that brace. The list refreshes on the New chat action's
+ * `revalidatePath("/", "layout")`, on a hard reload, and on the
+ * `router.refresh()` the chat issues when a turn finishes.
  */
 export default async function RootLayout({ children }: LayoutProps<"/">) {
   const { sub } = requireSales(await headers());
