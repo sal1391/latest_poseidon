@@ -10,7 +10,7 @@ silently pin the wrong codepoint. ``test_llm_module_files_are_ascii_on_disk``
 enforces that for this file and the four ``llm`` package modules.
 """
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
 import pytest
@@ -90,6 +90,27 @@ def test_role_config_is_frozen():
 # (doc 03 section 2, transcribed exactly)
 # ---------------------------------------------------------------------------
 
+_ANTHROPIC_PROFILE = {
+    "router": RoleConfig("anthropic", "claude-sonnet-5-5",
+                         {"max_tokens": 4096, "thinking": {"type": "between_tools"},
+                          "tool_choice_mode": "instruct"}),
+    "synthesis": RoleConfig("anthropic", "claude-sonnet-5-5",
+                            {"max_tokens": 8192, "thinking": {"type": "between_tools"},
+                             "tool_choice_mode": "instruct"}),
+    "supervisor": RoleConfig("anthropic", "claude-opus-5-5", {"enabled": False}),
+    "memory": RoleConfig("anthropic", "claude-sonnet-5-5",
+                         {"max_tokens": 2048, "thinking": {"type": "between_tools"},
+                          "tool_choice_mode": "instruct"}),
+    "utility": RoleConfig("anthropic", "claude-haiku-5-5",
+                          {"max_tokens": 512, "thinking": {"type": "disabled"}}),
+    "micro": RoleConfig("anthropic", "claude-haiku-5-5",
+                        {"max_tokens": 256, "thinking": {"type": "disabled"}}),
+}
+# Owner ruling 4 (2026-10-23): cortex is the same six rows, provider key aside.
+_CORTEX_PROFILE = {
+    role: replace(cfg, provider="cortex") for role, cfg in _ANTHROPIC_PROFILE.items()
+}
+
 _EXPECTED_PROFILES: dict[str, dict[str, RoleConfig]] = {
     "bedrock": {
         "router": RoleConfig(
@@ -117,22 +138,8 @@ _EXPECTED_PROFILES: dict[str, dict[str, RoleConfig]] = {
             "bedrock", "us.amazon.nova-micro-v1:0", {"max_tokens": 256, "temperature": 0.0}
         ),
     },
-    "cortex": {
-        "router": RoleConfig(
-            "cortex", "claude-sonnet-4-5", {"max_tokens": 4096, "temperature": 0.2}
-        ),
-        "synthesis": RoleConfig(
-            "cortex", "claude-sonnet-4-5", {"max_tokens": 8192, "temperature": 0.3}
-        ),
-        "supervisor": RoleConfig("cortex", "claude-opus-4-1", {"enabled": False}),
-        "memory": RoleConfig(
-            "cortex", "claude-sonnet-4-5", {"max_tokens": 2048, "temperature": 0.1}
-        ),
-        "utility": RoleConfig(
-            "cortex", "claude-haiku-4-5", {"max_tokens": 512, "temperature": 0.0}
-        ),
-        "micro": RoleConfig("cortex", "claude-haiku-4-5", {"max_tokens": 256, "temperature": 0.0}),
-    },
+    "cortex": _CORTEX_PROFILE,
+    "anthropic": _ANTHROPIC_PROFILE,
 }
 
 _BEDROCK_ROUTER = _EXPECTED_PROFILES["bedrock"]["router"]
@@ -150,7 +157,7 @@ def test_default_models_path_exists_under_poseidon_config():
 def test_load_model_profiles_both_profiles_six_roles_exact():
     profiles = load_model_profiles(DEFAULT_MODELS_PATH)
 
-    assert set(profiles) == {"bedrock", "cortex"}
+    assert set(profiles) == {"bedrock", "cortex", "anthropic"}
     for profile_name, expected_roles in _EXPECTED_PROFILES.items():
         assert set(profiles[profile_name]) == set(expected_roles)
         for role_name, expected_config in expected_roles.items():
@@ -305,8 +312,12 @@ def test_invoke_stub_mode_uses_stub_provider_and_records_request(monkeypatch):
             "system": "sys prompt",
             "messages": [{"role": "user", "content": "hi"}],
             "tools": [],
-            "model": "claude-sonnet-4-5",  # the CONFIGURED cortex router model
-            "params": {"max_tokens": 4096, "temperature": 0.2},
+            "model": "claude-sonnet-5-5",  # the CONFIGURED cortex router model
+            "params": {
+                "max_tokens": 4096,
+                "thinking": {"type": "between_tools"},
+                "tool_choice_mode": "instruct",
+            },
             "tool_choice": None,
         }
     ]
@@ -315,21 +326,52 @@ def test_invoke_stub_mode_uses_stub_provider_and_records_request(monkeypatch):
     assert client.resolve("router").provider == "cortex"
 
 
-def test_invoke_live_mode_cortex_raises_pinned_runtime_error(monkeypatch):
-    """The exact same role and call as the stub-mode test above, with only
-    LLM_MODE flipped to live: cortex is configured but not implemented
-    until the SPCS deployment phase (decision D33). Proves the seam from
-    the other side -- swapping the mode is the only thing that changes."""
+def test_cortex_profile_mirrors_anthropic_except_the_provider_key():
+    profiles = load_model_profiles(DEFAULT_MODELS_PATH)
+    assert {
+        r: replace(c, provider="anthropic") for r, c in profiles["cortex"].items()
+    } == profiles["anthropic"]
+
+
+def test_anthropic_profile_parses_with_no_temperature_anywhere():
+    """The 5.5 generation returns 400 on any non-default temperature and on
+    native forced tool_choice; the profile, not the provider, carries that
+    knowledge (owner ruling 4, 2026-10-23)."""
+    profiles = load_model_profiles(DEFAULT_MODELS_PATH)
+    assert profiles["anthropic"] == _ANTHROPIC_PROFILE
+    assert all("temperature" not in cfg.params for cfg in profiles["anthropic"].values())
+
+
+def test_invoke_live_mode_cortex_dispatches_to_registered_provider(monkeypatch):
+    """D68 replaces the D33 refusal: cortex is an ordinary live provider key."""
+    settings = _settings(monkeypatch, LLM_PROFILE="cortex", LLM_MODE="live")
+    cortex_provider = StubProvider([_SCRIPTED])
+    client = RoleClient(settings, providers={"cortex": cortex_provider})
+    assert client.invoke("router", system="s", messages=[]) == _SCRIPTED
+    assert cortex_provider.calls[0]["model"] == "claude-sonnet-5-5"
+
+
+def test_invoke_live_mode_cortex_unregistered_names_the_missing_key(monkeypatch):
     settings = _settings(monkeypatch, LLM_PROFILE="cortex", LLM_MODE="live")
     client = RoleClient(settings, providers={})
-
     with pytest.raises(RuntimeError) as err:
-        client.invoke("router", system="sys prompt", messages=[{"role": "user", "content": "hi"}])
-
+        client.invoke("router", system="s", messages=[])
     assert str(err.value) == (
-        "provider 'cortex' is configured but not available until the SPCS "
-        f"deployment phase (decision D33) {_EM_DASH} use profile 'bedrock' or LLM_MODE=stub"
+        f"no provider registered for key 'cortex' (llm_mode='live') {_EM_DASH} registered: []"
     )
+
+
+def test_invoke_live_mode_anthropic_dispatches_with_profile_params(monkeypatch):
+    settings = _settings(
+        monkeypatch, LLM_PROFILE="anthropic", LLM_MODE="live", ANTHROPIC_API_KEY="sk-test"
+    )
+    provider = StubProvider([_SCRIPTED])
+    client = RoleClient(settings, providers={"anthropic": provider})
+    tools = [{"name": "t", "description": "d", "input_schema": {}}]
+    client.invoke("synthesis", system="s", messages=[], tools=tools, tool_choice="t")
+    assert provider.calls[0]["model"] == "claude-sonnet-5-5"
+    assert provider.calls[0]["params"]["tool_choice_mode"] == "instruct"
+    assert provider.calls[0]["tool_choice"] == "t"
 
 
 def test_invoke_live_mode_bedrock_dispatches_to_registered_provider(monkeypatch):
@@ -484,7 +526,7 @@ def test_stub_provider_script_argument_not_mutated():
 
 
 def test_llm_module_files_are_ascii_on_disk():
-    """Byte-pinned messages (the unknown-role error, the D33 RuntimeError)
+    """Byte-pinned messages (the unknown-role error, the missing-provider RuntimeError)
     stay pinned only if no look-alike codepoint can slip into any of these
     files -- see the module docstring."""
     package_dir = Path(roles.__file__).parent

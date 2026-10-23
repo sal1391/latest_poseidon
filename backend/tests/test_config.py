@@ -74,3 +74,21 @@ def test_auth0_mode_valid_when_fields_present(monkeypatch):
         AUTH0_CLIENT_ID="abc123",
     )
     assert s.identity_mode == "auth0"
+
+
+def test_anthropic_live_requires_a_key(monkeypatch):
+    with pytest.raises(ValueError, match="requires anthropic_api_key"):
+        make_settings(monkeypatch, LLM_PROFILE="anthropic", LLM_MODE="live")
+
+
+def test_anthropic_stub_mode_needs_no_key(monkeypatch):
+    s = make_settings(monkeypatch, LLM_PROFILE="anthropic", LLM_MODE="stub")
+    assert s.llm_profile == "anthropic"
+
+
+def test_cortex_account_url_prefers_the_explicit_url_then_the_spcs_host(monkeypatch):
+    assert make_settings(monkeypatch).cortex_account_url is None
+    host = make_settings(monkeypatch, SNOWFLAKE_HOST="x.snowflakecomputing.com")
+    assert host.cortex_account_url == "https://x.snowflakecomputing.com"
+    both = make_settings(monkeypatch, SNOWFLAKE_HOST="x", SNOWFLAKE_ACCOUNT_URL="https://y")
+    assert both.cortex_account_url == "https://y"

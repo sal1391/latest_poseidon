@@ -12,12 +12,11 @@ changes no calling code (doc 08's validation criterion) -- callers only
 ever say ``role_client.invoke(role, ...)`` and never branch on mode
 themselves.
 
-Provider availability is scoped by decision D33: Phase 5 ships
-``BedrockProvider`` (Task 3) and the stub only. A role configured for
-``cortex`` is fully resolvable -- ``resolve()`` reports it, ``models.yml``
-declares it -- but ``invoke()`` in live mode refuses it with a pinned,
-actionable error, because ``CortexProvider`` does not exist until the SPCS
-deployment phase (Phase 14).
+Provider availability (D68, Phase 17 PR C): ``bedrock``, ``anthropic`` and
+``cortex`` are all live providers; the app registers every one lazily and
+``invoke()`` reads exactly one key per call. The D33-era refusal of ``cortex``
+is gone; a profile whose provider is not registered gets the generic registry
+error below.
 """
 
 from collections.abc import Mapping
@@ -50,12 +49,6 @@ STUB_PROVIDER_KEY = "stub"
 # convention, using an escape there instead) -- byte-pinned in
 # backend/tests/test_llm_types_roles.py.
 _EM_DASH = chr(0x2014)
-
-_CORTEX_NOT_AVAILABLE = (
-    "provider 'cortex' is configured but not available until the SPCS "
-    "deployment phase (decision D33) " + _EM_DASH + " use profile 'bedrock' or LLM_MODE=stub"
-)
-
 
 class ModelProfileError(Exception):
     """``models.yml`` is missing or not valid YAML. Raised at load time."""
@@ -100,7 +93,7 @@ class RoleConfig:
     (plus any env override) says, independent of what ``LLM_MODE`` actually
     invokes at call time (see the module docstring)."""
 
-    provider: str  # "bedrock" | "cortex"
+    provider: str  # "bedrock" | "cortex" | "anthropic"
     model: str
     params: dict[str, object]  # max_tokens/temperature/enabled etc. (passthrough)
 
@@ -209,8 +202,7 @@ class RoleClient:
         ``LLM_MODE=stub`` always uses the ``"stub"`` registry entry,
         regardless of the resolved provider -- the substitution IS the seam
         (see the module docstring). ``LLM_MODE=live`` uses the resolved
-        provider, except ``cortex``, which raises rather than silently
-        doing nothing (decision D33: not implemented until Phase 14).
+        provider (``bedrock``, ``anthropic`` or ``cortex``; D68).
         """
         # Defensive copies (Task 1 review carry, sanctioned for Task 3; the
         # `messages` half added in the final-review wave). For `tools`: a
@@ -232,8 +224,6 @@ class RoleClient:
         if mode == "stub":
             provider_key = STUB_PROVIDER_KEY
         else:
-            if config.provider == "cortex":
-                raise RuntimeError(_CORTEX_NOT_AVAILABLE)
             provider_key = config.provider
         try:
             provider = self._providers[provider_key]

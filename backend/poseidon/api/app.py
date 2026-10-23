@@ -14,7 +14,9 @@ from poseidon.core.config import Settings, get_settings
 from poseidon.core.data.factory import DataBackendUnavailable, build_data_client
 from poseidon.core.db import assert_boot_privileges, build_engine
 from poseidon.core.identity import AuthError, resolve_provider
+from poseidon.core.llm.anthropic import AnthropicProvider
 from poseidon.core.llm.bedrock import BedrockProvider
+from poseidon.core.llm.cortex import CortexProvider
 from poseidon.core.llm.prompt_tree import PromptTree
 from poseidon.core.llm.prompts import DEFAULT_PROMPTS_DIR, PromptRegistry
 from poseidon.core.llm.roles import RoleClient
@@ -475,12 +477,14 @@ def _wire_live_chat(app: FastAPI) -> None:
     string (its own module docstring), so one long-lived instance behaves
     identically to a fresh one per request -- unlike ``dev_runner.py``'s
     per-request construction, there is no connection or other per-call state
-    here to keep isolated between requests. ``RoleClient`` registers BOTH
-    the stub router (``DevDeterministicRouter``, what actually answers in
-    ``LLM_MODE=stub``) and the real Bedrock provider (what answers in
-    ``LLM_MODE=live`` with ``llm_profile=bedrock``) -- the two canonical
-    shapes ``roles.py``'s own docstring documents; registering both at once
-    is harmless (``RoleClient.invoke`` reads exactly one key per call).
+    here to keep isolated between requests. ``RoleClient`` registers the stub
+    router (``DevDeterministicRouter``, what actually answers in
+    ``LLM_MODE=stub``) and all three live providers (``bedrock``,
+    ``anthropic``, ``cortex``; what answers in ``LLM_MODE=live`` for the
+    matching ``llm_profile``). The live providers are registered lazily:
+    none touches credentials or the network at construction. Registering
+    them all at once is harmless (``RoleClient.invoke`` reads exactly one
+    key per call).
     ``tool_registry`` (Phase 7 Task 4) follows the identical "build once,
     share" discipline -- see :func:`_build_tool_registry`.
 
@@ -582,7 +586,17 @@ def _wire_live_chat(app: FastAPI) -> None:
     app.state.report_store = ReportStore(engine, app_role=settings.database_app_role)
     app.state.prompt_tree = PromptTree()
     app.state.role_client = RoleClient(
-        settings, providers={"stub": DevDeterministicRouter(), "bedrock": BedrockProvider()}
+        settings,
+        providers={
+            "stub": DevDeterministicRouter(),
+            "bedrock": BedrockProvider(),
+            "anthropic": AnthropicProvider(api_key=settings.anthropic_api_key),
+            "cortex": CortexProvider(
+                account_url=settings.cortex_account_url,
+                token=settings.snowflake_cortex_token,
+                token_type=settings.snowflake_cortex_token_type,
+            ),
+        },
     )
     prompts_dir = settings.prompts_dir if settings.prompts_dir is not None else DEFAULT_PROMPTS_DIR
     app.state.prompt_registry = PromptRegistry(prompts_dir)
