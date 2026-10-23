@@ -1058,3 +1058,32 @@ Compose up (`docker compose -f infra/docker-compose.yml up`, stub mode as shippe
 - **Type consistency.** `ConversationRow { id; title: string | null }` is produced by Task 3 and consumed by Task 5's map. `Composer({ disabled, onSend })` is produced by Task 2 and consumed by Task 6. `Shell({ sidebar, children })` by Task 4, consumed by Task 5. `newConversation(): Promise<void>` by Task 3, consumed by Tasks 3 and 5.
 - **Review focus.** Items 1, 3, 4, 5 have tests in Tasks 3, 6, 4, 6. Item 2 is the browser gate plus Task 1's `overflow: hidden` assertion.
 - **Deviations from the spec, all recorded as rulings:** P1-R1 radius names, P1-R2 no custom `.data` utility, P1-R3 toggle placement, and the branch name.
+
+---
+
+## Execution record (2026-10-23, night)
+
+Branch `feature/ui-design-pass` from `main` @ 606e693. Spec c09672b, plan 22c994f/fc3ead0, then nine implementation commits (df9b19a .. 0fbfd37). Every task passed a task-scoped review; Task 3 (one colour utility per sidebar row) and Task 7 (a stale provenance sentence in `CLAUDE.md`) each needed one fix round. Final whole-branch review on Opus: "with fixes" (one Important: the layout-rendered sidebar and header went stale after a turn); one fix wave (f2a680a, 0fbfd37) addressed it plus four minors; scoped re-review clean. Ledger with every ruling: `.superpowers/sdd/2026-10-23-ui-pass-1-shell/progress.md` (kept on disk, untracked). Screenshots `shot-01` to `shot-06` in the same folder.
+
+Gates at the head: web `npm test` 205 passed, 14 skipped (27 files passed, 1 skipped), `npx tsc --noEmit` clean, `grep -rn "dark:" web/src/app web/src/ui/shell` empty, no raw hex in any `.tsx`. Python and Vite suites not run: nothing under `backend/` or `frontend/` changed. Browser gate (stub backend through compose, Next dev on :3000): every PR 1 script item passed; see the ledger.
+
+**Rulings made during execution (Carlos can undo any of them):**
+- P1-R1 radius token names `chip/card/pill`; P1-R2 built-in `tabular-nums`; P1-R3 toggle in the shell's mobile top bar (plan header).
+- Task 4 test fixture is a button, not an anchor (jsdom navigation noise).
+- Body drops `h-dvh` (dead under the unlayered `height: 100%`).
+- Untitled sidebar rows are muted whether active or not; one colour utility per row.
+- D82 says "adds", not "revises": nothing is superseded.
+- **`router.refresh()` on `useChat`'s `onFinish`** so the sidebar list and header update after every turn. This is the one ruling that changes what a user sees; it restores the parity the old list page had (it re-fetched on every visit). One extra server render per turn; one-line revert if unwanted.
+- Compose was brought up with a scratch port override (db 5434, MinIO 9002/9003) outside the repo after a first `up -d backend` without it recreated the db container on the tracked 5432 mapping and failed on a port clash; the data volume was untouched and the db is back on 5434.
+
+**Deferred to PR 2 (from the reviews):** the scroll effect fires per streamed token and the thread rests about 23px short of the bottom (sentinel gap plus `py-6`); the composer loses focus after each send (pre-existing); a chips-stay-enabled-on-error test. **Dropped with reasons in the ledger:** the rest.
+
+**Follow-ons outside this pass:** a root `error.tsx`; the Anthropic key pasted into the PR C chat is still not rotated (Carlos).
+
+### PR description
+
+Paste-ready body at `.superpowers/sdd/2026-10-23-ui-pass-1-shell/pr-body.md`. Title: `UI pass PR 1: slate theme tokens, sidebar shell, pill composer, internal-scroll thread`. `git push` and `gh pr create` only on Carlos's word.
+
+### Handoff prompt for PR 2 (paste as-is into a new chat, after PR 1 is merged)
+
+> You are Fable, running PR 2 of the Next.js UI design pass of Poseidon in C:\Users\carlo\github\latest_poseidon. Fable supervises only: design, plan, dispatch, review; never implementation code. Read first: `CLAUDE.md` (gotchas; never `-m router_live` bare, never bare `python`, never pipe pytest, never `ruff format`); `.claude/CLAUDE.md` ("Cost comes first", "Plans get reviewed before execution", "Git & PRs"); the spec `docs/superpowers/specs/2026-10-23-nextjs-ui-design-pass-design.md` (§4 is PR 2, §6 verification, §7 execution shape); the "Execution record" at the bottom of `docs/superpowers/plans/2026-10-23-ui-pass-1-shell.md` (rulings, deferred items for PR 2). State: PR 1 merged (confirm with `git checkout main && git pull --ff-only` and `gh pr view <n> --json state`; if OPEN, stop and tell Carlos). Branch for PR 2: `git checkout -b feature/ui-pass-2-parts main`. Job: `superpowers:writing-plans` for §4 (the nine chat message parts plus the three tiny primitives `Disclosure`, `DataTable` cell constants, `Badge`), folding in PR 1's deferred items (scroll effect: scroll the container only when the user was near the bottom and go to `scrollHeight`, dropping the sentinel; composer refocus when `disabled` goes false; a chips-enabled-on-error test). Model split: Haiku where the plan carries the complete file, Sonnet otherwise, Opus for the final whole-branch review. Present the plan and STOP for Carlos's go; then `superpowers:subagent-driven-development`. Browser gate in stub mode through compose: the compose db is on host port 5434 and MinIO's 9000 is held by another project, so bring the stack up with a port override (db `5434:5432`, minio `9002:9000`/`9003:9001`, using `!override` on `ports`) in a scratch file outside the repo; Next dev on :3000 with `POSEIDON_INTERNAL_TOKEN=dev-internal-token` and `DRIZZLE_DATABASE_URL=postgresql://poseidon:poseidon@localhost:5434/poseidon`; the Chrome extension may be disconnected, the chrome-devtools MCP tools work. Rules: feature branch, PR, Carlos merges in the GitHub UI; `gh pr create` only on his word; branch check before every commit; commit messages via scratch file and `git commit -F`; no Bedrock ever; live Anthropic only on Carlos's word, file-scoped, key in his own shell (ask whether the PR C key was rotated).
