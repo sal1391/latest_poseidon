@@ -853,10 +853,11 @@ afterEach(() => {
 });
 
 const user: PoseidonUIMessage = { id: "u1", role: "user", parts: [{ type: "text", text: "GP for Acme\nby port" }] };
+// The shape `fromMessageParts` builds for a persisted text part (message-parts.ts:48).
 const assistant: PoseidonUIMessage = {
   id: "a1",
   role: "assistant",
-  parts: [{ type: "data-part", data: { kind: "text", payload: { markdown: "Here it is." } } } as PoseidonUIMessage["parts"][number]],
+  parts: [{ type: "text", text: "Here it is.", state: "done" }],
 };
 
 describe("Chat", () => {
@@ -886,7 +887,7 @@ describe("Chat", () => {
 });
 ```
 
-Check the assistant part shape against `web/src/lib/message-parts.ts` before running: the test needs one assistant part that `toMessageParts` turns into a `text` part with that markdown. If the real type for a data part differs from `{ type: "data-part", data: { kind, payload } }`, use the real shape (look at how `fromMessageParts` builds parts) and keep the assertion.
+The assistant fixture is the exact shape `fromMessageParts` produces for a `text` part, so `toMessageParts` turns it back into `{ kind: "text", payload: { markdown } }` and `TextPart` renders it through react-markdown.
 
 - [ ] **Step 2: Run it to verify it fails**
 
