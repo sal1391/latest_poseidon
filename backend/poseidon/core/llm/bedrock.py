@@ -30,6 +30,9 @@ file states them locally:
   Any commentary text emitted alongside a tool call is not carried into the
   structured response -- a streaming caller already saw it live via
   ``on_text`` (see :meth:`BedrockProvider.invoke_stream`).
+- A ``reasoningContent`` block on a tool_use turn is carried into
+  ``LLMResponse.reasoning`` untouched (D80); ``_build_content_block``
+  already passes it back verbatim on the way in.
 
 Tool names cross a translation boundary at every ``toolConfig``/``toolUse``
 touch point (plan amendment aa33a2f, fix round 1): Bedrock's ``ToolName``
@@ -385,12 +388,14 @@ def _normalize_response(response: dict) -> LLMResponse:
                 for block in content
                 if "toolUse" in block
             )
+            reasoning = tuple(block for block in content if "reasoningContent" in block)
             return LLMResponse(
                 text="",
                 tool_calls=tool_calls,
                 stop_reason="tool_use",
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                reasoning=reasoning,
             )
 
         text = "".join(block["text"] for block in content if "text" in block)

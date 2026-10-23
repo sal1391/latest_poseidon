@@ -357,6 +357,40 @@ def test_invoke_normalizes_tool_use_response_to_one_tool_call():
     )
 
 
+def test_invoke_carries_reasoning_content_blocks_on_a_tool_use_turn():
+    reasoning = {
+        "reasoningContent": {"reasoningText": {"text": "thinking...", "signature": "abc"}}
+    }
+    response = {
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [
+                    reasoning,
+                    {
+                        "toolUse": {
+                            "toolUseId": "tu-1",
+                            "name": "data_qa__metric_query",
+                            "input": {"metrics": ["GP"]},
+                        }
+                    },
+                ],
+            }
+        },
+        "stopReason": "tool_use",
+        "usage": {"inputTokens": 3, "outputTokens": 4, "totalTokens": 7},
+    }
+    result = _client(converse_response=response).invoke(
+        system="s",
+        messages=[{"role": "user", "content": "q"}],
+        tools=[_TOOL_SCHEMA],
+        model="m",
+        params={},
+    )
+    assert result.reasoning == (reasoning,)
+    assert result.tool_calls[0].name == "data_qa.metric_query"
+
+
 def test_invoke_normalizes_multiple_tool_use_blocks_in_order():
     provider = _client(converse_response=_MULTI_TOOL_USE_RESPONSE)
 
