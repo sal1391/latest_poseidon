@@ -1,7 +1,7 @@
 # Next.js UI design pass — design
 
 **Date:** 2026-10-23
-**Status:** approved in conversation (sections 1–3), awaiting Carlos's review of this file
+**Status:** PR 1 built on feature/ui-design-pass (plan: docs/superpowers/plans/2026-10-23-ui-pass-1-shell.md); PRs 2 and 3 pending
 **Owner of design decisions:** Fable. **Implementation:** worker subagents (Sonnet for the
 component work, Haiku where the plan carries the complete code, Opus only for the riskiest
 review). Fable never writes implementation code.
@@ -211,7 +211,7 @@ Screenshots of each walkthrough go in the PR body.
 ## 7. Execution shape
 
 Three PRs, each in a fresh chat from a handoff prompt, each on its own branch from `main`:
-`feature/ui-pass-1-shell`, `feature/ui-pass-2-parts`, `feature/ui-pass-3-report`. PR 2 branches
+`feature/ui-pass-1-shell`, `feature/ui-pass-2-parts`, `feature/ui-pass-3-report`. PR 1 landed on `feature/ui-design-pass`, the branch that already held the spec (plan ruling). PR 2 branches
 from `main` after PR 1 merges, PR 3 after PR 2. Subagent-driven development per task with a
 fresh reviewer per diff. Model split: Sonnet implements every task (routine component and CSS
 work against an explicit spec); Haiku only where the plan text carries the complete file; Opus
