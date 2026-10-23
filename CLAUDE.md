@@ -36,7 +36,7 @@ doc as current. Decisions taken in feature specs used to not propagate; that is 
 ## Commands — verified 2026-10-23 (Phase 17 PR C), copy-pasteable
 
 ```bash
-# Offline Python suite -> 2461 passed, 15 skipped, 140 deselected (~250s)
+# Offline Python suite -> 2462 passed, 15 skipped, 142 deselected (~250s)
 cd backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest \
   -p no:cacheprovider \
   -m 'not pg and not minio and not pdf and not router_live and not research_live'
@@ -74,7 +74,7 @@ cd web && npx drizzle-kit migrate      # reads DRIZZLE_DATABASE_URL
 ```
 
 **Figures verified 2026-10-23 (Phase 17 PR C), each run once, to its own file, never
-piped:** offline Python 2461 passed, 15 skipped, 140 deselected (136 plus the four new `router_live` tests); `ruff check` clean;
+piped:** offline Python 2462 passed, 15 skipped, 142 deselected (136 plus the four new `router_live` tests); `ruff check` clean;
 `tests/contracts` 9 passed (`contracts/` unchanged by PR C; `git status --short contracts/` empty); pg suite 355 passed, 1
 skipped, run serially against the compose `db` service (host port 5434 when the compose db is started with a port override; the tracked compose file maps 5432).
 Web `npm test` 170 passed, 14 skipped offline, web `npx tsc --noEmit` clean, Vite frontend 171 passed in 18 files and `npm run lint` clean:
