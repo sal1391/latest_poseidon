@@ -700,12 +700,12 @@ Everything below is done unless marked **YOU**. Merges are yours, in this order.
 **State of the repo**
 - `main` @ c1b74f5 = PR #12 (UI pass PR 1), merged by you.
 - PR #13 `feature/ui-pass-2-parts` (head 8abf8b2): the nine chat parts, three primitives, thread scroll and composer refocus. Open against `main`. https://github.com/sal1391/latest_poseidon/pull/13
-- PR 3 `feature/ui-pass-3-report`: the report document card. Open against `feature/ui-pass-2-parts` (stacked). Number and link in the chat's last message and in `gh pr list`.
+- PR #14 `feature/ui-pass-3-report`: the report document card. Open against `feature/ui-pass-2-parts` (stacked). https://github.com/sal1391/latest_poseidon/pull/14
 - Web suite at the PR 3 head: 234 passed, 14 skipped; tsc clean; no `dark:` or palette class anywhere under `web/src`. The design pass is complete pending your merges.
 
 **YOU: merge order (about ten minutes)**
 1. Review and merge #13 in the GitHub UI with **"Create a merge commit"** (not squash: PR 3 is stacked on it; a squash would make PR 3 show #13's commits again).
-2. Re-target PR 3 to main: on the PR 3 page click "Edit" next to the title, change the base branch to `main`, confirm. Or in your shell: `gh pr edit <PR 3 number> --base main`. GitHub sometimes does this itself when #13's branch is deleted; check the "base" label either way. The diff should then show only PR 3's commits.
+2. Re-target #14 to main: on the PR page click "Edit" next to the title, change the base branch to `main`, confirm. Or in your shell: `gh pr edit 14 --base main`. GitHub sometimes does this itself when #13's branch is deleted; check the "base" label either way. The diff should then show only PR 3's commits.
 3. Merge PR 3.
 4. Afterwards (any chat): flip the spec's `**Status:**` line (`docs/superpowers/specs/2026-10-23-nextjs-ui-design-pass-design.md`, line 4) to `Complete. PR 1 #12, PR 2 #13, PR 3 #<n>, all merged <date>. Follow-ons in §8.` The PR 2 plan's "PR description" paragraph says the PR link is in a morning report; it is this one: #13.
 5. If you squash-merged #13 by habit: say so in the next chat and Fable rebases PR 3 with `git rebase --onto main feature/ui-pass-2-parts feature/ui-pass-3-report` before you merge it.
