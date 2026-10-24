@@ -1045,3 +1045,23 @@ Any kind the stub path cannot produce is recorded as "covered by tests only" in 
 - Review Focus: 1 in Task 2's list test; 2 in Task 3's wrapper test plus the gate; 3 in Task 4's three scroll tests; 4 in Task 4's chips and focus tests; 5 in the kept fallback test.
 - Test counts: 205 at main, plus 4 (primitives) + 3 (globals) + 2 (Task 2) + 3 (Task 3) + 3 net (Task 4: four added, one removed) + 2 (Composer) = 222 expected; Task 5 records the real figure.
 - Known limitation (plan review item 10, not fixed): an `<h2>` inside `<summary>` is valid HTML but several screen readers expose the summary as a disclosure button and drop the heading role, so heading navigation will not find phase titles. The spec asks for this markup; ledgered, not changed.
+
+## Execution record (2026-10-23 night to 2026-10-24, overnight run)
+
+Branch `feature/ui-pass-2-parts` from `main` @ c1b74f5 (PR #12 merge). Plan 475bfc0, Opus plan review folded in at 3471b15 (eleven corrections), then Task 1 d2152c3 (Haiku), Task 2 a6554ac (Haiku), Task 3 251e9d9 (Haiku), Task 4 15fe786 (Sonnet), Task 5 11085df (Sonnet), final fix wave 8811f36 (Sonnet). Every task passed a fresh Sonnet task review with no Important findings and no fix rounds. Final whole-branch review on Opus: "with fixes", one Important (the unlayered global `:focus-visible` rule beat the composer's `outline-none`, so a rectangle drew inside the pill after every turn once the composer refocused) and six minors; one fix wave addressed all seven; scoped re-review clean. Ledger with every ruling: `.superpowers/sdd/2026-10-23-ui-pass-2-parts/progress.md` (kept on disk, untracked). Screenshots `shot-01` to `shot-08` in the same folder.
+
+Gates at the head: web `npm test` 225 passed, 14 skipped (28 files passed, 1 skipped), `npx tsc --noEmit` clean, `grep -rn "dark:" web/src/ui/message-parts web/src/app web/src/ui/shell web/src/ui/primitives` empty (13 hits remain under `web/src/ui/report`, PR 3's). Python and Vite suites not run: nothing under `backend/` or `frontend/` changed. Browser gate (stub backend through compose, Next dev on :3000): breakdown, compare, research pivot and an existing-customer brief exercised table, proof, prose, metric grid, tool events, phase sections and the artifact card; chips through the opener row; thread rests flush after every turn; scrolled-up reader stays put; a send or a conversation switch returns to the end; composer refocuses after a turn and stays away when another element holds focus or text is selected; 820px and the 501px floor show no overflow; console clean. Two §6 items could not be produced by the stub router and rest on tests: a forced `error` part, and a table wider than the column (so `min-w-0` on `<main>` is unexercised live).
+
+**Rulings made during execution (Carlos can undo any of them):**
+- P2-R1 `--font-mono` token for `code`/`pre` (spec §3.1's data font was for numbers). P2-R2 `Badge` carries `py-0.5` for both uses.
+- **P2-R3 (from the final review):** links inside answers always carry a faint underline (40% of the link colour, full on hover), where the spec said hover-only. Accent on ink is about 2.3:1, under the 3:1 that colour-only links need (WCAG 1.4.1). One rule to revert.
+- The composer refocus skips when another element holds focus or when the reader has text selected. It is not suppressed on touch devices: a phone will raise its keyboard after every turn. Recommendation if that annoys: skip when `matchMedia("(pointer: coarse)")` matches; two lines.
+- `Disclosure`'s initial-state prop is `defaultOpen` (it is uncontrolled after mount). An `h2` inside `<summary>` may lose its heading role in some screen readers; kept because the spec asks for it.
+- The prose and disclosure rules live in `@layer components` and the focus ring in `@layer base`, so Tailwind utilities win over both (PR 3 depends on this).
+- The Opus plan review's eleven corrections were applied without Carlos's go, per his overnight instruction; they are listed in the plan header.
+
+**Deferred:** none. **Follow-ons outside this pass:** a root `error.tsx`; `role="alert"` on the error line; links in answers open in the same tab (react-markdown default); the Anthropic key pasted into the PR C chat is still not rotated (Carlos).
+
+### PR description
+
+Paste-ready body at `.superpowers/sdd/2026-10-23-ui-pass-2-parts/pr-body.md`. Title: `UI pass PR 2: the nine chat parts on the slate tokens, thread follows the reader, composer refocus`. Pushed and opened under Carlos's overnight authorisation; the PR link is in the morning report at the bottom of this file once it exists.
