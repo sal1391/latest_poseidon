@@ -1,26 +1,59 @@
 @import "tailwindcss";
 
+/* Slate theme (spec 3.1). Every colour, radius, shadow and font the app uses
+   is a token here; components use the utilities Tailwind derives from these
+   names and never a raw value. Light only (U5). */
+@theme {
+  --color-surface: #ffffff;
+  --color-surface-raised: #f7f7f8;
+  --color-ink: #202123;
+  --color-ink-muted: #8e9196;
+  --color-border: #e5e5e5;
+  --color-accent: #1f5f8b;
+  --color-accent-ink: #ffffff;
+  --color-send: #202123;
+  --color-positive: #10a37f;
+  --color-negative: #d92d20;
+  --color-warn-bg: #fef3c7;
+  --color-warn-ink: #92400e;
+  --radius-chip: 8px;
+  --radius-card: 12px;
+  --radius-pill: 24px;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-2: 0 4px 16px rgba(0, 0, 0, 0.08);
+  --font-sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --motion-fast: 120ms;
+  --motion-slow: 240ms;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html,
+body {
+  height: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  margin: 0;
+  overflow: hidden;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

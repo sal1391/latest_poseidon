@@ -2,9 +2,11 @@
 
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useRef } from "react";
 import { toMessageParts, type PoseidonUIMessage } from "../../../lib/message-parts";
 import { PartRenderer } from "../../../ui/message-parts/registry";
+import { Composer } from "../../../ui/shell/Composer";
 
 /** client_turn_key per user message, reused if the SDK retries the same message (Python dedups on it). */
 const turnKeys = new Map<string, string>();
@@ -18,7 +20,6 @@ function userText(message: PoseidonUIMessage): string {
 }
 
 export function Chat({ conversationId, initialMessages }: { conversationId: string; initialMessages: PoseidonUIMessage[] }) {
-  const [draft, setDraft] = useState("");
   const transport = useMemo(
     () =>
       new DefaultChatTransport<PoseidonUIMessage>({
@@ -37,7 +38,19 @@ export function Chat({ conversationId, initialMessages }: { conversationId: stri
       }),
     [conversationId],
   );
-  const { messages, sendMessage, status, error } = useChat<PoseidonUIMessage>({ id: conversationId, messages: initialMessages, transport });
+  const router = useRouter();
+  // The sidebar list and the header title are rendered by the root layout,
+  // and a layout does not re-render on a soft navigation. Python retitles a
+  // conversation on its first turn and bumps updated_at on every turn, so a
+  // refresh on finish is what keeps the list and the title current. useChat
+  // seeds its messages once per id and ignores later initialMessages, so the
+  // refresh cannot reset the thread.
+  const { messages, sendMessage, status, error } = useChat<PoseidonUIMessage>({
+    id: conversationId,
+    messages: initialMessages,
+    transport,
+    onFinish: () => router.refresh(),
+  });
   /**
    * In flight, which is NOT `status !== "ready"`: the fourth status is
    * `"error"`, and treating it as busy would leave the composer and every chip
@@ -48,40 +61,51 @@ export function Chat({ conversationId, initialMessages }: { conversationId: stri
    */
   const busy = status === "submitted" || status === "streaming";
 
+  // The thread scrolls inside its own column now (spec 3.2), so the page no
+  // longer grows with the conversation and the browser no longer keeps the
+  // newest message in view for free. jsdom has no scrollIntoView; the
+  // optional call keeps the component testable there.
+  const endRef = useRef<HTMLLIElement>(null);
+  useEffect(() => {
+    endRef.current?.scrollIntoView?.({ block: "end" });
+  }, [messages, error]);
+
   function send(text: string) {
     if (busy || text.trim() === "") return;
-    setDraft("");
     void sendMessage({ text });
   }
 
   return (
-    <div className="mt-4 space-y-4">
-      <ol className="space-y-4">
-        {messages.map((m) => (
-          <li key={m.id} className={m.role === "user" ? "text-right" : ""}>
-            <span className="text-xs uppercase opacity-60">{m.role}</span>
-            {m.role === "user" ? (
-              <p>{userText(m)}</p>
+    <>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <ol className="mx-auto flex w-full max-w-[720px] flex-col gap-4 px-4 py-6">
+          {messages.map((m) =>
+            m.role === "user" ? (
+              <li key={m.id} className="max-w-[85%] self-end whitespace-pre-wrap break-words rounded-card bg-surface-raised px-4 py-3">
+                {userText(m)}
+              </li>
             ) : (
-              // In order, every part: P16-R17 means one assistant message can
-              // hold SEVERAL text parts (a token run is closed by the next
-              // non-token frame), so there is no such thing as "the" text part
-              // to single out.
-              toMessageParts(m).map((part, i) => (
-                <PartRenderer key={i} part={part} disabled={busy} onChipSelect={(_id, sendText) => send(sendText)} />
-              ))
-            )}
-          </li>
-        ))}
-      </ol>
-      {/* The translator's `end()` emits an `error` chunk on a stream that died
-          without a terminal frame, and `useChat` surfaces it here. Rendering it
-          is what makes a truncated turn visible rather than merely short. */}
-      {error ? <p className="text-red-600">{error.message}</p> : null}
-      <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); send(draft); }}>
-        <input className="flex-1 rounded border px-2 py-1" aria-label="Message Poseidon" placeholder="Message Poseidon…" value={draft} disabled={busy} onChange={(e) => setDraft(e.target.value)} />
-        <button type="submit" className="rounded border px-3 py-1" disabled={busy || draft.trim() === ""}>Send</button>
-      </form>
-    </div>
+              <li key={m.id} className="flex flex-col gap-3 py-1">
+                {/* In order, every part: P16-R17 means one assistant message can
+                    hold SEVERAL text parts (a token run is closed by the next
+                    non-token frame), so there is no such thing as "the" text part
+                    to single out. */}
+                {toMessageParts(m).map((part, i) => (
+                  <PartRenderer key={i} part={part} disabled={busy} onChipSelect={(_id, sendText) => send(sendText)} />
+                ))}
+              </li>
+            ),
+          )}
+          {/* The translator's `end()` emits an `error` chunk on a stream that died
+              without a terminal frame, and `useChat` surfaces it here. Rendering it
+              is what makes a truncated turn visible rather than merely short. */}
+          {error ? <li className="text-[13px] text-negative">{error.message}</li> : null}
+          <li ref={endRef} aria-hidden="true" />
+        </ol>
+      </div>
+      <div className="px-4">
+        <Composer disabled={busy} onSend={send} />
+      </div>
+    </>
   );
 }

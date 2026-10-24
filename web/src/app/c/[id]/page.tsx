@@ -27,9 +27,11 @@ export default async function Conversation({
     parts: fromMessageParts(m.parts as { kind: string; payload: unknown }[]),
   }));
   return (
-    <main className="mx-auto max-w-3xl p-8">
-      <h1 className="text-xl font-semibold">{loaded.conversation.title ?? "(untitled)"}</h1>
+    <>
+      <header className="border-b border-border px-6 py-4">
+        <h1 className="truncate text-xl font-semibold">{loaded.conversation.title ?? "(untitled)"}</h1>
+      </header>
       <Chat conversationId={id} initialMessages={initial} />
-    </main>
+    </>
   );
 }

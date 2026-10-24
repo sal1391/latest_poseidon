@@ -1,29 +1,33 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { headers } from "next/headers";
 import "./globals.css";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
+import { listConversations } from "../lib/conversations";
+import { requireSales } from "../lib/request-identity";
+import { Shell } from "../ui/shell/Shell";
+import { Sidebar } from "../ui/shell/Sidebar";
 
 export const metadata: Metadata = {
   title: "Poseidon",
   description: "Chat-first sales intelligence for marine fuel sales",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+/**
+ * Every page renders inside the shell. Identity and the conversation list
+ * are read here, once, under the same RLS the pages use; the proxy has
+ * already refused anyone without Poseidon:Sales, so `requireSales` is the
+ * belt to that brace. The list refreshes on the New chat action's
+ * `revalidatePath("/", "layout")`, on a hard reload, and on the
+ * `router.refresh()` the chat issues when a turn finishes.
+ */
+export default async function RootLayout({ children }: LayoutProps<"/">) {
+  const { sub } = requireSales(await headers());
+  const rows = await listConversations(sub);
+  const conversations = rows.map((c) => ({ id: c.id, title: c.title }));
   return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
-    >
-      <body className="min-h-full flex flex-col">{children}</body>
+    <html lang="en" className="h-full antialiased">
+      <body className="bg-surface font-sans text-ink">
+        <Shell sidebar={<Sidebar conversations={conversations} sub={sub} />}>{children}</Shell>
+      </body>
     </html>
   );
 }
