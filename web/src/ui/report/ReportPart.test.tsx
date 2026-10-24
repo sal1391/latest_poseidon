@@ -66,8 +66,33 @@ describe("ReportPart", () => {
     const key = payload.movers.decreases[0].key;
     const ctx = payload.entity_context![key];
     const d = ctx.reconciliation.display;
-    expect(screen.getByText(`Office ${d.office_change} | other offices ${d.other_offices_net} | book ${d.book_change}`)).toBeTruthy();
-    expect(screen.getByText(`share of book ${ctx.share_of_book.display.prior} -> ${ctx.share_of_book.display.current}`)).toBeTruthy();
+    expect(screen.getByText(`Office ${d.office_change} · other offices ${d.other_offices_net} · book ${d.book_change}`)).toBeTruthy();
+    expect(screen.getByText(`share of book ${ctx.share_of_book.display.prior} → ${ctx.share_of_book.display.current}`)).toBeTruthy();
+  });
+
+  it("mover cards show the GP line with an arrow and colour the change by sign", () => {
+    show();
+    const up = payload.movers.increases[0];
+    const down = payload.movers.decreases[0];
+    expect(screen.getByText(`GP ${up.display.GP.prior} → ${up.display.GP.current}`)).toBeTruthy();
+    expect(screen.getByText(`${up.display.GP.change} (${up.display.GP.pct})`).className).toContain("text-positive");
+    expect(screen.getByText(`${down.display.GP.change} (${down.display.GP.pct})`).className).toContain("text-negative");
+  });
+
+  it("new and lost tables are headed and say none in muted ink when empty", () => {
+    show({ ...payload, new_lost: { new: payload.new_lost.new, lost: [] } });
+    expect(screen.getByRole("heading", { level: 4, name: "New" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 4, name: "Lost" })).toBeTruthy();
+    expect(screen.getByText("none").className).toContain("text-ink-muted");
+  });
+
+  it("ranked table mutes the Other row, including its change cells (ruling P3-R5)", () => {
+    const row = payload.tables.entities_by_gp.rows[0];
+    const { container } = show({ ...payload, tables: { ...payload.tables, entities_by_gp: { ...payload.tables.entities_by_gp, other: { ...row, key: "" } } } });
+    const other = [...container.querySelectorAll("tbody tr")].find((tr) => tr.firstElementChild!.textContent === "Other")!;
+    expect(other.className.split(" ")).toContain("text-ink-muted");
+    const cells = [...other.querySelectorAll("td")].map((td) => td.className);
+    expect(cells.some((c) => c.includes("text-positive") || c.includes("text-negative"))).toBe(false);
   });
 
   it("renders a whole-book report without entity context", () => {
