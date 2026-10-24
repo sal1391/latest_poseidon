@@ -12,7 +12,9 @@
 
 **Model split (Carlos's cost rule):** Haiku for Tasks 1, 2 and 3 (the plan carries every file and test in full). Sonnet for Task 4 (docs and figures). Sonnet reviews Tasks 1 and 3; **Opus reviews Task 2** (the ranked-table header change is the one place spec §7 says a layout regression hides). One Opus whole-branch review at the end. Fable supervises, runs the browser walkthrough and never implements.
 
-**Branch:** `feature/ui-pass-3-report`, cut from `feature/ui-pass-2-parts` at its PR head (PR 2 was not yet merged when this plan was written). The PR is opened against `feature/ui-pass-2-parts` (stacked) and must be re-targeted to `main` once PR 2 merges: `gh pr edit <n> --base main`.
+**Branch:** `feature/ui-pass-3-report`, cut from `feature/ui-pass-2-parts` at its PR head 8abf8b2 (PR #13, open when this plan was written). The PR is opened against `feature/ui-pass-2-parts` (stacked) and must be re-targeted to `main` once #13 merges: `gh pr edit <n> --base main`.
+
+**Plan review:** Opus, 2026-10-24, "ready with corrections"; all ten corrections are folded in below. Two product calls it asked to surface for Carlos: (a) **P3-R2 sub-ruling:** colour follows the sign of the change for every KPI, so a rise in `NUM_LOST` (more lost deals) renders green, as the spec's rule implies; the alternative is a one-line inverted set for `NUM_LOST` in `KpiTiles` plus one test. (b) **P3-R5:** ranked-table change cells are also coloured by sign (the spec's "as §4 table" does not say so); the Other row's change cell stays muted. Both are in the morning report.
 
 ## Global Constraints
 
@@ -20,13 +22,14 @@
 - No raw hex, no `neutral-*`, `red-*`, `blue-*`, `amber-*` palette classes in any file this PR touches. Colours are the `@theme` tokens (`surface`, `surface-raised`, `ink`, `ink-muted`, `border`, `accent`, `positive`, `negative`, `warn-bg`, `warn-ink`).
 - Radii per P1-R1 (`rounded-card` 12px, `rounded-chip` 8px); numbers per P1-R2 (`tabular-nums`); mono per P2-R1 (not used in this PR); badge per P2-R2 (`Badge` primitive, `tone="warn"` for the month-to-date marker).
 - **Ruling P3-R1 (heading elements):** the spec's "heading-1" and "heading-2" are type styles (`text-xl font-semibold`, `text-base font-semibold`), not element changes. The scope label stays an `<h3>` and the section titles stay `<h4>`, so the existing tests on heading levels and the document outline are unchanged.
-- **Ruling P3-R2 (sign of a change):** the colour of a change line comes from the payload's numeric `change` (`Delta.change`, `Row.change[metric]`), not from the display string's first character as the spec suggests: the number is already on the payload and cannot be fooled by a currency symbol or a "+" prefix. Positive is `text-positive`, negative `text-negative`, zero `text-ink`.
+- **Ruling P3-R2 (sign of a change):** the colour of a change line comes from the payload's numeric `change` (`Delta.change`, `Row.change[metric]`), not from the display string's first character as the spec suggests: the number is already on the payload and cannot be fooled by a currency symbol or a "+" prefix. Positive is `text-positive`, negative `text-negative`, zero `text-ink`. A change below the display's precision (0.003 shown as "+0.00") takes its sign's colour; only an exact zero is ink. Colour follows the sign for every metric, including `NUM_LOST` (see the plan-review note in the header).
+- **Ruling P3-R5 (ranked-table change cells):** the Change cell of each metric in the ranked table and its footer is coloured by sign like the tiles; on the Other row it stays muted with the rest of the row.
 - **Ruling P3-R3 (numeric column headers):** headers above right-aligned numeric columns are right-aligned too (`TH_NUM`); the entity column header stays left (`TH`). The spec's §4 "text-left" was written for the chat table's mixed columns.
 - **Ruling P3-R4 (glyphs in mover lines):** the GP line and the share-of-book line use the arrow glyph `→`; the reconciliation line uses the middle dot `·` between its three facts, matching the header's "Generated … · Source: …". The two `ReportPart.test.tsx` assertions that spelled `->` and `|` change in the same commit with this reason.
 - Class assertions in tests are allowed for exactly one thing, the sign colour (as PR 1 allowed one for the sidebar row tone): there is no other observable for it in jsdom.
 - Existing tests keep passing except the ones named in Tasks 1 and 3 (Proof lookup text; the two glyph strings), each changed in the same commit with the reason in the body.
 - Commands: vitest, npm and tsc run inside `web/`; git and grep run from the repo root (the working directory persists between commands). Single file: `npx vitest run <path>`. Full suite: `npm test > <file> 2>&1`, then read the file. **Never pipe a test run.** Never set `DRIZZLE_DATABASE_URL` in a test shell. Never run `next dev` or `next build` from a task; if `web/AGENTS.md` shows as modified, leave it unstaged.
-- Before every commit: `git rev-parse --abbrev-ref HEAD` must print `feature/ui-pass-3-report`; after every commit `git log --oneline feature/ui-pass-2-parts..HEAD` must show only this branch's work. Anything else: stop and report.
+- Before every commit: `git rev-parse --abbrev-ref HEAD` must print `feature/ui-pass-3-report`. Before Task 1 and before each commit, run `gh pr view 13 --json state`. While it is OPEN the range check is `git log --oneline feature/ui-pass-2-parts..HEAD`, which must show only this branch's work (the plan commits `a687b5d` and its follow-up are this branch's work and are expected). Once #13 is MERGED, `git fetch origin main:main` and use `main..HEAD`; if the range then shows commits that are not this branch's (a squash merge of #13), stop and report so Fable rebases with `git rebase --onto main feature/ui-pass-2-parts feature/ui-pass-3-report`. Anything else unexpected: stop and report.
 - Commit messages via a scratch file and `git commit -F`. Each ends with the two attribution lines in the session's system reminder.
 
 ## Review Focus
@@ -53,7 +56,7 @@
 
 **Interfaces:**
 - Consumes: `Disclosure`, `Badge` from `web/src/ui/primitives/`; `.prose-poseidon`.
-- Produces: `toneFor(change: number): "text-positive" | "text-negative" | "text-ink"`; `TH_NUM` in `data-table.ts`.
+- Produces: `toneFor(change: number): "text-positive" | "text-negative" | "text-ink"`; `TH_NUM` in `data-table.ts`, with `TH` rebuilt from a non-exported `TH_BASE` so the two never stack `text-left` and `text-right` on one element (`TH`'s class set is unchanged for `TablePart`).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -82,7 +85,7 @@ In `web/src/ui/report/ReportPart.test.tsx`: in `"proof is collapsed"`, change `s
       const tile = container.querySelector(`[data-metric="${metric}"]`)!;
       const line = within(tile as HTMLElement).getByText(`${d.display.change} (${d.display.pct})`);
       const expected = d.change > 0 ? "text-positive" : d.change < 0 ? "text-negative" : "text-ink";
-      expect(line.className).toContain(expected);
+      expect(line.className.split(" ")).toContain(expected);
     }
   });
 
@@ -125,10 +128,12 @@ export function toneFor(change: number): "text-positive" | "text-negative" | "te
 }
 ```
 
-In `web/src/ui/primitives/data-table.ts`, add after `TH`:
+In `web/src/ui/primitives/data-table.ts`, replace the `TH` line with these three (the `TH` class set is unchanged; `TH_BASE` is not exported):
 
 ```ts
-export const TH_NUM = `${TH} text-right`;
+const TH_BASE = "border-b border-border px-2 pb-1 text-[12px] font-medium uppercase tracking-wide text-ink-muted";
+export const TH = `${TH_BASE} text-left`;
+export const TH_NUM = `${TH_BASE} text-right`;
 ```
 
 `web/src/ui/report/ReportPart.tsx`:
@@ -328,11 +333,13 @@ const TH_GROUP = "border-b border-border px-2 pb-1 text-center text-[12px] font-
 const TF = "border-t border-border px-2 py-1.5 font-semibold";
 const TF_NUM = `${TF} text-right tabular-nums`;
 
-function cells(row: Row, numClass: string) {
+/** The twelve metric cells of one row. The Change cell takes the sign's
+ * colour (ruling P3-R5) except on the muted Other row. */
+function cells(row: Row, numClass: string, muted = false) {
   return METRICS.flatMap((m) => {
     const d = row.display[m];
     return [d.prior, d.current, d.change, d.pct].map((text, i) => (
-      <td key={`${m}${i}`} className={i === 2 ? `${numClass} ${toneFor(row.change[m])}` : numClass}>
+      <td key={`${m}${i}`} className={i === 2 && !muted ? `${numClass} ${toneFor(row.change[m])}` : numClass}>
         {text}
       </td>
     ));
@@ -343,7 +350,7 @@ function DataRow({ row, muted = false }: { row: Row; muted?: boolean }) {
   return (
     <tr className={muted ? `${TR} text-ink-muted` : TR}>
       <td className={TD}>{row.key}</td>
-      {cells(row, TD_NUM)}
+      {cells(row, TD_NUM, muted)}
     </tr>
   );
 }
@@ -398,7 +405,7 @@ export function RankedTables({ tables, entityLabel }: { tables: ReportPayload["t
             <tr>
               {METRICS.flatMap((m) =>
                 COLUMNS.map((c) => (
-                  <th key={`${m}${c}`} className={TH_NUM}>
+                  <th key={`${m}${c}`} className={`${TH_NUM} pt-1`}>
                     {c}
                   </th>
                 )),
@@ -604,7 +611,7 @@ Expected: 14 tests pass.
 
 - [ ] **Step 5: Dark sweep of the whole web tree, full suite, type-check, commit**
 
-From the repo root: `grep -rn "dark:\|neutral-\|amber-\|red-\|blue-" web/src` (expected: no output; this is the design pass's closing condition, spec §6 item 3). In `web/`: `npm test > <scratch file> 2>&1`, read the file; `npx tsc --noEmit` clean.
+From the repo root: `grep -rnE "dark:|(neutral|amber|red|blue)-[0-9]" web/src` (expected: no output; this is the design pass's closing condition, spec §6 item 3. The digit is required: a plain `red-` matches "stored-procedure" and "shared-secret" in `web/src/lib`, which are not colours). In `web/`: `npm test > <scratch file> 2>&1`, read the file; `npx tsc --noEmit` clean.
 
 ```bash
 git rev-parse --abbrev-ref HEAD   # must print feature/ui-pass-3-report
@@ -626,13 +633,15 @@ Message: `feat(web): mover cards with badges and signed changes, new/lost tables
 
 - [ ] **Step 1: Run the gates and record the figures**
 
-In `web/`: `npm test > <scratch>/web-test.txt 2>&1`; `npx tsc --noEmit > <scratch>/tsc.txt 2>&1`. From the repo root: `grep -rn "dark:" web/src` (expected: no output). Write down tests passed/skipped and files passed/skipped.
+In `web/`: `npm test > <scratch>/web-test.txt 2>&1`; `npx tsc --noEmit > <scratch>/tsc.txt 2>&1`. From the repo root: `grep -rnE "dark:|(neutral|amber|red|blue)-[0-9]" web/src` (expected: no output). Write down tests passed/skipped and files passed/skipped (expected 232 passed, 14 skipped, 29 files passed, 1 skipped: PR 2's 225 plus 7).
 
 - [ ] **Step 2: Update the docs**
 
 In `CLAUDE.md`, both web figure occurrences become the new count with `(UI pass PR 3)`; the file count line is updated (one new test file, `tone.test.ts`); the provenance phrase `not re-run in PR C, UI pass PR 1 or UI pass PR 2 (the Vite app is untouched by all three)` becomes `not re-run in PR C or the three UI pass PRs (the Vite app is untouched by all of them)`.
 
-In the spec, the `**Status:**` line becomes: `Complete. PR 1 merged (#12, 2026-10-23); PR 2 feature/ui-pass-2-parts (plan 2026-10-23-ui-pass-2-parts.md); PR 3 feature/ui-pass-3-report (plan 2026-10-23-ui-pass-3-report.md). Follow-ons in §8.`
+In the spec, the `**Status:**` line becomes: `PR 1 merged (#12, 2026-10-23); PR 2 #13 (feature/ui-pass-2-parts; say "merged <date>" instead if gh pr view 13 reports MERGED); PR 3 feature/ui-pass-3-report (plan 2026-10-23-ui-pass-3-report.md), awaiting merge. Follow-ons in §8.` Carlos or the next chat flips it to "Complete" after the PR 3 merge.
+
+In the spec's §8 follow-on list, add one bullet: `- Narrative heading levels: the template markdown's "##" headings render as h2 inside a section headed h4 under the card's h3; map them down (react-markdown components, h1–h3 to h5) in a later pass.`
 
 Confirm `docs/architecture/00-overview.md` D82 already reads "the report renders as a document card"; no edit.
 
@@ -654,7 +663,7 @@ Compose up with the scratch port override; Next dev on :3000 with `POSEIDON_INTE
 1. Send `start a monthly report`; follow the perspective and month chips the stub flow offers; the report card renders: header with the scope label, period pair, generated line with a middle dot; seven tiles with green/red change lines; the segmented control; the ranked table with the spanning header; mover cards with badges; new/lost; narrative with its heading; the proof disclosure closed; the chips row outside the card. Screenshot.
 2. Click every segment: the table switches, the active segment lifts white in accent, the footer stays bold.
 3. A month-to-date report (pick the current month if the stub data offers one): the warn badge after the period pair. If the stub data has no partial month, the existing `mtd` test is the evidence; record it.
-4. Width 820px and the 501px floor: the segmented control wraps, the table scrolls inside its wrapper, the card keeps its padding, the composer's right edge is visible.
+4. Width 820px and the 501px floor: the segmented control wraps, the table scrolls inside its wrapper, the card keeps its padding, the composer's right edge is visible; at 820px look at the two-row table header (the column headers sit a little under the group hairline, `pt-1`).
 5. Console: no errors or warnings.
 
 Screenshots go in the PR body.
@@ -667,4 +676,5 @@ Screenshots go in the PR body.
 - Placeholders: none; every component is given in full.
 - Type consistency: `toneFor` signature identical in Tasks 1, 2, 3; `TH_NUM` added in Task 1 and used in Tasks 2 and 3; `Badge` tone prop as PR 2 defined it; `Disclosure` summary prop as PR 2 defined it.
 - Review Focus: 1 in `tone.test.ts`; 2 in Task 2's test plus the kept switching test; 3 in the gate; 4 in the kept whole-book test; 5 in Task 1's narrative test plus the kept guard test.
-- Test counts: PR 2's final figure plus 1 (tone) + 3 (Task 1) + 1 (Task 2) + 2 (Task 3) = +7; Task 4 records the real figure.
+- Test counts: PR 2's final figure (225) plus 1 (tone) + 3 (Task 1) + 1 (Task 2) + 2 (Task 3) = 232 expected, 29 files; Task 4 records the real figure.
+- Review Focus 1 note: a KPI whose change is exactly zero is not in the golden, so the tile test never exercises the ink branch; `tone.test.ts` pins it (0 and -0).
