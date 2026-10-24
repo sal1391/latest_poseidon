@@ -78,6 +78,25 @@ describe("PartRenderer", () => {
     expect(a.getAttribute("href")).toBe("https://example.invalid/b.pdf");
   });
 
+  it("artifacts show a file glyph, a MIME badge and keep the download attribute", () => {
+    const { container } = render(<PartRenderer part={{ kind: "artifact", payload: { name: "brief.pdf", url: "https://example.invalid/b.pdf", mime: "application/pdf" } }} />);
+    expect(container.querySelector('svg[aria-hidden="true"]')).toBeTruthy(); // the file glyph (spec 4)
+    expect(screen.getByText("application/pdf").tagName).toBe("SPAN");
+    expect(screen.getByText("brief.pdf").closest("a")!.getAttribute("download")).toBe("brief.pdf");
+  });
+
+  it("errors show the hint beneath the message", () => {
+    render(<PartRenderer part={{ kind: "error", payload: { code: "x", message: "It broke", hint: "Try a shorter period." } }} />);
+    expect(screen.getByText("It broke").tagName).toBe("P");
+    expect(screen.getByText("Try a shorter period.").tagName).toBe("P");
+  });
+
+  it("tables sit inside a scroll wrapper so a wide breakdown never widens the thread (Review Focus 2)", () => {
+    render(<PartRenderer part={{ kind: "table", payload: { columns: ["Customer", "GP"], rows: [["Acme", 12.5]] } }} />);
+    const table = screen.getByText("Acme").closest("table")!;
+    expect(table.parentElement!.className).toContain("overflow-x-auto");
+  });
+
   it("proof is collapsed, phase sections are open, errors show the message, unknown kinds fall back to JSON", () => {
     render(<PartRenderer part={{ kind: "proof", payload: { lines: ["SELECT 1"] } }} />);
     expect((screen.getByText("How this was computed").closest("details") as HTMLDetailsElement).open).toBe(false);
