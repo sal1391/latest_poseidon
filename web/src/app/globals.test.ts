@@ -42,3 +42,20 @@ describe("globals.css theme (spec 3.1)", () => {
     expect(css).toMatch(/body\s*\{[^}]*overflow:\s*hidden/);
   });
 });
+
+describe("globals.css prose and disclosure rules (spec 4)", () => {
+  it("defines the mono font token inside @theme (ruling P2-R1)", () => {
+    const theme = css.slice(css.indexOf("@theme"), css.indexOf("}", css.indexOf("@theme")));
+    expect(theme).toMatch(/--font-mono: [^;]*monospace;/);
+  });
+
+  it("scopes the markdown rules to .prose-poseidon with 16px semibold headings and mono code", () => {
+    expect(css).toMatch(/\.prose-poseidon h1,\s*\.prose-poseidon h2,\s*\.prose-poseidon h3,\s*\.prose-poseidon h4,\s*\.prose-poseidon h5,\s*\.prose-poseidon h6\s*\{[^}]*font-size:\s*16px/);
+    expect(css).toMatch(/\.prose-poseidon code\s*\{[^}]*var\(--font-mono\)/);
+    expect(css).toMatch(/\.prose-poseidon ul\s*\{[^}]*list-style:\s*disc/);
+  });
+
+  it("rotates the disclosure caret when the block is open", () => {
+    expect(css).toMatch(/\.disclosure\[open\]\s*>\s*summary::before\s*\{[^}]*rotate\(45deg\)/);
+  });
+});

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 
 /**
  * The docked pill composer (spec 3.2). Owns its draft; the page owns the
@@ -11,6 +11,21 @@ import { useState, type FormEvent } from "react";
 export function Composer({ disabled, onSend }: { disabled: boolean; onSend: (text: string) => void }) {
   const [draft, setDraft] = useState("");
   const blank = draft.trim() === "";
+
+  // The browser blurs an input the moment it is disabled, so without this
+  // every turn would end with the reader clicking back into the composer.
+  // Focus returns when `disabled` falls, never on mount, and only if nothing
+  // else holds focus by then: the blurred input leaves focus on <body>, so a
+  // reader who tabbed to a sidebar link or opened a proof block while the
+  // turn streamed is not pulled back, and neither is a reader who selected text in the thread (their Ctrl+C must copy the selection, not the input).
+  const inputRef = useRef<HTMLInputElement>(null);
+  const wasDisabled = useRef(disabled);
+  useEffect(() => {
+    const active = document.activeElement;
+    const idle = (active === null || active === document.body) && (window.getSelection()?.isCollapsed ?? true);
+    if (wasDisabled.current && !disabled && idle) inputRef.current?.focus();
+    wasDisabled.current = disabled;
+  }, [disabled]);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -27,6 +42,8 @@ export function Composer({ disabled, onSend }: { disabled: boolean; onSend: (tex
     >
       <input
         className="min-w-0 flex-1 bg-transparent px-1 py-3.5 text-[15px] text-ink outline-none placeholder:text-ink-muted"
+        ref={inputRef}
+        name="message"
         aria-label="Message Poseidon"
         placeholder="Message Poseidon…"
         value={draft}

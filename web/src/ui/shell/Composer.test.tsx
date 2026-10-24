@@ -42,4 +42,53 @@ describe("Composer", () => {
     fireEvent.submit(input().closest("form")!);
     expect(onSend).not.toHaveBeenCalled();
   });
+
+  it("takes the focus back when a turn ends (Review Focus 4)", () => {
+    const { rerender } = render(<Composer disabled onSend={vi.fn()} />);
+    expect(document.activeElement).not.toBe(input());
+    rerender(<Composer disabled={false} onSend={vi.fn()} />);
+    expect(document.activeElement).toBe(input());
+  });
+
+  it("leaves the focus alone when the reader moved it elsewhere during the turn", () => {
+    const { rerender } = render(
+      <>
+        <button type="button">Chats</button>
+        <Composer disabled onSend={vi.fn()} />
+      </>,
+    );
+    const chats = screen.getByRole("button", { name: "Chats" });
+    chats.focus();
+    rerender(
+      <>
+        <button type="button">Chats</button>
+        <Composer disabled={false} onSend={vi.fn()} />
+      </>,
+    );
+    expect(document.activeElement).toBe(chats);
+  });
+
+  it("leaves the focus alone when the reader has text selected in the thread", () => {
+    const { rerender } = render(
+      <>
+        <p>Certified answer for Singapore.</p>
+        <Composer disabled onSend={vi.fn()} />
+      </>,
+    );
+    const text = screen.getByText("Certified answer for Singapore.").firstChild as Text;
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, 9);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    rerender(
+      <>
+        <p>Certified answer for Singapore.</p>
+        <Composer disabled={false} onSend={vi.fn()} />
+      </>,
+    );
+    expect(document.activeElement).not.toBe(input());
+    selection.removeAllRanges();
+  });
 });

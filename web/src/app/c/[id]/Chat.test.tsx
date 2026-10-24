@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PoseidonUIMessage } from "../../../lib/message-parts";
 
@@ -31,6 +31,7 @@ import { Chat } from "./Chat";
 afterEach(() => {
   cleanup();
   nav.refresh.mockClear();
+  chat.state.sendMessage.mockClear();
   chat.lastOptions = undefined;
   chat.state.messages = [];
   chat.state.status = "ready";
@@ -44,6 +45,25 @@ const assistant: PoseidonUIMessage = {
   role: "assistant",
   parts: [{ type: "text", text: "Here it is.", state: "done" }],
 };
+
+/** The thread's scroll container: the `<ol>` is the only list Chat renders. */
+function thread() {
+  return screen.getByRole("list").parentElement as HTMLDivElement;
+}
+
+/** jsdom has no layout, so fake the three numbers the scroll logic reads. */
+function fakeScrollBox(el: HTMLElement, { scrollHeight, clientHeight }: { scrollHeight: number; clientHeight: number }) {
+  let top = 0;
+  Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => scrollHeight });
+  Object.defineProperty(el, "clientHeight", { configurable: true, get: () => clientHeight });
+  Object.defineProperty(el, "scrollTop", {
+    configurable: true,
+    get: () => top,
+    set: (value: number) => {
+      top = value;
+    },
+  });
+}
 
 describe("Chat", () => {
   it("refreshes the server-rendered sidebar and header when a turn finishes", () => {
@@ -76,12 +96,81 @@ describe("Chat", () => {
     expect((screen.getByLabelText("Message Poseidon") as HTMLInputElement).disabled).toBe(false);
   });
 
-  it("scrolls the end of the thread into view when messages change", () => {
-    const scrollIntoView = vi.fn();
-    Element.prototype.scrollIntoView = scrollIntoView;
+  it("follows the end of the thread while the reader is at the end (Review Focus 3)", () => {
+    chat.state.messages = [user];
+    const { rerender } = render(<Chat conversationId="c1" initialMessages={[]} />);
+    const box = thread();
+    fakeScrollBox(box, { scrollHeight: 1000, clientHeight: 400 });
     chat.state.messages = [user, assistant];
+    rerender(<Chat conversationId="c1" initialMessages={[]} />);
+    expect(box.scrollTop).toBe(1000);
+  });
+
+  it("leaves a reader who scrolled up where they are while new content arrives (Review Focus 3)", () => {
+    chat.state.messages = [user];
+    const { rerender } = render(<Chat conversationId="c1" initialMessages={[]} />);
+    const box = thread();
+    fakeScrollBox(box, { scrollHeight: 1000, clientHeight: 400 });
+    box.scrollTop = 100;
+    fireEvent.scroll(box);
+    chat.state.messages = [user, assistant];
+    rerender(<Chat conversationId="c1" initialMessages={[]} />);
+    expect(box.scrollTop).toBe(100);
+  });
+
+  it("returns to the end of the thread when the reader sends a message (Review Focus 3)", () => {
+    chat.state.messages = [user];
+    const { rerender } = render(<Chat conversationId="c1" initialMessages={[]} />);
+    const box = thread();
+    fakeScrollBox(box, { scrollHeight: 1000, clientHeight: 400 });
+    box.scrollTop = 100;
+    fireEvent.scroll(box);
+    const input = screen.getByLabelText("Message Poseidon") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "and by port?" } });
+    fireEvent.submit(input.closest("form")!);
+    expect(chat.state.sendMessage).toHaveBeenCalledWith({ text: "and by port?" });
+    chat.state.messages = [user, assistant, { id: "u2", role: "user", parts: [{ type: "text", text: "and by port?" }] }];
+    rerender(<Chat conversationId="c1" initialMessages={[]} />);
+    expect(box.scrollTop).toBe(1000);
+  });
+
+  it("still counts 48px from the end as reading the latest", () => {
+    chat.state.messages = [user];
+    const { rerender } = render(<Chat conversationId="c1" initialMessages={[]} />);
+    const box = thread();
+    fakeScrollBox(box, { scrollHeight: 1000, clientHeight: 400 });
+    box.scrollTop = 560;
+    fireEvent.scroll(box);
+    chat.state.messages = [user, assistant];
+    rerender(<Chat conversationId="c1" initialMessages={[]} />);
+    expect(box.scrollTop).toBe(1000);
+  });
+
+  it("opens another conversation at its end even after scrolling up in this one", () => {
+    chat.state.messages = [user];
+    const { rerender } = render(<Chat conversationId="c1" initialMessages={[]} />);
+    const box = thread();
+    fakeScrollBox(box, { scrollHeight: 1000, clientHeight: 400 });
+    box.scrollTop = 100;
+    fireEvent.scroll(box);
+    chat.state.messages = [user, assistant];
+    rerender(<Chat conversationId="c2" initialMessages={[]} />);
+    expect(box.scrollTop).toBe(1000);
+  });
+
+  it("keeps the last message's chips clickable after an errored turn (Review Focus 4)", () => {
+    const chips: PoseidonUIMessage = {
+      id: "a2",
+      role: "assistant",
+      parts: [{ type: "data-chips", data: { options: [{ id: "x", label: "Pacific Basin" }] } } as PoseidonUIMessage["parts"][number]],
+    };
+    chat.state.status = "error";
+    chat.state.error = new Error("stream ended without a terminal frame");
+    chat.state.messages = [user, chips];
     render(<Chat conversationId="c1" initialMessages={[]} />);
-    expect(scrollIntoView).toHaveBeenCalledTimes(1);
-    expect(scrollIntoView).toHaveBeenCalledWith({ block: "end" });
+    const chip = screen.getByText("Pacific Basin") as HTMLButtonElement;
+    expect(chip.disabled).toBe(false);
+    fireEvent.click(chip);
+    expect(chat.state.sendMessage).toHaveBeenCalledWith({ text: "Pacific Basin" });
   });
 });
