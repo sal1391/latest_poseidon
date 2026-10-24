@@ -43,6 +43,21 @@ describe("ReportPart", () => {
     expect(foot[2].textContent).toBe(payload.kpis.GP.display.current);
   });
 
+  it("ranked table has a spanning metric header above Prior / Current / Change / % columns (Review Focus 2)", () => {
+    const { container } = show();
+    const ranked = container.querySelector("table")!;
+    const headRows = ranked.querySelectorAll("thead tr");
+    expect(headRows).toHaveLength(2);
+    const groups = [...headRows[0].querySelectorAll("th")];
+    expect(groups.map((th) => th.textContent)).toEqual(["Customer", "GP", "Volume", "Margin"]);
+    expect(groups.slice(1).every((th) => th.colSpan === 4)).toBe(true);
+    expect(groups[0].rowSpan).toBe(2);
+    const columns = [...headRows[1].querySelectorAll("th")].map((th) => th.textContent);
+    expect(columns).toEqual(["Prior", "Current", "Change", "%", "Prior", "Current", "Change", "%", "Prior", "Current", "Change", "%"]);
+    const foot = ranked.querySelectorAll("tfoot tr td");
+    expect(foot).toHaveLength(13);
+  });
+
   it("renders movers with drivers and reconciliation lines", () => {
     show();
     expect(screen.getByText("Increases")).toBeTruthy();
