@@ -11,6 +11,26 @@ describe("PartRenderer", () => {
     expect(screen.getByText("bold").tagName).toBe("STRONG");
   });
 
+  it("renders markdown lists with real list items inside the prose scope (Review Focus 1)", () => {
+    const { container } = render(<PartRenderer part={{ kind: "text", payload: { markdown: "## Ports\n\n- Singapore\n- Rotterdam\n\nSee `GP` at [docs](https://example.invalid/)." } }} />);
+    const item = screen.getByText("Singapore");
+    expect(item.tagName).toBe("LI");
+    expect(item.parentElement!.tagName).toBe("UL");
+    expect(item.closest(".prose-poseidon")).toBeTruthy();
+    expect(screen.getByText("Ports").tagName).toBe("H2");
+    expect(screen.getByText("GP").tagName).toBe("CODE");
+    expect((screen.getByText("docs") as HTMLAnchorElement).href).toBe("https://example.invalid/");
+    expect(container.querySelector(".prose-poseidon")).toBeTruthy();
+  });
+
+  it("phase sections set their title as a heading inside the summary and their body in the prose scope", () => {
+    render(<PartRenderer part={{ kind: "phase_section", payload: { title: "Contextualize", markdown: "**done**" } }} />);
+    const title = screen.getByText("Contextualize");
+    expect(title.tagName).toBe("H2");
+    expect(title.closest("summary")).toBeTruthy();
+    expect(screen.getByText("done").closest(".prose-poseidon")).toBeTruthy();
+  });
+
   it("chips send send_text, falling back to the label, and honour disabled", () => {
     const onChipSelect = vi.fn();
     render(
@@ -60,7 +80,7 @@ describe("PartRenderer", () => {
 
   it("proof is collapsed, phase sections are open, errors show the message, unknown kinds fall back to JSON", () => {
     render(<PartRenderer part={{ kind: "proof", payload: { lines: ["SELECT 1"] } }} />);
-    expect((screen.getByText("Proof").closest("details") as HTMLDetailsElement).open).toBe(false);
+    expect((screen.getByText("How this was computed").closest("details") as HTMLDetailsElement).open).toBe(false);
     cleanup();
     render(<PartRenderer part={{ kind: "phase_section", payload: { title: "Contextualize", markdown: "done" } }} />);
     expect((screen.getByText("Contextualize").closest("details") as HTMLDetailsElement).open).toBe(true);
