@@ -14,6 +14,8 @@
 
 **Branch:** `feature/ui-pass-2-parts`, cut from `main` @ c1b74f5 (the PR #12 merge).
 
+**Plan review:** Opus, 2026-10-23 night, "ready with corrections"; all eleven corrections are folded in below (Carlos's instruction for the overnight run). Two visible design calls it asked to surface rather than bury: (a) ruling P2-R1 puts `code` and `<pre>` in a mono font, where spec §3.1's "data font" was the Segoe stack with tabular figures; numbers keep the Segoe stack. (b) The composer refocus after a turn (Task 4) is skipped when something else already holds focus; on touch devices it will still raise the soft keyboard after every turn. Both are listed for Carlos in the morning report.
+
 ## Global Constraints
 
 - `web/` only. Nothing under `frontend/` or `backend/` changes. If a task finds it must touch either, stop and report.
@@ -24,14 +26,14 @@
 - Light only: every `dark:` class in `web/src/ui/message-parts/` goes. `web/src/ui/report/` keeps its `dark:` classes until PR 3; the dark sweep is scoped to `message-parts`.
 - Type scale: small `text-[13px]`, label `text-[12px]`, heading-2 `text-base font-semibold` (16px), metric value `text-lg font-semibold`.
 - Existing tests keep passing unchanged except the two named in Task 2 (the Proof summary text changes to "How this was computed", so the registry test's lookup changes with it) and Task 4 (the scroll test is replaced because the sentinel it asserted on is gone). Each change is in the same commit as the code, with the reason in the commit body.
-- Commands: `cd web` first. Single file: `npx vitest run <path>`. Full suite: `npm test > <file> 2>&1`, then read the file. **Never pipe a test run.** Never set `DRIZZLE_DATABASE_URL` in a test shell (the db-backed files must keep skipping). Never run `next dev` or `next build` from a task (Fable runs the dev server for the browser gate); if `web/AGENTS.md` shows as modified, leave it unstaged.
+- Commands: vitest, npm and tsc run inside `web/`; git and grep run from the repo root (`git -C C:/Users/carlo/github/latest_poseidon ...`, or `cd` back first), because the working directory persists between commands and `git add web/...` from inside `web/` fails with "pathspec did not match". Single file: `npx vitest run <path>`. Full suite: `npm test > <file> 2>&1`, then read the file. **Never pipe a test run.** Never set `DRIZZLE_DATABASE_URL` in a test shell (the db-backed files must keep skipping). Never run `next dev` or `next build` from a task (Fable runs the dev server for the browser gate); if `web/AGENTS.md` shows as modified, leave it unstaged.
 - Before every commit: `git rev-parse --abbrev-ref HEAD` must print `feature/ui-pass-2-parts`; after every commit `git log --oneline main..HEAD` must show only this branch's work. Anything else: stop and report, do not improvise.
 - Commit messages via a scratch file and `git commit -F` (PowerShell mangles quotes). Each ends with the two attribution lines in the session's system reminder.
 
 ## Review Focus
 
 1. **A markdown answer with a heading, a bulleted list, inline code and a link:** bullets are visible (Tailwind's preflight removes list markers; the prose rules put them back), the heading is 16px semibold, the link is accent. Pinned in Task 2's test (a list item renders as `LI` inside `UL` under `.prose-poseidon`).
-2. **A table wider than the 720px column** (twelve columns of amounts): the table scrolls horizontally inside its own wrapper and never widens the thread. Task 3 wraps the table; the browser gate (Task 5) confirms with a wide breakdown.
+2. **A table wider than the 720px column** (twelve columns of amounts): the table scrolls horizontally inside its own wrapper and never widens the thread. Task 3 wraps the table AND gives the shell's `<main>` a `min-w-0`, because a grid `1fr` track is `minmax(auto, 1fr)` and a scroll wrapper still reports its content's full min-content width (the grid blowout the plan review caught: between 768px and about 1000px of viewport the main column would widen to 720px and `body { overflow: hidden }` would clip the composer). The browser gate (Task 5) confirms with a wide breakdown at an 820px window.
 3. **A reader who scrolled up to re-read while a long answer streams** stays where they are; the moment they send a new message the thread returns to the end. Pinned in Task 4's three scroll tests.
 4. **An errored turn:** the chips of the last assistant message stay clickable and the composer gets its focus back when the turn ends. Pinned in Task 4's tests (chips enabled under `status === "error"`; input focused when `disabled` goes false).
 5. **A part kind the registry does not know** still renders, with the kind as its summary and the payload readable. The existing fallback test is kept (Task 2).
@@ -472,6 +474,7 @@ Message: `feat(web): text, proof, fallback and phase-section parts on the prose 
 - Modify: `web/src/ui/message-parts/TablePart.tsx`
 - Modify: `web/src/ui/message-parts/MetricGridPart.tsx`
 - Modify: `web/src/ui/message-parts/registry.test.tsx`
+- Modify: `web/src/ui/shell/Shell.tsx` (one class on `<main>`)
 
 **Interfaces:**
 - Consumes: `Badge` and the `data-table.ts` constants from Task 1.
@@ -482,8 +485,9 @@ Message: `feat(web): text, proof, fallback and phase-section parts on the prose 
 Add inside the `describe("PartRenderer", ...)` block of `web/src/ui/message-parts/registry.test.tsx`, after `"artifacts render a plain download anchor"`:
 
 ```tsx
-  it("artifacts show a MIME badge and keep the download attribute", () => {
-    render(<PartRenderer part={{ kind: "artifact", payload: { name: "brief.pdf", url: "https://example.invalid/b.pdf", mime: "application/pdf" } }} />);
+  it("artifacts show a file glyph, a MIME badge and keep the download attribute", () => {
+    const { container } = render(<PartRenderer part={{ kind: "artifact", payload: { name: "brief.pdf", url: "https://example.invalid/b.pdf", mime: "application/pdf" } }} />);
+    expect(container.querySelector('svg[aria-hidden="true"]')).toBeTruthy(); // the file glyph (spec 4)
     expect(screen.getByText("application/pdf").tagName).toBe("SPAN");
     expect(screen.getByText("brief.pdf").closest("a")!.getAttribute("download")).toBe("brief.pdf");
   });
@@ -504,7 +508,7 @@ Add inside the `describe("PartRenderer", ...)` block of `web/src/ui/message-part
 - [ ] **Step 2: Run the registry test to verify the three new tests fail**
 
 Run: `cd web && npx vitest run src/ui/message-parts/registry.test.tsx`
-Expected: the hint test passes already (the hint was rendered before); the badge test and the wrapper test fail. Note the hint test's pass in the report: it pins behaviour this task must keep, it is not a TDD red.
+Expected: the artifact test fails on the missing file glyph (the badge span and the download attribute already exist, so only the glyph assertion is the red); the wrapper test fails; the hint test passes already (the hint was rendered before). Note the hint test's pass in the report: it pins behaviour this task must keep, it is not a TDD red.
 
 - [ ] **Step 3: Rewrite the six components**
 
@@ -528,7 +532,7 @@ export function ChipsPart({ part, onChipSelect, disabled }: PartProps) {
         <button
           key={option.id}
           type="button"
-          className="rounded-full border border-border bg-surface px-3 py-1 text-[13px] transition-colors duration-[120ms] hover:bg-surface-raised disabled:cursor-default disabled:opacity-60 disabled:hover:bg-surface"
+          className="rounded-full border border-border bg-surface px-3 py-1 text-[13px] transition-colors duration-[120ms] enabled:hover:bg-surface-raised disabled:cursor-default disabled:opacity-60"
           disabled={isDisabled}
           onClick={() => onChipSelect?.(option.id, option.send_text ?? option.label)}
         >
@@ -730,18 +734,22 @@ export function MetricGridPart({ part }: PartProps) {
 Run: `cd web && npx vitest run src/ui/message-parts/registry.test.tsx`
 Expected: 13 tests pass.
 
-- [ ] **Step 5: Confirm the dark sweep of `message-parts` is complete, run the full suite, type-check, commit**
+- [ ] **Step 5: Stop the grid blowout in the shell**
 
-Run: `grep -rn "dark:\|neutral-\|red-\|blue-" web/src/ui/message-parts` (expected: no output). Run `cd web && npm test > <scratch file> 2>&1` and read the file (expected: every file that passed before still passes; the new count is 205 plus the tests added so far). Run `cd web && npx tsc --noEmit` (expected: clean).
+In `web/src/ui/shell/Shell.tsx`, change `<main className="flex min-h-0 flex-col">` to `<main className="flex min-h-0 min-w-0 flex-col">`. Reason for the commit body: the desktop grid's `1fr` track is `minmax(auto, 1fr)`, so without `min-w-0` a wide table or `<pre>` inside its `overflow-x-auto` wrapper still widens the main column to the 720px list cap and `body { overflow: hidden }` clips the composer. No test: jsdom has no layout; the browser gate covers it at 820px.
+
+- [ ] **Step 6: Confirm the dark sweep of `message-parts` is complete, run the full suite, type-check, commit**
+
+From the repo root: `grep -rn "dark:\|neutral-\|red-\|blue-" web/src/ui/message-parts` (expected: no output). Run `cd web && npm test > <scratch file> 2>&1` and read the file (expected: every file that passed before still passes; the new count is 205 plus the tests added so far). Run `npx tsc --noEmit` in `web/` (expected: clean).
 
 ```bash
 git rev-parse --abbrev-ref HEAD   # must print feature/ui-pass-2-parts
-git add web/src/ui/message-parts
+git add web/src/ui/message-parts web/src/ui/shell/Shell.tsx
 git commit -F <scratch message file>
 git log --oneline main..HEAD
 ```
 
-Message: `feat(web): chips, tool-event, error, artifact, table and metric-grid parts on the slate tokens (UI pass PR 2, Task 3)`.
+Message: `feat(web): chips, tool-event, error, artifact, table and metric-grid parts on the slate tokens; min-w-0 on the shell's main (UI pass PR 2, Task 3)`.
 
 ---
 
@@ -851,12 +859,30 @@ In `web/src/ui/shell/Composer.test.tsx`, add inside the `describe`:
     rerender(<Composer disabled={false} onSend={vi.fn()} />);
     expect(document.activeElement).toBe(input());
   });
+
+  it("leaves the focus alone when the reader moved it elsewhere during the turn", () => {
+    const { rerender } = render(
+      <>
+        <button type="button">Chats</button>
+        <Composer disabled onSend={vi.fn()} />
+      </>,
+    );
+    const chats = screen.getByRole("button", { name: "Chats" });
+    chats.focus();
+    rerender(
+      <>
+        <button type="button">Chats</button>
+        <Composer disabled={false} onSend={vi.fn()} />
+      </>,
+    );
+    expect(document.activeElement).toBe(chats);
+  });
 ```
 
 - [ ] **Step 2: Run the two test files to verify the new tests fail**
 
 Run: `cd web && npx vitest run "src/app/c/[id]/Chat.test.tsx" src/ui/shell/Composer.test.tsx`
-Expected: "leaves a reader who scrolled up" fails (the sentinel effect ignores the scroll position, so `scrollTop` is not 100... note: with the sentinel still in place, `scrollIntoView` is a no-op in jsdom and `scrollTop` stays 100, so this test may pass against the old code; the "follows the end" and "returns to the end" tests fail because nothing sets `scrollTop` to 1000). The chips test passes already (it pins the `busy` rule from PR 1; say so in the report). The composer focus test fails (`activeElement` is `body`).
+Expected: "follows the end" and "returns to the end" fail (`scrollTop` stays 0 and 100, not 1000: the old effect only calls `scrollIntoView`, which jsdom lacks, so nothing touches `scrollTop`); the Composer "takes the focus back" test fails (`activeElement` is `body`). "leaves a reader who scrolled up", the chips-on-error test and the Composer "leaves the focus alone" test pass against the old code: the first is proven by Step 6's break-the-guard run, the second pins PR 1's `busy` rule, the third pins that the new effect must not regress it. Say so in the report.
 
 - [ ] **Step 3: Rework the thread's scroll in `Chat.tsx`**
 
@@ -878,6 +904,11 @@ Replace the block from the comment `// The thread scrolls inside its own column 
   // the messages or the error line; a send always re-engages it.
   const threadRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  // Cheap insurance: if Next reuses this instance between /c/A and /c/B,
+  // a `false` left over from A would open B at A's offset instead of its end.
+  useEffect(() => {
+    stick.current = true;
+  }, [conversationId]);
   function onScroll() {
     const el = threadRef.current;
     if (!el) return;
@@ -908,12 +939,16 @@ Change the React import to `import { useEffect, useRef, useState, type FormEvent
 ```tsx
   // The browser blurs an input the moment it is disabled, so without this
   // every turn would end with the reader clicking back into the composer.
-  // Focus returns when `disabled` falls, never on mount: a page that steals
-  // focus on load is a worse habit than one that asks for a click.
+  // Focus returns when `disabled` falls, never on mount, and only if nothing
+  // else holds focus by then: the blurred input leaves focus on <body>, so a
+  // reader who tabbed to a sidebar link or opened a proof block while the
+  // turn streamed is not pulled back.
   const inputRef = useRef<HTMLInputElement>(null);
   const wasDisabled = useRef(disabled);
   useEffect(() => {
-    if (wasDisabled.current && !disabled) inputRef.current?.focus();
+    const active = document.activeElement;
+    const idle = active === null || active === document.body;
+    if (wasDisabled.current && !disabled && idle) inputRef.current?.focus();
     wasDisabled.current = disabled;
   }, [disabled]);
 ```
@@ -923,7 +958,7 @@ Add `ref={inputRef}` to the `<input>`.
 - [ ] **Step 5: Run the two test files to verify they pass**
 
 Run: `cd web && npx vitest run "src/app/c/[id]/Chat.test.tsx" src/ui/shell/Composer.test.tsx`
-Expected: Chat 8 tests pass, Composer 4 tests pass.
+Expected: Chat 8 tests pass, Composer 5 tests pass.
 
 - [ ] **Step 6: Prove the guard by breaking it**
 
@@ -968,7 +1003,7 @@ Write the test line down (files passed/skipped, tests passed/skipped).
 
 - [ ] **Step 2: Update the three docs**
 
-In `CLAUDE.md`, replace both occurrences of `205 passed, 14 skipped, offline; verified 2026-10-23 (UI pass PR 1)` / `205 passed, 14 skipped offline (verified 2026-10-23 (UI pass PR 1))` with the new count and `(UI pass PR 2)`, keeping the surrounding sentence shape; the `27 files passed, 1 skipped` becomes the new file count; the provenance sentence `not re-run in PR C or UI pass PR 1` becomes `not re-run in PR C, UI pass PR 1 or UI pass PR 2`.
+In `CLAUDE.md`, replace both occurrences of `205 passed, 14 skipped, offline; verified 2026-10-23 (UI pass PR 1)` / `205 passed, 14 skipped offline (verified 2026-10-23 (UI pass PR 1))` with the new count and `(UI pass PR 2)`, keeping the surrounding sentence shape; the `27 files passed, 1 skipped` becomes the new file count (expected 28 passed, 1 skipped: `primitives.test.tsx` is the one new file); the provenance phrase `not re-run in PR C or UI pass PR 1 (the Vite app is untouched by both)` becomes `not re-run in PR C, UI pass PR 1 or UI pass PR 2 (the Vite app is untouched by all three)`.
 
 In the spec, the `**Status:**` line becomes: `PR 1 merged (#12, 2026-10-23); PR 2 built on feature/ui-pass-2-parts (plan: docs/superpowers/plans/2026-10-23-ui-pass-2-parts.md); PR 3 pending`.
 
@@ -994,8 +1029,8 @@ Compose up with the scratch port override (db 5434, MinIO 9002/9003), Next dev o
 3. A research pivot after naming a customer, e.g. `any relevant news on Maersk?`: tool-event lines (pulsing dot then check or cross), and whatever phase sections and artifact the stub path produces. Screenshot.
 4. A clarify, e.g. `brief for pacific`: chips (the stub router may answer with the capability message instead; record which).
 5. An error part: if no stub path yields one, the registry test is the evidence; record that in the ledger and the PR body.
-6. Scroll: with twenty-plus messages, scroll up, send another message, confirm the thread returns to the end; scroll up again and confirm a reload does not move the reader while a turn streams (stub turns are fast; the per-token case is covered by Task 4's tests). Confirm the thread rests flush with the bottom after a turn (no 23px gap). Confirm the composer has focus after the turn ends.
-7. A wide table: `GP, volume and margin by customer by port for 2025` (or the widest breakdown the stub returns): the table scrolls inside its wrapper, the thread column does not widen. Screenshot.
+6. Scroll: with twenty-plus messages, scroll up, send another message, confirm the thread returns to the end; scroll up while a turn streams and confirm the thread does not pull you down (stub turns are fast; the per-token case is covered by Task 4's tests); when the turn ends, confirm the composer has focus. Confirm the thread rests flush with the bottom after a turn (no 23px gap). Scroll up in one conversation, open another from the sidebar: it opens at its end.
+7. A wide table: `GP, volume and margin by customer by port for 2025` (or the widest breakdown the stub returns): the table scrolls inside its wrapper, the thread column does not widen. Repeat at an 820px-wide window: the table scrolls inside its wrapper and the composer's right edge is visible. Screenshot.
 8. Console: no errors or warnings.
 
 Any kind the stub path cannot produce is recorded as "covered by tests only" in the ledger and in the PR body.
@@ -1008,4 +1043,5 @@ Any kind the stub path cannot produce is recorded as "covered by tests only" in 
 - Placeholders: none. Every component is given in full.
 - Type consistency: `Disclosure` props (`summary`, `open`, `section`, `children`) used identically in Tasks 2 and its own test; `Badge` `tone` used in Task 1's test and PR 3; `TABLE/TH/TR/TD/TD_NUM` names used identically in Task 3.
 - Review Focus: 1 in Task 2's list test; 2 in Task 3's wrapper test plus the gate; 3 in Task 4's three scroll tests; 4 in Task 4's chips and focus tests; 5 in the kept fallback test.
-- Test counts: 205 at main, plus 4 (primitives) + 3 (globals) + 2 (Task 2) + 3 (Task 3) + 3 net (Task 4: four added, one removed) + 1 (Composer) = 221 expected; Task 5 records the real figure.
+- Test counts: 205 at main, plus 4 (primitives) + 3 (globals) + 2 (Task 2) + 3 (Task 3) + 3 net (Task 4: four added, one removed) + 2 (Composer) = 222 expected; Task 5 records the real figure.
+- Known limitation (plan review item 10, not fixed): an `<h2>` inside `<summary>` is valid HTML but several screen readers expose the summary as a disclosure button and drop the heading role, so heading navigation will not find phase titles. The spec asks for this markup; ledgered, not changed.
