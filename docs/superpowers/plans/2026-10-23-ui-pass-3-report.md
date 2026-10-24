@@ -678,3 +678,56 @@ Screenshots go in the PR body.
 - Review Focus: 1 in `tone.test.ts`; 2 in Task 2's test plus the kept switching test; 3 in the gate; 4 in the kept whole-book test; 5 in Task 1's narrative test plus the kept guard test.
 - Test counts: PR 2's final figure (225) plus 1 (tone) + 3 (Task 1) + 1 (Task 2) + 2 (Task 3) = 232 expected, 29 files; Task 4 records the real figure.
 - Review Focus 1 note: a KPI whose change is exactly zero is not in the golden, so the tile test never exercises the ink branch; `tone.test.ts` pins it (0 and -0).
+
+## Execution record (2026-10-24, overnight run)
+
+Branch `feature/ui-pass-3-report` from `feature/ui-pass-2-parts` @ 8abf8b2 (PR #13, open; stacked). Plan a687b5d, Opus plan review folded in at 84e1f56 (ten corrections), then Task 1 6862111 (Haiku), Task 2 b7f79dd (Haiku, reviewed by Opus), Task 3 2eb330f (Haiku), Task 4 94f8490 (Sonnet), final fix wave 8cd6a16 (Haiku). Every task review approved with no Important findings and no fix rounds; the Task 2 review asked for an Other-row test, added in Task 3. Final whole-branch review on Opus: "Clean" with three minors; two fixed in one wave (a positive P3-R5 test proven by mutation; the three group underlines moved to inner spans so they no longer merge under `border-collapse`), re-review approved, underlines confirmed separate live. The third (spec status wording after #13 merges) is in the morning report. Ledger: `.superpowers/sdd/2026-10-23-ui-pass-3-report/progress.md` (untracked); screenshots `shot-00` (before) to `shot-07`.
+
+Gates at the head: web `npm test` 234 passed, 14 skipped (29 files passed, 1 skipped), `npx tsc --noEmit` clean, `grep -rnE "dark:|(neutral|amber|red|blue)-[0-9]" web/src` empty (the design pass's closing condition). Python and Vite suites not run: nothing under `backend/` or `frontend/` changed. Browser gate (stub backend, Next dev :3000): the full report flow rendered the card; every segment switches; 820px and the 501px floor hold; console clean. Not reachable live: the month-to-date badge (synthetic data ends June 2026; the `mtd` test is the evidence).
+
+**Rulings made during execution (Carlos can undo any of them):** P3-R1 heading elements unchanged (styles only); P3-R2 colour from the numeric change, every metric by sign (so `NUM_LOST` rising is green; see the morning report); P3-R3 numeric column headers right-aligned; P3-R4 arrow and middle-dot glyphs in mover lines (two test strings changed); P3-R5 ranked Change cells coloured by sign, Other row muted; group underlines on inner spans (final review).
+
+### PR description
+
+Paste-ready body at `.superpowers/sdd/2026-10-23-ui-pass-3-report/pr-body.md`. Title: `UI pass PR 3: the report as a document card (stacked on #13)`. Base `feature/ui-pass-2-parts`.
+
+---
+
+## Morning report for Carlos (written 2026-10-24, end of the overnight run)
+
+Everything below is done unless marked **YOU**. Merges are yours, in this order.
+
+**State of the repo**
+- `main` @ c1b74f5 = PR #12 (UI pass PR 1), merged by you.
+- PR #13 `feature/ui-pass-2-parts` (head 8abf8b2): the nine chat parts, three primitives, thread scroll and composer refocus. Open against `main`. https://github.com/sal1391/latest_poseidon/pull/13
+- PR 3 `feature/ui-pass-3-report`: the report document card. Open against `feature/ui-pass-2-parts` (stacked). Number and link in the chat's last message and in `gh pr list`.
+- Web suite at the PR 3 head: 234 passed, 14 skipped; tsc clean; no `dark:` or palette class anywhere under `web/src`. The design pass is complete pending your merges.
+
+**YOU: merge order (about ten minutes)**
+1. Review and merge #13 in the GitHub UI with **"Create a merge commit"** (not squash: PR 3 is stacked on it; a squash would make PR 3 show #13's commits again).
+2. Re-target PR 3 to main: on the PR 3 page click "Edit" next to the title, change the base branch to `main`, confirm. Or in your shell: `gh pr edit <PR 3 number> --base main`. GitHub sometimes does this itself when #13's branch is deleted; check the "base" label either way. The diff should then show only PR 3's commits.
+3. Merge PR 3.
+4. Afterwards (any chat): flip the spec's `**Status:**` line (`docs/superpowers/specs/2026-10-23-nextjs-ui-design-pass-design.md`, line 4) to `Complete. PR 1 #12, PR 2 #13, PR 3 #<n>, all merged <date>. Follow-ons in §8.` The PR 2 plan's "PR description" paragraph says the PR link is in a morning report; it is this one: #13.
+5. If you squash-merged #13 by habit: say so in the next chat and Fable rebases PR 3 with `git rebase --onto main feature/ui-pass-2-parts feature/ui-pass-3-report` before you merge it.
+
+**YOU: six design calls made overnight (each is a one-line revert; say "undo X" and the next chat does it)**
+- **P2-R1** `code` and `<pre>` in a mono font (spec §3.1's "data font" was the Segoe stack for numbers). Numbers keep Segoe with tabular figures.
+- **P2-R3** links inside answers always carry a faint underline (40% of the link colour, full on hover); the spec said hover-only. Reason: accent on ink is about 2.3:1, under the 3:1 colour-only links need (WCAG 1.4.1).
+- **Composer refocus after a turn** is skipped when you moved focus elsewhere or selected text, but on a phone it will raise the keyboard after every answer. If that annoys you on mobile, say so: two lines to skip it on `pointer: coarse`.
+- **P3-R2** KPI change colour follows the sign for every metric, so a *rise* in `NUM_LOST` shows **green**. Opus (plan review and final review) both recommend the alternative: a one-line inverted set for `NUM_LOST` plus one test. My recommendation too; I kept the spec's literal rule so you decide.
+- **P3-R5** the ranked table's Change cells are coloured by sign (the spec did not say); the Other row stays muted.
+- **Group underlines** in the ranked header are three separate lines (final review), not one.
+
+**Not exercised live (rests on tests):** a forced `error` part (no stub path produces one); the month-to-date badge (synthetic data ends June 2026). Everything else in spec §6 was walked through in the browser; screenshots in `.superpowers/sdd/2026-10-23-ui-pass-2-parts/shot-01..08.png` and `.superpowers/sdd/2026-10-23-ui-pass-3-report/shot-00..07.png` (the CLI cannot attach images to a PR).
+
+**Process notes**
+- Carried out under your "finish everything, have opus review and approve all recommendations" instruction: two Opus plan reviews (eleven and ten corrections, all applied) stood in for your plan go; eleven task reviews (nine Sonnet, one Opus, one docs) all approved first time; two Opus whole-branch reviews, each followed by one fix wave and a clean re-review. Model split held: Haiku transcribed seven of the nine code tasks, Sonnet the two with judgment plus all docs, Opus reviewed.
+- `gh pr create` was allowed for #13 and PR 3 this time (the classifier blocked it for #12 yesterday).
+- A few commit trailers name the implementing Haiku or Sonnet rather than Fable; left as is, they are accurate.
+- Infra: the compose db stays up on host 5434 as before; the backend and MinIO containers and the Next dev server were stopped at the end of the run.
+
+**Still open from before:** rotate the Anthropic key pasted into the PR C chat (**YOU**). Follow-ons listed in spec §8 (feedback thumbs, skills popover, settings and user menu, dark mode, narrative heading levels, Vite retirement) plus a root `error.tsx` and `role="alert"` on the error line.
+
+### Handoff prompt for the next chat (paste as-is after both merges)
+
+> You are Fable, supervising Poseidon in C:\Users\carlo\github\latest_poseidon (design, plan, dispatch, review; never implementation code). Read `CLAUDE.md` (gotchas: never `-m router_live` bare, never bare `python`, never pipe pytest, never `ruff format`), `.claude/CLAUDE.md`, the decision log in `docs/architecture/00-overview.md` through D82, and the morning report at the bottom of `docs/superpowers/plans/2026-10-23-ui-pass-3-report.md`. State: the Next.js UI design pass is complete (PRs #12, #13 and the PR 3 number in `gh pr list --state merged`); confirm with `git checkout main && git pull --ff-only`. First job: flip the spec status line to Complete (one-line docs PR, or fold it into the next PR), and apply any "undo X" Carlos gives from the morning report's six design calls (each is one line; `NUM_LOST` inverted colouring is the one both reviewers recommended). Then run `superpowers:brainstorming` to choose the next work from: (1) PR C carry-forwards, (2) Phase 17b retrieval, (3) the first live-mode browser session on Anthropic (needs Carlos's key in his own shell, file-scoped `-m router_live tests/test_llm_anthropic.py`, and his word in that chat; ask whether the PR C key was rotated), (4) the §8 follow-ons (feedback thumbs or the skills popover are the smallest). Ask 3-4 multiple-choice questions, recommendation first; write the plan under `docs/superpowers/plans/`; STOP for his go; never write a plan and dispatch in the same turn. Rules: no Bedrock ever; every pytest run carries `env -u PERPLEXITY_API_KEY` and `-m 'not pg and not minio and not pdf and not router_live and not research_live'`; `backend/.venv/Scripts/python.exe` only; branch from main explicitly, feature branch, PR, Carlos merges in the GitHub UI; `gh pr create` only on his word; commit messages via scratch file and `git commit -F`; model split in every plan header (Haiku transcription, Sonnet routine, Opus judgment and the riskiest reviews; Fable never implements). Local infra: compose db on host 5434; MinIO 9000 is held by another project, so bring compose up with a scratch `ports: !override` file (db 5434:5432, minio 9002:9000/9003:9001); Next dev with `POSEIDON_INTERNAL_TOKEN=dev-internal-token` and `DRIZZLE_DATABASE_URL=postgresql://poseidon:poseidon@localhost:5434/poseidon`; the chrome-devtools MCP tools drive the browser.
