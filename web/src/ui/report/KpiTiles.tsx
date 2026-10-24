@@ -1,14 +1,17 @@
+import { toneFor } from "./tone";
 import type { Delta } from "./types";
 
+/** One tile per KPI, in payload order: name, current value, the change line
+ * coloured by its sign (ruling P3-R2), the prior value beneath (spec 5). */
 export function KpiTiles({ kpis }: { kpis: Record<string, Delta> }) {
   return (
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
       {Object.entries(kpis).map(([metric, d]) => (
-        <dl key={metric} data-metric={metric} className="rounded-md border border-neutral-200 p-2 text-sm dark:border-neutral-800">
-          <dt className="text-xs text-neutral-500">{metric}</dt>
-          <dd className="text-lg font-semibold tabular-nums">{d.display.current}</dd>
-          <dd className="tabular-nums">{`${d.display.change} (${d.display.pct})`}</dd>
-          <dd className="text-xs text-neutral-500 tabular-nums">{`prior ${d.display.prior}`}</dd>
+        <dl key={metric} data-metric={metric} className="rounded-card border border-border p-3">
+          <dt className="text-[12px] uppercase tracking-wide text-ink-muted">{metric}</dt>
+          <dd className="text-xl font-semibold tabular-nums">{d.display.current}</dd>
+          <dd className={`text-[13px] tabular-nums ${toneFor(d.change)}`}>{`${d.display.change} (${d.display.pct})`}</dd>
+          <dd className="text-[12px] text-ink-muted tabular-nums">{`prior ${d.display.prior}`}</dd>
         </dl>
       ))}
     </div>

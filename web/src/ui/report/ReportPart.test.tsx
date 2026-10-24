@@ -80,11 +80,36 @@ describe("ReportPart", () => {
 
   it("proof is collapsed", () => {
     show();
-    expect((screen.getByText("Proof").closest("details") as HTMLDetailsElement).open).toBe(false);
+    expect((screen.getByText("How this was computed").closest("details") as HTMLDetailsElement).open).toBe(false);
   });
 
   it("an mtd payload shows the badge", () => {
     show({ ...payload, periods: { ...payload.periods, window_kind: "mtd" } });
     expect(screen.getByText("Month to date")).toBeTruthy();
+  });
+
+  it("colours each kpi change line by the sign of its numeric change (ruling P3-R2)", () => {
+    const { container } = show();
+    for (const [metric, d] of Object.entries(payload.kpis)) {
+      const tile = container.querySelector(`[data-metric="${metric}"]`)!;
+      const line = within(tile as HTMLElement).getByText(`${d.display.change} (${d.display.pct})`);
+      const expected = d.change > 0 ? "text-positive" : d.change < 0 ? "text-negative" : "text-ink";
+      expect(line.className.split(" ")).toContain(expected);
+    }
+  });
+
+  it("header carries the generated line with a middle dot and the period pair", () => {
+    show();
+    expect(screen.getByText(`Generated ${payload.generated_at} · Source: ${payload.source}`)).toBeTruthy();
+  });
+
+  it("narrative has its heading, renders in the prose scope, and a withheld notice is a muted line (Review Focus 5)", () => {
+    const { container } = show({ ...payload, narrative: { template_md: "Plain **template** text.", llm_md: null, grounded: false, flags: ["model narrative skipped: stub mode"] } });
+    expect(screen.getByRole("heading", { level: 4, name: "Narrative" })).toBeTruthy();
+    expect(screen.getByText("template").closest(".prose-poseidon")).toBeTruthy();
+    const notice = screen.getByText("AI narrative withheld");
+    expect(notice.className).not.toContain("font-medium");
+    expect(notice.className).toContain("text-ink-muted");
+    expect(container.textContent).toContain("model narrative skipped: stub mode");
   });
 });
