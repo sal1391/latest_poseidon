@@ -1082,7 +1082,7 @@ Gates at the head: web `npm test` 205 passed, 14 skipped (27 files passed, 1 ski
 
 ### PR description
 
-Paste-ready body at `.superpowers/sdd/2026-10-23-ui-pass-1-shell/pr-body.md`. Title: `UI pass PR 1: slate theme tokens, sidebar shell, pill composer, internal-scroll thread`. `git push` and `gh pr create` only on Carlos's word.
+Paste-ready body at `.superpowers/sdd/2026-10-23-ui-pass-1-shell/pr-body.md`. Title: `UI pass PR 1: slate theme tokens, sidebar shell, pill composer, internal-scroll thread`. Opened as PR #12 and merged by Carlos on 2026-10-23 (main @ c1b74f5).
 
 ### Handoff prompt for PR 2 (paste as-is into a new chat, after PR 1 is merged)
 
