@@ -6,8 +6,8 @@ import type { MetricKey, RankedTable, ReportPayload, Row } from "./types";
 const METRICS: MetricKey[] = ["GP", "VOLUME", "MARGIN"];
 const METRIC_LABEL: Record<MetricKey, string> = { GP: "GP", VOLUME: "Volume", MARGIN: "Margin" };
 const COLUMNS = ["Prior", "Current", "Change", "%"] as const;
-/** The spanning metric header: centred over its four columns, hairline beneath. */
-const TH_GROUP = "border-b border-border px-2 pb-1 text-center text-[12px] font-medium uppercase tracking-wide text-ink-muted";
+/** The spanning metric header: centred over its four columns; the hairline is on the inner span so the three lines do not merge under border-collapse. */
+const TH_GROUP = "px-2 pb-1 text-center text-[12px] font-medium uppercase tracking-wide text-ink-muted";
 /** Footer cells: bold, rule above, no rule beneath (the table ends there). */
 const TF = "border-t border-border px-2 py-1.5 font-semibold";
 const TF_NUM = `${TF} text-right tabular-nums`;
@@ -77,7 +77,7 @@ export function RankedTables({ tables, entityLabel }: { tables: ReportPayload["t
               </th>
               {METRICS.map((m) => (
                 <th key={m} colSpan={4} className={TH_GROUP}>
-                  {METRIC_LABEL[m]}
+                  <span className="block border-b border-border pb-1">{METRIC_LABEL[m]}</span>
                 </th>
               ))}
             </tr>

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { PartRenderer } from "../message-parts/registry";
+import { toneFor } from "./tone";
 import type { ReportPayload } from "./types";
 
 afterEach(cleanup);
@@ -93,6 +94,16 @@ describe("ReportPart", () => {
     expect(other.className.split(" ")).toContain("text-ink-muted");
     const cells = [...other.querySelectorAll("td")].map((td) => td.className);
     expect(cells.some((c) => c.includes("text-positive") || c.includes("text-negative"))).toBe(false);
+  });
+
+  it("colours ranked body and footer change cells by sign (ruling P3-R5)", () => {
+    const { container } = show();
+    const t = payload.tables.entities_by_gp;
+    const ranked = container.querySelector("table")!;
+    const body = ranked.querySelectorAll("tbody tr")[0].querySelectorAll("td");
+    expect(body[3].className.split(" ")).toContain(toneFor(t.rows[0].change.GP));
+    const foot = ranked.querySelectorAll("tfoot tr td");
+    expect(foot[3].className.split(" ")).toContain(toneFor(t.footer.change.GP));
   });
 
   it("renders a whole-book report without entity context", () => {
