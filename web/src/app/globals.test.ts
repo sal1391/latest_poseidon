@@ -50,7 +50,7 @@ describe("globals.css prose and disclosure rules (spec 4)", () => {
   });
 
   it("scopes the markdown rules to .prose-poseidon with 16px semibold headings and mono code", () => {
-    expect(css).toMatch(/\.prose-poseidon h1,\s*\.prose-poseidon h2,\s*\.prose-poseidon h3\s*\{[^}]*font-size:\s*16px/);
+    expect(css).toMatch(/\.prose-poseidon h1,\s*\.prose-poseidon h2,\s*\.prose-poseidon h3,\s*\.prose-poseidon h4,\s*\.prose-poseidon h5,\s*\.prose-poseidon h6\s*\{[^}]*font-size:\s*16px/);
     expect(css).toMatch(/\.prose-poseidon code\s*\{[^}]*var\(--font-mono\)/);
     expect(css).toMatch(/\.prose-poseidon ul\s*\{[^}]*list-style:\s*disc/);
   });

@@ -67,4 +67,28 @@ describe("Composer", () => {
     );
     expect(document.activeElement).toBe(chats);
   });
+
+  it("leaves the focus alone when the reader has text selected in the thread", () => {
+    const { rerender } = render(
+      <>
+        <p>Certified answer for Singapore.</p>
+        <Composer disabled onSend={vi.fn()} />
+      </>,
+    );
+    const text = screen.getByText("Certified answer for Singapore.").firstChild as Text;
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, 9);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    rerender(
+      <>
+        <p>Certified answer for Singapore.</p>
+        <Composer disabled={false} onSend={vi.fn()} />
+      </>,
+    );
+    expect(document.activeElement).not.toBe(input());
+    selection.removeAllRanges();
+  });
 });

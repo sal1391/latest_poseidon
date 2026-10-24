@@ -134,6 +134,30 @@ describe("Chat", () => {
     expect(box.scrollTop).toBe(1000);
   });
 
+  it("still counts 48px from the end as reading the latest", () => {
+    chat.state.messages = [user];
+    const { rerender } = render(<Chat conversationId="c1" initialMessages={[]} />);
+    const box = thread();
+    fakeScrollBox(box, { scrollHeight: 1000, clientHeight: 400 });
+    box.scrollTop = 560;
+    fireEvent.scroll(box);
+    chat.state.messages = [user, assistant];
+    rerender(<Chat conversationId="c1" initialMessages={[]} />);
+    expect(box.scrollTop).toBe(1000);
+  });
+
+  it("opens another conversation at its end even after scrolling up in this one", () => {
+    chat.state.messages = [user];
+    const { rerender } = render(<Chat conversationId="c1" initialMessages={[]} />);
+    const box = thread();
+    fakeScrollBox(box, { scrollHeight: 1000, clientHeight: 400 });
+    box.scrollTop = 100;
+    fireEvent.scroll(box);
+    chat.state.messages = [user, assistant];
+    rerender(<Chat conversationId="c2" initialMessages={[]} />);
+    expect(box.scrollTop).toBe(1000);
+  });
+
   it("keeps the last message's chips clickable after an errored turn (Review Focus 4)", () => {
     const chips: PoseidonUIMessage = {
       id: "a2",

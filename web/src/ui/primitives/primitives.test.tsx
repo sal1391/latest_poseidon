@@ -16,7 +16,7 @@ describe("Disclosure", () => {
 
   it("opens when asked, with a heading as its summary", () => {
     render(
-      <Disclosure open section summary={<h2>Contextualize</h2>}>
+      <Disclosure defaultOpen section summary={<h2>Contextualize</h2>}>
         the body
       </Disclosure>,
     );
@@ -35,5 +35,6 @@ describe("Badge", () => {
   it("accepts the warn tone", () => {
     render(<Badge tone="warn">Month to date</Badge>);
     expect(screen.getByText("Month to date")).toBeTruthy();
+    expect(screen.getByText("Month to date").className).toContain("bg-warn-bg");
   });
 });

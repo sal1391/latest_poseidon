@@ -11,7 +11,7 @@ import type { PartProps, PhaseSectionPayload } from "./registry";
 export function PhaseSectionPart({ part }: PartProps) {
   const { title, markdown } = part.payload as PhaseSectionPayload;
   return (
-    <Disclosure open section summary={<h2 className="text-base font-semibold">{title}</h2>}>
+    <Disclosure defaultOpen section summary={<h2 className="text-base font-semibold">{title}</h2>}>
       <div className="prose-poseidon">
         <Markdown>{markdown}</Markdown>
       </div>
