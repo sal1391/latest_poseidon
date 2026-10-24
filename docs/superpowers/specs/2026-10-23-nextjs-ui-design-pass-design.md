@@ -1,7 +1,7 @@
 # Next.js UI design pass — design
 
 **Date:** 2026-10-23
-**Status:** PR 1 merged (#12, 2026-10-23); PR 2 built on feature/ui-pass-2-parts (plan: docs/superpowers/plans/2026-10-23-ui-pass-2-parts.md); PR 3 pending
+**Status:** PR 1 merged (#12, 2026-10-23); PR 2 #13 (feature/ui-pass-2-parts); PR 3 feature/ui-pass-3-report (plan 2026-10-23-ui-pass-3-report.md), awaiting merge. Follow-ons in §8.
 **Owner of design decisions:** Fable. **Implementation:** worker subagents (Sonnet for the
 component work, Haiku where the plan carries the complete code, Opus only for the riskiest
 review). Fable never writes implementation code.
@@ -231,6 +231,7 @@ the browser walkthrough, never implements.
   removes the "it looks like a scaffold" blocker only.
 - Rotate the Anthropic key pasted into the PR C chat (open, not a UI item, listed so it is not
   lost).
+- Narrative heading levels: the template markdown's "##" headings render as h2 inside a section headed h4 under the card's h3; map them down (react-markdown components, h1–h3 to h5) in a later pass.
 
 ## 9. Decision-log entry
 
