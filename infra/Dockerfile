@@ -145,7 +145,8 @@ RUN pip install /app
 
 # Non-root: nothing this process does needs root, and /app stays root-owned
 # (no chown) so the running user cannot modify its own code or the vendored
-# ontology at /ontology. Artifacts go to S3, never to the local filesystem.
+# ontology at /ontology. Brief and report bytes are stored in Postgres, never on
+# the local filesystem.
 RUN useradd --create-home --uid 10001 app
 USER app
 

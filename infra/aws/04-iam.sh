@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# PARKED (D84, 2026-11-16): the EC2 habitat is not a deploy target; Poseidon
+# ships to Snowpark Container Services with Snowflake Postgres. This file is
+# kept for reference only. The app no longer reads `S3_*` and has no object
+# store, so every S3 / artifact-bucket step here is stale.
 # Poseidon EC2 deployment -- Phase 14 Task 6 (doc 07 section 5).
 #
 # IAM role + instance profile for the EC2 box: Bedrock invoke (the exact

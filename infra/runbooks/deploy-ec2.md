@@ -1,5 +1,10 @@
 # Deploy runbook: EC2 (first-deployed target)
 
+> PARKED (D84, 2026-11-16): the EC2 habitat is not a deploy target; Poseidon
+> ships to Snowpark Container Services with Snowflake Postgres. This file is
+> kept for reference only. The app no longer reads `S3_*` and has no object
+> store, so every S3 / artifact-bucket step here is stale.
+
 Phase 14 Task 6 (docs/architecture/07-infrastructure.md section 5, decision D8 revised
 2026-08-05: EC2 deploys first, SPCS remains the corporate primary target, deployed after).
 Written so someone who has never seen this repo can execute it top to bottom. Every command
