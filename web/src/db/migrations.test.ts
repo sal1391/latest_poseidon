@@ -7,10 +7,25 @@ const webRoot = join(__dirname, "..", "..");
 const drizzleDir = join(webRoot, "drizzle");
 
 describe("web/drizzle is in step with schema.ts (Phase 16 Task 7 tripwire)", () => {
-  it("contains the four expected migrations and a journal", () => {
+  it("contains the five expected migrations and a journal", () => {
     const files = readdirSync(drizzleDir).filter((f) => f.endsWith(".sql")).sort();
-    expect(files).toEqual(["0000_roles.sql", "0001_baseline.sql", "0002_grants_force_rls.sql", "0003_report_run.sql"]);
+    expect(files).toEqual([
+      "0000_roles.sql",
+      "0001_baseline.sql",
+      "0002_grants_force_rls.sql",
+      "0003_report_run.sql",
+      "0004_brief_run.sql",
+    ]);
     expect(existsSync(join(drizzleDir, "meta", "_journal.json"))).toBe(true);
+  });
+
+  it("0004 creates brief_run as a shared org document", () => {
+    const sql = readFileSync(join(drizzleDir, "0004_brief_run.sql"), "utf8");
+    expect(sql).toContain('CREATE TABLE "brief_run"');
+    expect(sql).toContain("GRANT SELECT, INSERT ON brief_run TO poseidon_app;");
+    expect(sql).not.toContain("ENABLE ROW LEVEL SECURITY");
+    expect(sql).not.toContain("CREATE POLICY");
+    expect(sql).toMatch(/ck_brief_run_kind[\s\S]*'existing_customer'::text[\s\S]*'new_prospect'::text/);
   });
 
   it("0003 creates report_run as a shared org document and widens the mode check", () => {
