@@ -514,8 +514,6 @@ def test_slug_keeps_the_latin_remainder_of_a_mixed_script_title():
     assert slug("日本語 Brief 2026") == "brief-2026"
 
 
-
-
 @pytest.mark.pdf
 @pytest.mark.skipif(
     not _HAS_WEASYPRINT, reason="weasyprint needs Pango/Cairo - run in the container"

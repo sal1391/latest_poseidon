@@ -193,29 +193,15 @@ def _settings() -> Settings:
 
 
 def _drop_artifact_store(app) -> None:
-    """Phase 14 final-review wave (C3): this suite is ``pg``-marked, NOT
-    ``minio``-marked -- it needs a real Postgres and nothing else.
+    """This suite is ``pg``-marked, NOT ``minio``-marked -- it needs a real
+    Postgres and nothing else.
 
-    Before that wave, ``create_app`` wired an ``ArtifactStore`` only under
-    ``deploy_mode == "local"`` and NOTHING threaded it into the
-    orchestrator's ``SkillContext``, so every brief turn through this HTTP
-    surface hit the skill's ``ctx.artifacts is None`` branch and pinned its
-    honest "Artifact: skipped" proof line for free. The wave fixed exactly
-    that (``_wire_live_chat`` builds the store for every deploy_mode;
-    ``live_chat.py`` threads it), which would otherwise make these two
-    scripted flows attempt a REAL PDF upload to whatever ``S3_ENDPOINT_URL``
-    /AWS happens to be reachable from the machine running them -- an
-    environment dependency this suite has never had, and a pinned proof
-    line that would change with it.
-
-    Dropping the store back to ``None`` post-construction (the same
-    post-construction substitution ``test_live_chat_sse.py``'s own
-    ``_live_app`` does for ``data_client``/``run_log_writer``) keeps every
-    number in these two flows byte-identical to what they pinned before the
-    wave. The real store-carrying path is covered offline, without S3, by
-    ``test_live_chat_sse.py``'s own artifact-store wiring test; the real
-    upload path stays where it already lives, behind the ``minio`` marker
-    (``test_artifacts.py``/``test_brief_pdf.py``).
+    Dropping the artifact store back to ``None`` post-construction (the same
+    substitution ``test_live_chat_sse.py``'s own ``_live_app`` does for
+    ``data_client``/``run_log_writer``) now serves only the report flow test
+    (``test_report_flow_pg.py`` imports this helper), so that suite does not
+    depend on S3/MinIO being reachable. The brief flows no longer use an
+    artifact store at all (D83): they store a ``brief_run`` row instead.
     """
     app.state.artifact_store = None
 
@@ -241,6 +227,7 @@ def _fixed_brief_render(monkeypatch) -> None:
             html="<p>e2e</p>", pdf=_FIXED_PDF, pdf_error=None, page_count=1
         ),
     )
+
 
 @pytest.fixture
 def anyio_backend():
