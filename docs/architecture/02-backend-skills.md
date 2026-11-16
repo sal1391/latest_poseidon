@@ -101,7 +101,8 @@ SkillContext:  user (UserContext, doc 05) · profile (user system instruction + 
                llm (role-based model client, doc 03) · tools (external tool adapters via
                backend/poseidon/mcp, §7) · run (run-log recorder,
                doc 06) · settings · report_store (ReportStore over report_run, doc 05 §4) ·
-               prompt_tree (PromptTree over backend/prompts/, doc 03 §4)
+               prompt_tree (PromptTree over backend/prompts/, doc 03 §4) ·
+               brief_store (BriefStore over brief_run, D83)
 SkillResult:   ok · parts: list[MessagePart]   (typed parts of doc 01 §4)
                proof: list[str]                (deterministic provenance block)
                artifacts: list[ArtifactRef] · usage: TokenUsage · error: ProblemDetail | None

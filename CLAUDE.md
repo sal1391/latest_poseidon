@@ -43,6 +43,10 @@ cd backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest \
 
 # Postgres-backed suite (needs the compose `db` service up; DATABASE_URL points at it, e.g.
 # postgresql+psycopg://poseidon:poseidon@localhost:5434/poseidon when the compose db is started with a port override; the tracked compose file maps 5432) -> 368 passed, 0 skipped
+# To start it that way, pass a second `-f` file containing exactly:
+#   services:
+#     db:
+#       ports: !override ["5434:5432"]
 # (Drizzle-only database; Alembic no longer owns this schema, D58)
 cd backend && .venv/Scripts/python.exe -B -m pytest -p no:cacheprovider -m pg
 
@@ -77,7 +81,7 @@ cd web && npx drizzle-kit migrate      # reads DRIZZLE_DATABASE_URL
 piped:** offline Python 2471 passed, 14 skipped, 153 deselected; `ruff check` clean;
 `tests/contracts` 9 passed (nine dots in the `-q` output; `contracts/` unchanged; `git status --short contracts/` empty); pg suite 368 passed, 0
 skipped, run serially against the compose `db` service (host port 5434 when the compose db is started with a port override; the tracked compose file maps 5432).
-Drizzle now has five migrations (0000-0004); the pg suite still needs the compose `migrate` service re-run after pulling this change.
+Drizzle has five migrations (0000-0004); the pg suite needs the compose `migrate` service to have run against the database it tests.
 The `pdf`-marked tests run in the backend container: 2 passed (the brief PDF test and the
 monthly-performance render test).
 Web `npm test` 241 passed, 15 skipped offline (verified 2026-11-16 (MinIO removal)), web `npx tsc --noEmit` clean, Vite frontend 171 passed in 18 files and `npm run lint` clean:
