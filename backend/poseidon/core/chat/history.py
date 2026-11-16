@@ -203,6 +203,10 @@ def _encode_cursor(payload: dict) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii")
 
 
+#: The title every conversation is created with, and the value
+#: :meth:`UserHistory.get_title` reads back until a title is set.
+UNTITLED = "New chat"
+
 #: Every exception type the decode-through-parse pipeline below can
 #: legitimately raise for some malformed input, empirically enumerated
 #: (not merely assumed) against every matrix cell the fix-round review
@@ -308,6 +312,8 @@ _BUMP_UPDATED_AT_SQL = text("UPDATE conversations SET updated_at = now() WHERE i
 _SET_TITLE_SQL = text("UPDATE conversations SET title = :title WHERE id = :id")
 
 _DELETE_CONVERSATION_SQL = text("DELETE FROM conversations WHERE id = :id")
+
+_GET_TITLE_SQL = text("SELECT title FROM conversations WHERE id = :id")
 
 _READ_STATE_SQL = text("SELECT state FROM conversations WHERE id = :id")
 
@@ -421,7 +427,7 @@ class UserHistory:
                 {
                     "id": str(conversation_id),
                     "user_sub": self._user_sub,
-                    "title": "New chat",
+                    "title": UNTITLED,
                     "mode": mode,
                 },
             )
@@ -436,7 +442,7 @@ class UserHistory:
                     "turn_id": None,
                 },
             )
-        conversation = {"id": str(conversation_id), "title": "New chat"}
+        conversation = {"id": str(conversation_id), "title": UNTITLED}
         opener = {"id": str(opener_id), "role": "assistant", "parts": opener_parts}
         return conversation, opener
 
@@ -635,6 +641,19 @@ class UserHistory:
             return
         with self._transaction() as conn:
             conn.execute(_SET_TITLE_SQL, {"id": str(parsed_cid), "title": title})
+
+    def get_title(self, cid: str) -> str | None:
+        """The row's ``title`` -- ``None`` for an absent, malformed, or
+        invisible ``cid`` (never raises). A fresh conversation reads back
+        :data:`UNTITLED`."""
+        parsed_cid = _parse_uuid(cid)
+        if parsed_cid is None:
+            return None
+        with self._transaction() as conn:
+            row = conn.execute(_GET_TITLE_SQL, {"id": str(parsed_cid)}).first()
+        if row is None:
+            return None
+        return row[0]
 
     def read_state(self, cid: str) -> dict:
         """The raw ``state`` jsonb -- ``{}`` for an absent, malformed, or

@@ -221,12 +221,20 @@ auto-vivifying a real, persisted, RLS-owned table would mean minting
 that ``LookupError`` straight to the SAME 404 ``GET .../messages`` already
 uses for an unknown/foreign conversation.
 
-*Titles at turn one.* After a SUCCESSFUL first turn (``turn_index == 1``,
-``outcome.status == "ok"``), the route calls :func:`~poseidon.core.llm.
-titles.title_for`, falls back to ``question[:60]`` on ``""``, and both
-persists the result (``UserHistory.set_title``) and folds it into that
-turn's own ``done`` frame as an additive ``"title": str|null`` field (``null``
-on every other ``done`` frame -- a later turn, or a turn-one ``clarify``).
+*Titles at turn one.* The heading is historical: the title lands on a
+conversation's first SUCCESSFUL turn, which is turn one only when nothing
+clarified first. A flow chip (report, brief) opens with one or more
+``clarify`` turns, so gating on ``turn_index == 1`` left those conversations
+titled "New chat" for good (finding F2). The gate is now "``outcome.status ==
+"ok"``, not replayed, and the conversation is still untitled"
+(``UserHistory.get_title(cid) == UNTITLED``): the route calls :func:`~poseidon.
+core.llm.titles.title_for` with the question plus the turn's answer summary
+(``TurnOutcome.answer_summary``, so a chip-opened conversation, whose first
+question is only "Houston", is titled from what the turn actually produced),
+falls back to ``question[:60]`` on ``""``, and both persists the result
+(``UserHistory.set_title``) and folds it into that turn's own ``done`` frame
+as an additive ``"title": str|null`` field (``null`` on every other ``done``
+frame -- a later turn of an already-titled conversation, or a ``clarify``).
 The catch: ``sink.done(usage)`` is called by ``orchestrator.py`` itself,
 synchronously, BEFORE ``execute_turn`` returns its ``TurnOutcome`` -- by the
 time this route could inspect ``outcome.status``, the ``done`` frame may
@@ -238,16 +246,13 @@ either. Instead, ``send`` holds back (never immediately queues) the ONE
 ``else:`` branch of ``run_turn_sync``'s ``try``), the real outcome is known,
 the title is computed (or left ``None``), and :func:`_inject_done_title`
 re-serializes the buffered frame with that field before it ever reaches the
-client. ``turn_index`` itself is read back off the ``accepted`` frame
-(``TurnOutcome`` carries no such field) -- the one other frame ``send``
-inspects rather than merely folding into the transcript buffer or forwarding
-verbatim. A title-computation failure (a role-client bug, a ``set_title``
-call landing on a dropped connection -- ``title_for`` itself already
-swallows a provider error into ``""``, per its own docstring, but nothing
-guards the ``RoleClient.invoke``/``set_title`` calls THIS route makes) is
-caught, logged, and treated as "no title" rather than allowed to break the
-``done`` frame an already-finished, otherwise-successful turn owes the
-client -- the identical "a second failure must never re-terminate an
+client. A title-computation failure (a role-client bug, a ``get_title``/
+``set_title`` call landing on a dropped connection -- ``title_for`` itself
+already swallows a provider error into ``""``, per its own docstring, but
+nothing guards the ``RoleClient.invoke``/``set_title`` calls THIS route
+makes) is caught, logged, and treated as "no title" rather than allowed to
+break the ``done`` frame an already-finished, otherwise-successful turn owes
+the client -- the identical "a second failure must never re-terminate an
 already-finished turn" discipline ``orchestrator.py``'s own pass-through
 repopulation guard uses.
 
@@ -358,6 +363,7 @@ from poseidon.api.auth import rate_limit_chat_send, require_sales
 from poseidon.core.chat.events import SseEnvelopeSink, skill_label
 from poseidon.core.chat.feedback import FeedbackNotApplicable, FeedbackStore
 from poseidon.core.chat.history import (
+    UNTITLED,
     DbStateStore,
     HistoryStore,
     MalformedCursor,
@@ -881,10 +887,6 @@ async def stream_turn(
     # none) is held here, not queued immediately, until the real outcome is
     # known -- see the module docstring's "Titles at turn one".
     pending_done: list[str] = []
-    # `accepted`'s own turn_index, the ONE other frame this route reads
-    # rather than merely folding or forwarding -- TurnOutcome carries no
-    # such field.
-    turn_index_holder: list[int] = []
     # Fix round 1, Important-3 (persistence-ordering race): set the instant
     # _persist_once actually runs, so a SECOND call (the terminal-frame call
     # site below, racing the `finally` safety net) becomes a no-op instead
@@ -936,9 +938,7 @@ async def stream_turn(
     def send(frame: str) -> None:
         _record_transcript_frame(frame, assistant, buffer)
         name, data = _decode_frame(frame)
-        if name == "accepted":
-            turn_index_holder.append(data["turn_index"])
-        elif name == "done":
+        if name == "done":
             pending_done.append(frame)
             return
         elif name == "error":
@@ -958,33 +958,40 @@ async def stream_turn(
         """Flush the buffered ``done`` frame now that ``execute_turn`` has
         returned -- see the module docstring's "Titles at turn one" for the
         full rationale. A no-op when the turn produced no ``done`` frame at
-        all (a duplicate-turn error retry, or a turn-one entry/subject
-        clarify that still needs no title).
+        all (a duplicate-turn error retry).
+
+        The title is computed when the turn is ``ok``, not a replay, and the
+        conversation is still untitled (``get_title(cid) == UNTITLED``) --
+        the first ``ok`` turn, whichever index it has, and never again once
+        a title exists. The input is the question, plus the turn's answer
+        summary when it has one (``TurnOutcome.answer_summary``).
 
         ``outcome.replayed`` (Phase 11 Task 3) gates title computation off
-        too, defensively, alongside ``turn_index == 1``: a true replay's
-        freshly-minted ``turn_index`` is, in every reachable case, at least
-        2 (the ORIGINAL turn it replays already consumed an earlier index
-        for itself -- ``core/chat/orchestrator.py``'s own ``_begin_turn``
-        mints a fresh index unconditionally, before the duplicate check
-        ever runs), so this guard is not expected to change behavior on any
-        real request today -- it exists so a replayed turn can never, even
-        in a theoretical race, trigger a spurious ``title_for``/``set_
-        title`` call for content the pipeline never actually produced this
-        time. Threaded into :func:`_inject_done_title` either way, so the
-        additive ``"replayed": true`` field reaches the wire exactly when
-        ``execute_turn`` said this was one -- never guessed at here.
+        too, defensively: a replayed turn replays content the pipeline never
+        actually produced this time, so it must never trigger a spurious
+        ``title_for``/``set_title`` call, even in a theoretical race where
+        the original turn's title is not yet visible. Threaded into
+        :func:`_inject_done_title` either way, so the additive ``"replayed":
+        true`` field reaches the wire exactly when ``execute_turn`` said this
+        was one -- never guessed at here.
         """
         if not pending_done:
             return
         frame = pending_done[0]
-        turn_index = turn_index_holder[0] if turn_index_holder else None
         title = None
-        if outcome.status == "ok" and turn_index == 1 and not outcome.replayed:
+        if outcome.status == "ok" and not outcome.replayed:
             try:
-                computed = title_for(text, app_state.role_client, app_state.prompt_registry)
-                title = computed if computed else text[:60]
-                user_history.set_title(cid, title)
+                if user_history.get_title(cid) == UNTITLED:
+                    title_input = (
+                        text
+                        if outcome.answer_summary is None
+                        else f"{text}\n\n{outcome.answer_summary}"
+                    )
+                    computed = title_for(
+                        title_input, app_state.role_client, app_state.prompt_registry
+                    )
+                    title = computed if computed else text[:60]
+                    user_history.set_title(cid, title)
             except Exception as exc:  # noqa: BLE001 - a title failure must not break an already-finished turn's done frame
                 logger.error(
                     "title computation failed: conversation_id=%s: %s: %s",

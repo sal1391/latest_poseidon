@@ -714,7 +714,12 @@ def test_flagship_singapore_top_gp_frame_sequence_and_writer_rows(monkeypatch):
     # --- TurnOutcome ---
     # turn_run_id IS the sink's own turn_id (Phase 6 Task 4's turn-id
     # unification amendment) -- never a writer-minted id of its own.
-    assert outcome == TurnOutcome(status="ok", message_id="msg-1", turn_run_id="turn-1")
+    assert outcome == TurnOutcome(
+        status="ok",
+        message_id="msg-1",
+        turn_run_id="turn-1",
+        answer_summary="Certified answer for SINGAPORE " + _EM_DASH + " 2026-04-01..2026-05-01.",
+    )
 
     # --- frame sequence, event by event, event_seq 1..N, envelope on every
     #     data JSON (doc 01 section 5 verbatim) ---
@@ -1760,7 +1765,12 @@ def test_retry_with_same_client_turn_key_short_circuits_with_duplicate_turn_erro
 
     # The FIRST send: an ordinary, successful turn. turn_run_id IS the first
     # sink's own turn_id -- the turn-id unification half of this amendment.
-    assert first_outcome == TurnOutcome(status="ok", message_id="msg-A", turn_run_id="turn-A")
+    assert first_outcome == TurnOutcome(
+        status="ok",
+        message_id="msg-A",
+        turn_run_id="turn-A",
+        answer_summary="Certified answer for SINGAPORE " + _EM_DASH + " 2026-04-01..2026-05-01.",
+    )
 
     # A retry: a NEW HTTP request (a new sink, its own fresh turn_id/message_id
     # -- mirroring mock_chat.py's own per-request minting) but the SAME
@@ -2439,3 +2449,8 @@ def test_slice_text_matches_the_parser_issue_message():
     from poseidon.core.parsing import pipeline
 
     assert orchestrator.SLICE_TEXT == pipeline.SLICE_TEXT
+
+
+def test_turn_outcome_answer_summary_defaults_to_none():
+    outcome = TurnOutcome(status="clarify", message_id="m", turn_run_id=None)
+    assert outcome.answer_summary is None
