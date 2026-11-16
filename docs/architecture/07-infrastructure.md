@@ -5,7 +5,7 @@ Everything is developed and validated locally with docker-compose, then deployed
 **EC2 first** -- a public, Auth0-gated instance on proven AWS footing, brought up before the
 corporate-platform work -- and then to **Snowpark Container Services (SPCS), the corporate
 primary target**, following the proven in-house pattern. Only configuration differs (decision
-D8, revised 2026-08-05).
+D8, revised 2026-08-05). **Update (D84, 2026-11-16): the EC2 habitat is parked; the deploy target is SPCS with Snowflake Postgres.**
 
 ## 1. Local development topology
 
@@ -260,7 +260,7 @@ accounts:
 - `infra/runbooks/local.md` — clean-machine bring-up, synthetic regeneration, stub vs live LLM.
 - `infra/runbooks/deploy-spcs.md` — image push, service spec, EAI, identity mode, verify,
   suspend/resume, rollback (previous image tag).
-- `infra/runbooks/backup-restore-spcs.md` — schedule and verify the `pg_dump` + artifact mirror,
+- `infra/runbooks/backup-restore-spcs.md` — schedule and verify the `pg_dump` backup,
   restore into a fresh service, volume expansion, migration rollback (`alembic downgrade` +
   previous image tag), and the RPO/RTO the procedure is written to meet (§4).
 - `infra/runbooks/deploy-ec2.md` — account prep, provisioning scripts (small idempotent CLI
