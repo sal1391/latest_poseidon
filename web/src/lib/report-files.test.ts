@@ -28,3 +28,15 @@ describe("reportFileName", () => {
     ).toBe("Whole book October 2026 month to date.pdf");
   });
 });
+
+describe("sanitizeFilename parity with backend safe_filename", () => {
+  it("matches the PARITY fixtures in backend/tests/test_documents.py", () => {
+    const pairs: [string, string][] = [
+      ["Acme  Marine Brief", "Acme Marine Brief"],
+      ["A/S Rederi: Q3 Brief!", "A_S Rederi_ Q3 Brief_"],
+      ['Rotterdam/"x" Office', "Rotterdam__x_ Office"],
+      ["   ", "report"],
+    ];
+    for (const [raw, expected] of pairs) expect(sanitizeFilename(raw)).toBe(expected);
+  });
+});
