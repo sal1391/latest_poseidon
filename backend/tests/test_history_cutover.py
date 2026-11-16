@@ -336,8 +336,8 @@ async def test_title_set_after_first_successful_turn_persisted_and_in_done_frame
 @pytest.mark.pg
 @pytest.mark.anyio
 async def test_title_is_not_set_for_a_turn_index_one_clarify(pg_database_url):
-    """The brief's own gate is ``turn_index == 1`` AND ``status == "ok"`` --
-    a first turn that only CLARIFIES must leave the title alone. Uses the
+    """The gate is "untitled and ``ok``" -- a first turn that only
+    CLARIFIES must leave the title alone. Uses the
     D19 bubble-entry phrase (``orchestrator.py``'s own
     ``ENTRY_PHRASE_EXISTING``) rather than an ambiguous customer name:
     ``_finish_entry`` ALWAYS ends ``clarify`` deterministically (a fixed
@@ -367,6 +367,97 @@ async def test_title_is_not_set_for_a_turn_index_one_clarify(pg_database_url):
 
     items = listing.json()["items"]
     assert items[0]["title"] == "New chat"
+
+
+class _RecordingRoleClient:
+    """Wraps a real ``RoleClient``: records ``(role, messages)`` for every
+    ``invoke`` and delegates every role unchanged."""
+
+    def __init__(self, real):
+        self._real = real
+        self.recorded = []
+
+    def resolve(self, role):
+        return self._real.resolve(role)
+
+    def invoke(self, role, *, system, messages, tools=()):
+        self.recorded.append((role, messages))
+        return self._real.invoke(role, system=system, messages=messages, tools=tools)
+
+
+@pytest.mark.pg
+@pytest.mark.anyio
+async def test_title_set_on_the_first_ok_turn_after_a_clarify(pg_database_url):
+    """F2: a conversation opened through a flow chip clarifies first, so its
+    first ``ok`` turn is turn two. The title lands on that turn, not never.
+
+    The artifact store is dropped (``test_chat_e2e_scripted.py``'s own
+    ``_drop_artifact_store`` precedent): the brief would otherwise attempt a
+    real PDF upload, which this pg-only suite has no MinIO or Pango for."""
+    headers = _headers(_dev_user("alice"))
+    app = _app(pg_database_url)
+    app.state.artifact_store = None
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid = (await client.post("/api/conversations", headers=headers)).json()["conversation"][
+            "id"
+        ]
+        events_1 = await read_sse(
+            client, cid, "start an existing-customer brief", headers=headers
+        )
+        listing_1 = await client.get("/api/conversations", headers=headers)
+        events_2 = await read_sse(client, cid, "Northstar Lines", headers=headers)
+        listing_2 = await client.get("/api/conversations", headers=headers)
+
+    done_payloads_turn1 = [payload for name, payload in events_1 if name == "done"]
+    done_payloads_turn2 = [payload for name, payload in events_2 if name == "done"]
+    assert done_payloads_turn1[0]["title"] is None
+    assert listing_1.json()["items"][0]["title"] == "New chat"
+    assert done_payloads_turn2[0]["title"] == _STUB_TITLE
+    assert listing_2.json()["items"][0]["title"] == _STUB_TITLE
+
+
+@pytest.mark.pg
+@pytest.mark.anyio
+async def test_title_is_computed_once_and_not_recomputed_on_later_ok_turns(pg_database_url):
+    headers = _headers(_dev_user("alice"))
+    app = _app(pg_database_url)
+    recorder = _RecordingRoleClient(app.state.role_client)
+    app.state.role_client = recorder
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid = (await client.post("/api/conversations", headers=headers)).json()["conversation"][
+            "id"
+        ]
+        events_1 = await read_sse(client, cid, "hello", headers=headers)
+        events_2 = await read_sse(client, cid, "hello again", headers=headers)
+
+    done_turn1 = [payload for name, payload in events_1 if name == "done"][0]
+    done_turn2 = [payload for name, payload in events_2 if name == "done"][0]
+    assert done_turn1["title"] == _STUB_TITLE
+    assert done_turn2["title"] is None
+    assert [role for role, _m in recorder.recorded].count("utility") == 1
+
+
+@pytest.mark.pg
+@pytest.mark.anyio
+async def test_title_input_carries_question_and_answer_summary(pg_database_url):
+    headers = _headers(_dev_user("alice"))
+    app = _app(pg_database_url)
+    recorder = _RecordingRoleClient(app.state.role_client)
+    app.state.role_client = recorder
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid = (await client.post("/api/conversations", headers=headers)).json()["conversation"][
+            "id"
+        ]
+        await read_sse(client, cid, "hello", headers=headers)
+
+    utility_messages = [m for role, m in recorder.recorded if role == "utility"]
+    assert len(utility_messages) == 1
+    content = utility_messages[0][0]["content"]
+    assert content.startswith("hello")
+    assert "I can answer certified metric questions" in content
 
 
 # ===========================================================================
