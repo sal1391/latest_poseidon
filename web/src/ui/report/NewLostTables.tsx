@@ -1,40 +1,42 @@
+import { TABLE, TD, TD_NUM, TH, TH_NUM, TR } from "../primitives/data-table";
 import type { Row } from "./types";
-
-const TH = "border-b border-neutral-300 px-2 py-1 text-left font-medium dark:border-neutral-700";
-const TD = "border-b border-neutral-200 px-2 py-1 text-right tabular-nums dark:border-neutral-800";
 
 function Block({ title, rows, which }: { title: string; rows: Row[]; which: "current" | "prior" }) {
   return (
     <div>
-      <h4 className="mb-1 text-sm font-medium">{title}</h4>
+      <h4 className="mb-2 text-base font-semibold">{title}</h4>
       {rows.length === 0 ? (
-        <p className="text-sm text-neutral-500">none</p>
+        <p className="text-[13px] text-ink-muted">none</p>
       ) : (
-        <table className="w-full border-collapse text-sm">
-          <thead>
-            <tr>
-              <th className={TH}>Name</th>
-              <th className={TH}>GP</th>
-              <th className={TH}>Volume</th>
-              <th className={TH}>Margin</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.key}>
-                <td className="border-b border-neutral-200 px-2 py-1 dark:border-neutral-800">{r.key}</td>
-                <td className={TD}>{r.display.GP[which]}</td>
-                <td className={TD}>{r.display.VOLUME[which]}</td>
-                <td className={TD}>{r.display.MARGIN[which]}</td>
+        <div className="overflow-x-auto">
+          <table className={TABLE}>
+            <thead>
+              <tr>
+                <th className={TH}>Name</th>
+                <th className={TH_NUM}>GP</th>
+                <th className={TH_NUM}>Volume</th>
+                <th className={TH_NUM}>Margin</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.key} className={TR}>
+                  <td className={TD}>{r.key}</td>
+                  <td className={TD_NUM}>{r.display.GP[which]}</td>
+                  <td className={TD_NUM}>{r.display.VOLUME[which]}</td>
+                  <td className={TD_NUM}>{r.display.MARGIN[which]}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
 }
 
+/** New (current-period values) and Lost (prior-period values) side by side
+ * from 640px (spec 5). */
 export function NewLostTables({ newLost }: { newLost: { new: Row[]; lost: Row[] } }) {
   return (
     <div className="grid gap-3 sm:grid-cols-2">

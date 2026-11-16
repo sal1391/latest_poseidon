@@ -1,7 +1,7 @@
 # Next.js UI design pass — design
 
 **Date:** 2026-10-23
-**Status:** PR 1 merged (#12, 2026-10-23); PR 2 built on feature/ui-pass-2-parts (plan: docs/superpowers/plans/2026-10-23-ui-pass-2-parts.md); PR 3 pending
+**Status:** PR 1 merged (#12, 2026-10-23); PR 2 #13 (feature/ui-pass-2-parts); PR 3 feature/ui-pass-3-report (plan 2026-10-23-ui-pass-3-report.md), awaiting merge. Follow-ons in §8.
 **Owner of design decisions:** Fable. **Implementation:** worker subagents (Sonnet for the
 component work, Haiku where the plan carries the complete code, Opus only for the riskiest
 review). Fable never writes implementation code.
@@ -171,7 +171,7 @@ the 720px column. Components keep their names, props, `data-metric` attributes a
 | Surface | Design |
 |---------|--------|
 | Header (`ReportPart`) | Scope label as heading-1; period pair beneath in 15px ink; a muted 12px line "Generated … · Source: …" (middle dot, not a pipe); the Month to date badge `rounded-[--radius-s] bg-warn-bg text-warn-ink text-[12px] px-1.5 py-0.5` after the period pair. |
-| `KpiTiles` | `grid grid-cols-2 sm:grid-cols-4 gap-3`; tile `rounded-[--radius-m] border border-border p-3`: metric name `text-[12px] uppercase tracking-wide text-ink-muted`; current value `text-xl font-semibold data`; change line `text-[13px] data` coloured `text-positive` / `text-negative` by the sign of the change (sign read from the display string's leading character, `-` or the minus sign, else positive; zero is ink); prior `text-[12px] text-ink-muted data` "prior …". |
+| `KpiTiles` | `grid grid-cols-2 sm:grid-cols-4 gap-3`; tile `rounded-[--radius-m] border border-border p-3`: metric name `text-[12px] uppercase tracking-wide text-ink-muted`; current value `text-xl font-semibold data`; change line `text-[13px] data` coloured `text-positive` / `text-negative` by the sign of the payload's numeric change, inverted for `NUM_LOST` where a rise is bad news (zero is ink; rulings P3-R2 and its 2026-11-16 amendment); prior `text-[12px] text-ink-muted data` "prior …". |
 | `RankedTables` | The `role="tablist"` becomes a segmented control: track `inline-flex rounded-[--radius-m] bg-surface-raised p-1 gap-1`, each tab `rounded-[--radius-s] px-3 py-1 text-[13px]`, the active one `bg-surface shadow-1 text-accent font-medium`, `aria-selected` unchanged. The table adds a first `<thead>` row of three spanning headers (`colSpan=4`, "GP", "Volume", "Margin", 12px uppercase muted, centered, with a hairline bottom border) above the existing twelve column headers, which become "Prior / Current / Change / %". Body as §4 table. The Other row `text-ink-muted`. Footer `font-semibold border-t border-border`. `overflow-x-auto` kept. |
 | `MoverCards` | Two columns "Increases" / "Decreases" as heading-2; each card `rounded-[--radius-m] border border-border p-3 text-[13px]`: entity key `font-medium`; driver as a `Badge`; the GP line "GP prior → current" in the data font with the arrow glyph; the change line coloured by sign as in tiles; the office reconciliation and share-of-book lines `text-[12px] text-ink-muted data`. |
 | `NewLostTables` | Two columns, "New" / "Lost" as heading-2, tables as §4, "none" in muted ink. |
@@ -231,6 +231,7 @@ the browser walkthrough, never implements.
   removes the "it looks like a scaffold" blocker only.
 - Rotate the Anthropic key pasted into the PR C chat (open, not a UI item, listed so it is not
   lost).
+- Narrative heading levels: the template markdown's "##" headings render as h2 inside a section headed h4 under the card's h3; map them down (react-markdown components, h1–h3 to h5) in a later pass.
 
 ## 9. Decision-log entry
 
