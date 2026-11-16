@@ -139,14 +139,21 @@ describe("ReportPart", () => {
     expect(screen.getByText("Month to date")).toBeTruthy();
   });
 
-  it("colours each kpi change line by the sign of its numeric change (ruling P3-R2)", () => {
+  it("colours each kpi change line by the sign of its numeric change, inverted for NUM_LOST (ruling P3-R2)", () => {
     const { container } = show();
     for (const [metric, d] of Object.entries(payload.kpis)) {
       const tile = container.querySelector(`[data-metric="${metric}"]`)!;
       const line = within(tile as HTMLElement).getByText(`${d.display.change} (${d.display.pct})`);
-      const expected = d.change > 0 ? "text-positive" : d.change < 0 ? "text-negative" : "text-ink";
+      const sign = metric === "NUM_LOST" ? -d.change : d.change;
+      const expected = sign > 0 ? "text-positive" : sign < 0 ? "text-negative" : "text-ink";
       expect(line.className.split(" ")).toContain(expected);
     }
+    // The golden corpus carries NUM_LOST +2: more lost deals, so red, not green.
+    expect(payload.kpis.NUM_LOST.change).toBeGreaterThan(0);
+    const lost = container.querySelector('[data-metric="NUM_LOST"]')!;
+    const lostLine = within(lost as HTMLElement).getByText(`${payload.kpis.NUM_LOST.display.change} (${payload.kpis.NUM_LOST.display.pct})`);
+    expect(lostLine.className.split(" ")).toContain("text-negative");
+    expect(lostLine.className.split(" ")).not.toContain("text-positive");
   });
 
   it("header carries the generated line with a middle dot and the period pair", () => {
