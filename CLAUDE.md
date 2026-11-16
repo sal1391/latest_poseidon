@@ -33,16 +33,16 @@ doc as current. Decisions taken in feature specs used to not propagate; that is 
 - **Cortex via the SQL `COMPLETE` function with emulated tools.** D40 chose the Cortex REST
   Messages endpoint with native tool calling.
 
-## Commands — verified 2026-11-16 (F1 brief PDF serving), copy-pasteable
+## Commands — verified 2026-11-16 (MinIO removal), copy-pasteable
 
 ```bash
-# Offline Python suite -> 2475 passed, 15 skipped, 153 deselected (~270s)
+# Offline Python suite -> 2471 passed, 14 skipped, 153 deselected (~85s)
 cd backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest \
   -p no:cacheprovider \
   -m 'not pg and not pdf and not router_live and not research_live'
 
 # Postgres-backed suite (needs the compose `db` service up; DATABASE_URL points at it, e.g.
-# postgresql+psycopg://poseidon:poseidon@localhost:5434/poseidon when the compose db is started with a port override; the tracked compose file maps 5432) -> 368 passed, 1 skipped
+# postgresql+psycopg://poseidon:poseidon@localhost:5434/poseidon when the compose db is started with a port override; the tracked compose file maps 5432) -> 368 passed, 0 skipped
 # (Drizzle-only database; Alembic no longer owns this schema, D58)
 cd backend && .venv/Scripts/python.exe -B -m pytest -p no:cacheprovider -m pg
 
@@ -58,7 +58,7 @@ cd backend && POSEIDON_UPDATE_CONTRACTS=1 .venv/Scripts/python.exe -B -m pytest 
 cd frontend && npm test -- --run
 cd frontend && npm run lint
 
-# Web (Next.js) -> 241 passed, 15 skipped, offline; verified 2026-11-16 (F1 brief PDF serving) (30 files passed, 1 skipped; db-backed files
+# Web (Next.js) -> 241 passed, 15 skipped, offline; verified 2026-11-16 (MinIO removal) (30 files passed, 1 skipped; db-backed files
 # skip without DRIZZLE_DATABASE_URL). The web package has NO lint script: its static gate is tsc.
 cd web && npm test
 cd web && npx tsc --noEmit             # clean
@@ -73,14 +73,15 @@ cd web && npx drizzle-kit migrate      # reads DRIZZLE_DATABASE_URL
 # Fresh local database after the Phase 16 cutover: docker compose -f infra/docker-compose.yml down -v
 ```
 
-**Figures verified 2026-11-16 (F1 brief PDF serving), each run once, to its own file, never
-piped:** offline Python 2475 passed, 15 skipped, 153 deselected; `ruff check` clean;
-`tests/contracts` 9 passed (nine dots in the `-q` output; `contracts/` unchanged; `git status --short contracts/` empty); pg suite 368 passed, 1
+**Figures verified 2026-11-16 (MinIO removal), each run once, to its own file, never
+piped:** offline Python 2471 passed, 14 skipped, 153 deselected; `ruff check` clean;
+`tests/contracts` 9 passed (nine dots in the `-q` output; `contracts/` unchanged; `git status --short contracts/` empty); pg suite 368 passed, 0
 skipped, run serially against the compose `db` service (host port 5434 when the compose db is started with a port override; the tracked compose file maps 5432).
 Drizzle now has five migrations (0000-0004); the pg suite still needs the compose `migrate` service re-run after pulling this change.
-The `pdf`-marked brief tests run in the backend container: 1 passed.
-Web `npm test` 241 passed, 15 skipped offline (verified 2026-11-16 (F1 brief PDF serving)), web `npx tsc --noEmit` clean, Vite frontend 171 passed in 18 files and `npm run lint` clean:
-the Vite figures carried from PR B, not re-run in PR C, the UI pass PRs or F1 (the Vite app is untouched by all of them). The web package defines no lint script,
+The `pdf`-marked tests run in the backend container: 2 passed (the brief PDF test and the
+monthly-performance render test).
+Web `npm test` 241 passed, 15 skipped offline (verified 2026-11-16 (MinIO removal)), web `npx tsc --noEmit` clean, Vite frontend 171 passed in 18 files and `npm run lint` clean:
+the Vite figures carried from PR B, not re-run in PR C, the UI pass PRs, F1 or the MinIO removal (the Vite app is untouched by all of them). The web package defines no lint script,
 so there is no web lint figure.
 
 **CI: there is none.** No `.github/workflows`. Nothing gates a merge except Carlos, so the suites

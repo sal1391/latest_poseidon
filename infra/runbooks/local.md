@@ -464,8 +464,13 @@ local` to `DEPLOY_MODE: bogus` in the `backend` service's `environment` block in
 `infra/docker-compose.yml` and bring the stack up: the one-shot `migrate`
 service still completes (it only runs Drizzle migrations, unrelated to
 `DEPLOY_MODE`), then uvicorn's app factory raises a pydantic `ValidationError`
-naming `deploy_mode` (it accepts only `local`, `spcs` and `ec2`) and the
-container exits instead of serving. (verified in Task 6)
+(`1 validation error for Settings`, field `deploy_mode`, `Input should be
+'local', 'spcs' or 'ec2' [type=literal_error, input_value='bogus']`) and the
+server never starts answering. The `backend` container itself stays `Up`,
+because the dev command runs uvicorn with `--reload` and the reloader process
+outlives the crashed worker: read `docker compose -f infra/docker-compose.yml
+logs backend` for the traceback rather than expecting an exited container.
+(verified 2026-11-16)
 
 Use `DEPLOY_MODE`, not `DATABASE_URL`, for this check. Since Phase 16 (D58)
 Alembic no longer runs at boot, so `migrations/env.py`'s old
