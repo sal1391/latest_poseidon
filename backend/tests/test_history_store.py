@@ -72,6 +72,7 @@ from sqlalchemy import create_engine, text
 
 from poseidon.core.chat import history
 from poseidon.core.chat.history import (
+    UNTITLED,
     DbStateStore,
     HistoryStore,
     MalformedCursor,
@@ -811,6 +812,29 @@ def test_set_title_updates_the_row(history_store):
 
     items, _cursor = user_history.list_conversations()
     assert items[0]["title"] == "Renamed chat"
+
+
+@pytest.mark.pg
+def test_get_title_returns_new_chat_for_a_fresh_conversation(history_store):
+    user = history_store.for_user("dev|alice")
+    conversation, _opener = user.create_conversation()
+    assert user.get_title(conversation["id"]) == UNTITLED
+    user.set_title(conversation["id"], "Houston June 2026")
+    assert user.get_title(conversation["id"]) == "Houston June 2026"
+
+
+@pytest.mark.pg
+def test_get_title_is_none_for_unknown_and_malformed_ids(history_store):
+    user = history_store.for_user("dev|alice")
+    assert user.get_title("not-a-uuid") is None
+    assert user.get_title(str(uuid7())) is None
+
+
+@pytest.mark.pg
+def test_get_title_is_none_for_another_users_conversation(history_store):
+    alice = history_store.for_user("dev|alice")
+    conversation, _opener = alice.create_conversation()
+    assert history_store.for_user("dev|bob").get_title(conversation["id"]) is None
 
 
 @pytest.mark.pg

@@ -477,6 +477,9 @@ class TurnOutcome:
     message_id: str
     turn_run_id: str | None
     replayed: bool = False
+    # The same capped string the run log's ``turn_run.answer_summary``
+    # received on this path (``None`` on clarify/error/replay).
+    answer_summary: str | None = None
 
 
 def execute_turn(
@@ -895,7 +898,10 @@ def execute_turn(
     # else (error): slots unchanged -- state.put is simply never called.
 
     return TurnOutcome(
-        status=turn_result.status, message_id=sink.message_id, turn_run_id=turn_run_id
+        status=turn_result.status,
+        message_id=sink.message_id,
+        turn_run_id=turn_run_id,
+        answer_summary=(_capped(turn_result.text) if turn_result.status == "ok" else None),
     )
 
 
@@ -1581,7 +1587,12 @@ def _finish_subject_turn(
             exc,
         )
 
-    return TurnOutcome(status="ok", message_id=sink.message_id, turn_run_id=turn_run_id)
+    return TurnOutcome(
+        status="ok",
+        message_id=sink.message_id,
+        turn_run_id=turn_run_id,
+        answer_summary=_capped(answer_summary),
+    )
 
 
 def _finish_report_step(
@@ -1860,6 +1871,7 @@ def _finish_report_turn(
             },
         )
     sink.done({"input_tokens": 0, "output_tokens": 0})
+    report_summary = _capped(report_flow.answer_summary(payload))
 
     latency_ms = int((monotonic() - started) * 1000)
     if writer is not None and turn_run_id is not None:
@@ -1877,7 +1889,7 @@ def _finish_report_turn(
             user_sub=user.sub,
             status="ok",
             message_id=sink.message_id,
-            answer_summary=_capped(report_flow.answer_summary(payload)),
+            answer_summary=report_summary,
             input_tokens=0,
             output_tokens=0,
             latency_ms=latency_ms,
@@ -1898,7 +1910,12 @@ def _finish_report_turn(
             exc,
         )
 
-    return TurnOutcome(status="ok", message_id=sink.message_id, turn_run_id=turn_run_id)
+    return TurnOutcome(
+        status="ok",
+        message_id=sink.message_id,
+        turn_run_id=turn_run_id,
+        answer_summary=report_summary,
+    )
 
 
 def _resolve_subject_customer(text: str, data: DataClient) -> customer_resolver.Resolution:
