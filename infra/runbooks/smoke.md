@@ -151,7 +151,7 @@ Using the logged-in session from section 3 (the `Poseidon:Sales` user):
 ## 5. Artifact PDF download
 
 - [ ] From the existing-customer brief above (or any turn that produces one), confirm an
-  `artifact` part renders and its link downloads a real PDF (not a 404, not an HTML error page).
+  `artifact` part renders and its link (an app route, `/api/briefs/<id>/pdf`) downloads a real PDF (not a 404, not an HTML error page).
 
 ### PDF render-verify on the production image
 

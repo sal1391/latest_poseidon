@@ -99,8 +99,7 @@ versa) — the drift bug class TM1 guards with `test_snowflake_mode_exposes_rend
 SkillContext:  user (UserContext, doc 05) · profile (user system instruction + memory doc,
                doc 05 §5) · conversation state (slots, mode) · data (DataClient, doc 04) ·
                llm (role-based model client, doc 03) · tools (external tool adapters via
-               backend/poseidon/mcp, §7) · artifacts (object-store client; absent on SPCS per
-               D39 — report bytes go to Postgres, see doc 07 §4) · run (run-log recorder,
+               backend/poseidon/mcp, §7) · run (run-log recorder,
                doc 06) · settings · report_store (ReportStore over report_run, doc 05 §4) ·
                prompt_tree (PromptTree over backend/prompts/, doc 03 §4)
 SkillResult:   ok · parts: list[MessagePart]   (typed parts of doc 01 §4)
@@ -207,8 +206,8 @@ real-time external questions (→ `research.web_research`).
    (ported from `agents/researcher.py`).
 4. Subskill `strategize` — Sonnet fills the exact Salesforce CRM field template (ported from
    `agents/strategist.py`), consuming 2 + 3 + the internal data summary.
-5. Tool `build_brief_pdf` — brief rendered to PDF, stored to S3, emitted as an `artifact` part
-   (markdown fallback preserved).
+5. Tool `build_brief_pdf` — brief rendered to PDF, stored as a `brief_run` row in Postgres (D83), emitted as an
+   `artifact` part linking `/api/briefs/<id>/pdf` (markdown fallback preserved).
 
 **`new_prospect_brief`** (source: `app.py` lines 329–412, `agents/orchestrator.py`):
 

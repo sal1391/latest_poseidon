@@ -16,7 +16,7 @@ doc as current. Decisions taken in feature specs used to not propagate; that is 
   at boot) · `psycopg[binary]` · weasyprint · boto3 · httpx · rapidfuzz · `PyJWT[crypto]`
 - **Node 24.14.1 / npm 11.13.0**
 - React 18.3.1 · Vite 8.1.1 · TypeScript ~6.0.2 · vitest 4.1.10 · zustand 5 · oxlint
-- Postgres 16 + pgvector · MinIO (local object store) · Alembic frozen at **0010** (history
+- Postgres 16 + pgvector · Alembic frozen at **0010** (history
   only) · **Drizzle migrates** (`web/drizzle`, D58)
 - Migrating to Next.js 16 / AI SDK 6 / Auth.js / Drizzle / Tailwind (M1–M5); Python is **retained**
   for analytics and PDF rendering. See `docs/superpowers/specs/2026-09-07-nextjs-migration-design.md`.
@@ -39,7 +39,7 @@ doc as current. Decisions taken in feature specs used to not propagate; that is 
 # Offline Python suite -> 2475 passed, 15 skipped, 153 deselected (~270s)
 cd backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest \
   -p no:cacheprovider \
-  -m 'not pg and not minio and not pdf and not router_live and not research_live'
+  -m 'not pg and not pdf and not router_live and not research_live'
 
 # Postgres-backed suite (needs the compose `db` service up; DATABASE_URL points at it, e.g.
 # postgresql+psycopg://poseidon:poseidon@localhost:5434/poseidon when the compose db is started with a port override; the tracked compose file maps 5432) -> 368 passed, 1 skipped
@@ -105,7 +105,7 @@ above *are* the gate.
   **43 files** — a diff unrelated to any task, buried in the review.
 - **Never pipe pytest.** `pytest ... | tail` reports **exit code 0 on a failing run** — the pipe
   masks it. Redirect to a file and tail the file. This has masked a real failure here before.
-- **Always use the full marker exclusion** (`pg`, `minio`, `pdf`, `router_live`, `research_live`)
+- **Always use the full marker exclusion** (`pg`, `pdf`, `router_live`, `research_live`)
   and `env -u PERPLEXITY_API_KEY`. An incomplete exclusion has fired **real, paid Bedrock calls**.
 - **`POSEIDON_ENV_FILE: ""` in compose is deliberate** — it makes the backend read no dotenv, so a
   host `backend/.env` bind-mounted at `/app` cannot shadow compose's values.
