@@ -504,9 +504,13 @@ def execute_turn(
     outbox_store: OutboxStore | None = None,
     report_store: object | None = None,
     prompt_tree: object | None = None,
+    brief_store: object | None = None,
 ) -> TurnOutcome:
     """Run one chat turn to completion. See the module docstring for the
     full pinned order and the three terminal-state disciplines.
+
+    ``brief_store`` (D83, additive, default ``None``) is threaded unexamined
+    into every ``SkillContext`` this function and its helpers build.
 
     ``report_store``/``prompt_tree`` (Phase 17 PR A2, additive, default
     ``None``) are threaded unexamined into the normal path's and the report
@@ -635,6 +639,7 @@ def execute_turn(
             tools=tools,
             artifacts=artifacts,
             outbox_store=outbox_store,
+            brief_store=brief_store,
         )
 
     # Phase 17 PR A2, branch 3: a turn inside the monthly report flow (one of
@@ -659,6 +664,7 @@ def execute_turn(
             outbox_store=outbox_store,
             report_store=report_store,
             prompt_tree=prompt_tree,
+            brief_store=brief_store,
         )
 
     # Phase 11 Task 2 (doc 06 section 3): a pure span() wrapper around this
@@ -780,6 +786,7 @@ def execute_turn(
         # report_ref's run back through this store.
         report_store=report_store,
         prompt_tree=prompt_tree,
+        brief_store=brief_store,
         conversation_id=conversation_id,
     )
     # Phase 13 Task 2: fetched ONCE per turn, not once per _router_prompt_
@@ -1373,6 +1380,7 @@ def _finish_subject_turn(
     tools: object | None,
     artifacts: "ArtifactStore | None" = None,
     outbox_store: OutboxStore | None = None,
+    brief_store: object | None = None,
 ) -> TurnOutcome:
     """D19 branch 2: the subject turn -- see the module docstring's "D19
     entry orchestration" for the full contract (resolution rules, the
@@ -1443,6 +1451,7 @@ def _finish_subject_turn(
         # for the normal path; identically true here (see the module
         # docstring's "The subject branch").
         emit_part=sink.part_emitter(1),
+        brief_store=brief_store,
     )
 
     sink.emit("tool_start", {"tool_seq": 1, "skill_id": skill_id, "arguments": dict(arguments)})
@@ -1615,6 +1624,7 @@ def _finish_report_step(
     outbox_store: OutboxStore | None,
     report_store: object | None,
     prompt_tree: object | None,
+    brief_store: object | None,
 ) -> TurnOutcome:
     """Phase 17 PR A2, branch 3: one turn of the monthly report flow.
 
@@ -1700,6 +1710,7 @@ def _finish_report_step(
         outbox_store=outbox_store,
         report_store=report_store,
         prompt_tree=prompt_tree,
+        brief_store=brief_store,
         turn_run_id=turn_run_id,
         started=started,
     )
@@ -1763,6 +1774,7 @@ def _finish_report_turn(
     outbox_store: OutboxStore | None,
     report_store: object | None,
     prompt_tree: object | None,
+    brief_store: object | None,
     turn_run_id: str | None,
     started: float,
 ) -> TurnOutcome:
@@ -1792,6 +1804,7 @@ def _finish_report_turn(
         emit_part=sink.part_emitter(1),
         report_store=report_store,
         prompt_tree=prompt_tree,
+        brief_store=brief_store,
         conversation_id=conversation_id,
     )
 

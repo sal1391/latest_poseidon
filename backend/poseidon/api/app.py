@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from poseidon.api import auth, dev_runner, health, internal, live_chat, me, mock_chat, turns
+from poseidon.briefs.store import BriefStore
 from poseidon.core.artifacts import ArtifactStore
 from poseidon.core.chat.dev_router import DevDeterministicRouter
 from poseidon.core.chat.feedback import FeedbackStore
@@ -584,6 +585,7 @@ def _wire_live_chat(app: FastAPI) -> None:
     # rationale as the stores above) and the D46 prompt tree, both threaded
     # into every chat turn's SkillContext by live_chat.py.
     app.state.report_store = ReportStore(engine, app_role=settings.database_app_role)
+    app.state.brief_store = BriefStore(engine, app_role=settings.database_app_role)
     app.state.prompt_tree = PromptTree()
     app.state.role_client = RoleClient(
         settings,

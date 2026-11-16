@@ -91,6 +91,9 @@ in Phase 17 PR A1):
               ``object`` for the same reason. ``None`` is a real state: a
               call site that wires no tree leaves it unset, and the reporting
               skill falls back to the default ``PromptTree()``.
+``brief_store`` the ``brief_run`` store (D83) -- a
+              :class:`~poseidon.briefs.store.BriefStore`, typed ``object`` for
+              the same one-way-dependency reason. ``None`` is a real state.
 
 ``artifacts`` is annotated as a string under a ``TYPE_CHECKING`` guard on
 purpose, and permanently so: :mod:`poseidon.core.artifacts` (Task 4) imports
@@ -185,5 +188,7 @@ class SkillContext:
     user: object | None = None
     report_store: object | None = None
     prompt_tree: object | None = None
+    # the brief_run store (D83); None is a real state, as for report_store
+    brief_store: object | None = None
     # the chat conversation a dispatch belongs to; the report flow sets it
     conversation_id: str | None = None

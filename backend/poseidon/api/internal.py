@@ -180,6 +180,7 @@ def dispatch_skill(skill_id: str, body: _DispatchRequest, request: Request) -> A
         # a direct skill call belongs to no conversation.
         report_store=getattr(request.app.state, "report_store", None),
         prompt_tree=getattr(request.app.state, "prompt_tree", None),
+        brief_store=getattr(request.app.state, "brief_store", None),
         conversation_id=None,
     )
     return _serialize(registry.dispatch(skill_id, body.args, ctx))

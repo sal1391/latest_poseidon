@@ -93,6 +93,7 @@ def _build_ctx(request: Request) -> SkillContext | SkillResult:
         # middleware for EVERY request, this dev-only route included -- see
         # core/identity.py's own module docstring for the seam.
         user=request.state.user,
+        brief_store=getattr(request.app.state, "brief_store", None),
     )
 
 
