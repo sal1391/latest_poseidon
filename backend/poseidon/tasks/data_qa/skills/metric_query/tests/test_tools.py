@@ -67,7 +67,7 @@ APRIL = PeriodWindow(dt.date(2026, 4, 1), dt.date(2026, 5, 1))
 _APRIL_ARG = PeriodArg(start=dt.date(2026, 4, 1), end=dt.date(2026, 5, 1))
 PRIOR_APRIL = PeriodWindow(dt.date(2025, 4, 1), dt.date(2025, 5, 1))
 
-# Present-and-non-blank is all Settings asks of these two fields; nothing in
+# Present-and-non-blank is all Settings asks of this field; nothing in
 # this module connects anywhere.
 SETTINGS = Settings(
     _env_file=None,

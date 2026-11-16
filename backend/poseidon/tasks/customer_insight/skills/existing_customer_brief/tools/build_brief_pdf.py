@@ -26,7 +26,6 @@ instead; tests assert the ``%PDF`` magic and a positive page count, never a
 fixed hash.
 """
 
-import re
 from dataclasses import dataclass
 from html import escape
 
@@ -46,33 +45,6 @@ table { border-collapse: collapse; width: 100%; margin: 4mm 0; }
 th, td { border: 1px solid #999; padding: 1mm 2mm; text-align: left; }
 th { background: #eee; }
 """
-
-_SLUG_DISALLOWED = re.compile(r"[^a-z0-9]+")
-
-
-def slug(title: str) -> str:
-    """Lowercase ``title`` with every run of non-alphanumeric characters
-    collapsed to a single hyphen, and no leading or trailing hyphen — e.g.
-    ``"Northstar Lines: Q3 Brief!"`` -> ``"northstar-lines-q3-brief"``.
-
-    Falls back to ``"untitled"`` when that leaves nothing — an empty,
-    whitespace-only, or punctuation-only ``title``, or one written entirely
-    in a non-Latin script (``_SLUG_DISALLOWED`` only keeps ASCII
-    ``[a-z0-9]``, so e.g. ``"日本語"`` has no alphanumeric characters by that
-    definition), would otherwise collapse to the empty string and every such
-    title would silently collide on the same key, ``f"{key_prefix}/.pdf"``,
-    overwriting one another with no error.
-
-    Used to turn an arbitrary brief title into a safe, readable object key
-    component; never claimed to be reversible or collision-free beyond that
-    one fallback (two titles differing only in punctuation can still produce
-    the same slug, same as any typical slugify implementation) — avoiding
-    *that* kind of collision is the caller's responsibility via
-    ``key_prefix`` (the Phase-8 skill's keys carry customer and date).
-    """
-    slugged = _SLUG_DISALLOWED.sub("-", title.strip().lower()).strip("-")
-    return slugged or "untitled"
-
 
 def _render_html(title: str, markdown_body: str) -> str:
     """The full HTML document WeasyPrint renders — pure string building, no

@@ -196,7 +196,7 @@ async def test_artifact_refs_serialize_to_the_frontend_wire_shape(
     ``ArtifactRef`` and pins the exact list the endpoint puts on the wire.
 
     Hermetic: local-mode app on a placeholder DSN, and the skill ignores
-    ``ctx`` entirely, so nothing here needs Postgres or MinIO.
+    ``ctx`` entirely, so nothing here needs Postgres.
     """
     pkg = tasks_package(
         "artifact_tasks", _files("demo_task", "makes_artifact", skill_py=_ARTIFACT_SKILL)

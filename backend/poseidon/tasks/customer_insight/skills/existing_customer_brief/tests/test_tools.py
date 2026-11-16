@@ -26,8 +26,7 @@ are pinned:
    exhaustive pin (named ids, sorted order); this copy still lives with the
    tools it is actually about and checks only that both new skill ids are
    now present.
-4. ``render_brief``'s pure ``slug`` helper (offline, no marker needed —
-   plain string logic), its offline failure path (a WeasyPrint that cannot
+4. ``render_brief``'s offline failure path (a WeasyPrint that cannot
    import yields ``pdf=None``, never an exception), and its real markdown ->
    HTML -> PDF render (``@pytest.mark.pdf``, skipped unless WeasyPrint can
    actually import — see ``_HAS_WEASYPRINT`` below).
@@ -58,7 +57,6 @@ from poseidon.core.skills.registry import SkillRegistry
 from poseidon.scripts.generate_synthetic import generate
 from poseidon.tasks.customer_insight.skills.existing_customer_brief.tools.build_brief_pdf import (
     render_brief,
-    slug,
 )
 from poseidon.tasks.customer_insight.skills.existing_customer_brief.tools.fetch_metrics import (
     fetch_metrics,
@@ -480,38 +478,8 @@ def test_fetch_top_ports_matches_python_ground_truth_keys_values_and_order():
 
 
 # ---------------------------------------------------------------------------
-# render_brief: pure offline shape (slug is plain string logic, no
-# WeasyPrint involved), then the real-PDF render (pdf marker)
+# render_brief: the real-PDF render (pdf marker)
 # ---------------------------------------------------------------------------
-
-
-def test_slug_lowercases_and_hyphenates_punctuation():
-    assert slug("Northstar Lines: Q3 Brief!") == "northstar-lines-q3-brief"
-
-
-def test_slug_collapses_runs_and_strips_leading_and_trailing_separators():
-    assert slug("  --Multiple   Spaces & Dashes--  ") == "multiple-spaces-dashes"
-
-
-def test_slug_keeps_digits_as_part_of_a_word():
-    assert slug("Q3 2026 Update") == "q3-2026-update"
-
-
-@pytest.mark.parametrize(
-    "title",
-    ["", "   ", "---", "日本語"],
-    ids=["empty", "whitespace-only", "punctuation-only", "non-latin-only"],
-)
-def test_slug_falls_back_to_untitled_when_nothing_survives(title: str):
-    """Empty, whitespace-only, punctuation-only, and non-Latin-only titles
-    all collapse to the empty string under the ASCII-only ``[a-z0-9]``
-    pattern — without a fallback they would all silently share the same
-    key and overwrite one another."""
-    assert slug(title) == "untitled"
-
-
-def test_slug_keeps_the_latin_remainder_of_a_mixed_script_title():
-    assert slug("日本語 Brief 2026") == "brief-2026"
 
 
 @pytest.mark.pdf
