@@ -1,7 +1,7 @@
 # Next.js UI design pass — design
 
 **Date:** 2026-10-23
-**Status:** PR 1 merged (#12, 2026-10-23); PR 2 #13 (feature/ui-pass-2-parts); PR 3 feature/ui-pass-3-report (plan 2026-10-23-ui-pass-3-report.md), awaiting merge. Follow-ons in §8.
+**Status:** Complete. PR 1 #12 (merged 2026-10-24), PR 2 #13 and PR 3 #14 (both merged 2026-11-16; PR 3 carries the `NUM_LOST` colour inversion, P3-R2 amendment). Follow-ons in §8.
 **Owner of design decisions:** Fable. **Implementation:** worker subagents (Sonnet for the
 component work, Haiku where the plan carries the complete code, Opus only for the riskiest
 review). Fable never writes implementation code.
