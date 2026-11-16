@@ -135,7 +135,7 @@ def settings_override(monkeypatch):
     duration of a single test, hermetically -- mirrors ``test_harvest_
     cost.py``'s own ``_clear_settings_env``/``get_settings.cache_clear()``
     discipline: every Settings-derived env var is cleared first (so no
-    ambient shell value leaks in), ``DATABASE_URL``/``S3_BUCKET`` are
+    ambient shell value leaks in), ``DATABASE_URL`` is
     re-set to what this suite actually needs, then the caller's own
     overrides are applied. ``get_settings`` is ``lru_cache``-wrapped (one
     process-wide singleton, by design, for the real long-lived server) --
@@ -148,7 +148,6 @@ def settings_override(monkeypatch):
         for key in (name.upper() for name in Settings.model_fields):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("DATABASE_URL", _DSN)
-        monkeypatch.setenv("S3_BUCKET", "poseidon-artifacts")
         for key, value in overrides.items():
             monkeypatch.setenv(key.upper(), str(value))
         get_settings.cache_clear()

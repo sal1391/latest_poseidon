@@ -87,7 +87,7 @@ process environment, mirroring ``export_router_cases.py``'s own identical
 choice (see that script's own module docstring): unlike ``cost_rollup.py``,
 which needs ``Settings.token_spike_threshold`` for its second mode, nothing
 here reads any OTHER ``Settings`` field, so requiring a full ``Settings``
-construction (and therefore ``S3_BUCKET``, etc., for a bespoke invocation)
+construction (and therefore ``DATABASE_URL``, etc., for a bespoke invocation)
 would add a real operational cost for zero benefit.
 
 **Operator posture (no new auth code) -- identical to both siblings.** Every

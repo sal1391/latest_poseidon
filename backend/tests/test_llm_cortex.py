@@ -209,7 +209,6 @@ def _live_role_client(monkeypatch):
         if key not in keep:
             monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://x:x@localhost:5432/poseidon")
-    monkeypatch.setenv("S3_BUCKET", "poseidon-artifacts")
     monkeypatch.setenv("LLM_PROFILE", "cortex")
     monkeypatch.setenv("LLM_MODE", "live")
     settings = Settings(_env_file=None)

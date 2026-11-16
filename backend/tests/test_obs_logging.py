@@ -51,7 +51,7 @@ def anyio_backend():
 
 def _settings(**overrides) -> Settings:
     defaults: dict = dict(
-        _env_file=None, database_url=_PLACEHOLDER_DSN, s3_bucket="poseidon-artifacts"
+        _env_file=None, database_url=_PLACEHOLDER_DSN
     )
     defaults.update(overrides)
     return Settings(**defaults)

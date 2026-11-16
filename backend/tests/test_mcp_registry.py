@@ -77,7 +77,6 @@ def _settings(**overrides: object) -> Settings:
     fields: dict[str, object] = {
         "_env_file": None,
         "database_url": _PLACEHOLDER_DSN,
-        "s3_bucket": "poseidon-artifacts",
     }
     fields.update(overrides)
     return Settings(**fields)

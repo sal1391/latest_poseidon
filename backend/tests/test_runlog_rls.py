@@ -218,7 +218,6 @@ def _settings(pg_database_url: str, **overrides):
     defaults: dict = dict(
         _env_file=None,
         database_url=pg_database_url,
-        s3_bucket="poseidon-artifacts",
         llm_mode="stub",
         llm_profile="bedrock",
         chat_mode="live",

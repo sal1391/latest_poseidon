@@ -445,8 +445,8 @@ def _expected_by_dimension(tag: str) -> dict[str, dict[str, tuple[int, int, int]
 def _clear_settings_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mirrors ``test_llm_loop.py``'s own ``_settings()`` helper: every
     Settings-derived env var cleared first, so an ambient shell value (this
-    task's own manual doc-08 validation run sets ``DATABASE_URL``/
-    ``S3_BUCKET`` in the SAME shell family) can never leak into a
+    task's own manual doc-08 validation run sets ``DATABASE_URL``
+    in the SAME shell family) can never leak into a
     hermetic-by-intent test."""
     for key in (name.upper() for name in Settings.model_fields):
         monkeypatch.delenv(key, raising=False)
@@ -474,7 +474,6 @@ def _run_cost_rollup(
     """
     _clear_settings_env(monkeypatch)
     monkeypatch.setenv("DATABASE_URL", database_url)
-    monkeypatch.setenv("S3_BUCKET", "poseidon-artifacts")
     if token_spike_threshold is not None:
         monkeypatch.setenv("TOKEN_SPIKE_THRESHOLD", str(token_spike_threshold))
     get_settings.cache_clear()

@@ -190,7 +190,6 @@ def worker_settings(monkeypatch):
         for key in (name.upper() for name in Settings.model_fields):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("DATABASE_URL", _DSN)
-        monkeypatch.setenv("S3_BUCKET", "poseidon-artifacts")
         monkeypatch.setenv("LLM_MODE", "stub")
         monkeypatch.setenv(
             "DATABASE_APP_ROLE", _EFFECTIVE_APP_ROLE if _EFFECTIVE_APP_ROLE else ""

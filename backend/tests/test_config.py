@@ -3,7 +3,6 @@ from pydantic import ValidationError
 
 REQUIRED = {
     "DATABASE_URL": "postgresql+psycopg://x:x@localhost:5432/poseidon",
-    "S3_BUCKET": "poseidon-artifacts",
 }
 
 
@@ -92,3 +91,19 @@ def test_cortex_account_url_prefers_the_explicit_url_then_the_spcs_host(monkeypa
     assert host.cortex_account_url == "https://x.snowflakecomputing.com"
     both = make_settings(monkeypatch, SNOWFLAKE_HOST="x", SNOWFLAKE_ACCOUNT_URL="https://y")
     assert both.cortex_account_url == "https://y"
+
+
+def test_a_leftover_s3_bucket_variable_is_ignored(monkeypatch):
+    """A stale ``S3_BUCKET`` in a dotenv or shell is tolerated (``extra="ignore"``)
+    and surfaces nowhere on ``Settings``."""
+    s = make_settings(monkeypatch, S3_BUCKET="poseidon-artifacts")
+    assert not hasattr(s, "s3_bucket")
+
+
+def test_database_url_is_the_only_required_setting(monkeypatch):
+    from poseidon.core.config import Settings
+
+    for key in (name.upper() for name in Settings.model_fields):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://x:x@localhost:5432/poseidon")
+    Settings(_env_file=None)

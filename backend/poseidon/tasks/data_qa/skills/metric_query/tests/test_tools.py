@@ -72,7 +72,6 @@ PRIOR_APRIL = PeriodWindow(dt.date(2025, 4, 1), dt.date(2025, 5, 1))
 SETTINGS = Settings(
     _env_file=None,
     database_url="postgresql+psycopg://nobody:nope@127.0.0.1:1/void",
-    s3_bucket="poseidon-artifacts",
 )
 
 

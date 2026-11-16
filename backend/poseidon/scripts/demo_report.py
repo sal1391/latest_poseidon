@@ -163,7 +163,6 @@ def main(argv: list[str] | None = None) -> int:
     settings = Settings(
         _env_file=None,
         database_url=url,
-        s3_bucket="poseidon-artifacts",
         data_backend="synthetic",
         llm_mode="stub",
     )

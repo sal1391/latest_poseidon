@@ -175,7 +175,7 @@ conversation's every later turn.
 Usage::
 
     DATABASE_URL=postgresql+psycopg://poseidon:poseidon@localhost:5432/poseidon \\
-    S3_BUCKET=poseidon-artifacts LLM_MODE=stub \\
+    LLM_MODE=stub \\
         python -m poseidon.scripts.memory_worker
 """
 

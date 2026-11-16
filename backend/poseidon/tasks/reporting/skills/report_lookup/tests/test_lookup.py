@@ -54,7 +54,7 @@ def registry():
 
 
 def _ctx(report_ref=RUN_ID, store=None, data=None):
-    settings = Settings(_env_file=None, database_url=DSN, s3_bucket="poseidon-artifacts")
+    settings = Settings(_env_file=None, database_url=DSN)
     return SkillContext(
         data=data,
         settings=settings,

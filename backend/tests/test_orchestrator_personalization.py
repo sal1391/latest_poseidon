@@ -41,7 +41,6 @@ from tests.test_chat_orchestrator import REGISTRY, FakeDataClient, RecordingWrit
 
 REQUIRED_ENV = {
     "DATABASE_URL": "postgresql+psycopg://x:x@localhost:5432/poseidon",
-    "S3_BUCKET": "poseidon-artifacts",
 }
 
 # Same reference date test_chat_orchestrator.py/test_entry_orchestration.py

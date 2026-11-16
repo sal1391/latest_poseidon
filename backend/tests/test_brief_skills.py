@@ -181,7 +181,6 @@ def _settings() -> Settings:
     return Settings(
         _env_file=None,
         database_url=_PLACEHOLDER_DSN,
-        s3_bucket="poseidon-artifacts",
         llm_mode="stub",
     )
 

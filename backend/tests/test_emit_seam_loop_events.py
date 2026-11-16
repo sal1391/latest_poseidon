@@ -68,7 +68,6 @@ from poseidon.core.skills.result import SkillResult, problem
 
 REQUIRED_ENV = {
     "DATABASE_URL": "postgresql+psycopg://x:x@localhost:5432/poseidon",
-    "S3_BUCKET": "poseidon-artifacts",
 }
 
 FAKE_SKILL = "fake_task.streaming_skill"
@@ -93,15 +92,14 @@ def _bare_settings() -> Settings:
     ``SkillContext`` field tests below, which never invoke an LLM or touch
     ``LLM_MODE`` and therefore need no monkeypatched environment at all
     (mirrors ``test_skill_registry.py``'s own inline construction).
-    ``database_url``/``s3_bucket`` are the model's own lowercase field
-    names, deliberately not built from ``REQUIRED_ENV`` (whose keys are the
+    ``database_url`` is the model's own lowercase field
+    name, deliberately not built from ``REQUIRED_ENV`` (whose keys are the
     UPPERCASE env var names ``_settings`` above feeds to ``monkeypatch.
     setenv`` -- a different casing convention for a different construction
     path)."""
     return Settings(
         _env_file=None,
         database_url=REQUIRED_ENV["DATABASE_URL"],
-        s3_bucket=REQUIRED_ENV["S3_BUCKET"],
     )
 
 

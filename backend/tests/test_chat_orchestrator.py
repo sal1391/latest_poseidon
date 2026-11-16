@@ -85,7 +85,6 @@ _METRIC_QUERY_LABEL = "Metric query"
 
 REQUIRED_ENV = {
     "DATABASE_URL": "postgresql+psycopg://x:x@localhost:5432/poseidon",
-    "S3_BUCKET": "poseidon-artifacts",
 }
 
 # The reference "today" every test parses against: mid-April 2026, so

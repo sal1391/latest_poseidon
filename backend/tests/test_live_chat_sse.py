@@ -184,7 +184,6 @@ def _settings(**overrides) -> Settings:
     defaults: dict = dict(
         _env_file=None,
         database_url=_PLACEHOLDER_DSN,
-        s3_bucket="poseidon-artifacts",
         llm_mode="stub",
         llm_profile="bedrock",
     )

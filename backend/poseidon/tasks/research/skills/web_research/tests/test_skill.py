@@ -106,7 +106,7 @@ class _Tools:
 
 
 def _settings() -> Settings:
-    return Settings(_env_file=None, database_url=_PLACEHOLDER_DSN, s3_bucket="poseidon-artifacts")
+    return Settings(_env_file=None, database_url=_PLACEHOLDER_DSN)
 
 
 def _ctx(*, tools: object | None = None, state: ConversationSlots | None = None) -> SkillContext:

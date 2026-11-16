@@ -13,7 +13,7 @@ _DSN = "postgresql+psycopg://nobody:nope@127.0.0.1:1/void"
 
 
 def _settings(**overrides) -> Settings:
-    base = dict(_env_file=None, database_url=_DSN, s3_bucket="poseidon-artifacts")
+    base = dict(_env_file=None, database_url=_DSN)
     base.update(overrides)
     return Settings(**base)
 

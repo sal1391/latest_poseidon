@@ -142,7 +142,6 @@ def _app_for_route_sweep():
     settings = Settings(
         _env_file=None,
         database_url="postgresql+psycopg://nobody:nope@127.0.0.1:1/void",
-        s3_bucket="poseidon-artifacts",
         llm_mode="stub",
         llm_profile="bedrock",
         chat_mode="live",
@@ -232,3 +231,9 @@ def test_no_source_file_mentions_the_store():
         )
     )
     assert offenders == [], f"files still mention the object-store handle: {offenders}"
+
+
+def test_settings_have_no_object_store_fields():
+    from poseidon.core.config import Settings
+
+    assert not [n for n in Settings.model_fields if n.startswith("s3_")]
