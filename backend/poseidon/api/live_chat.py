@@ -250,10 +250,9 @@ client. A title-computation failure (a role-client bug, a ``get_title``/
 ``set_title`` call landing on a dropped connection -- ``title_for`` itself
 already swallows a provider error into ``""``, per its own docstring, but
 nothing guards the ``RoleClient.invoke``/``set_title`` calls THIS route
-makes) is
-caught, logged, and treated as "no title" rather than allowed to break the
-``done`` frame an already-finished, otherwise-successful turn owes the
-client -- the identical "a second failure must never re-terminate an
+makes) is caught, logged, and treated as "no title" rather than allowed to
+break the ``done`` frame an already-finished, otherwise-successful turn owes
+the client -- the identical "a second failure must never re-terminate an
 already-finished turn" discipline ``orchestrator.py``'s own pass-through
 repopulation guard uses.
 
@@ -980,20 +979,19 @@ async def stream_turn(
             return
         frame = pending_done[0]
         title = None
-        if (
-            outcome.status == "ok"
-            and not outcome.replayed
-            and user_history.get_title(cid) == UNTITLED
-        ):
+        if outcome.status == "ok" and not outcome.replayed:
             try:
-                title_input = (
-                    text
-                    if outcome.answer_summary is None
-                    else f"{text}\n\n{outcome.answer_summary}"
-                )
-                computed = title_for(title_input, app_state.role_client, app_state.prompt_registry)
-                title = computed if computed else text[:60]
-                user_history.set_title(cid, title)
+                if user_history.get_title(cid) == UNTITLED:
+                    title_input = (
+                        text
+                        if outcome.answer_summary is None
+                        else f"{text}\n\n{outcome.answer_summary}"
+                    )
+                    computed = title_for(
+                        title_input, app_state.role_client, app_state.prompt_registry
+                    )
+                    title = computed if computed else text[:60]
+                    user_history.set_title(cid, title)
             except Exception as exc:  # noqa: BLE001 - a title failure must not break an already-finished turn's done frame
                 logger.error(
                     "title computation failed: conversation_id=%s: %s: %s",

@@ -203,6 +203,10 @@ def _encode_cursor(payload: dict) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii")
 
 
+#: The title every conversation is created with, and the value
+#: :meth:`UserHistory.get_title` reads back until a title is set.
+UNTITLED = "New chat"
+
 #: Every exception type the decode-through-parse pipeline below can
 #: legitimately raise for some malformed input, empirically enumerated
 #: (not merely assumed) against every matrix cell the fix-round review
@@ -213,10 +217,6 @@ def _encode_cursor(payload: dict) -> str:
 #: a present-but-wrongly-typed field passed to ``datetime.fromisoformat``/
 #: ``uuid.UUID`` -- ``TypeError``/``AttributeError``. One shared tuple so
 #: both cursor-shape decoders below catch identically.
-#: The title every conversation is created with, and the value
-#: :meth:`UserHistory.get_title` reads back until a title is set.
-UNTITLED = "New chat"
-
 _CURSOR_DECODE_ERRORS = (ValueError, TypeError, KeyError, AttributeError)
 
 

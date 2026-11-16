@@ -460,6 +460,34 @@ async def test_title_input_carries_question_and_answer_summary(pg_database_url):
     assert "I can answer certified metric questions" in content
 
 
+@pytest.mark.pg
+@pytest.mark.anyio
+async def test_title_is_none_when_get_title_raises(pg_database_url, monkeypatch):
+    """The title gate's store read sits inside the failure guard: a store
+    failure degrades to "no title" instead of dropping the done frame."""
+    from poseidon.core.chat.history import UserHistory
+
+    def _raising(self, *args, **kwargs):
+        raise RuntimeError("simulated get_title failure")
+
+    monkeypatch.setattr(UserHistory, "get_title", _raising)
+    headers = _headers(_dev_user("alice"))
+    app = _app(pg_database_url)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        cid = (await client.post("/api/conversations", headers=headers)).json()["conversation"][
+            "id"
+        ]
+        events = await read_sse(client, cid, "hello", headers=headers)
+        listing = (await client.get("/api/conversations", headers=headers)).json()
+
+    done_payloads = [payload for name, payload in events if name == "done"]
+    assert len(done_payloads) == 1
+    assert done_payloads[0]["title"] is None
+    assert len(listing["items"]) == 1
+    assert listing["items"][0]["title"] == "New chat"
+
+
 # ===========================================================================
 # pagination envelope byte-pins
 # ===========================================================================
