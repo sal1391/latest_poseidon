@@ -167,8 +167,9 @@ class ConversationSlots:
 class ArtifactRef:
     """A file a skill produced, addressable by the frontend's artifact part.
 
-    ``url`` is a presigned GET: the browser fetches the object directly and
-    the backend never proxies bytes.
+    ``url`` is either a presigned GET (the browser fetches the object
+    directly) or an app-relative path such as ``/api/briefs/{id}/pdf`` that
+    the app itself serves.
     """
 
     name: str

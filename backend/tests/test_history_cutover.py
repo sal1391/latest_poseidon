@@ -389,14 +389,9 @@ class _RecordingRoleClient:
 @pytest.mark.anyio
 async def test_title_set_on_the_first_ok_turn_after_a_clarify(pg_database_url):
     """F2: a conversation opened through a flow chip clarifies first, so its
-    first ``ok`` turn is turn two. The title lands on that turn, not never.
-
-    The artifact store is dropped (``test_chat_e2e_scripted.py``'s own
-    ``_drop_artifact_store`` precedent): the brief would otherwise attempt a
-    real PDF upload, which this pg-only suite has no MinIO or Pango for."""
+    first ``ok`` turn is turn two. The title lands on that turn, not never."""
     headers = _headers(_dev_user("alice"))
     app = _app(pg_database_url)
-    app.state.artifact_store = None
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
         cid = (await client.post("/api/conversations", headers=headers)).json()["conversation"][
