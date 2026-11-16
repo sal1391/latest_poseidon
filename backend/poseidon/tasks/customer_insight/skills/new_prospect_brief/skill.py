@@ -10,9 +10,9 @@ contextualize IN PROSPECT MODE, CONSUMING research's own
 concurrent contextualize -- see "SEQUENTIAL, NOT CONCURRENT" below) ->
 strategize (renders the pinned "Prospect -- no current services" rule via
 ``mode=MODE_PROSPECT`` -- see ``strategize.subskill``'s own "CURRENT
-SERVICES" docstring section) -> ``build_brief_pdf``, or a pinned skip line
-when no artifact store is configured (mirrors ``existing_customer_brief``'s
-identical dev-reality branch, doc 07).
+SERVICES" docstring section) -> ``persist_brief``, or a pinned skip line
+when no brief store is configured (mirrors ``existing_customer_brief``'s
+identical branch).
 
 SEQUENTIAL, NOT CONCURRENT (contrast with ``existing_customer_brief``,
 disclosed judgment call). Doc 02 section 4's own "Concurrency" paragraph
@@ -61,10 +61,10 @@ operational_profile call list, the CRM header list, or the field
 dictionary to silently drift out of sync with the original -- precisely
 the risk the folder law's own "every skill owns its tools" principle
 exists to avoid one level over (two skills disagreeing about a shared
-certified concept). ``tools.build_brief_pdf`` is imported the same way,
-one level further: rendering markdown to a stored PDF has nothing
-customer-specific about it at all (``title``/``markdown_body``/
-``key_prefix`` are its whole surface), so a byte-identical copy here would
+certified concept). ``tools.persist_brief`` is imported the same way,
+one level further: rendering markdown to a stored HTML+PDF has nothing
+customer-specific about it at all (``kind``/``subject``/``title``/
+``markdown_body`` are its whole surface), so a byte-identical copy here would
 be pure duplication with no offsetting benefit -- unlike ``fetch_metrics``/
 ``fetch_top_ports``, which this skill does NOT import, because those two
 are genuinely inapplicable here (see "NO INTERNAL DATA TOOLS" above), not
@@ -90,7 +90,7 @@ from ..existing_customer_brief.subskills.contextualize import subskill as contex
 from ..existing_customer_brief.subskills.research import subskill as research_subskill
 from ..existing_customer_brief.subskills.research.subskill import MODE_PROSPECT
 from ..existing_customer_brief.subskills.strategize import subskill as strategize_subskill
-from ..existing_customer_brief.tools.build_brief_pdf import build_brief_pdf
+from ..existing_customer_brief.tools.persist_brief import persist_brief
 from .schema import Args
 
 # See existing_customer_brief/skill.py's own identical constant for the
@@ -98,18 +98,16 @@ from .schema import Args
 # order (research first) is D10's, not doc 02 section 4.1's.
 _PHASE_ORDER = ("research", "contextualize", "strategize")
 
-_ARTIFACT_SKIP_PROOF = "Artifact: skipped (no artifact store configured)"
-
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 
 
 def _today() -> date:
-    """Only used to date-partition the PDF's storage key -- see
+    """The brief's anchor date, stored on its ``brief_run`` row -- see
     ``existing_customer_brief.skill``'s own ``_today`` for the fuller
     rationale (identical here; this flow has no window/anchor math to make
-    deterministic, only a storage key)."""
+    deterministic, only the stored date)."""
     return date.today()
 
 
@@ -229,18 +227,14 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
         f"Transport: {_transport_name(ctx)}",
     ]
 
-    artifacts = []
-    if ctx.artifacts is not None:
-        markdown_body = _render_markdown(args.prospect_name, parts)
-        ref, pdf_proof = build_brief_pdf(
-            ctx.artifacts,
-            title=f"{args.prospect_name} Prospect Brief",
-            markdown_body=markdown_body,
-            key_prefix=f"new-prospect-brief/{_today().isoformat()}",
-        )
-        artifacts.append(ref)
-        proof.extend(pdf_proof)
-    else:
-        proof.append(_ARTIFACT_SKIP_PROOF)
+    artifacts, brief_proof = persist_brief(
+        ctx,
+        kind="new_prospect",
+        subject=args.prospect_name,
+        title=f"{args.prospect_name} Prospect Brief",
+        anchor_date=_today(),
+        markdown_body=_render_markdown(args.prospect_name, parts),
+    )
+    proof.extend(brief_proof)
 
     return SkillResult(ok=True, parts=parts, proof=proof, artifacts=artifacts)

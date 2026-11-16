@@ -2,8 +2,8 @@ import { Badge } from "../primitives/Badge";
 import type { ArtifactPayload, PartProps } from "./registry";
 
 /** Renders `artifact` parts as a download card: a file glyph, the file name
- * linking straight to `url` -- a presigned GET the browser fetches directly,
- * so this needs no backend proxy route -- and a badge naming the MIME type
+ * linking straight to `url` -- an app-relative download path (`/api/reports/...`, `/api/briefs/...`),
+ * served by the web app, no longer a presigned GET -- and a badge naming the MIME type
  * (spec 4). */
 export function ArtifactPart({ part }: PartProps) {
   const { name, url, mime } = part.payload as ArtifactPayload;

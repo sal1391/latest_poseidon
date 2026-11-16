@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import cast
 
+from poseidon.core.documents import ANONYMOUS_SUB
 from poseidon.core.identity import UserContext
 from poseidon.core.skills.context import SkillContext
 from poseidon.core.skills.result import SkillResult, problem, text_part
@@ -20,7 +21,6 @@ NO_REPORT_TEXT = (
     "Open a report first: click Monthly report, then pick a perspective, an office and a month."
 )
 GONE_TEXT = "The report this conversation refers to is no longer available."
-ANONYMOUS = "dev|anonymous"
 
 
 def run(ctx: SkillContext, args: Args) -> SkillResult:
@@ -40,7 +40,7 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
         )
 
     user = cast(UserContext | None, ctx.user)
-    run_row = store.get_run(user.sub if user else ANONYMOUS, ref)  # type: ignore[attr-defined]
+    run_row = store.get_run(user.sub if user else ANONYMOUS_SUB, ref)  # type: ignore[attr-defined]
     if run_row is None:
         return SkillResult(
             ok=True, parts=[text_part(GONE_TEXT)], proof=[f"Report: run {ref} not found"]

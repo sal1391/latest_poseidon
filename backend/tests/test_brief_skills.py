@@ -4,10 +4,10 @@ plumbing/subskills/tools, and the registry discovering all four skills.
 ``customer_insight.existing_customer_brief``: fetch_metrics + fetch_top_ports
 (metric_grid + table parts emitted immediately) -> contextualize || research
 (concurrent, ThreadPoolExecutor(2), FIXED consumption order) -> strategize ->
-build_brief_pdf (or a pinned skip line when no artifact store is wired).
+persist_brief (or a pinned skip line when no brief store is wired).
 
 ``customer_insight.new_prospect_brief``: research -> contextualize (consuming
-research, sequential -- D10) -> strategize -> build_brief_pdf, no internal
+research, sequential -- D10) -> strategize -> persist_brief, no internal
 data tools (nothing exists for a prospect).
 
 No Postgres, no network, no live LLM: every ``ResearchTool`` here is either
@@ -18,20 +18,17 @@ own ``_ExplodingLLM`` tests -- not re-proven here). ``PERPLEXITY_API_KEY``
 is withheld from every suite run regardless (this phase's own house rule),
 though nothing in this file could reach it either way.
 
-PDF-path tests are ``@pytest.mark.pdf``, skipped unless WeasyPrint's native
-libraries import cleanly (same ``_HAS_WEASYPRINT`` probe as
-``existing_customer_brief/tests/test_tools.py``) -- they use a FAKE
-``ArtifactStore`` (P3's test-double pattern, adapted: no real MinIO needed,
-since only the upload step is doubled, not the markdown -> HTML -> PDF
-rendering, which needs the real library to prove anything).
+The store path is fully offline: a FAKE ``BriefStore`` records inserts and
+``persist_brief.render_brief`` is patched to a canned ``RenderedBrief``, so no
+WeasyPrint is needed (the real render is covered by ``test_tools.py``).
 
 Section map:
   A. Test doubles shared by every section below.
   B. existing_customer_brief: full run, part order pinned end to end
      (including the early-emitted metric_grid/table), proof pinned,
-     artifacts-None skip.
+     brief-store-None skip.
   C. new_prospect_brief: full run, part order pinned, proof pinned,
-     artifacts-None skip.
+     brief-store-None skip.
   D. Concurrency determinism: slow-research/fast-contextualize and
      inverted -- byte-identical part order both ways.
   D2. Trace-id propagation across the ThreadPoolExecutor boundary (P11
@@ -41,7 +38,7 @@ Section map:
      item 2 / I-4): a raising fake subskill in EACH of the three phases,
      in BOTH flows -- both briefs continue, ok=True, the raising phase's
      own pinned failure text stands in for it.
-  G. PDF path with a fake artifact store.
+  G. Store path with a fake brief store and a canned render.
   H. Dispatch through the real SkillRegistry, with validated Args.
   I. ASCII guard.
 """
@@ -57,7 +54,8 @@ import pytest
 from poseidon.core import obs
 from poseidon.core.config import Settings
 from poseidon.core.data.client import BreakdownResult, BreakdownRow, MetricResult
-from poseidon.core.skills.context import ArtifactRef, SkillContext
+from poseidon.core.identity import UserContext
+from poseidon.core.skills.context import SkillContext
 from poseidon.core.skills.registry import SkillRegistry
 from poseidon.core.skills.result import phase_section_part
 from poseidon.mcp.perplexity.fixture_tool import FixtureResearchTool
@@ -66,18 +64,14 @@ from poseidon.tasks.customer_insight.skills.existing_customer_brief import skill
 from poseidon.tasks.customer_insight.skills.existing_customer_brief.subskills.research.subskill import (  # noqa: E501
     SubskillResult,
 )
+from poseidon.tasks.customer_insight.skills.existing_customer_brief.tools import (
+    persist_brief as persist_brief_module,
+)
+from poseidon.tasks.customer_insight.skills.existing_customer_brief.tools.build_brief_pdf import (
+    RenderedBrief,
+)
 from poseidon.tasks.customer_insight.skills.new_prospect_brief import schema as prospect_schema
 from poseidon.tasks.customer_insight.skills.new_prospect_brief import skill as prospect_skill
-
-# WeasyPrint links Pango/Cairo/GDK-Pixbuf at import time and raises OSError
-# (not ImportError) when they are missing -- same probe as
-# existing_customer_brief/tests/test_tools.py's own _HAS_WEASYPRINT.
-try:
-    import weasyprint  # noqa: F401 - existence probe only, never used directly
-except Exception:  # noqa: BLE001 - missing native libs raise OSError, not ImportError
-    _HAS_WEASYPRINT = False
-else:
-    _HAS_WEASYPRINT = True
 
 _PLACEHOLDER_DSN = "postgresql+psycopg://nobody:nope@127.0.0.1:1/void"
 
@@ -170,20 +164,17 @@ class _RecordingEmit:
 
 
 @dataclass
-class _FakeArtifactStore:
-    """An ``ArtifactStore`` double (structurally -- ``build_brief_pdf``
-    only ever calls ``.put_pdf``): records every upload and hands back a
-    fake presigned reference, no real S3/MinIO client involved. P3's own
-    ``test_tools.py`` exercises ``build_brief_pdf`` against a REAL MinIO;
-    this task's own brief asks for a double instead so the PDF-path tests
-    below need no running container -- only WeasyPrint's native libraries,
-    which the ``@pytest.mark.pdf`` marker gates."""
+class _FakeBriefStore:
+    """A ``BriefStore`` double (structurally -- ``persist_brief`` only ever
+    calls ``.insert_brief``): records every insert, or raises ``raises``."""
 
-    puts: list = field(default_factory=list)
+    inserts: list = field(default_factory=list)
+    raises: Exception | None = None
 
-    def put_pdf(self, key: str, content: bytes) -> ArtifactRef:
-        self.puts.append((key, content))
-        return ArtifactRef(name=key, url=f"https://fake.example.test/{key}", mime="application/pdf")
+    def insert_brief(self, user_sub, brief):
+        if self.raises is not None:
+            raise self.raises
+        self.inserts.append((user_sub, brief))
 
 
 def _settings() -> Settings:
@@ -199,12 +190,15 @@ def _ctx(
     *,
     data=None,
     tools: object | None = None,
-    artifacts: object | None = None,
+    brief_store: object | None = None,
+    user: object | None = None,
     emit_part: object | None = None,
 ) -> SkillContext:
     return SkillContext(
         data=data if data is not None else _FakeDataClient(),
-        artifacts=artifacts,
+        artifacts=None,
+        brief_store=brief_store,
+        user=user,
         settings=_settings(),
         tools=tools,
         emit_part=emit_part,
@@ -213,7 +207,7 @@ def _ctx(
 
 # ===========================================================================
 # Section B -- existing_customer_brief: full run, part order pinned end to
-# end, proof pinned, artifacts-None skip.
+# end, proof pinned, brief-store-None skip.
 # ===========================================================================
 
 
@@ -258,11 +252,11 @@ def test_existing_customer_brief_full_run_part_order_and_proof_pinned(monkeypatc
         "Phases completed: contextualize, research, strategize",
         "Phases failed: none",
         "Transport: FixtureResearchTool",
-        "Artifact: skipped (no artifact store configured)",
+        "Brief: skipped (no brief store configured)",
     ]
 
-    # artifacts-None skip: no artifact store was wired, so no PDF is built
-    # and no artifact rides the result -- never a crash.
+    # brief-store-None skip: no brief store was wired, so nothing is rendered
+    # or stored and no artifact rides the result -- never a crash.
     assert result.artifacts == []
 
 
@@ -305,7 +299,7 @@ def test_existing_customer_brief_rejects_a_january_1_anchor_as_a_structured_422(
 
 # ===========================================================================
 # Section C -- new_prospect_brief: full run, part order pinned, proof
-# pinned, artifacts-None skip.
+# pinned, brief-store-None skip.
 # ===========================================================================
 
 
@@ -332,7 +326,7 @@ def test_new_prospect_brief_full_run_part_order_and_proof_pinned():
         "Phases completed: research, contextualize, strategize",
         "Phases failed: none",
         "Transport: FixtureResearchTool",
-        "Artifact: skipped (no artifact store configured)",
+        "Brief: skipped (no brief store configured)",
     ]
 
     assert result.artifacts == []
@@ -736,56 +730,139 @@ def test_new_prospect_brief_continues_when_strategize_raises(monkeypatch):
 
 
 # ===========================================================================
-# Section G -- PDF path with a fake artifact store.
+# Section G -- store path with a fake brief store and a canned render.
 # ===========================================================================
 
 
-@pytest.mark.pdf
-@pytest.mark.skipif(
-    not _HAS_WEASYPRINT, reason="weasyprint needs Pango/Cairo - run in the container"
-)
-def test_existing_customer_brief_pdf_path_with_a_fake_artifact_store(monkeypatch):
+_ID = "0199a000-0000-7000-8000-0000000000b1"
+_PDF = b"%PDF-1.4 fake"
+
+
+@pytest.fixture
+def canned_render(monkeypatch):
+    """Patch ``persist_brief``'s uuid7 and renderer; returns a setter."""
+    monkeypatch.setattr(persist_brief_module, "uuid7", lambda: _ID)
+
+    def _set(rendered: RenderedBrief) -> None:
+        monkeypatch.setattr(persist_brief_module, "render_brief", lambda title, body: rendered)
+
+    _set(RenderedBrief(html="<p>h</p>", pdf=_PDF, pdf_error=None, page_count=2))
+    return _set
+
+
+def _flows(monkeypatch):
+    """Both skills as (run, base ctx kwargs factory, kind, subject, title, h1)."""
     monkeypatch.setattr(existing_skill, "_today", lambda: _ANCHOR)
-    store = _FakeArtifactStore()
+    monkeypatch.setattr(prospect_skill, "_today", lambda: _ANCHOR)
+    return [
+        (
+            lambda ctx: existing_skill.run(ctx, existing_schema.Args(customer="Northstar Lines")),
+            lambda: {"data": _FakeDataClient()},
+            "existing_customer",
+            "Northstar Lines",
+            "Northstar Lines Brief",
+            "# Northstar Lines Brief",
+        ),
+        (
+            lambda ctx: prospect_skill.run(
+                ctx, prospect_schema.Args(prospect_name="Meridian Global Shipping")
+            ),
+            dict,
+            "new_prospect",
+            "Meridian Global Shipping",
+            "Meridian Global Shipping Prospect Brief",
+            "# Meridian Global Shipping Brief (Prospect)",
+        ),
+    ]
+
+
+def _run(flow, **ctx_kwargs):
+    run, base, *_ = flow
+    ctx = _ctx(tools=_Tools(research=FixtureResearchTool()), **base(), **ctx_kwargs)
+    return run(ctx)
+
+
+def test_brief_stores_and_links_the_brief(monkeypatch, canned_render):
+    for flow in _flows(monkeypatch):
+        _, _, kind, subject, title, h1 = flow
+        store = _FakeBriefStore()
+        result = _run(flow, brief_store=store)
+
+        assert result.ok is True
+        assert len(result.artifacts) == 1
+        ref = result.artifacts[0]
+        assert ref.url == f"/api/briefs/{_ID}/pdf"
+        assert ref.mime == "application/pdf"
+        assert ref.name == f"{title}.pdf"
+        assert result.proof[-3:] == [f"Brief: {_ID}", "Pages: 2", "Bytes: 13"]
+
+        assert len(store.inserts) == 1
+        user_sub, brief = store.inserts[0]
+        assert user_sub == brief.created_by == "dev|anonymous"
+        assert brief.id == _ID
+        assert brief.kind == kind
+        assert brief.subject == subject
+        assert brief.title == title
+        assert brief.status == "ok"
+        assert brief.html == b"<p>h</p>"
+        assert brief.pdf == _PDF
+        assert brief.markdown.startswith(h1)
+        assert brief.anchor_date == _ANCHOR
+
+
+def test_brief_created_by_is_the_user_sub(monkeypatch, canned_render):
+    alice = UserContext(sub="dev|alice", email=None, name=None, roles=())
+    for flow in _flows(monkeypatch):
+        store = _FakeBriefStore()
+        _run(flow, brief_store=store, user=alice)
+        user_sub, brief = store.inserts[0]
+        assert user_sub == brief.created_by == "dev|alice"
+
+
+def test_brief_without_a_store_skips(monkeypatch, canned_render):
+    def _boom(title, body):
+        raise AssertionError("render_brief must not run without a brief store")
+
+    monkeypatch.setattr(persist_brief_module, "render_brief", _boom)
+    for flow in _flows(monkeypatch):
+        result = _run(flow)
+        assert result.artifacts == []
+        assert result.proof[-1] == "Brief: skipped (no brief store configured)"
+
+
+def test_brief_pdf_not_rendered_still_stores(monkeypatch, canned_render):
+    canned_render(RenderedBrief(html="<p>h</p>", pdf=None, pdf_error="OSError", page_count=None))
+    for flow in _flows(monkeypatch):
+        store = _FakeBriefStore()
+        result = _run(flow, brief_store=store)
+        assert result.ok is True
+        assert result.artifacts == []
+        assert result.proof[-2:] == [f"Brief: {_ID}", "PDF not rendered: OSError"]
+        assert len(store.inserts) == 1
+        brief = store.inserts[0][1]
+        assert brief.pdf is None
+        assert brief.pdf_error == "OSError"
+
+
+def test_brief_store_failure_degrades(monkeypatch, canned_render):
+    for flow in _flows(monkeypatch):
+        ok_result = _run(flow, brief_store=_FakeBriefStore())
+        result = _run(flow, brief_store=_FakeBriefStore(raises=RuntimeError("db down")))
+        assert result.ok is True
+        assert result.artifacts == []
+        assert result.proof[-1] == "Brief: not stored: RuntimeError"
+        assert result.parts == ok_result.parts
+
+
+def test_brief_with_a_quoted_title_gets_a_safe_name(monkeypatch, canned_render):
+    monkeypatch.setattr(existing_skill, "_today", lambda: _ANCHOR)
     ctx = _ctx(
-        data=_FakeDataClient(), tools=_Tools(research=FixtureResearchTool()), artifacts=store
+        data=_FakeDataClient(),
+        tools=_Tools(research=FixtureResearchTool()),
+        brief_store=_FakeBriefStore(),
     )
-    args = existing_schema.Args(customer="Northstar Lines")
-
-    result = existing_skill.run(ctx, args)
-
-    assert result.ok is True
-    assert len(result.artifacts) == 1
-    ref = result.artifacts[0]
-    assert ref.name == "existing-customer-brief/2026-07-01/northstar-lines-brief.pdf"
-    assert ref.mime == "application/pdf"
-    assert len(store.puts) == 1
-    uploaded_key, uploaded_content = store.puts[0]
-    assert uploaded_key == ref.name
-    assert uploaded_content.startswith(b"%PDF")
-    assert result.proof[-3] == f"Artifact: {ref.name}"
-    assert result.proof[-2].startswith("Pages: ")
-    assert result.proof[-1].startswith("Bytes: ")
-
-
-@pytest.mark.pdf
-@pytest.mark.skipif(
-    not _HAS_WEASYPRINT, reason="weasyprint needs Pango/Cairo - run in the container"
-)
-def test_new_prospect_brief_pdf_path_with_a_fake_artifact_store():
-    store = _FakeArtifactStore()
-    ctx = _ctx(tools=_Tools(research=FixtureResearchTool()), artifacts=store)
-    args = prospect_schema.Args(prospect_name="Meridian Global Shipping")
-
-    result = prospect_skill.run(ctx, args)
-
-    assert result.ok is True
-    assert len(result.artifacts) == 1
-    ref = result.artifacts[0]
-    assert ref.name.startswith("new-prospect-brief/")
-    assert ref.name.endswith("meridian-global-shipping-prospect-brief.pdf")
-    assert len(store.puts) == 1
-    assert store.puts[0][1].startswith(b"%PDF")
+    result = existing_skill.run(ctx, existing_schema.Args(customer='A/S "Rederi"  Lines'))
+    assert result.artifacts[0].name == "A_S _Rederi_ Lines Brief.pdf"
 
 
 # ===========================================================================

@@ -161,6 +161,27 @@ export const reportRun = pgTable("report_run", {
 	check("ck_report_run_status", sql`status = ANY (ARRAY['ok'::text, 'error'::text])`),
 ]);
 
+// D83: a shared org document like report_run. No RLS, no policy.
+export const briefRun = pgTable("brief_run", {
+	id: uuid().primaryKey().notNull(),
+	kind: text().notNull(),
+	subject: text().notNull(),
+	title: text().notNull(),
+	anchorDate: date("anchor_date").notNull(),
+	status: text().notNull(),
+	markdown: text().notNull(),
+	html: bytea(),
+	pdf: bytea(),
+	pdfError: text("pdf_error"),
+	createdBy: text("created_by").notNull(),
+	conversationId: uuid("conversation_id"),
+	generatedAt: timestamp("generated_at", { withTimezone: true, mode: 'string' }).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+}, (table) => [
+	check("ck_brief_run_kind", sql`kind = ANY (ARRAY['existing_customer'::text, 'new_prospect'::text])`),
+	check("ck_brief_run_status", sql`status = ANY (ARRAY['ok'::text, 'error'::text])`),
+]);
+
 export const turnRun = pgTable("turn_run", {
 	id: uuid().primaryKey().notNull(),
 	kind: text().default('chat_turn').notNull(),

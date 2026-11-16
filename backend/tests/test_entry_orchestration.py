@@ -486,7 +486,7 @@ def test_subject_turn_existing_mode_resolves_and_dispatches_the_brief(monkeypatc
         data for _seq, name, data in decoded if name == "part" and data["kind"] == "proof"
     ]
     proof_lines = proof_parts[0]["payload"]["lines"]
-    assert any(line.startswith("Artifact:") for line in proof_lines)
+    assert proof_lines[-1] == "Brief: skipped (no brief store configured)"
 
     assert writer.append_llm_calls == []
     assert len(writer.append_tool_calls) == 1

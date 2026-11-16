@@ -44,13 +44,13 @@ the offline tests can replace them.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import cast
 
 from poseidon.core.analytics import mom
 from poseidon.core.data.query_builder import resolve_row_scope_value
+from poseidon.core.documents import ANONYMOUS_SUB, safe_filename
 from poseidon.core.identity import UserContext
 from poseidon.core.llm.prompt_tree import PromptTree
 from poseidon.core.llm.roles import RoleClient
@@ -81,7 +81,6 @@ from .tools.questions import select_questions
 
 __all__ = ["ENTITY", "GROUP_BY", "PERSPECTIVES", "Perspective", "run"]
 
-ANONYMOUS = "dev|anonymous"
 NARRATE_PROMPT_ID = "reporting/narrate"
 
 
@@ -113,13 +112,6 @@ def _today() -> date:
 def _now() -> datetime:
     """The run's generated_at; tests monkeypatch it."""
     return datetime.now(UTC)
-
-
-def safe_filename(name: str) -> str:
-    """Ruling 13: keep [A-Za-z0-9 ._-], replace the rest with _, collapse spaces."""
-    cleaned = re.sub(r"[^A-Za-z0-9 ._-]", "_", name)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    return cleaned or "report"
 
 
 def _fail(status: int, title: str, detail: str) -> SkillResult:
@@ -227,8 +219,8 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
     run_id = str(uuid7())
     generated_at = _now()
     source = ctx.settings.data_backend
-    generated_by = (user.name or user.email or user.sub) if user is not None else ANONYMOUS
-    created_by = user.sub if user is not None else ANONYMOUS
+    generated_by = (user.name or user.email or user.sub) if user is not None else ANONYMOUS_SUB
+    created_by = user.sub if user is not None else ANONYMOUS_SUB
     scope_label = (
         "Whole book"
         if office_column is None

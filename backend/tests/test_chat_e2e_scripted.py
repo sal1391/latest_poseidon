@@ -193,31 +193,40 @@ def _settings() -> Settings:
 
 
 def _drop_artifact_store(app) -> None:
-    """Phase 14 final-review wave (C3): this suite is ``pg``-marked, NOT
-    ``minio``-marked -- it needs a real Postgres and nothing else.
+    """This suite is ``pg``-marked, NOT ``minio``-marked -- it needs a real
+    Postgres and nothing else.
 
-    Before that wave, ``create_app`` wired an ``ArtifactStore`` only under
-    ``deploy_mode == "local"`` and NOTHING threaded it into the
-    orchestrator's ``SkillContext``, so every brief turn through this HTTP
-    surface hit the skill's ``ctx.artifacts is None`` branch and pinned its
-    honest "Artifact: skipped" proof line for free. The wave fixed exactly
-    that (``_wire_live_chat`` builds the store for every deploy_mode;
-    ``live_chat.py`` threads it), which would otherwise make these two
-    scripted flows attempt a REAL PDF upload to whatever ``S3_ENDPOINT_URL``
-    /AWS happens to be reachable from the machine running them -- an
-    environment dependency this suite has never had, and a pinned proof
-    line that would change with it.
-
-    Dropping the store back to ``None`` post-construction (the same
-    post-construction substitution ``test_live_chat_sse.py``'s own
-    ``_live_app`` does for ``data_client``/``run_log_writer``) keeps every
-    number in these two flows byte-identical to what they pinned before the
-    wave. The real store-carrying path is covered offline, without S3, by
-    ``test_live_chat_sse.py``'s own artifact-store wiring test; the real
-    upload path stays where it already lives, behind the ``minio`` marker
-    (``test_artifacts.py``/``test_brief_pdf.py``).
+    Dropping the artifact store back to ``None`` post-construction (the same
+    substitution ``test_live_chat_sse.py``'s own ``_live_app`` does for
+    ``data_client``/``run_log_writer``) now serves only the report flow test
+    (``test_report_flow_pg.py`` imports this helper), so that suite does not
+    depend on S3/MinIO being reachable. The brief flows no longer use an
+    artifact store at all (D83): they store a ``brief_run`` row instead.
     """
     app.state.artifact_store = None
+
+
+_FIXED_PDF = b"%PDF-1.4 e2e fixture"
+
+
+def _fixed_brief_render(monkeypatch) -> None:
+    """The brief turns store a real ``brief_run`` row through the real
+    ``BriefStore`` wired by ``create_app``; only the WeasyPrint render is
+    replaced, so the flow needs no Pango on the host."""
+    from poseidon.tasks.customer_insight.skills.existing_customer_brief.tools import (
+        build_brief_pdf as render_module,
+    )
+    from poseidon.tasks.customer_insight.skills.existing_customer_brief.tools import (
+        persist_brief as persist_module,
+    )
+
+    monkeypatch.setattr(
+        persist_module,
+        "render_brief",
+        lambda title, body: render_module.RenderedBrief(
+            html="<p>e2e</p>", pdf=_FIXED_PDF, pdf_error=None, page_count=1
+        ),
+    )
 
 
 @pytest.fixture
@@ -673,7 +682,7 @@ def _brief_anchor_windows() -> tuple[date, tuple[date, date], tuple[date, date]]
 
 
 @pytest.mark.anyio
-async def test_existing_customer_brief_flow_scripted_against_live_seeded_postgres():
+async def test_existing_customer_brief_flow_scripted_against_live_seeded_postgres(monkeypatch):
     """doc 08 P8's own flow script A: the bubble entry ("Existing
     customer") -> the subject turn ("Northstar Lines") -> a normal routed
     pivot ("top GP customers for Port of Singapore in April 2026"), over
@@ -682,8 +691,9 @@ async def test_existing_customer_brief_flow_scripted_against_live_seeded_postgre
     from poseidon.api.app import create_app
 
     app = create_app(_settings())
-    _drop_artifact_store(app)
-    headers = _headers(_dev_user("existing-brief"))
+    _fixed_brief_render(monkeypatch)
+    user = _dev_user("existing-brief")
+    headers = _headers(user)
     transport = httpx.ASGITransport(app=app)
     anchor, prior_window, ytd_window = _brief_anchor_windows()
     ports_window_start = anchor - timedelta(days=365)
@@ -724,10 +734,10 @@ async def test_existing_customer_brief_flow_scripted_against_live_seeded_postgre
     # directly -- no router call, hence no token frame): metric_grid +
     # table streamed immediately, then FIVE phase_sections (contextualize,
     # the three research lens calls, strategize -- D19's own emit_part
-    # seam, REAL progressive display), then the artifact-or-skip proof.
+    # seam, REAL progressive display), then the proof, then the brief artifact.
     # ===================================================================
     names_2 = [name for name, _data in events_2]
-    assert names_2 == ["accepted", "tool"] + ["part"] * 7 + ["tool", "part", "done"]
+    assert names_2 == ["accepted", "tool"] + ["part"] * 7 + ["tool", "part", "part", "done"]
     assert "token" not in names_2
     payloads_2 = [data for _name, data in events_2]
     turn_id_2 = payloads_2[0]["turn_id"]
@@ -823,18 +833,24 @@ async def test_existing_customer_brief_flow_scripted_against_live_seeded_postgre
     assert lines_2[9] == "Phases completed: contextualize, research, strategize"
     assert lines_2[10] == "Phases failed: none"
     assert lines_2[11] == "Transport: FixtureResearchTool"
-    # Artifact-or-skip (doc 08 P8's own words): the "or its honest skip"
-    # half of the plan's own Phase Gate wording is what fires here.
-    #
-    # RE-STATED (Phase 14 final-review wave, C3): this used to be true for
-    # free -- execute_turn hardcoded ``artifacts=None`` at BOTH SkillContext
-    # sites, so no HTTP turn anywhere could carry a store. It now CAN, and
-    # does on a real deploy; this suite opts out on purpose via
-    # :func:`_drop_artifact_store` (see its docstring) so the line below
-    # stays a pinned constant instead of an S3-reachability test.
-    assert lines_2[12] == "Artifact: skipped (no artifact store configured)"
+    # Brief-stored (D83): the skill rendered the brief (render patched to a
+    # fixed PDF by _fixed_brief_render), wrote a brief_run row through the
+    # real BriefStore, and proves it with the id, page count and byte size.
+    # The orchestrator pushes the proof part first and the artifact part
+    # right after it (events.py _handle_tool_done), so the artifact is
+    # payloads_2[11] and `done` is payloads_2[12].
+    artifact = payloads_2[11]
+    assert artifact["kind"] == "artifact"
+    artifact = artifact["payload"]
+    match = re.fullmatch(r"/api/briefs/([0-9a-f-]{36})/pdf", artifact["url"])
+    assert match and artifact["mime"] == "application/pdf"
+    assert artifact["name"] == "Northstar Lines Brief.pdf"
+    brief_id = match.group(1)
+    assert lines_2[12:] == [f"Brief: {brief_id}", "Pages: 1", f"Bytes: {len(_FIXED_PDF)}"]
+    # The row really exists: read the PDF back through the app's own store.
+    assert app.state.brief_store.get_bytes(f"dev|{user}", brief_id, "pdf") == _FIXED_PDF
 
-    assert payloads_2[11]["usage"] == {"input_tokens": 0, "output_tokens": 0}
+    assert payloads_2[12]["usage"] == {"input_tokens": 0, "output_tokens": 0}
 
     # ===================================================================
     # Turn 3: the pivot -> routed normally (a real router call: 2
@@ -954,7 +970,7 @@ async def test_existing_customer_brief_flow_scripted_against_live_seeded_postgre
 
 
 @pytest.mark.anyio
-async def test_new_prospect_brief_flow_scripted_against_live_seeded_postgres():
+async def test_new_prospect_brief_flow_scripted_against_live_seeded_postgres(monkeypatch):
     """doc 08 P8's own flow script B: the bubble entry ("New prospect") ->
     the subject turn ("Meridian Global Shipping", deliberately NOT a real
     seeded customer -- proves no resolver on the prospect path) -> a
@@ -969,7 +985,7 @@ async def test_new_prospect_brief_flow_scripted_against_live_seeded_postgres():
     from poseidon.api.app import create_app
 
     app = create_app(_settings())
-    _drop_artifact_store(app)
+    _fixed_brief_render(monkeypatch)
     headers = _headers(_dev_user("new-prospect"))
     transport = httpx.ASGITransport(app=app)
     prospect_pivot = "any relevant news on Meridian Global Shipping?"
@@ -1007,7 +1023,7 @@ async def test_new_prospect_brief_flow_scripted_against_live_seeded_postgres():
     # (no internal-data tools for a prospect).
     # ===================================================================
     names_2 = [name for name, _data in events_2]
-    assert names_2 == ["accepted", "tool"] + ["part"] * 4 + ["tool", "part", "done"]
+    assert names_2 == ["accepted", "tool"] + ["part"] * 4 + ["tool", "part", "part", "done"]
     assert "token" not in names_2
     payloads_2 = [data for _name, data in events_2]
     turn_id_2 = payloads_2[0]["turn_id"]
@@ -1042,6 +1058,17 @@ async def test_new_prospect_brief_flow_scripted_against_live_seeded_postgres():
     assert tool_done_2["status"] == "done"
     assert tool_done_2["tool"] == "customer_insight.new_prospect_brief"
 
+    # The orchestrator pushes the proof part, then the artifact part right
+    # after it (events.py _handle_tool_done): proof is payloads_2[7], the
+    # artifact payloads_2[8], and `done` payloads_2[9].
+    artifact = payloads_2[8]
+    assert artifact["kind"] == "artifact"
+    artifact = artifact["payload"]
+    match = re.fullmatch(r"/api/briefs/([0-9a-f-]{36})/pdf", artifact["url"])
+    assert match and artifact["mime"] == "application/pdf"
+    assert artifact["name"] == "Meridian Global Shipping Prospect Brief.pdf"
+    brief_id = match.group(1)
+
     proof_2 = payloads_2[7]
     assert proof_2["kind"] == "proof"
     assert proof_2["payload"]["lines"] == [
@@ -1049,10 +1076,12 @@ async def test_new_prospect_brief_flow_scripted_against_live_seeded_postgres():
         "Phases completed: research, contextualize, strategize",
         "Phases failed: none",
         "Transport: FixtureResearchTool",
-        "Artifact: skipped (no artifact store configured)",
+        f"Brief: {brief_id}",
+        "Pages: 1",
+        f"Bytes: {len(_FIXED_PDF)}",
     ]
 
-    assert payloads_2[8]["usage"] == {"input_tokens": 0, "output_tokens": 0}
+    assert payloads_2[9]["usage"] == {"input_tokens": 0, "output_tokens": 0}
 
     # ===================================================================
     # Turn 3: the research pivot -> routed normally. See judgment call 5:

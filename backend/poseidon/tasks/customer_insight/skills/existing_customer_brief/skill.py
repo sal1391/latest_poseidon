@@ -21,10 +21,10 @@ ORDER (doc 02 section 4.1's own numbered list, extended by this plan's own
    changes only WHEN the work happens, never what order its OUTPUT
    appears in (a house rule this whole phase holds to).
 4. ``strategize`` -- awaits both of the above, fills the CRM template.
-5. ``build_brief_pdf`` -- renders everything to a stored PDF, or skips
-   with a pinned proof line when no artifact store is configured (doc 07's
-   own dev-reality: a local dev box need not run MinIO to demo the rest of
-   this skill).
+5. ``persist_brief`` -- renders everything to HTML and a PDF and stores
+   them in ``brief_run``, linking ``/api/briefs/{id}/pdf``; skips with a
+   pinned proof line when no brief store is configured, and degrades to a
+   proof line when the store write fails.
 
 CONCURRENT, NOT SEQUENTIAL (contrast with ``new_prospect_brief``, disclosed
 judgment call). ``contextualize.subskill.run``'s signature is fixed (by
@@ -168,9 +168,9 @@ from .subskills.contextualize import subskill as contextualize_subskill
 from .subskills.research import subskill as research_subskill
 from .subskills.research.subskill import MODE_EXISTING
 from .subskills.strategize import subskill as strategize_subskill
-from .tools.build_brief_pdf import build_brief_pdf
 from .tools.fetch_metrics import SIX_METRICS, fetch_metrics
 from .tools.fetch_top_ports import fetch_top_ports
+from .tools.persist_brief import persist_brief
 
 _ENTITY = "MARINE_SALES_PLANNING_V"
 _TOP_N = 5
@@ -205,8 +205,6 @@ _PORTS_COLUMNS = ["Port", "Gross Profit"]
 # fixed order every proof/part list below uses, regardless of which
 # subskill's ThreadPoolExecutor worker actually finishes first.
 _PHASE_ORDER = ("contextualize", "research", "strategize")
-
-_ARTIFACT_SKIP_PROOF = "Artifact: skipped (no artifact store configured)"
 
 logger = logging.getLogger(__name__)
 
@@ -384,7 +382,7 @@ def _ports_table_markdown(payload: dict) -> str:
 
 
 def _render_markdown(customer: str, parts: list[dict]) -> str:
-    """The brief's markdown body for ``build_brief_pdf`` -- one section per
+    """The brief's markdown body for ``persist_brief`` -- one section per
     part, in the SAME order the user sees them streamed. Generic over the
     three kinds this skill ever produces (``metric_grid``, ``table``,
     ``phase_section``); any other kind is skipped rather than crashing the
@@ -518,18 +516,14 @@ def run(ctx: SkillContext, args: Args) -> SkillResult:
         f"Transport: {_transport_name(ctx)}",
     ]
 
-    artifacts = []
-    if ctx.artifacts is not None:
-        markdown_body = _render_markdown(args.customer, parts)
-        ref, pdf_proof = build_brief_pdf(
-            ctx.artifacts,
-            title=f"{args.customer} Brief",
-            markdown_body=markdown_body,
-            key_prefix=f"existing-customer-brief/{anchor.isoformat()}",
-        )
-        artifacts.append(ref)
-        proof.extend(pdf_proof)
-    else:
-        proof.append(_ARTIFACT_SKIP_PROOF)
+    artifacts, brief_proof = persist_brief(
+        ctx,
+        kind="existing_customer",
+        subject=args.customer,
+        title=f"{args.customer} Brief",
+        anchor_date=anchor,
+        markdown_body=_render_markdown(args.customer, parts),
+    )
+    proof.extend(brief_proof)
 
     return SkillResult(ok=True, parts=parts, proof=proof, artifacts=artifacts)

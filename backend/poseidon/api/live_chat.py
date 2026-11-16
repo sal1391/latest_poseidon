@@ -1060,6 +1060,7 @@ async def stream_turn(
                 # ran that wiring has neither.
                 report_store=getattr(app_state, "report_store", None),
                 prompt_tree=getattr(app_state, "prompt_tree", None),
+                brief_store=getattr(app_state, "brief_store", None),
             )
         except Exception as exc:  # noqa: BLE001 - a crash mid-turn must still end the stream cleanly
             # execute_turn's own contract only produces a `turn_error` frame
