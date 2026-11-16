@@ -36,7 +36,7 @@ export function Shell({ sidebar, children }: { sidebar: ReactNode; children: Rea
       {open ? (
         <button type="button" aria-label="Close conversations" onClick={() => setOpen(false)} className="fixed inset-0 z-10 bg-ink/20 md:hidden" />
       ) : null}
-      <main className="flex min-h-0 flex-col">{children}</main>
+      <main className="flex min-h-0 min-w-0 flex-col">{children}</main>
     </div>
   );
 }

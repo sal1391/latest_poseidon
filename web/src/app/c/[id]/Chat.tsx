@@ -11,6 +11,9 @@ import { Composer } from "../../../ui/shell/Composer";
 /** client_turn_key per user message, reused if the SDK retries the same message (Python dedups on it). */
 const turnKeys = new Map<string, string>();
 
+/** How close to the end (px) still counts as "reading the latest". */
+const NEAR_BOTTOM_PX = 48;
+
 /** The text a user message carries, folded back out of its parts. */
 function userText(message: PoseidonUIMessage): string {
   return message.parts
@@ -61,23 +64,38 @@ export function Chat({ conversationId, initialMessages }: { conversationId: stri
    */
   const busy = status === "submitted" || status === "streaming";
 
-  // The thread scrolls inside its own column now (spec 3.2), so the page no
-  // longer grows with the conversation and the browser no longer keeps the
-  // newest message in view for free. jsdom has no scrollIntoView; the
-  // optional call keeps the component testable there.
-  const endRef = useRef<HTMLLIElement>(null);
+  // The thread scrolls inside its own column (spec 3.2), so the browser no
+  // longer keeps the newest message in view for free. Follow the end of the
+  // thread only while the reader is already there: someone who scrolled up
+  // to re-read an earlier answer stays put while tokens stream in. `stick`
+  // is re-derived on every scroll and read after every render that changes
+  // the messages or the error line; a send always re-engages it.
+  const threadRef = useRef<HTMLDivElement>(null);
+  const stick = useRef(true);
+  // Cheap insurance: if Next reuses this instance between /c/A and /c/B,
+  // a `false` left over from A would open B at A's offset instead of its end.
   useEffect(() => {
-    endRef.current?.scrollIntoView?.({ block: "end" });
+    stick.current = true;
+  }, [conversationId]);
+  function onScroll() {
+    const el = threadRef.current;
+    if (!el) return;
+    stick.current = el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX;
+  }
+  useEffect(() => {
+    const el = threadRef.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [messages, error]);
 
   function send(text: string) {
     if (busy || text.trim() === "") return;
+    stick.current = true;
     void sendMessage({ text });
   }
 
   return (
     <>
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div ref={threadRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
         <ol className="mx-auto flex w-full max-w-[720px] flex-col gap-4 px-4 py-6">
           {messages.map((m) =>
             m.role === "user" ? (
@@ -100,7 +118,6 @@ export function Chat({ conversationId, initialMessages }: { conversationId: stri
               without a terminal frame, and `useChat` surfaces it here. Rendering it
               is what makes a truncated turn visible rather than merely short. */}
           {error ? <li className="text-[13px] text-negative">{error.message}</li> : null}
-          <li ref={endRef} aria-hidden="true" />
         </ol>
       </div>
       <div className="px-4">
