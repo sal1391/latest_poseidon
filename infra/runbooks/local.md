@@ -160,6 +160,9 @@ environment setup is needed there.
 
 ## Artifacts (MinIO)
 
+As of D83, brief PDFs no longer go to MinIO: they are stored in `brief_run` and
+served by the Next app; removing MinIO is a follow-up.
+
 Generated files (today: PDF briefs from `build_brief_pdf`) are objects in the
 `minio` service's `S3_BUCKET` (default `poseidon-artifacts`), never files on
 the backend's own filesystem. The bucket does **not** pre-exist — nothing
@@ -402,10 +405,9 @@ chip's own `send_text` sends it verbatim (`api/live_chat.py`'s
    Market Position, Strategic Profile, Strategy — `existing_customer_brief`
    always produces exactly this many: one contextualize + three research
    lens calls + one strategize), then a collapsible "How this was
-   computed" proof block ending in `Artifact: skipped (no artifact store
-   configured)` — `execute_turn` never wires a real `ArtifactStore` into
-   `SkillContext` on any path, so this honest skip line is what a real run
-   always shows here, never a PDF card.
+   computed" proof block ending in `Brief: <id>` followed by `Pages:`/`Bytes:` (or `PDF not
+   rendered: <ExceptionName>` on a host without Pango); the brief is stored in
+   `brief_run` (D83), and with a PDF the card links `/api/briefs/<id>/pdf`.
 3. Ask a pivot: `top GP customers for Port of Singapore in April 2026`.
    Routes normally (a real router call, 2 `llm_calls` rows) — but NOTE: the
    brief's customer (Northstar Lines) is now CARRIED in conversation state,

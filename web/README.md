@@ -74,6 +74,18 @@ does (the `fallback` rewrite). Both the proxy and the handler enforce
 whichever sees it first. A run with no PDF (rendered on a host without Pango)
 answers 404 on `/pdf` and still serves `/html`.
 
+### Brief downloads
+
+Two more route handlers serve a stored brief's bytes, same shape as the report ones:
+
+- `/api/briefs/<brief id>/pdf`
+- `/api/briefs/<brief id>/html`
+
+They use the same `Poseidon:Sales` gate and `Content-Disposition: attachment`
+behaviour as reports. A brief with no PDF (rendered on a host without Pango)
+answers 404 on `/pdf` and still serves `/html`. Briefs are shared documents:
+any Sales user can download any brief.
+
 ### Checking the 403
 
 Start the dev server in SPCS ingress mode with an allowlist that excludes the
