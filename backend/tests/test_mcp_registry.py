@@ -344,7 +344,7 @@ def test_skill_context_tools_defaults_to_none():
     """Additive per Phase 7 Task 1: every one of P3/P4/P6's existing
     SkillContext(...) call sites omits tools entirely and must keep working
     unchanged -- provable only if the field defaults to None."""
-    ctx = SkillContext(data=object(), artifacts=None, settings=_settings())
+    ctx = SkillContext(data=object(), settings=_settings())
 
     assert ctx.tools is None
 
@@ -352,13 +352,13 @@ def test_skill_context_tools_defaults_to_none():
 def test_skill_context_tools_accepts_an_explicit_value():
     fake_registry = object()
 
-    ctx = SkillContext(data=object(), artifacts=None, settings=_settings(), tools=fake_registry)
+    ctx = SkillContext(data=object(), settings=_settings(), tools=fake_registry)
 
     assert ctx.tools is fake_registry
 
 
 def test_skill_context_remains_frozen_with_tools_field():
-    ctx = SkillContext(data=object(), artifacts=None, settings=_settings())
+    ctx = SkillContext(data=object(), settings=_settings())
 
     with pytest.raises(FrozenInstanceError):
         ctx.tools = object()
@@ -368,7 +368,7 @@ def test_skill_context_state_default_is_unaffected_by_the_new_field():
     """tools is appended after state in the dataclass's field order (both
     now carry defaults) -- state's own default must still construct on its
     own, unaffected by the new field sitting after it."""
-    ctx = SkillContext(data=object(), artifacts=None, settings=_settings())
+    ctx = SkillContext(data=object(), settings=_settings())
 
     assert ctx.state == ConversationSlots()
 

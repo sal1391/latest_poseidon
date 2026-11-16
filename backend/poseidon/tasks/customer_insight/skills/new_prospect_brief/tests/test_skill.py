@@ -157,7 +157,6 @@ def _bare_ctx(*, tools):
 
     return SkillContext(
         data=object(),
-        artifacts=None,
         settings=Settings(
             _env_file=None,
             database_url="postgresql+psycopg://nobody:nope@127.0.0.1:1/void",

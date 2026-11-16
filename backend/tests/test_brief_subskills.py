@@ -157,7 +157,6 @@ def _settings() -> Settings:
 def _ctx(*, tools: object | None = None, state: ConversationSlots | None = None) -> SkillContext:
     return SkillContext(
         data=object(),
-        artifacts=None,
         settings=_settings(),
         state=ConversationSlots() if state is None else state,
         tools=tools,
@@ -1003,7 +1002,6 @@ def _ctx_with_llm(
     shape."""
     return SkillContext(
         data=object(),
-        artifacts=None,
         settings=settings,
         state=ConversationSlots() if state is None else state,
         tools=tools,

@@ -75,7 +75,6 @@ def _ctx(**slots: Any) -> SkillContext:
     """
     return SkillContext(
         data=_NullDataClient(),
-        artifacts=None,
         settings=Settings(
             _env_file=None, database_url=PLACEHOLDER_DSN, s3_bucket="poseidon-artifacts"
         ),

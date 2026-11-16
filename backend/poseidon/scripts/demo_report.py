@@ -171,7 +171,6 @@ def main(argv: list[str] | None = None) -> int:
     user = UserContext(sub="dev|demo", email=None, name="Demo", roles=("Poseidon:Sales",))
     ctx = SkillContext(
         data=SyntheticDataClient(settings.database_url),
-        artifacts=None,
         settings=settings,
         user=user,
         report_store=store,

@@ -7,7 +7,6 @@ from fastapi.staticfiles import StaticFiles
 
 from poseidon.api import auth, dev_runner, health, internal, live_chat, me, mock_chat, turns
 from poseidon.briefs.store import BriefStore
-from poseidon.core.artifacts import ArtifactStore
 from poseidon.core.chat.dev_router import DevDeterministicRouter
 from poseidon.core.chat.feedback import FeedbackStore
 from poseidon.core.chat.history import HistoryStore
@@ -175,38 +174,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # The dev skill runner is a local-only surface (poseidon.api.dev_runner's
         # module docstring): app.state.skill_registry is already built above --
         # unconditionally, since Phase 15 Task 5.
-        # One store per app/process, shared by every request (dev_runner's
-        # _build_ctx reads it off app.state), and one bucket check at boot so
-        # the first skill that writes a PDF does not meet a NoSuchBucket.
-        # Constructing the store is pure local work — boto3.client opens no
-        # connection — so only ensure_bucket() can fail here, and it is
-        # deliberately non-fatal: a developer with MinIO stopped must still be
-        # able to boot the API and run every skill that produces no artifact
-        # (which is all of them today). The warning is the honest record that
-        # artifact writes will fail until MinIO is back.
-        #
-        # Phase 14 final-review wave (C3): the CONSTRUCTION moved to
-        # _wire_live_chat, which runs above this block, so a live-chat app in
-        # ANY deploy_mode has a store (before this fix, only deploy_mode=
-        # "local" built one at all, and every EC2/SPCS chat turn therefore ran
-        # with SkillContext.artifacts=None -- no brief could ever produce a
-        # PDF on a real deploy). This block keeps its own construction as the
-        # fallback for the local-but-NOT-live app (CHAT_MODE unset, the
-        # dev_runner-only case), and keeps the ensure_bucket() probe for
-        # local either way -- local behavior, warning line included, is
-        # exactly what it was. A local+live app now shares the ONE store
-        # _wire_live_chat built instead of overwriting it with a second one.
-        if getattr(app.state, "artifact_store", None) is None:
-            app.state.artifact_store = ArtifactStore(app.state.settings)
-        try:
-            app.state.artifact_store.ensure_bucket()
-        except Exception as exc:  # noqa: BLE001 - any store failure must not block local boot
-            print(
-                f"WARNING: artifact bucket '{app.state.settings.s3_bucket}' is not ready "
-                f"({type(exc).__name__}: {exc}); artifact uploads will fail until "
-                "MinIO/S3 is reachable",
-                flush=True,
-            )
         # flush=True: uvicorn --reload runs this inside a long-lived worker
         # subprocess whose stdout is piped back through the reloader rather
         # than a TTY, so an unflushed print can sit in Python's block buffer
@@ -465,9 +432,7 @@ def _wire_live_chat(app: FastAPI) -> None:
 
     Everything else here is built once per app/process, the same "cheap to
     construct, safe to share" discipline ``deploy_mode == "local"``'s own
-    ``dev_runner`` wiring uses (and, since the Phase 14 final-review wave's
-    C3 fix, the discipline ``artifact_store`` -- built here now, for every
-    deploy_mode -- follows too): ``RoleClient``/``PromptRegistry`` touch
+    ``dev_runner`` wiring uses): ``RoleClient``/``PromptRegistry`` touch
     only a packaged YAML file and a prompts directory, ``HistoryStore``/
     ``FeedbackStore`` (Phase 12 Task 1; replaces the in-memory
     ``FeedbackStubStore``) are both explicitly meant to be ONE shared
@@ -611,27 +576,6 @@ def _wire_live_chat(app: FastAPI) -> None:
         # read fail loudly instead of querying an empty schema.
         app.state.data_client = None
         get_logger("app").warning("data_client_unavailable", backend=exc.backend)
-    # Phase 14 final-review wave (C3): the artifact store, built HERE so it
-    # exists in EVERY deploy_mode a live chat runs in -- not only "local".
-    # `core/chat/orchestrator.py` threads this straight into both of its
-    # SkillContext constructions, and the existing-customer brief skips its
-    # whole PDF step when `ctx.artifacts is None`, so before this line an
-    # EC2/SPCS deploy could not produce a downloadable artifact at all while
-    # local dev could -- the one habitat difference doc 07 section 1's
-    # "artifact code is identical in every habitat" promise forbids.
-    #
-    # No `ensure_bucket()` call here, deliberately, and that is the ONLY
-    # difference from the `deploy_mode == "local"` block's own wiring below.
-    # Constructing the store is pure local work (boto3.client opens no
-    # connection -- see that block's own comment), but ensure_bucket() is a
-    # real network round trip, and on a real deploy the bucket is
-    # infrastructure that `infra/aws/03-s3.sh` already created and the
-    # instance profile deliberately grants no CreateBucket for
-    # (`infra/aws/04-iam.sh`: GetObject/PutObject/ListBucket, nothing more) --
-    # so a boot-time create attempt would be both useless and unauthorized
-    # there. Local keeps its probe: MinIO genuinely may not have the bucket
-    # yet, which is the case that warning line exists for.
-    app.state.artifact_store = ArtifactStore(settings)
     # Phase 11 Task 1: turn_run/llm_calls/tool_calls join conversations/
     # messages under the same RLS discipline (migration 0005) -- app_role is
     # load-bearing here for the identical reason the history_store

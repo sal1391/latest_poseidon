@@ -100,7 +100,6 @@ def _ctx(store):
     )
     return SkillContext(
         data=CLIENT,
-        artifacts=None,
         settings=settings,
         state=ConversationSlots(),
         user=USER,

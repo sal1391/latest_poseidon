@@ -55,7 +55,6 @@ def _ctx(data=None, store=None, llm=None, llm_mode="stub", user=USER):
     )
     return SkillContext(
         data=data or FakeDataClient(),
-        artifacts=None,
         settings=settings,
         state=ConversationSlots(),
         llm=llm,
@@ -496,7 +495,6 @@ def test_month_not_on_day_one_is_a_422(registry):
 def test_missing_report_store_is_a_structured_500(registry):
     ctx = SkillContext(
         data=FakeDataClient(),
-        artifacts=None,
         settings=Settings(_env_file=None, database_url=DSN, s3_bucket="poseidon-artifacts"),
         state=ConversationSlots(),
         user=USER,

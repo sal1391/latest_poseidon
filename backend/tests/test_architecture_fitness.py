@@ -206,3 +206,29 @@ def test_ruff_format_check_passes_over_poseidon():
         text=True,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_object_store_seam_is_gone():
+    import dataclasses
+    import importlib.util
+
+    from poseidon.core.skills.context import SkillContext
+
+    assert importlib.util.find_spec("poseidon.core.artifacts") is None
+    names = [f.name for f in dataclasses.fields(SkillContext)]
+    assert "artifacts" not in names
+    assert names[:2] == ["data", "settings"]
+
+
+def test_no_source_file_mentions_the_store():
+    """No ``backend/poseidon/**/*.py`` file names ``ArtifactStore`` or ``artifact_store``."""
+    root = Path(__file__).resolve().parent.parent / "poseidon"
+    offenders = sorted(
+        str(path.relative_to(root.parent))
+        for path in root.rglob("*.py")
+        if any(
+            needle in path.read_text(encoding="utf-8")
+            for needle in ("ArtifactStore", "artifact_store")
+        )
+    )
+    assert offenders == [], f"files still mention the object-store handle: {offenders}"

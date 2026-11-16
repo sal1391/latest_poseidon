@@ -192,20 +192,6 @@ def _settings() -> Settings:
     )
 
 
-def _drop_artifact_store(app) -> None:
-    """This suite is ``pg``-marked, NOT ``minio``-marked -- it needs a real
-    Postgres and nothing else.
-
-    Dropping the artifact store back to ``None`` post-construction (the same
-    substitution ``test_live_chat_sse.py``'s own ``_live_app`` does for
-    ``data_client``/``run_log_writer``) now serves only the report flow test
-    (``test_report_flow_pg.py`` imports this helper), so that suite does not
-    depend on S3/MinIO being reachable. The brief flows no longer use an
-    artifact store at all (D83): they store a ``brief_run`` row instead.
-    """
-    app.state.artifact_store = None
-
-
 _FIXED_PDF = b"%PDF-1.4 e2e fixture"
 
 

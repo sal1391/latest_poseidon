@@ -512,7 +512,6 @@ def _ctx(
 ) -> SkillContext:
     return SkillContext(
         data=client,
-        artifacts=None,
         settings=SETTINGS,
         user=user,
         state=ConversationSlots() if state is None else state,

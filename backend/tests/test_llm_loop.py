@@ -280,7 +280,6 @@ def _context(
     state = ConversationSlots() if slots is None else slots
     return SkillContext(
         data=FakeDataClient(),
-        artifacts=None,
         settings=settings,
         state=state,
         tools=tools,
