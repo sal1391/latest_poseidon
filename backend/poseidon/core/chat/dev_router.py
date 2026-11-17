@@ -474,6 +474,15 @@ there is no code for it here):
     complete for {subject}."``, checked alongside (c2) and BEFORE (c) for
     the identical reason. See "Task 5 CLOSURE" above for where ``subject``
     comes from on each branch.
+(t) A title request (checked before every other case): ``system`` contains the
+    literal ``"Write a chat title"`` (the ``utility/title`` prompt) and does
+    NOT contain the ``"=== CONVERSATION STATE ==="`` header. The user message
+    is ``question`` or ``question + "\\n\\n" + answer_summary`` (``live_chat.py``'s
+    ``_finalize_turn``), a plain ``str`` as ``title_for`` sends it. The title
+    is the answer summary when it is non-empty and not the capability message,
+    else the question; first line only, whitespace collapsed, trailing ``.``
+    stripped, cut on a word boundary at :data:`_TITLE_MAX_CHARS`. No usable
+    text -> falls through to the other cases (so, case (d)).
 (d) Anything else (most commonly: no period resolved and hints do not lead
     research or a brief with their own required signal, so none of
     (b)/(b2)/(b3) can fire and there is nothing yet to certify for
@@ -718,6 +727,12 @@ class DevDeterministicRouter:
         implements, but this router's decisions never depend on their
         values -- see the module docstring's opening paragraph.
         """
+        # Case (t): a title request is never a routed turn, so it wins over
+        # everything else; None (nothing usable) falls through.
+        if _is_title_request(system):
+            title = _title_response(messages)
+            if title is not None:
+                return title
         parsed_state = _parse_state(system)
         last_tool_use = _last_tool_use_name(messages)
         # Case (c2), Task 4: checked FIRST, and independent of whether a
@@ -1184,6 +1199,55 @@ def _certified_answer(parsed_state: _ParsedState) -> LLMResponse:
     text = f"Certified answer for {entity_label} {_EM_DASH} {period_label}."
     return LLMResponse(
         text=text, tool_calls=(), stop_reason="end_turn", input_tokens=0, output_tokens=0
+    )
+
+
+# Pinned here rather than imported: this module never imports titles.py (see
+# the module docstring's contract). Mirrors ``titles.TITLE_MAX_CHARS``.
+_TITLE_MAX_CHARS = 60
+# The literal the ``utility/title`` prompt opens with; a prompt edit that drops
+# it silently stops this case matching (pinned by a test that renders the real
+# prompt).
+_TITLE_MARKER = "Write a chat title"
+
+
+def _is_title_request(system: str) -> bool:
+    """Case (t)'s test: the title prompt, and not a routed turn's state block."""
+    return _TITLE_MARKER in system and _STATE_HEADER not in system
+
+
+def _title_user_text(messages: list[dict]) -> str:
+    """The last ``user`` message's text, whichever shape carries it: a plain
+    ``str`` (what ``title_for`` sends) or a list of ``{"text": ...}`` blocks."""
+    for message in reversed(messages):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        texts = [block["text"] for block in (content or []) if "text" in block]
+        if texts:
+            return " ".join(texts)
+    return ""
+
+
+def _title_response(messages: list[dict]) -> LLMResponse | None:
+    """Case (t): a deterministic title from the question or the answer summary,
+    or ``None`` when there is nothing usable."""
+    question, _sep, summary = _title_user_text(messages).partition("\n\n")
+    source = question
+    if summary.strip() and not summary.startswith(_CAPABILITY_MESSAGE):
+        source = summary
+    lines = source.strip().splitlines()
+    title = " ".join(lines[0].split()).rstrip(".") if lines else ""
+    if len(title) > _TITLE_MAX_CHARS:
+        head = title[:_TITLE_MAX_CHARS]
+        cut = title[: _TITLE_MAX_CHARS + 1].rfind(" ")
+        title = title[:cut].rstrip() if cut > 0 else head
+    if not title:
+        return None
+    return LLMResponse(
+        text=title, tool_calls=(), stop_reason="end_turn", input_tokens=0, output_tokens=0
     )
 
 

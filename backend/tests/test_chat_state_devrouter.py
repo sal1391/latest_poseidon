@@ -1684,3 +1684,74 @@ def test_plural_cues_match_their_singular_column():
     assert _call_for("gp by deal classes")["group_by"] == ["DEAL_CLASSIFICATION_TRADE_CUT"]
     assert _call_for("gp by customer offices")["group_by"] == ["CUSTOMER_TEAM_NAME"]
     assert _call_for("gp by months")["group_by"] == ["MONTH"]
+
+
+# ---------------------------------------------------------------------------
+# Title requests (the `utility/title` prompt): answered with a deterministic
+# title instead of the capability message
+# ---------------------------------------------------------------------------
+
+_TITLE_SYSTEM = PromptRegistry(DEFAULT_PROMPTS_DIR).render("utility/title", max_chars=60)
+_CAPABILITY_PREFIX = "I can answer certified metric questions"
+
+
+def _title_text(user_text: str, system: str = _TITLE_SYSTEM) -> str:
+    """The router's answer to a title request whose user message is a plain
+    ``str``, the shape ``title_for`` actually sends."""
+    response = DevDeterministicRouter().invoke(
+        system=system,
+        messages=[{"role": "user", "content": user_text}],
+        tools=[],
+        model="m",
+        params={},
+    )
+    return response.text
+
+
+def test_title_request_uses_the_answer_summary():
+    text = _title_text("Northstar Lines\n\nBrief generated for Northstar Lines.")
+
+    assert text == "Brief generated for Northstar Lines"
+
+
+def test_title_request_falls_back_to_the_question_without_a_summary():
+    assert _title_text("hello") == "hello"
+
+
+def test_title_request_ignores_a_capability_message_summary():
+    text = _title_text("hello\n\n" + dev_router._CAPABILITY_MESSAGE)
+
+    assert text == "hello"
+
+
+def test_title_request_takes_the_first_line_and_collapses_whitespace():
+    text = _title_text("q\n\nGross  profit rose.\nSecond line.")
+
+    assert text == "Gross profit rose"
+
+
+def test_title_request_cuts_long_text_on_a_word_boundary():
+    text = _title_text("q\n\n" + "alpha " * 20)
+
+    assert len(text) <= 60
+    assert text == ("alpha " * 20)[:60].rsplit(" ", 1)[0]
+    assert not text.endswith(" ")
+
+
+def test_title_request_with_no_usable_text_gets_the_capability_message():
+    assert _title_text("").startswith(_CAPABILITY_PREFIX)
+
+
+def test_a_state_block_system_is_never_a_title_request():
+    system = "Write a chat title\n=== CONVERSATION STATE ===\n"
+
+    assert _title_text("hello", system=system).startswith(_CAPABILITY_PREFIX)
+
+
+def test_title_for_through_the_stub_role_client_is_not_the_capability_message(monkeypatch):
+    from poseidon.core.llm.titles import title_for
+
+    settings = _settings(monkeypatch)
+    role_client = RoleClient(settings, providers={"stub": DevDeterministicRouter()})
+
+    assert title_for("hello", role_client) == "hello"
