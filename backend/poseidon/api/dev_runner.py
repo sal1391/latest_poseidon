@@ -60,11 +60,7 @@ def _build_ctx(request: Request) -> SkillContext | SkillResult:
 
     ``SyntheticDataClient`` is cheap to build (a DSN string; it opens no
     network connection until a query actually runs), so it is built fresh per
-    request and needs no pooling or caching at this phase. The
-    :class:`~poseidon.core.artifacts.ArtifactStore` is NOT built here: it is
-    the process-wide one ``create_app`` built and called ``ensure_bucket()``
-    on at start-up, so every request shares one boto3 client and the bucket
-    check happens once per process rather than never.
+    request and needs no pooling or caching at this phase.
     """
     settings = request.app.state.settings
     try:
@@ -86,7 +82,6 @@ def _build_ctx(request: Request) -> SkillContext | SkillResult:
         )
     return SkillContext(
         data=data,
-        artifacts=request.app.state.artifact_store,
         settings=settings,
         state=ConversationSlots(),
         # Phase 9 Task 1: request.state.user is set by app.py's identity

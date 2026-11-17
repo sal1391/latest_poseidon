@@ -151,13 +151,12 @@ _ALL_CALLABLE_SCHEMA_NAMES = (*_NEW_SCHEMA_NAMES, "web_research")
 
 
 def _settings() -> Settings:
-    return Settings(_env_file=None, database_url=_PLACEHOLDER_DSN, s3_bucket="poseidon-artifacts")
+    return Settings(_env_file=None, database_url=_PLACEHOLDER_DSN)
 
 
 def _ctx(*, tools: object | None = None, state: ConversationSlots | None = None) -> SkillContext:
     return SkillContext(
         data=object(),
-        artifacts=None,
         settings=_settings(),
         state=ConversationSlots() if state is None else state,
         tools=tools,
@@ -970,7 +969,6 @@ def _stub_settings() -> Settings:
     return Settings(
         _env_file=None,
         database_url=_PLACEHOLDER_DSN,
-        s3_bucket="poseidon-artifacts",
         llm_mode="stub",
     )
 
@@ -982,7 +980,6 @@ def _live_settings() -> Settings:
     return Settings(
         _env_file=None,
         database_url=_PLACEHOLDER_DSN,
-        s3_bucket="poseidon-artifacts",
         llm_mode="live",
         llm_profile="bedrock",
     )
@@ -1003,7 +1000,6 @@ def _ctx_with_llm(
     shape."""
     return SkillContext(
         data=object(),
-        artifacts=None,
         settings=settings,
         state=ConversationSlots() if state is None else state,
         tools=tools,

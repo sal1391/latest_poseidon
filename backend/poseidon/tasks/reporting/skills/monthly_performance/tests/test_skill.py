@@ -51,11 +51,10 @@ def registry():
 
 def _ctx(data=None, store=None, llm=None, llm_mode="stub", user=USER):
     settings = Settings(
-        _env_file=None, database_url=DSN, s3_bucket="poseidon-artifacts", llm_mode=llm_mode
+        _env_file=None, database_url=DSN, llm_mode=llm_mode
     )
     return SkillContext(
         data=data or FakeDataClient(),
-        artifacts=None,
         settings=settings,
         state=ConversationSlots(),
         llm=llm,
@@ -118,7 +117,7 @@ BAD_NARRATIVE = "Northstar Lines' GP fell 60,000 (-30.0%) on lower volume."
 def _live_ctx(script, store=None):
     provider = StubProvider(script)
     settings = Settings(
-        _env_file=None, database_url=DSN, s3_bucket="poseidon-artifacts", llm_mode="live"
+        _env_file=None, database_url=DSN, llm_mode="live"
     )
     llm = RoleClient(settings, providers={"bedrock": provider})
     return _ctx(store=store, llm=llm, llm_mode="live"), provider
@@ -496,8 +495,7 @@ def test_month_not_on_day_one_is_a_422(registry):
 def test_missing_report_store_is_a_structured_500(registry):
     ctx = SkillContext(
         data=FakeDataClient(),
-        artifacts=None,
-        settings=Settings(_env_file=None, database_url=DSN, s3_bucket="poseidon-artifacts"),
+        settings=Settings(_env_file=None, database_url=DSN),
         state=ConversationSlots(),
         user=USER,
     )

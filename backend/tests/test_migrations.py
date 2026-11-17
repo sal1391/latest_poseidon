@@ -78,7 +78,6 @@ def test_upgrade_head_on_sqlite(tmp_path):
     db = tmp_path / "mig.db"
     env = {
         "DATABASE_URL": f"sqlite:///{db.as_posix()}",
-        "S3_BUCKET": "poseidon-artifacts",
     }
     result = _alembic("upgrade", "head", env_overrides=env)
     assert result.returncode == 0, result.stderr
@@ -168,7 +167,7 @@ def test_0009_round_trips_against_postgres(alembic_probe):
     from poseidon.core.data.synthetic_client import normalize_dsn
 
     dsn = alembic_probe
-    env = {"DATABASE_URL": dsn, "S3_BUCKET": "poseidon-artifacts"}
+    env = {"DATABASE_URL": dsn}
 
     def _policy() -> bool:
         """Whether 0009's ``memory_outbox_worker`` policy exists **on this
@@ -264,7 +263,7 @@ def test_0010_round_trips_against_postgres(alembic_probe):
     from poseidon.core.data.synthetic_client import normalize_dsn
 
     dsn = alembic_probe
-    env = {"DATABASE_URL": dsn, "S3_BUCKET": "poseidon-artifacts"}
+    env = {"DATABASE_URL": dsn}
 
     def _member() -> bool:
         """``True`` when the DSN user is a MEMBER of ``poseidon_app``.

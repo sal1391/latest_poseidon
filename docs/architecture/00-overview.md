@@ -89,8 +89,7 @@ flowchart LR
   IDP["Identity provider<br/>Auth0 (OIDC) | SPCS ingress"]
   LLM["LLM providers<br/>Bedrock (Sonnet/Opus/Nova)<br/>Snowflake Cortex (Claude)"]
   PPLX["Perplexity<br/>(web research)"]
-  PG[("Postgres + pgvector<br/>chat, run log, feedback,<br/>user memory, vectors,<br/>report HTML/PDF bytes (D39)<br/>SPCS: managed Snowflake Postgres")]
-  OBJ[("Object store (S3 API)<br/>artifacts (PDF briefs)<br/>local + EC2 only — absent on SPCS (D39)")]
+  PG[("Postgres + pgvector<br/>chat, run log, feedback,<br/>user memory, vectors,<br/>report and brief HTML/PDF bytes (D39, D83)<br/>SPCS: managed Snowflake Postgres")]
   SRC[("Domain data<br/>synthetic (local default) |<br/>Snowflake views/tables")]
 
   UI -- "login" --> IDP
@@ -102,7 +101,6 @@ flowchart LR
   SKILLS --> DATA --> SRC
   API --> PG
   RUNLOG --> PG
-  SKILLS --> OBJ
 ```
 
 ## 6. Repository layout (target)
@@ -196,7 +194,7 @@ poseidon/
   in-service Postgres and MinIO containers on mounted volumes; under D39 SPCS has neither, so
   there the obligation is to verify and document Snowflake Postgres's own backup/PITR guarantees
   rather than to run backup sidecars. The rehearsed-restore and stated-RPO/RTO requirements are
-  unchanged, and still apply in full to EC2's RDS + S3 (doc 07 §4).
+  unchanged, and would apply in full to EC2's RDS if that habitat is revived (doc 07 §4; EC2 is parked, D84).
 - D33 **(timing revised by D40, interface unchanged)** Phase 5 ships Bedrock + stub; Cortex
   arrives with a provider-parity contract test — prove the seam with one live provider before
   paying for two (doc 03 §1, doc 08). D40 moves Cortex earlier than "the SPCS phase's
@@ -216,7 +214,7 @@ remains authoritative for the feature, this table for the fact that the decision
 | D36 | Comparison basis is an enum with one implemented value, `prior_month`. Other bases are declared but fail validation until built. | — |
 | D37 | Report definitions, runs and sends are shared org documents granted to the app role, no per-user row policies. Writes gated by a new role `Poseidon:ReportAdmin`; reads by `Poseidon:Sales`. | — |
 | D38 | One `Mailer` interface. Microsoft Graph is the production transport on SPCS (its egress allows only ports 22, 80, 443, 1024+); SMTP serves local Mailpit and EC2; a stub serves tests. The mail path is a new egress processor: report content to allow-listed internal domains, never conversation content. | — |
-| **D39** | **On SPCS the app database is managed Snowflake Postgres, injected as `DATABASE_URL` from a Snowflake secret. Report HTML and PDF are stored as bytes in Postgres and served through the API in every habitat; MinIO is not part of the SPCS service.** (refined by D65: report PDF/HTML are served by the Next.js routes `/api/reports/[runId]/{pdf,html}`) | **D20** |
+| **D39** | **On SPCS the app database is managed Snowflake Postgres, injected as `DATABASE_URL` from a Snowflake secret. Report HTML and PDF are stored as bytes in Postgres and served through the API in every habitat; MinIO is not part of the SPCS service.** (refined by D65: report PDF/HTML are served by the Next.js routes `/api/reports/[runId]/{pdf,html}`) (completed by D84) | **D20** |
 | D40 | `CortexProvider` is built now, over the Cortex REST Messages endpoint with native tool calling — not the SQL `COMPLETE` function with emulated tools. **(timing revised by D68)** **(endpoint named by D79: the Anthropic-compatible Messages endpoint)** | D33 (timing) |
 | D41 | Report chat carries the office filter and month pair by default. Scope is an explicit validated skill argument; the model chooses the value, code applies the filter. Share-of-total is computed in Python. The report's figures reach the model only through `reporting.report_lookup`. | — |
 | D42 | The EC2 deployment (Phase 14) is paused after its completed offline half; report work sequences first. | doc 08 order |
@@ -260,7 +258,8 @@ remains authoritative for the feature, this table for the fact that the decision
 | D80 | `LLMResponse.reasoning` carries the model's reasoning blocks from a tool_use turn as Converse `reasoningContent` blocks; the agent loop echoes them, deep-copied, ahead of the `toolUse` blocks in the assistant history. The Claude 5.5 generation requires it. Stub and dev router emit none, so stub-mode output and the contracts corpus are unchanged. The `anthropic` and `cortex` profiles both name Sonnet 5.5 / Haiku 5.5 / Opus 5.5 (owner ruling 2026-10-23, reaffirmed) and differ only in the provider key: no `temperature`, `thinking: between_tools` on Sonnet 5.5 and `disabled` on Haiku 5.5, `tool_choice_mode: instruct` on Sonnet 5.5 because native forced tool_choice is a 400 there. | spec §9.1 "forced tool call supported" (kept, by instruction on 5.5) |
 | D81 | The stub dev router's drift from the live router is reconciled as a documented divergence list in `dev_router.py` plus three fixes (first bucket wins, `% of` boundary, plural cues); routing to `reporting.report_lookup` in the dev router stays parked (A2 ruling 19) because the recorded stub scripts in `routing_cases.yml` cover the report cases. | D78 (closed) |
 | D82 | The Next.js app carries the Vite app's slate look as Tailwind 4 theme tokens (U1–U7 of `docs/superpowers/specs/2026-10-23-nextjs-ui-design-pass-design.md`): sidebar shell, light only, no raw colours in components, the report renders as a document card. Radius tokens are `chip/card/pill` (ruling P1-R1). Adds the styling the migration design (§10) never covered; no earlier decision is revised. | migration design §10 (addition) |
-| D83 | Brief HTML, PDF and markdown are stored in `brief_run` (Drizzle 0004, a shared org document with D69 visibility) and served by the Next.js routes `/api/briefs/[runId]/{pdf,html}` behind the Sales-role check; the artifact part links the relative path `/api/briefs/<id>/pdf`, and the proof lines read `Brief: <id>` then `Pages:`/`Bytes:` (or `PDF not rendered: <ExceptionName>`; `Brief: skipped (no brief store configured)` with no store). A failed store write degrades to a proof line (`Brief: not stored: <ExceptionName>`), the turn stays ok. `ArtifactStore`/MinIO have no production caller for briefs and are removed in a follow-up PR. | D65 (extends) |
+| D83 | Brief HTML, PDF and markdown are stored in `brief_run` (Drizzle 0004, a shared org document with D69 visibility) and served by the Next.js routes `/api/briefs/[runId]/{pdf,html}` behind the Sales-role check; the artifact part links the relative path `/api/briefs/<id>/pdf`, and the proof lines read `Brief: <id>` then `Pages:`/`Bytes:` (or `PDF not rendered: <ExceptionName>`; `Brief: skipped (no brief store configured)` with no store). A failed store write degrades to a proof line (`Brief: not stored: <ExceptionName>`), the turn stays ok. `ArtifactStore`/MinIO have no production caller for briefs and are removed in a follow-up PR (completed by D84). | D65 (extends) |
+| D84 | No object store in any habitat. MinIO is removed from the app and local stack: `ArtifactStore`, `SkillContext.artifacts`, the `S3_*` settings, the `minio` test marker and the compose `minio` service. Brief and report bytes are Postgres rows served by Next.js routes (D65, D83). The EC2 habitat is parked: the deploy target is SPCS with Snowflake Postgres (D39); `infra/aws/`, `docker-compose.ec2.yml` and `deploy-ec2.md` are kept for reference under a PARKED banner and their S3 steps are stale. `boto3` remains for the Bedrock provider, which stays for now. The bucket's 90-day expiry went with it; retention of `brief_run` / `report_run` rows is an open item for the first real deploy. | completes D39 and D83; revises doc 07 §1, §5, §6 and doc 05 §8 |
 
 ### Migration decisions (M1-M5)
 

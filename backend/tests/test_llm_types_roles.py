@@ -28,7 +28,6 @@ from poseidon.core.llm.types import LLMResponse, ToolCall
 
 REQUIRED_ENV = {
     "DATABASE_URL": "postgresql+psycopg://x:x@localhost:5432/poseidon",
-    "S3_BUCKET": "poseidon-artifacts",
 }
 
 # U+2014 EM DASH, written as an escape for the reason given in the module
@@ -188,8 +187,8 @@ def test_load_model_profiles_wraps_invalid_yaml(tmp_path):
 def test_settings_defaults_for_llm_layer(monkeypatch):
     """Every Settings field RoleClient depends on is defaulted, so a bare
     local environment (no LLM_*/MODELS_PATH/etc. set at all) never crashes
-    at startup -- only the pre-existing required fields (DATABASE_URL,
-    S3_BUCKET) do."""
+    at startup -- only the pre-existing required field (DATABASE_URL)
+    does."""
     settings = _settings(monkeypatch)
 
     assert settings.llm_mode == "stub"

@@ -51,7 +51,6 @@ REGISTRY = SkillRegistry.discover()
 REFERENCE_DATE = date(2026, 7, 15)
 REQUIRED_ENV = {
     "DATABASE_URL": "postgresql+psycopg://x:x@localhost:5432/poseidon",
-    "S3_BUCKET": "poseidon-artifacts",
 }
 OFFICES = ["Gibraltar Office", "Malta Office", "Spain Office", "Valencia Office"]
 REPORT_SKILL = "reporting.monthly_performance"

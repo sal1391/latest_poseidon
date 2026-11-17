@@ -110,7 +110,7 @@ def _settings(**overrides) -> Settings:
     monkeypatched environment needed, since nothing here touches an LLM or
     reads an ambient env var."""
     defaults: dict = dict(
-        _env_file=None, database_url=_PLACEHOLDER_DSN, s3_bucket="poseidon-artifacts"
+        _env_file=None, database_url=_PLACEHOLDER_DSN
     )
     defaults.update(overrides)
     return Settings(**defaults)

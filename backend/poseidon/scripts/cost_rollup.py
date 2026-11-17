@@ -65,16 +65,15 @@ grant); not repeated here.
 ``Settings.token_spike_threshold`` (a real, typed, centrally-documented
 config field, not a second, parallel env-var convention this script would
 otherwise have to invent) -- so it constructs a real ``Settings`` via
-``get_settings()``, which also validates ``DATABASE_URL``/``S3_BUCKET``/
-etc. as a side effect. A deployed environment already satisfies that full
-contract (the backend server needs it too); only a bespoke, backend-less
-invocation must additionally export ``S3_BUCKET`` (any non-blank value --
-this script never reads it) purely to satisfy ``Settings`` construction.
+``get_settings()``, which also validates ``DATABASE_URL``
+as a side effect. A deployed environment already satisfies that full
+contract (the backend server needs it too); a bespoke, backend-less
+invocation needs only ``DATABASE_URL`` to satisfy ``Settings`` construction.
 
 Usage::
 
     DATABASE_URL=postgresql+psycopg://poseidon:poseidon@localhost:5432/poseidon \\
-    S3_BUCKET=poseidon-artifacts TOKEN_SPIKE_THRESHOLD=20000 \\
+    TOKEN_SPIKE_THRESHOLD=20000 \\
         python -m poseidon.scripts.cost_rollup --by role --since 2026-08-01T00:00:00Z
         python -m poseidon.scripts.cost_rollup --spike-check --since 2026-08-01T00:00:00Z
 """

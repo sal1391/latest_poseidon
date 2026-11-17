@@ -49,16 +49,16 @@ Requires Docker Desktop, or Docker Engine with the Compose plugin.
 docker compose -f infra/docker-compose.yml up --build
 ```
 
-That brings up four services — Postgres, MinIO for object storage, the backend API, and the Vite
-dev server:
+That brings up four long-running services — Postgres, the backend API, the memory-distillation
+worker and the Vite dev server — after a one-shot `migrate` service has applied the Drizzle
+migrations:
 
 | | |
 |---|---|
 | App | http://localhost:5173 |
 | API | http://localhost:8000 |
-| MinIO console | http://localhost:9001 |
 
-**Data is already there.** The backend's start-up runs migrations and seeds a deterministic
+**Data is already there.** The `migrate` service applies the migrations and the backend's start-up seeds a deterministic
 synthetic dataset — roughly 24,000 marine sales rows and 16,200 GL rows generated from
 `ontology/synthetic/profiles.yml`. The seeder skips when tables already hold rows, so restarting
 never rewrites what a running demo is looking at. Local development runs against this synthetic
@@ -78,14 +78,13 @@ cd backend && python -m pytest      # offline suite — always green with no ser
 cd frontend && npm test             # component and interaction tests
 ```
 
-Three pytest markers gate tests needing more than a bare Python environment. Each **skips with a
+Two pytest markers gate tests needing more than a bare Python environment. Each **skips with a
 reason** rather than failing when its dependency is absent, which is what keeps the offline suite
 honest:
 
 | Marker | Needs | Run it with |
 |---|---|---|
 | `pg` | Migrated, seeded Postgres | `DATABASE_URL=postgresql+psycopg://poseidon:poseidon@localhost:5432/poseidon python -m pytest -m pg` |
-| `minio` | Reachable MinIO | `S3_ENDPOINT_URL=http://localhost:9000 S3_ACCESS_KEY=poseidon S3_SECRET_KEY=poseidon123 python -m pytest -m minio` |
 | `pdf` | WeasyPrint native libraries | Easiest inside the container — see `infra/runbooks/local.md` |
 
 The `pg` tests recompute every expectation in pure Python from the same generator that seeded the

@@ -40,7 +40,6 @@ testpaths = ["tests", "poseidon/tasks"]
 addopts = "-q"
 markers = [
   "pg: requires a reachable Postgres (DATABASE_URL)",
-  "minio: requires reachable MinIO (S3_ENDPOINT_URL)",
   "pdf: requires weasyprint native libs (run in container)",
   "router_live: live LLM provider tests requiring credentials",
   "research_live: live Perplexity research tests requiring an API key",

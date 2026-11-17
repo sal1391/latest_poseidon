@@ -159,13 +159,6 @@ def dispatch_skill(skill_id: str, body: _DispatchRequest, request: Request) -> A
         )
     ctx = SkillContext(
         data=data,
-        # Defensively, mirroring app.py's own pattern at app.py:177: the store
-        # is assigned in two places (``_wire_live_chat``, and the
-        # ``deploy_mode == "local"`` block) and an spcs+mock app runs neither,
-        # so the attribute need not exist. ``None`` is the established
-        # semantic for "this dispatch cannot produce a file" (app.py:170's own
-        # comment); an AttributeError is not.
-        artifacts=getattr(request.app.state, "artifact_store", None),
         settings=settings,
         state=ConversationSlots(),
         user=UserContext(
@@ -176,8 +169,9 @@ def dispatch_skill(skill_id: str, body: _DispatchRequest, request: Request) -> A
             # leave the identity mutable through it.
             roles=tuple(body.identity.roles),
         ),
-        # Phase 17 PR A2: getattr for the same reason as artifact_store above;
-        # a direct skill call belongs to no conversation.
+        # Phase 17 PR A2: getattr because an spcs+mock app never runs
+        # ``_wire_live_chat``, so these attributes need not exist; a direct
+        # skill call belongs to no conversation.
         report_store=getattr(request.app.state, "report_store", None),
         prompt_tree=getattr(request.app.state, "prompt_tree", None),
         brief_store=getattr(request.app.state, "brief_store", None),

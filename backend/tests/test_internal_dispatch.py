@@ -56,7 +56,6 @@ def _settings(**overrides) -> Settings:
     defaults: dict = dict(
         _env_file=None,
         database_url=_PLACEHOLDER_DSN,
-        s3_bucket="poseidon-artifacts",
         internal_token="test-internal-token",
     )
     defaults.update(overrides)
@@ -145,7 +144,7 @@ def test_internal_token_is_read_from_POSEIDON_INTERNAL_TOKEN(monkeypatch):
     variable name (``POSEIDON_INTERNAL_TOKEN``) compose/Task 8 set -- every
     internal route would 503 forever even with the intended variable set."""
     monkeypatch.setenv("POSEIDON_INTERNAL_TOKEN", "from-env")
-    s = Settings(_env_file=None, database_url=_PLACEHOLDER_DSN, s3_bucket="poseidon-artifacts")
+    s = Settings(_env_file=None, database_url=_PLACEHOLDER_DSN)
     assert s.internal_token == "from-env"
 
 
@@ -154,7 +153,7 @@ def test_generic_INTERNAL_TOKEN_env_var_is_ignored(monkeypatch):
 
     monkeypatch.delenv("POSEIDON_INTERNAL_TOKEN", raising=False)
     monkeypatch.setenv("INTERNAL_TOKEN", "should-not-bind")
-    s = Settings(_env_file=None, database_url=_PLACEHOLDER_DSN, s3_bucket="poseidon-artifacts")
+    s = Settings(_env_file=None, database_url=_PLACEHOLDER_DSN)
     assert s.internal_token is None
 
 

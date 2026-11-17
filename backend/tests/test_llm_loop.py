@@ -72,7 +72,6 @@ from poseidon.tasks.reporting.skills.monthly_performance.tests.payload_fixture i
 
 REQUIRED_ENV = {
     "DATABASE_URL": "postgresql+psycopg://x:x@localhost:5432/poseidon",
-    "S3_BUCKET": "poseidon-artifacts",
 }
 
 METRIC_QUERY = "data_qa.metric_query"
@@ -280,7 +279,6 @@ def _context(
     state = ConversationSlots() if slots is None else slots
     return SkillContext(
         data=FakeDataClient(),
-        artifacts=None,
         settings=settings,
         state=state,
         tools=tools,

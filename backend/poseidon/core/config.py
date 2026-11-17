@@ -23,14 +23,6 @@ class Settings(BaseSettings):
 
     deploy_mode: Literal["local", "spcs", "ec2"] = "local"
     database_url: str
-    s3_endpoint_url: str | None = None
-    s3_bucket: str
-    # Static credentials for the local MinIO dev stack only (doc 07 section 6
-    # names no such variables for SPCS/EC2 -- those authenticate via OAuth token / IAM
-    # instance profile). Optional: ``None`` lets boto3 fall back to its normal
-    # credential chain, which is exactly what a non-local habitat needs.
-    s3_access_key: str | None = None
-    s3_secret_key: str | None = None
     data_backend: Literal["synthetic", "snowflake"] = "synthetic"
     identity_mode: Literal["disabled", "auth0", "spcs_ingress"] = "disabled"
     auth0_domain: str | None = None
@@ -261,7 +253,7 @@ class Settings(BaseSettings):
     # so duplicating it would just be a second place to keep in sync.
     static_dir: str | None = None
 
-    @field_validator("database_url", "s3_bucket")
+    @field_validator("database_url")
     @classmethod
     def not_blank(cls, v: str) -> str:
         if not v.strip():

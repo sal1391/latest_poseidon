@@ -26,7 +26,6 @@ from pydantic import ValidationError
 
 REQUIRED = {
     "DATABASE_URL": "postgresql+psycopg://x:x@localhost:5432/poseidon",
-    "S3_BUCKET": "poseidon-artifacts",
 }
 
 

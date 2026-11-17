@@ -1136,7 +1136,6 @@ def test_bedrock_utility_role_live_smoke(monkeypatch):
     for key in (name.upper() for name in Settings.model_fields):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://x:x@localhost:5432/poseidon")
-    monkeypatch.setenv("S3_BUCKET", "poseidon-artifacts")
     monkeypatch.setenv("LLM_PROFILE", "bedrock")
     monkeypatch.setenv("LLM_MODE", "live")
     settings = Settings(_env_file=None)

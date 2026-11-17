@@ -69,15 +69,13 @@ class _NullDataClient:
 def _ctx(**slots: Any) -> SkillContext:
     """The context every dispatch test passes in.
 
-    ``artifacts`` is None (no skill in this phase writes one) and ``data`` is
-    the null client above, so the context is complete without any external
-    dependency.
+    ``data`` is the null client above, so the context is complete without any
+    external dependency.
     """
     return SkillContext(
         data=_NullDataClient(),
-        artifacts=None,
         settings=Settings(
-            _env_file=None, database_url=PLACEHOLDER_DSN, s3_bucket="poseidon-artifacts"
+            _env_file=None, database_url=PLACEHOLDER_DSN
         ),
         state=ConversationSlots(**slots),
     )

@@ -181,7 +181,6 @@ def _settings() -> Settings:
     return Settings(
         _env_file=None,
         database_url=_PLACEHOLDER_DSN,
-        s3_bucket="poseidon-artifacts",
         llm_mode="stub",
     )
 
@@ -196,7 +195,6 @@ def _ctx(
 ) -> SkillContext:
     return SkillContext(
         data=data if data is not None else _FakeDataClient(),
-        artifacts=None,
         brief_store=brief_store,
         user=user,
         settings=_settings(),

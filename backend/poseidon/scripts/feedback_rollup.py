@@ -87,8 +87,9 @@ process environment, mirroring ``export_router_cases.py``'s own identical
 choice (see that script's own module docstring): unlike ``cost_rollup.py``,
 which needs ``Settings.token_spike_threshold`` for its second mode, nothing
 here reads any OTHER ``Settings`` field, so requiring a full ``Settings``
-construction (and therefore ``S3_BUCKET``, etc., for a bespoke invocation)
-would add a real operational cost for zero benefit.
+construction would validate every other ``Settings`` field (and fail the
+run on any that is unset) for zero benefit; this script needs only
+``DATABASE_URL``.
 
 **Operator posture (no new auth code) -- identical to both siblings.** Every
 query opens inside ``poseidon.core.db.rls_transaction`` with

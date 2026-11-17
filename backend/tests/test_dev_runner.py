@@ -53,7 +53,7 @@ DEV_RUN_PATH_TEMPLATE = "/api/dev/skills/{skill_id}/run"
 
 def _settings(**overrides) -> Settings:
     defaults: dict = dict(
-        _env_file=None, database_url=_PLACEHOLDER_DSN, s3_bucket="poseidon-artifacts"
+        _env_file=None, database_url=_PLACEHOLDER_DSN
     )
     defaults.update(overrides)
     return Settings(**defaults)
@@ -196,7 +196,7 @@ async def test_artifact_refs_serialize_to_the_frontend_wire_shape(
     ``ArtifactRef`` and pins the exact list the endpoint puts on the wire.
 
     Hermetic: local-mode app on a placeholder DSN, and the skill ignores
-    ``ctx`` entirely, so nothing here needs Postgres or MinIO.
+    ``ctx`` entirely, so nothing here needs Postgres.
     """
     pkg = tasks_package(
         "artifact_tasks", _files("demo_task", "makes_artifact", skill_py=_ARTIFACT_SKILL)

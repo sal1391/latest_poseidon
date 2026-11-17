@@ -25,8 +25,7 @@ exactly one new test module):
   run. Every identifying value (``user_sub``, ``client_turn_key``) is a fresh
   ``uuid4`` per test, so re-running this suite against a long-lived dev
   Postgres never trips on a previous run's leftover rows (which are
-  deliberately never deleted -- ``test_artifact_store.py``'s same choice,
-  and for the same reason: harmless, and evidence the write actually
+  deliberately never deleted -- harmless, and evidence the write actually
   happened).
 """
 

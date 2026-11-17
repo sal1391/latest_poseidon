@@ -100,7 +100,6 @@ def settings_override(pg_database_url, monkeypatch):
         for key in (name.upper() for name in Settings.model_fields):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("DATABASE_URL", pg_database_url)
-        monkeypatch.setenv("S3_BUCKET", "poseidon-artifacts")
         for key, value in overrides.items():
             monkeypatch.setenv(key.upper(), str(value))
         get_settings.cache_clear()
@@ -137,7 +136,6 @@ def _settings(pg_database_url: str, **overrides) -> Settings:
     defaults: dict = dict(
         _env_file=None,
         database_url=pg_database_url,
-        s3_bucket="poseidon-artifacts",
         llm_mode="stub",
         llm_profile="bedrock",
         chat_mode="live",

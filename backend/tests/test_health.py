@@ -8,7 +8,7 @@ def build_app(database_url: str):
     from poseidon.api.app import create_app
 
     settings = Settings(
-        _env_file=None, database_url=database_url, s3_bucket="poseidon-artifacts"
+        _env_file=None, database_url=database_url
     )
     return create_app(settings)
 

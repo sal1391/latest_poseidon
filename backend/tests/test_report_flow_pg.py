@@ -20,7 +20,6 @@ from poseidon.reports.store import ReportStore
 from tests.test_chat_e2e_scripted import (
     _DSN,
     _dev_user,
-    _drop_artifact_store,
     _headers,
     _settings,
     anyio_backend,  # noqa: F401 - the anyio fixture the pg suite shares
@@ -43,7 +42,6 @@ async def test_monthly_report_flow_over_http_then_a_scoped_follow_up():
     from poseidon.api.app import create_app
 
     app = create_app(_settings())
-    _drop_artifact_store(app)
     user = _dev_user("report-flow")
     sub = f"dev|{user}"
     headers = _headers(user)

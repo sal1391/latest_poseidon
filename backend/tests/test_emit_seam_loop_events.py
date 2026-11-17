@@ -68,7 +68,6 @@ from poseidon.core.skills.result import SkillResult, problem
 
 REQUIRED_ENV = {
     "DATABASE_URL": "postgresql+psycopg://x:x@localhost:5432/poseidon",
-    "S3_BUCKET": "poseidon-artifacts",
 }
 
 FAKE_SKILL = "fake_task.streaming_skill"
@@ -93,15 +92,14 @@ def _bare_settings() -> Settings:
     ``SkillContext`` field tests below, which never invoke an LLM or touch
     ``LLM_MODE`` and therefore need no monkeypatched environment at all
     (mirrors ``test_skill_registry.py``'s own inline construction).
-    ``database_url``/``s3_bucket`` are the model's own lowercase field
-    names, deliberately not built from ``REQUIRED_ENV`` (whose keys are the
+    ``database_url`` is the model's own lowercase field
+    name, deliberately not built from ``REQUIRED_ENV`` (whose keys are the
     UPPERCASE env var names ``_settings`` above feeds to ``monkeypatch.
     setenv`` -- a different casing convention for a different construction
     path)."""
     return Settings(
         _env_file=None,
         database_url=REQUIRED_ENV["DATABASE_URL"],
-        s3_bucket=REQUIRED_ENV["S3_BUCKET"],
     )
 
 
@@ -120,7 +118,7 @@ def test_skill_context_emit_part_defaults_to_none():
     """Additive per Phase 8 Task 1: every pre-existing ``SkillContext(...)``
     call site in this codebase omits ``emit_part`` entirely and must keep
     working unchanged -- provable only if the field defaults to ``None``."""
-    ctx = SkillContext(data=object(), artifacts=None, settings=_bare_settings())
+    ctx = SkillContext(data=object(), settings=_bare_settings())
 
     assert ctx.emit_part is None
 
@@ -131,7 +129,7 @@ def test_skill_context_emit_part_accepts_an_explicit_callable():
     def emitter(part: dict) -> None:
         calls.append(part)
 
-    ctx = SkillContext(data=object(), artifacts=None, settings=_bare_settings(), emit_part=emitter)
+    ctx = SkillContext(data=object(), settings=_bare_settings(), emit_part=emitter)
 
     assert ctx.emit_part is emitter
     ctx.emit_part({"kind": "text", "payload": {"markdown": "x"}})
@@ -139,7 +137,7 @@ def test_skill_context_emit_part_accepts_an_explicit_callable():
 
 
 def test_skill_context_llm_defaults_to_none():
-    ctx = SkillContext(data=object(), artifacts=None, settings=_bare_settings())
+    ctx = SkillContext(data=object(), settings=_bare_settings())
 
     assert ctx.llm is None
 
@@ -148,14 +146,14 @@ def test_skill_context_llm_accepts_an_explicit_value():
     fake_role_client = object()
 
     ctx = SkillContext(
-        data=object(), artifacts=None, settings=_bare_settings(), llm=fake_role_client
+        data=object(), settings=_bare_settings(), llm=fake_role_client
     )
 
     assert ctx.llm is fake_role_client
 
 
 def test_skill_context_remains_frozen_with_the_two_new_fields():
-    ctx = SkillContext(data=object(), artifacts=None, settings=_bare_settings())
+    ctx = SkillContext(data=object(), settings=_bare_settings())
 
     with pytest.raises(FrozenInstanceError):
         ctx.llm = object()
@@ -167,7 +165,7 @@ def test_skill_context_tools_and_state_defaults_are_unaffected_by_the_new_traili
     """``llm``/``emit_part`` are appended AFTER ``tools`` (all three now
     carry defaults) -- ``tools``'s and ``state``'s own defaults must still
     construct correctly, unaffected by two more fields sitting after them."""
-    ctx = SkillContext(data=object(), artifacts=None, settings=_bare_settings())
+    ctx = SkillContext(data=object(), settings=_bare_settings())
 
     assert ctx.tools is None
     assert ctx.state == ConversationSlots()
@@ -184,7 +182,6 @@ def test_skill_context_every_field_can_be_supplied_together_by_keyword():
 
     ctx = SkillContext(
         data=object(),
-        artifacts=None,
         settings=_bare_settings(),
         state=slots,
         tools=fake_tools,
@@ -270,7 +267,7 @@ def _end_turn(text: str, *, input_tokens: int = 12, output_tokens: int = 3) -> L
 
 def _context(settings: Settings, **kwargs) -> SkillContext:
     return SkillContext(
-        data=object(), artifacts=None, settings=settings, state=ConversationSlots(), **kwargs
+        data=object(), settings=settings, state=ConversationSlots(), **kwargs
     )
 
 
@@ -622,7 +619,6 @@ def test_part_emitter_return_value_is_a_plain_callable_matching_emit_part_shape(
 
     ctx = SkillContext(
         data=object(),
-        artifacts=None,
         settings=_bare_settings(),
         emit_part=sink.part_emitter(1),
     )

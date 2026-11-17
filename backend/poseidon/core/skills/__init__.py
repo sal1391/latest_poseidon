@@ -1,7 +1,7 @@
 """The contracts every Poseidon skill plugs into (doc 02 §2-§3).
 
-``context``  what a skill is handed: data seam, artifact store, settings,
-             conversation slots.
+``context``  what a skill is handed: data seam, settings, conversation slots,
+             and the optional tools, llm, user, report and brief seams.
 ``result``   what it hands back: typed message parts, proof lines, RFC-7807
              problem details.
 ``registry`` how it is found and called: fail-fast discovery over the folder

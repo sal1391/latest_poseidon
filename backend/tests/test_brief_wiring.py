@@ -1,6 +1,5 @@
 """Offline wiring tests for the brief store: ``create_app`` builds one and
-``execute_turn`` threads it into every ``SkillContext`` it builds. Modelled on
-``test_live_chat_sse.test_live_wiring_builds_an_artifact_store_and_turns_carry_it``."""
+``execute_turn`` threads it into every ``SkillContext`` it builds."""
 
 from poseidon.briefs.store import BriefStore
 from poseidon.core.llm.roles import RoleClient

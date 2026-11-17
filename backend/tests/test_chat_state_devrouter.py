@@ -99,7 +99,6 @@ _SINGAPORE = ResolvedEntity(
 
 REQUIRED_ENV = {
     "DATABASE_URL": "postgresql+psycopg://x:x@localhost:5432/poseidon",
-    "S3_BUCKET": "poseidon-artifacts",
 }
 
 

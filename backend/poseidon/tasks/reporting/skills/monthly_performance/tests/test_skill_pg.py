@@ -96,11 +96,10 @@ def store():
 
 def _ctx(store):
     settings = Settings(
-        _env_file=None, database_url=_SETTINGS_DSN, s3_bucket="poseidon-artifacts", llm_mode="stub"
+        _env_file=None, database_url=_SETTINGS_DSN, llm_mode="stub"
     )
     return SkillContext(
         data=CLIENT,
-        artifacts=None,
         settings=settings,
         state=ConversationSlots(),
         user=USER,

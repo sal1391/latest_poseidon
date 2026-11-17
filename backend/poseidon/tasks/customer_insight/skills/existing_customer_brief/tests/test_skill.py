@@ -3,8 +3,8 @@ the skill itself (folder law) -- ``Args``/``SKILL_META`` and ``skill.py``'s
 own small helper functions, unit-tested directly.
 
 The BIG cross-cutting scenarios (both skills' full runs, concurrency
-determinism, degraded-research continuation, artifacts-None skip, the PDF
-path with a fake artifact store, dispatch through the real registry) live
+determinism, degraded-research continuation, no-brief-store skip, the PDF
+path with a fake brief store, dispatch through the real registry) live
 in ``backend/tests/test_brief_skills.py`` instead -- this file mirrors
 ``data_qa.metric_query``'s/``research.web_research``'s own co-located
 ``tests/test_skill.py`` proportions: ``Args`` validation plus the skill
@@ -291,11 +291,9 @@ def _bare_ctx(*, tools):
 
     return SkillContext(
         data=object(),
-        artifacts=None,
         settings=Settings(
             _env_file=None,
             database_url="postgresql+psycopg://nobody:nope@127.0.0.1:1/void",
-            s3_bucket="poseidon-artifacts",
         ),
         tools=tools,
     )

@@ -85,9 +85,8 @@ REGISTRY = SkillRegistry.discover()
 def _ctx() -> SkillContext:
     return SkillContext(
         data=SyntheticDataClient(_DSN, connect_timeout=CONNECT_TIMEOUT_SECONDS),
-        artifacts=None,
         settings=Settings(
-            _env_file=None, database_url=_SETTINGS_DSN, s3_bucket="poseidon-artifacts"
+            _env_file=None, database_url=_SETTINGS_DSN
         ),
     )
 

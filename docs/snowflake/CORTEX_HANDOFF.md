@@ -71,7 +71,6 @@ token never appears in an error text (a test pins this).
 | `SNOWFLAKE_CORTEX_TOKEN` | the PAT secret from section 3 | B, D |
 | `SNOWFLAKE_CORTEX_TOKEN_TYPE` | `PROGRAMMATIC_ACCESS_TOKEN` (or `KEYPAIR_JWT` if you use a key-pair JWT) | B, D |
 | `DATABASE_URL` | `postgresql+psycopg://poseidon:poseidon@localhost:5432/poseidon` | the app's Settings require it (the live tests fill in a placeholder) |
-| `S3_BUCKET` | `poseidon-artifacts` | same |
 
 PowerShell:
 
@@ -80,7 +79,6 @@ $env:SNOWFLAKE_ACCOUNT_URL = "https://<account_identifier>.snowflakecomputing.co
 $env:SNOWFLAKE_CORTEX_TOKEN = "<secret>"
 $env:SNOWFLAKE_CORTEX_TOKEN_TYPE = "PROGRAMMATIC_ACCESS_TOKEN"
 $env:DATABASE_URL = "postgresql+psycopg://poseidon:poseidon@localhost:5432/poseidon"
-$env:S3_BUCKET = "poseidon-artifacts"
 ```
 
 bash:
@@ -90,7 +88,6 @@ export SNOWFLAKE_ACCOUNT_URL=https://<account_identifier>.snowflakecomputing.com
 export SNOWFLAKE_CORTEX_TOKEN='<secret>'
 export SNOWFLAKE_CORTEX_TOKEN_TYPE=PROGRAMMATIC_ACCESS_TOKEN
 export DATABASE_URL=postgresql+psycopg://poseidon:poseidon@localhost:5432/poseidon
-export S3_BUCKET=poseidon-artifacts
 ```
 
 Do **not** export `LLM_PROFILE` or `LLM_MODE`. The live tests of Step B set them themselves, and
@@ -112,7 +109,7 @@ exit code). The bash form works in Git Bash on Windows; the `env -u` part unsets
 would otherwise trigger paid calls elsewhere in the suite.
 
 ```bash
-cd <path-to-clone>/backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest -p no:cacheprovider -m 'not pg and not minio and not pdf and not router_live and not research_live' tests/test_provider_parity.py tests/test_llm_cortex.py > parity.txt 2>&1
+cd <path-to-clone>/backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest -p no:cacheprovider -m 'not pg and not pdf and not router_live and not research_live' tests/test_provider_parity.py tests/test_llm_cortex.py > parity.txt 2>&1
 tail -n 3 parity.txt
 ```
 
@@ -121,7 +118,7 @@ PowerShell equivalent:
 ```powershell
 cd <path-to-clone>\backend
 Remove-Item Env:PERPLEXITY_API_KEY -ErrorAction SilentlyContinue
-.venv\Scripts\python.exe -B -m pytest -p no:cacheprovider -m "not pg and not minio and not pdf and not router_live and not research_live" tests/test_provider_parity.py tests/test_llm_cortex.py *> parity.txt
+.venv\Scripts\python.exe -B -m pytest -p no:cacheprovider -m "not pg and not pdf and not router_live and not research_live" tests/test_provider_parity.py tests/test_llm_cortex.py *> parity.txt
 Get-Content parity.txt -Tail 3
 ```
 

@@ -163,7 +163,6 @@ def main(argv: list[str] | None = None) -> int:
     settings = Settings(
         _env_file=None,
         database_url=url,
-        s3_bucket="poseidon-artifacts",
         data_backend="synthetic",
         llm_mode="stub",
     )
@@ -171,7 +170,6 @@ def main(argv: list[str] | None = None) -> int:
     user = UserContext(sub="dev|demo", email=None, name="Demo", roles=("Poseidon:Sales",))
     ctx = SkillContext(
         data=SyntheticDataClient(settings.database_url),
-        artifacts=None,
         settings=settings,
         user=user,
         report_store=store,

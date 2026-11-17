@@ -7,13 +7,11 @@ placeholder, because a placeholder invites code that pretends the capability
 exists. ``tools`` arrived in Phase 7 Task 1; ``llm`` and ``emit_part`` arrive
 in Phase 8 Task 1; ``user`` arrives in Phase 9 Task 1 (all four named below);
 ``profile`` and ``run`` remain pending their own owning phases. Today a
-skill gets exactly ten things (``report_store`` and ``prompt_tree`` arrive
+skill gets exactly these things (``report_store`` and ``prompt_tree`` arrive
 in Phase 17 PR A1):
 
 ``data``      the adapter seam of doc 04 — a :class:`DataClient`, never a
               connection, a cursor or SQL.
-``artifacts`` the object store, or ``None`` for the skills that produce no
-              file (``data_qa.metric_query`` passes ``None``).
 ``settings``  the validated environment contract.
 ``state``     the conversation slots the deterministic parsing pipeline
               (doc 02 §5, phase 4) fills in, carried across turns.
@@ -95,25 +93,15 @@ in Phase 17 PR A1):
               :class:`~poseidon.briefs.store.BriefStore`, typed ``object`` for
               the same one-way-dependency reason. ``None`` is a real state.
 
-``artifacts`` is annotated as a string under a ``TYPE_CHECKING`` guard on
-purpose, and permanently so: :mod:`poseidon.core.artifacts` (Task 4) imports
-``ArtifactRef`` from this very module, so a real runtime import here would be
-circular. Dataclasses never evaluate their annotations, so the forward
-reference costs nothing at runtime. ``tools``, ``llm`` and ``emit_part`` take
-the plainer route of typing themselves ``object`` instead, because unlike
-``ArtifactRef`` there is no real cycle to dodge for any of the three -- only a
-dependency DIRECTION worth keeping one-way on purpose.
+``tools``, ``llm`` and ``emit_part`` are typed ``object`` on purpose: there is
+no cycle to dodge, only a dependency DIRECTION worth keeping one-way.
 """
 
 from dataclasses import dataclass
 from datetime import date
-from typing import TYPE_CHECKING
 
 from poseidon.core.config import Settings
 from poseidon.core.data.client import DataClient
-
-if TYPE_CHECKING:  # avoids the circular import — see the docstring above
-    from poseidon.core.artifacts import ArtifactStore
 
 
 @dataclass(frozen=True)
@@ -167,9 +155,8 @@ class ConversationSlots:
 class ArtifactRef:
     """A file a skill produced, addressable by the frontend's artifact part.
 
-    ``url`` is either a presigned GET (the browser fetches the object
-    directly) or an app-relative path such as ``/api/briefs/{id}/pdf`` that
-    the app itself serves.
+    ``url`` is an app-relative path such as ``/api/briefs/{id}/pdf`` that the
+    app itself serves.
     """
 
     name: str
@@ -180,7 +167,6 @@ class ArtifactRef:
 @dataclass(frozen=True)
 class SkillContext:
     data: DataClient
-    artifacts: "ArtifactStore | None"
     settings: Settings
     state: ConversationSlots = ConversationSlots()
     tools: object | None = None

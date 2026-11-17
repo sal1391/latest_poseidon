@@ -5,20 +5,20 @@ Everything is developed and validated locally with docker-compose, then deployed
 **EC2 first** -- a public, Auth0-gated instance on proven AWS footing, brought up before the
 corporate-platform work -- and then to **Snowpark Container Services (SPCS), the corporate
 primary target**, following the proven in-house pattern. Only configuration differs (decision
-D8, revised 2026-08-05).
+D8, revised 2026-08-05). **Update (D84, 2026-11-16): the EC2 habitat is parked; the deploy target is SPCS with Snowflake Postgres.**
 
 ## 1. Local development topology
 
 ```
 docker-compose.yml
   db        postgres:16 + pgvector          ports 5432; schemas: app, synthetic
-  minio     S3-compatible object store      ports 9000/9001; bucket: poseidon-artifacts
-  backend   FastAPI (uvicorn, reload)       port 8000; depends_on db, minio
+  migrate   one-shot Drizzle migration      no port; depends_on db (D58)
+  backend   FastAPI (uvicorn, reload)       port 8000; depends_on db, migrate
   worker    memory-distillation worker      no port; depends_on db (Phase 13 Task 4, D31)
   frontend  Vite dev server                 port 5173; proxies /api -> backend
 ```
 
-- First run: `docker compose up` → migrations apply (Alembic) → synthetic dataset generates and
+- First run: `docker compose up` → migrations apply (the one-shot `migrate` service, Drizzle) → synthetic dataset generates and
   loads into the `synthetic` schema (doc 04 §4 — the standard local-development practice) →
   app is fully usable at `localhost:5173`.
 - `IDENTITY_MODE=disabled` by default locally (fixed dev user + `X-Dev-User` act-as, doc 05
@@ -26,8 +26,8 @@ docker-compose.yml
 - LLM: `LLM_PROFILE=bedrock` with an IAM user's keys in `.env` (section 6), or
   `LLM_PROFILE=cortex` with Snowflake credentials. `LLM_MODE=stub` (recorded responses;
   default for tests) keeps the stack usable with zero credentials.
-- MinIO stands in for S3 behind the same `boto3` client (endpoint-url config) — artifact code
-  is identical in every habitat.
+- There is no object store in any habitat (D84): brief and report PDF/HTML bytes are Postgres
+  rows (`brief_run`, `report_run`) served by the Next.js routes (D65, D83).
 
 ## 2. The container contract
 
@@ -41,9 +41,8 @@ image conventions):
   built SPA from one origin/port with `uvicorn` on 8000 (StaticFiles mounted after all `/api/*`
   routes).
 
-Report HTML and PDF bytes live in Postgres (`report_run`) in every habitat, so the image needs no
-object store for reports; MinIO/S3 keeps the brief PDFs until the carry-forward in the Phase 17
-spec section 13 moves them.
+Report and brief HTML and PDF bytes live in Postgres (`report_run`, `brief_run`) in every
+habitat, so the image needs no object store (D83, D84).
 
 One image serves every target; behavior differences are environment variables only (section 6).
 The existing corporate pipeline (Bitbucket → JFrog/ECR, `bitbucket-pipelines.yml`) consumes the
@@ -56,7 +55,7 @@ same image, so the corporate deployment path stays compatible by construction.
 | Runs as | multi-container **service** in a compute pool | docker-compose behind Caddy |
 | Data platform access | Snowpark session via auto-mounted OAuth token | Snowpark session via Secrets Manager credentials |
 | App state (Postgres) | managed **Snowflake Postgres**; `DATABASE_URL` injected from a Snowflake secret (D39, revises D20) | RDS Postgres + pgvector (D17) |
-| Artifacts | **no object store in the service** — report HTML/PDF are bytes in Postgres, served through the API (D39) | S3 bucket + lifecycle rule |
+| Artifacts | **no object store in the service** — report and brief HTML/PDF are bytes in Postgres, served through the API (D39, D83) | none; EC2 is parked (D84) |
 | LLM default | Cortex (D21) | Bedrock via instance profile (D21) |
 | Identity default | `spcs_ingress` (D22) | `auth0` |
 | Outbound calls | External Access Integration (§4) | security-group egress |
@@ -162,11 +161,13 @@ service still owns is its image, its spec, and its schema revision.
    recreate service.
 
 Decision D32, as narrowed by D39: app state gets a real backup taken off the thing it protects, a
-rehearsed restore, and a stated RPO/RTO. On SPCS there is no longer an in-service Postgres or MinIO
+rehearsed restore, and a stated RPO/RTO. On SPCS there is no longer an in-service Postgres, and no object store (D84),
 to run backup sidecars against — the managed instance's own guarantees are what must be verified
 to meet the target.
 
 ## 5. EC2 deployment (first-deployed)
+
+> PARKED (D84, 2026-11-16): the EC2 habitat is not a deploy target; Poseidon ships to Snowpark Container Services with Snowflake Postgres. This section is kept for reference only; its S3 / artifact-bucket steps are stale.
 
 ```mermaid
 flowchart LR
@@ -216,7 +217,6 @@ flowchart LR
 |----------|---------------|------|-----|
 | `DEPLOY_MODE` | `local` | `spcs` | `ec2` |
 | `DATABASE_URL` | compose `db` DSN | **managed Snowflake Postgres DSN, injected from a Snowflake secret** (D39) | `/etc/poseidon/backend.env` (on-box, this phase; Secrets Manager arrives with the Snowflake credentials effort) |
-| `S3_ENDPOINT_URL` / `S3_BUCKET` | minio / `poseidon-artifacts` | **unset — no object store on SPCS** (D39) | unset (real S3) / bucket |
 | `DATA_BACKEND` | `synthetic` | `synthetic` → `snowflake` (doc 08 gate) | `synthetic` or `snowflake` |
 | `SNOWFLAKE_*` | unset or password auth | injected by platform + OAuth token file | Secrets Manager (arrives with the Snowflake credentials effort; unset today) |
 | `IDENTITY_MODE` | `disabled` | `spcs_ingress` | `auth0` |
@@ -247,8 +247,8 @@ accounts:
    access integration, and the certified views loaded from the synthetic dataset — then a full
    SPCS deploy rehearsal (§4) ending at a working `ingress_url`.
 3. **AWS free-tier account**: Bedrock model access in `us-east-1` (Claude + Nova families) →
-   IAM dev user for local `.env` → later EC2 t3.micro + RDS db.t3.micro + one S3 bucket +
-   instance profile (§5).
+   IAM dev user for local `.env` → later EC2 t3.micro + RDS db.t3.micro +
+   instance profile (§5, parked, D84).
 4. **Cost guardrails**: AWS Budget alert; compute pool `SUSPEND` when idle; small tiers for
    development-loop LLM calls; `router_live` suites marker-gated so model spend is always a
    deliberate act.
@@ -260,7 +260,7 @@ accounts:
 - `infra/runbooks/local.md` — clean-machine bring-up, synthetic regeneration, stub vs live LLM.
 - `infra/runbooks/deploy-spcs.md` — image push, service spec, EAI, identity mode, verify,
   suspend/resume, rollback (previous image tag).
-- `infra/runbooks/backup-restore-spcs.md` — schedule and verify the `pg_dump` + artifact mirror,
+- `infra/runbooks/backup-restore-spcs.md` — schedule and verify the `pg_dump` backup,
   restore into a fresh service, volume expansion, migration rollback (`alembic downgrade` +
   previous image tag), and the RPO/RTO the procedure is written to meet (§4).
 - `infra/runbooks/deploy-ec2.md` — account prep, provisioning scripts (small idempotent CLI

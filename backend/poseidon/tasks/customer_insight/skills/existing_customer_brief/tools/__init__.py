@@ -4,7 +4,7 @@
 ``poseidon.core.data.specs`` queries and run them through a
 :class:`~poseidon.core.data.client.DataClient` — no SQL, no
 ``query_builder`` import, no LLM. ``build_brief_pdf`` (Task 4) renders the
-brief to PDF and uploads it via ``ArtifactStore``. Each tool is unit-tested
+brief to PDF. Each tool is unit-tested
 in ``tests/`` on its own, ahead of the skill that will call them in
 sequence.
 """
