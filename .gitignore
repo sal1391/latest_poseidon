@@ -43,3 +43,7 @@ backend/tests/router_cases/candidates/*.yml
 # default and points at the host backend/.env.
 infra/docker-compose.auth0.yml
 infra/docker-compose.live.yml
+
+# Claude Code per-machine permission file (also covered by a global ignore on the
+# original dev machine; listed here so a fresh clone behaves the same).
+.claude/settings.local.json
