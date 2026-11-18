@@ -33,10 +33,10 @@ doc as current. Decisions taken in feature specs used to not propagate; that is 
 - **Cortex via the SQL `COMPLETE` function with emulated tools.** D40 chose the Cortex REST
   Messages endpoint with native tool calling.
 
-## Commands — verified 2026-11-16 (MinIO removal), copy-pasteable
+## Commands — verified 2026-11-17 (dev-router titles), copy-pasteable
 
 ```bash
-# Offline Python suite -> 2471 passed, 14 skipped, 153 deselected (~85s)
+# Offline Python suite -> 2479 passed, 14 skipped, 153 deselected (~85s)
 cd backend && env -u PERPLEXITY_API_KEY .venv/Scripts/python.exe -B -m pytest \
   -p no:cacheprovider \
   -m 'not pg and not pdf and not router_live and not research_live'
@@ -77,8 +77,8 @@ cd web && npx drizzle-kit migrate      # reads DRIZZLE_DATABASE_URL
 # Fresh local database after the Phase 16 cutover: docker compose -f infra/docker-compose.yml down -v
 ```
 
-**Figures verified 2026-11-16 (MinIO removal), each run once, to its own file, never
-piped:** offline Python 2471 passed, 14 skipped, 153 deselected; `ruff check` clean;
+**Figures verified 2026-11-17 (dev-router titles), each run once, to its own file, never
+piped:** offline Python 2479 passed, 14 skipped, 153 deselected; `ruff check` clean;
 `tests/contracts` 9 passed (nine dots in the `-q` output; `contracts/` unchanged; `git status --short contracts/` empty); pg suite 368 passed, 0
 skipped, run serially against the compose `db` service (host port 5434 when the compose db is started with a port override; the tracked compose file maps 5432).
 Drizzle has five migrations (0000-0004); the pg suite needs the compose `migrate` service to have run against the database it tests.

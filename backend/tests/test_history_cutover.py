@@ -37,13 +37,14 @@ discipline -- see ``test_chat_orchestrator.py``'s module docstring for the
 precedent), not assumed from the offline suites' unrelated fixture data.
 
 **The stub title.** ``LLM_MODE=stub`` routes the ``utility`` role through
-``DevDeterministicRouter`` exactly like every other role; a title prompt
-(``utility/title``) matches none of that router's state-block-driven gates,
-so it falls to the SAME deterministic capability-message fallback every
-unrecognized input gets, truncated to :data:`~poseidon.core.llm.titles.
-TITLE_MAX_CHARS` (60) characters -- verified directly against a real
-``title_for(...)`` call before being pinned as :data:`_STUB_TITLE` below,
-not derived from reading the router's source by hand.
+``DevDeterministicRouter`` exactly like every other role, and the router
+answers a title prompt (``utility/title``) with a deterministic title: the
+turn's answer summary when it carries one, else the question, first line
+only, cut on a word boundary at :data:`~poseidon.core.llm.titles.
+TITLE_MAX_CHARS` (60). So ``"hello"`` (whose offline answer is the capability
+message, which the router ignores as a summary) is titled
+:data:`_STUB_TITLE_HELLO`, and the brief flow's second turn is titled
+:data:`_STUB_TITLE_BRIEF`.
 """
 
 import json
@@ -298,11 +299,11 @@ async def test_continue_with_carry_after_restart_answers_target_the_carried_cust
 # the stub RoleClient.
 # ===========================================================================
 
-# Verified directly against a real title_for(...) call under LLM_MODE=stub
-# before being pinned here (module docstring's "The stub title") -- the
-# router's own deterministic capability-message fallback, truncated to
-# TITLE_MAX_CHARS (60) characters, mid-word.
-_STUB_TITLE = "I can answer certified metric questions " + chr(0x2014) + " try a metric, a cu"
+# The dev router's deterministic title (module docstring's "The stub title"):
+# the question when the turn has no usable answer summary, else the summary's
+# first line.
+_STUB_TITLE_HELLO = "hello"
+_STUB_TITLE_BRIEF = "Brief generated for Northstar Lines"
 
 
 @pytest.mark.pg
@@ -323,12 +324,12 @@ async def test_title_set_after_first_successful_turn_persisted_and_in_done_frame
 
     done_payloads = [payload for name, payload in events if name == "done"]
     assert len(done_payloads) == 1
-    assert done_payloads[0]["title"] == _STUB_TITLE
+    assert done_payloads[0]["title"] == _STUB_TITLE_HELLO
 
     items = listing.json()["items"]
     assert len(items) == 1
     assert items[0]["id"] == cid
-    assert items[0]["title"] == _STUB_TITLE
+    assert items[0]["title"] == _STUB_TITLE_HELLO
     assert items[0]["title"] != "New chat"
 
 
@@ -407,8 +408,8 @@ async def test_title_set_on_the_first_ok_turn_after_a_clarify(pg_database_url):
     done_payloads_turn2 = [payload for name, payload in events_2 if name == "done"]
     assert done_payloads_turn1[0]["title"] is None
     assert listing_1.json()["items"][0]["title"] == "New chat"
-    assert done_payloads_turn2[0]["title"] == _STUB_TITLE
-    assert listing_2.json()["items"][0]["title"] == _STUB_TITLE
+    assert done_payloads_turn2[0]["title"] == _STUB_TITLE_BRIEF
+    assert listing_2.json()["items"][0]["title"] == _STUB_TITLE_BRIEF
 
 
 @pytest.mark.pg
@@ -428,7 +429,7 @@ async def test_title_is_computed_once_and_not_recomputed_on_later_ok_turns(pg_da
 
     done_turn1 = [payload for name, payload in events_1 if name == "done"][0]
     done_turn2 = [payload for name, payload in events_2 if name == "done"][0]
-    assert done_turn1["title"] == _STUB_TITLE
+    assert done_turn1["title"] == _STUB_TITLE_HELLO
     assert done_turn2["title"] is None
     assert [role for role, _m in recorder.recorded].count("utility") == 1
 
@@ -670,7 +671,7 @@ async def test_title_fallback_to_first_60_chars_when_title_for_returns_empty(pg_
     client's ``utility``-role call resolves with ``stop_reason="error"``
     (``core/llm/titles.py``'s own docstring) -- under the stub ``RoleClient``
     every OTHER pg test in this suite exercises, that call always succeeds
-    (the deterministic capability-message fallback, :data:`_STUB_TITLE`
+    (the dev router's deterministic title, :data:`_STUB_TITLE_HELLO`
     above), so the ``computed if computed else body.text[:60]`` ternary's
     ``else`` branch had no coverage anywhere in this suite. This test
     forces exactly that branch: a small wrapper role client answers the
