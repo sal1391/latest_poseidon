@@ -114,8 +114,8 @@ above *are* the gate.
   and `env -u PERPLEXITY_API_KEY`. An incomplete exclusion has fired **real, paid Bedrock calls**.
 - **`POSEIDON_ENV_FILE: ""` in compose is deliberate** — it makes the backend read no dotenv, so a
   host `backend/.env` bind-mounted at `/app` cannot shadow compose's values.
-- **No `.gitattributes` exists.** A fresh clone gives the 6 tracked `infra/aws/*.sh` files CRLF
-  endings and bash rejects them. One-line fix when someone wants it: `*.sh text eol=lf`.
+- **`.gitattributes` pins `*.sh` to LF** (since the docs/plan-files PR). Before it, a fresh Windows clone gave
+  the 6 tracked `infra/aws/*.sh` files CRLF endings and bash rejected them.
 - **Windows CRLF in shell scripts:** `aws.exe` emits CRLF. `$(...)` strips the CR under MSYS but
   `mapfile < <(...)` does **not** — it lands on the last array element and fails silently.
 - **Never parallelise the `-m pg` suite.** `test_migrations.py`'s two Alembic round-trips revoke
